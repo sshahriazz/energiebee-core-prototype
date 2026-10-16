@@ -12,6 +12,7 @@ import { syncWeather } from '../adapters/openmeteo.js';
 import { syncQuartz } from '../adapters/quartz.js';
 import { syncSunsynk } from '../adapters/sunsynk.js';
 import { syncOctopusAccount, syncOctopusConsumption, syncTariffRates, syncKraken, upsertTariff, syncGasUnits } from '../adapters/octopus.js';
+import { learnIogWindow } from '../core/pricing.js';
 import { syncComparison } from '../core/compare.js';
 import { syncGasCv } from '../adapters/nationalgas.js';
 import { measureBatteryCapacity } from '../core/derive.js';
@@ -98,6 +99,21 @@ function recordForecast(siteId) {
   return { forecasts };
 }
 
+// Earliest time touched by facts recorded since `sinceMs`: this home's readings and
+// intervals (its own, its meters' and its regions'), and prices of its tariffs.
+function earliestChange(siteId, site, sinceMs) {
+  const gas = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean);
+  const regions = [site.carbon_region != null ? `carbon:${site.carbon_region}` : null, gas ? `ldz:${gas}` : null].filter(Boolean);
+  const ours = `(se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
+    ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''}`;
+  const args = [String(siteId), siteId, ...regions];
+  const r = db.prepare(`SELECT MIN(r.ts) AS t FROM reading r JOIN series se ON se.id = r.series_id WHERE r.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args)?.t;
+  const f = db.prepare(`SELECT MIN(f.start_ts) AS t FROM interval_fact f JOIN series se ON se.id = f.series_id WHERE f.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args)?.t;
+  const p = db.prepare(`SELECT MIN(r.valid_from) AS t FROM rate_interval r WHERE r.recorded_at >= ? AND r.tariff_id IN (SELECT tariff_id FROM tariff_agreement WHERE site_id = ?)`).get(sinceMs, siteId)?.t;
+  const ts = [r, f, p].filter((v) => v != null);
+  return ts.length ? Math.min(...ts) : null;
+}
+
 async function step(log, siteId, provider, fn) {
   const t0 = Date.now();
   try {
@@ -116,6 +132,8 @@ export async function syncSite(siteId) {
   if (running.has(siteId)) return { skipped: 'already running' };
   running.add(siteId);
   const runId = Number(db.prepare("INSERT INTO sync_run (site_id, started_at, status) VALUES (?, ?, 'running')").run(siteId, nowSec()).lastInsertRowid);
+  const syncStartMs = Date.now();
+  let agreementsChanged = false;
   const log = [];
   try {
     let site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
@@ -158,7 +176,8 @@ export async function syncSite(siteId) {
       const octoFirst = firstRun || !db.prepare("SELECT last_success_at FROM connection WHERE site_id = ? AND provider = 'octopus'").get(siteId)?.last_success_at;
       const octoFrom = octoFirst ? dayBounds(tz, addDays(today, -INITIAL_DAYS))[0] : fromTs;
       await step(log, siteId, 'octopus', async () => {
-        await syncOctopusAccount(site, creds);
+        const meters = await syncOctopusAccount(site, creds);
+        agreementsChanged = !!meters.agreementsChanged;
         // Gas units straight from Octopus; if they changed, re-read the whole gas history.
         let gasUnits = null;
         try { gasUnits = await syncGasUnits(site, creds); } catch (err) { gasUnits = { error: err.message }; }
@@ -174,6 +193,17 @@ export async function syncSite(siteId) {
                                     WHERE a.site_id = ? AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
         let rates = 0;
         for (const t of tariffs) rates += await syncTariffRates(t, octoFrom - 86400, nowSec() + 2 * 86400, siteId);
+        // Intelligent Octopus Go tariffs that publish day/night prices give no times. The window
+        // is learned from Octopus's time-stamped prices of the home's earlier IOG tariffs, so fetch
+        // the last two weeks of those when no such prices are held yet.
+        if (tariffs.some((t) => t.structure === 'iog') && !learnIogWindow(site.gsp_region, tz)) {
+          const earlier = db.prepare(`SELECT DISTINCT t.*, a.valid_to AS ended FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
+            WHERE a.site_id = ? AND t.structure = 'iog' AND a.valid_to IS NOT NULL ORDER BY a.valid_to DESC`).all(siteId);
+          for (const t of earlier) {
+            rates += await syncTariffRates(t, t.ended - 14 * 86400, t.ended, siteId);
+            if (learnIogWindow(site.gsp_region, tz)) break;
+          }
+        }
         let kraken = null;
         try { kraken = await syncKraken(site, creds); } catch (err) { kraken = { error: err.message }; }
         return { consumption, rates, tariffs: tariffs.length, kraken, gasUnits };
@@ -193,7 +223,10 @@ export async function syncSite(siteId) {
     await step(log, siteId, 'compare', () => syncComparison(site, cmpFrom - 86400, nowSec() + 2 * 86400));
     await step(log, siteId, 'solar_forecast', () => syncQuartz(site));
 
-    markDirty(siteId, fromTs, nowSec(), firstRun ? 'initial load' : 'sync');
+    // Rebuild only from the earliest half-hour whose facts changed in this sync (always
+    // including today, which is still being filled in). A changed tariff history rebuilds all.
+    const dirtyFrom = firstRun || agreementsChanged ? fromTs : Math.min(dayBounds(tz, today)[0], earliestChange(siteId, site, syncStartMs) ?? Infinity);
+    markDirty(siteId, dirtyFrom, nowSec(), firstRun ? 'initial load' : agreementsChanged ? 'tariff agreements changed' : 'facts changed');
     const t0 = Date.now();
     const rebuilt = processQueue();
     log.push({ step: 'build', ok: true, ms: Date.now() - t0, rebuilt });

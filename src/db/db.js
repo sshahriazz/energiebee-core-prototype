@@ -53,6 +53,11 @@ function addColumns(table, cols) {
   for (const c of cols) if (!have.has(c)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} REAL`);
 }
 for (const t of ['site_hh', 'site_day']) addColumns(t, ['solar_to_loss', 'battery_to_loss', 'grid_to_loss', 'loss_cost']);
+// Battery stock carried from one day to the next, so a rebuild can start at any day.
+addColumns('site_day', ['battery_eff']);
+if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'battery_stock')) db.exec('ALTER TABLE site_day ADD COLUMN battery_stock TEXT');
+// The primary key (series_id, ts, recorded_at) already serves every reading lookup; this index was never used.
+db.exec('DROP INDEX IF EXISTS reading_current');
 
 const sourceIds = new Map(db.prepare('SELECT code, id FROM source').all().map((r) => [r.code, r.id]));
 const metricIds = new Map(db.prepare('SELECT code, id FROM metric').all().map((r) => [r.code, r.id]));
@@ -67,4 +72,5 @@ export function metricId(code) {
   if (!id) throw new Error(`unknown metric ${code}`);
   return id;
 }
-export const dataDir = path.join(root, 'data');
+// Raw payload files live next to the database file, wherever DB_FILE puts it.
+export const dataDir = path.dirname(dbFile);

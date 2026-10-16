@@ -185,7 +185,6 @@ CREATE TABLE IF NOT EXISTS reading (
   raw_id        INTEGER REFERENCES raw_payload(id),
   PRIMARY KEY (series_id, ts, recorded_at)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS reading_current ON reading (series_id, ts) WHERE superseded_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS interval_fact (
   series_id     INTEGER NOT NULL REFERENCES series(id),
@@ -258,6 +257,8 @@ CREATE TABLE IF NOT EXISTS site_day (
   self_consumption REAL, self_sufficiency REAL, blended_cost REAL,
   peak_import_kw REAL, base_load_kw REAL, soc_min REAL, soc_max REAL, battery_cycles REAL,
   integrity REAL,
+  battery_eff REAL,                 -- round-trip efficiency used for this day's charging
+  battery_stock TEXT,               -- battery layers at the end of the day (JSON), so a rebuild can start the next day
   method_version TEXT NOT NULL,
   built_at INTEGER NOT NULL,
   PRIMARY KEY (site_id, local_date)

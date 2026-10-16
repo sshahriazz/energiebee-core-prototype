@@ -8,7 +8,7 @@
 import { db, tx } from '../db/db.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY } from './facts.js';
 import { loadPricing, priceAt } from './pricing.js';
-import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo } from './time.js';
+import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays } from './time.js';
 
 export const METHOD_VERSION = 'v2-measured-load';
 
@@ -117,28 +117,34 @@ export function buildSite(siteId, fromDate, toDate) {
   const previous = new Map(db.prepare('SELECT slot_start, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
     .all(siteId, winStart, winEnd).map((r) => [r.slot_start, r]));
 
-  // Battery round trip, measured from this battery's own data over the window:
-  // energy out ÷ (energy in − change in stored energy). Without enough data no loss
-  // is applied (1.0) and the check says so; nothing is assumed.
-  const sumE = (k) => [...aligned[k].energy.values()].reduce((s, v) => s + v, 0);
-  const socSeries = readings.get(socId) || [];
-  let roundTrip = null; let roundTripNote = 'not enough battery data to measure';
-  if (site.battery_kwh && socSeries.length > 1) {
-    const inKwh = sumE('chg'); const outKwh = sumE('dis');
-    const stored = ((socSeries[socSeries.length - 1].value - socSeries[0].value) / 100) * site.battery_kwh;
-    const net = inKwh - stored;
-    if (inKwh > 5 && net > 0 && outKwh / net > 0.5 && outKwh / net <= 1.02) {
-      roundTrip = Math.min(1, outKwh / net);
-      roundTripNote = `${outKwh.toFixed(1)} kWh out ÷ (${inKwh.toFixed(1)} kWh in − ${stored.toFixed(1)} kWh change in stored energy)`;
-    }
-  }
-  const eff = roundTrip ?? 1;
+  // Battery round trip for each day, measured from the inverter's own daily counters over
+  // the 30 days ending that day: energy out ÷ (energy in − change in stored energy).
+  // It depends only on facts up to that day, so a day gets the same value whether it is
+  // rebuilt alone or as part of a full rebuild. Without enough data no loss is applied (1.0).
+  const counterSum = db.prepare('SELECT SUM(value) AS v FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND start_ts >= ? AND start_ts < ?');
+  const firstSoc = db.prepare('SELECT value FROM reading WHERE series_id = ? AND superseded_at IS NULL AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1');
+  const lastSoc = db.prepare('SELECT value FROM reading WHERE series_id = ? AND superseded_at IS NULL AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1');
+  const efficiencyFor = (date) => {
+    const [a] = dayBounds(tz, addDays(date, -29)); const [, b] = dayBounds(tz, date);
+    const inKwh = counterSum.get(dailyIds.chg, a, b)?.v || 0; const outKwh = counterSum.get(dailyIds.dis, a, b)?.v || 0;
+    const s0 = firstSoc.get(socId, a, b)?.value; const s1 = lastSoc.get(socId, a, b)?.value;
+    if (!site.battery_kwh || s0 == null || s1 == null || inKwh <= 5) return { eff: 1, note: 'not enough battery data to measure; no loss applied' };
+    const stored = ((s1 - s0) / 100) * site.battery_kwh; const net = inKwh - stored; const r = net > 0 ? outKwh / net : null;
+    if (r == null || r <= 0.5 || r > 1.02) return { eff: 1, note: `measured ${r?.toFixed(3) ?? '–'}, outside what is possible; no loss applied` };
+    return { eff: Math.min(1, r), note: `${outKwh.toFixed(1)} kWh out ÷ (${inKwh.toFixed(1)} kWh in − ${stored.toFixed(1)} kWh change in stored energy), inverter counters, 30 days to ${date}` };
+  };
   // Battery energy layers, first in first out: { kwh, p } (p = pence per stored kWh).
-  // The energy already in the battery at the first charge-level reading is the first
-  // layer; its cost is unknown (p = null) because it was stored before the data starts.
-  const stock = [];
-  if (site.battery_kwh && socSeries.length) stock.push({ kwh: (socSeries[0].value / 100) * site.battery_kwh, p: null });
-  let unknownStock = false;
+  // A rebuild that starts after the first day continues from the stock saved at the end
+  // of the day before. On the first day the energy already in the battery at the first
+  // charge-level reading is the opening layer; its cost is unknown (p = null).
+  const prevDay = db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(siteId, addDays(fromDate, -1));
+  const socSeries = readings.get(socId) || [];
+  const stock = prevDay?.battery_stock ? JSON.parse(prevDay.battery_stock).map(([kwh, p]) => ({ kwh, p })) : [];
+  if (!prevDay?.battery_stock && site.battery_kwh && socSeries.length) stock.push({ kwh: (socSeries[0].value / 100) * site.battery_kwh, p: null });
+  // Adjacent layers at the same price are one layer; first in first out is unchanged.
+  const addLayer = (kwh, p) => { const last = stock[stock.length - 1]; if (last && last.p === p) last.kwh += kwh; else stock.push({ kwh, p }); };
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  let unknownStock = false; let lastEff = null;
   const hhRows = [];
   const dayRows = [];
   const checks = [];
@@ -147,6 +153,8 @@ export function buildSite(siteId, fromDate, toDate) {
     const slots = slotsOfDay(tz, date).filter((s) => s + SLOT <= now);
     if (!slots.length) continue;
     const nSlotsDay = slotsOfDay(tz, date).length;
+    const { eff, note: effNote } = efficiencyFor(date);
+    lastEff = { date, eff, note: effNote };
 
     // ── 1 Align: fit each node's half-hours to the inverter's daily total ──
     const fit = {};
@@ -232,8 +240,8 @@ export function buildSite(siteId, fromDate, toDate) {
       // Unknown when energy comes from the opening layer, or more is drawn than the records hold.
       const unknownDraw = fromUnknown > 1e-6 || draw > 1e-6;
       if (unknownDraw) { unknownStock = true; q |= QUALITY.ESTIMATED; }
-      if (gToBatt > 0) stock.push({ kwh: gToBatt * eff, p: (impInc ?? 0) / eff });
-      if (sToBatt > 0) stock.push({ kwh: sToBatt * eff, p: 0 });   // solar has no fuel cost
+      if (gToBatt > 0) addLayer(gToBatt * eff, (impInc ?? 0) / eff);
+      if (sToBatt > 0) addLayer(sToBatt * eff, 0);   // solar has no fuel cost
 
       const standing = pi ? (pi.standingEx * (1 + pi.vat)) / nSlotsDay + (pg ? (pg.standingEx * (1 + pg.vat)) / nSlotsDay : 0) : 0;
       const gasCost = gas != null && pg?.unitEx != null ? gas * pg.unitEx * (1 + pg.vat) : (gas != null ? null : 0);
@@ -311,6 +319,12 @@ export function buildSite(siteId, fromDate, toDate) {
       battery_cycles: site.battery_kwh ? sum('battery_discharge') / site.battery_kwh : null,
       // Share of half-hours that are present, priced and pass the balance; finality is reported separately by state.
       integrity: R.length ? R.filter((r) => r.state !== 'missing' && !(r.quality & (QUALITY.SUSPECT | QUALITY.CHECK_FAILED))).length / R.length : null,
+      battery_eff: eff,
+      // Rounded at every day end (whether rebuilt alone or in a full rebuild), so both give the same numbers.
+      battery_stock: (() => {
+        for (let i = stock.length - 1; i >= 0; i--) { stock[i].kwh = round6(stock[i].kwh); if (stock[i].p != null) stock[i].p = round6(stock[i].p); if (stock[i].kwh <= 0) stock.splice(i, 1); }
+        return JSON.stringify(stock.map((l) => [l.kwh, l.p]));
+      })(),
       method_version: METHOD_VERSION, built_at: now,
     };
     dayRows.push(dayRow);
@@ -327,7 +341,7 @@ export function buildSite(siteId, fromDate, toDate) {
     checks.push([date, 'completeness', dayRow.slots_missing === 0 ? 'pass' : 'warn', R.length ? 1 - dayRow.slots_missing / R.length : 0, 1, `${dayRow.slots_final} final, ${dayRow.slots_provisional} provisional, ${dayRow.slots_missing} missing`]);
   }
   if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, 'Energy already in the battery when the data starts has unknown cost; those half-hours show no stored cost']);
-  if (checks.length) checks.push([fromDate, 'battery_efficiency', roundTrip != null ? 'pass' : 'skip', roundTrip, null, roundTrip != null ? `measured round trip ${(roundTrip * 100).toFixed(1)}%: ${roundTripNote}` : roundTripNote]);
+  if (lastEff) checks.push([lastEff.date, 'battery_efficiency', lastEff.eff < 1 ? 'pass' : 'skip', lastEff.eff, null, lastEff.eff < 1 ? `measured round trip ${(lastEff.eff * 100).toFixed(1)}%: ${lastEff.note}` : lastEff.note]);
 
   // ── Write serving rows (replace the window) ──
   tx(() => {
@@ -350,20 +364,34 @@ export function buildSite(siteId, fromDate, toDate) {
   return { days: dayRows.length, slots: hhRows.length };
 }
 
-// Rebuild everything a queued change touched, from the earliest dirty day to today.
-// The battery stock is carried day to day, so a rebuild always runs forward in order.
+// Rebuild from the earliest day a change touched to today. Each day saves its battery
+// stock, so the rebuild continues from the day before; it falls back to the first day
+// only when that saved stock is missing (for example rows built before it was saved).
 export function processQueue() {
   const pending = db.prepare('SELECT site_id, MIN(from_ts) AS from_ts FROM rebuild_queue WHERE done_at IS NULL GROUP BY site_id').all();
   const out = [];
   for (const p of pending) {
     const site = db.prepare('SELECT * FROM site WHERE id = ?').get(p.site_id);
     if (!site) continue;
-    const firstData = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id)?.d;
+    const firstDay = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id)?.d;
     let from = localDate(site.timezone, p.from_ts);
-    if (firstData && firstData < from) from = firstData;
+    // Never before the home's own first energy data (inverter or meter readings): a change
+    // elsewhere (a price list starting months earlier, weather history) must not create empty half-hours.
+    const firstFact = db.prepare(`SELECT MIN(t) AS t FROM (
+        SELECT MIN(r.ts) AS t FROM reading r JOIN series se ON se.id = r.series_id JOIN source so ON so.id = se.source_id
+          WHERE se.subject_kind = 'site' AND se.subject_id = ? AND so.code = 'sunsynk_5min'
+        UNION ALL SELECT MIN(f.start_ts) FROM interval_fact f JOIN series se ON se.id = f.series_id
+          WHERE se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).get(String(p.site_id), p.site_id)?.t;
+    if (firstFact != null && from < localDate(site.timezone, firstFact)) from = localDate(site.timezone, firstFact);
+    if (firstDay && from > firstDay) {
+      const prev = db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(p.site_id, addDays(from, -1));
+      if (!prev?.battery_stock) from = firstDay;
+    }
+    const t0 = Date.now();
     const res = buildSite(p.site_id, from, localDate(site.timezone, nowSec()));
-    db.prepare('UPDATE rebuild_queue SET done_at = ? WHERE site_id = ? AND done_at IS NULL').run(nowSec(), p.site_id);
-    out.push({ siteId: p.site_id, from, ...res });
+    // Processed requests are removed; the sync run records what was rebuilt.
+    db.prepare('DELETE FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL').run(p.site_id);
+    out.push({ siteId: p.site_id, from, ms: Date.now() - t0, ...res });
   }
   return out;
 }

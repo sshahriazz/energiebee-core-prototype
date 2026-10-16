@@ -14,19 +14,29 @@ const insertRaw = db.prepare(
   `INSERT INTO raw_payload (source_id, site_id, request, fetched_at, hash, file, status, reason)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 
+// Identity is the source and the body, not the request: requests carry the current
+// time (period_to=now, nonces), so the same data fetched again would otherwise be
+// stored again. The row is written first and removed if the file cannot be, so a
+// file never exists without its row.
 export function landRaw({ source, siteId, request, body, status = 'accepted', reason = null }) {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
   const reqText = JSON.stringify(request ?? {});
-  const hash = crypto.createHash('sha256').update(`${source}\n${reqText}\n${text}`).digest('hex');
+  const hash = crypto.createHash('sha256').update(`${source}\n${status}\n${text}`).digest('hex');
   const existing = findRaw.get(hash);
   if (existing) return { rawId: existing.id, duplicate: true };
   const fetchedAt = nowSec();
   const day = new Date(fetchedAt * 1000).toISOString().slice(0, 10);
   const rel = path.join('raw', source, day, `${hash.slice(0, 16)}.json`);
-  fs.mkdirSync(path.join(dataDir, path.dirname(rel)), { recursive: true });
-  fs.writeFileSync(path.join(dataDir, rel), text);
   const r = insertRaw.run(sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
-  return { rawId: Number(r.lastInsertRowid), duplicate: false };
+  const rawId = Number(r.lastInsertRowid);
+  try {
+    fs.mkdirSync(path.join(dataDir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, rel), text);
+  } catch (err) {
+    db.prepare('DELETE FROM raw_payload WHERE id = ?').run(rawId);
+    throw err;
+  }
+  return { rawId, duplicate: false };
 }
 
 export function quarantine({ source, siteId, request, body, reason }) {
@@ -107,11 +117,20 @@ export function putIntervals(series, rows, rawId) {
 
 const insForecast = db.prepare(
   'INSERT OR IGNORE INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, raw_id) VALUES (?, ?, ?, ?, ?, ?)');
+const latestForecast = db.prepare('SELECT value FROM forecast_fact WHERE series_id = ? AND start_ts = ? ORDER BY issued_at DESC LIMIT 1');
 
+// A new issue is stored only for periods whose value changed since the latest issue.
+// The forecast of record for a period is then still "the latest issue made before a
+// time", but repeated identical issues (every 10-minute sync) are not stored again.
 export function putForecasts(series, issuedAt, rows, rawId) {
   let n = 0;
   tx(() => {
-    for (const r of rows) n += Number(insForecast.run(series, r.start, r.end, issuedAt, r.value, rawId ?? null).changes);
+    for (const r of rows) {
+      const value = r.value === undefined ? null : r.value;
+      const last = latestForecast.get(series, r.start);
+      if (last && same(last.value, value)) continue;
+      n += Number(insForecast.run(series, r.start, r.end, issuedAt, value, rawId ?? null).changes);
+    }
   });
   return n;
 }

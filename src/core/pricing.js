@@ -56,7 +56,7 @@ function dispatchAllowance(dispatches, tz) {
 // Intelligent Octopus Go tariffs that publish day/night prices give no times. Octopus's
 // time-stamped IOG price lists for the same region do: the cheaper rows mark the off-peak
 // window (local time). It is read from those rows, never assumed.
-function learnIogWindow(region, tz) {
+export function learnIogWindow(region, tz) {
   if (!region) return null;
   const rows = db.prepare(`SELECT r.tariff_id, r.valid_from, r.valid_to, r.price_ex_vat, t.tariff_code FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
     WHERE t.structure = 'iog' AND t.region = ? AND r.component = 'unit' AND r.register = 'single'

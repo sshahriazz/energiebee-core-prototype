@@ -151,6 +151,10 @@ function replaceAgreements(siteId, deviceId, agreements, direction) {
     if (clean[i].to === null || clean[i].to > clean[i + 1].from) clean[i].to = clean[i + 1].from;
   }
   const kept = clean.filter((a) => a.to === null || a.to > a.from);
+  // Unchanged history is left alone (no delete and re-insert on every sync).
+  const current = db.prepare('SELECT t.tariff_code AS code, a.valid_from AS "from", a.valid_to AS "to" FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.device_id = ? ORDER BY a.valid_from').all(deviceId);
+  const key = (list) => list.map((a) => `${a.code}|${a.from}|${a.to ?? ''}`).join(',');
+  if (key(current) === key(kept)) return { kept, changed: false };
   tx(() => {
     db.prepare('DELETE FROM tariff_agreement WHERE device_id = ?').run(deviceId);
     for (const a of kept) {
@@ -159,7 +163,7 @@ function replaceAgreements(siteId, deviceId, agreements, direction) {
         .run(siteId, deviceId, t.id, a.from, a.to);
     }
   });
-  return kept;
+  return { kept, changed: true };
 }
 
 export async function syncOctopusAccount(site, { apiKey, accountNumber }) {
@@ -173,22 +177,24 @@ export async function syncOctopusAccount(site, { apiKey, accountNumber }) {
   const prop = [...json.properties].sort((a, b) => (b.moved_in_at || '').localeCompare(a.moved_in_at || '')).find((p) => !p.moved_out_at) || json.properties[0];
   // The supply address is the best source for the home's postcode when none is configured.
   if (!site.postcode && prop.postcode) db.prepare('UPDATE site SET postcode = ? WHERE id = ?').run(prop.postcode, site.id);
+  let agreementsChanged = false;
   const meters = [];
   for (const mp of prop.electricity_meter_points || []) {
     const kind = mp.is_export ? 'meter_export' : 'meter_import';
     const dev = upsertDevice(site.id, kind, mp.mpan, mp.is_export ? 'Export meter' : 'Import meter', {
       serials: (mp.meters || []).map((m) => m.serial_number), profileClass: mp.profile_class, annualKwh: mp.consumption_standard,
     });
-    replaceAgreements(site.id, dev.id, mp.agreements || [], mp.is_export ? 'export' : 'import');
+    if (replaceAgreements(site.id, dev.id, mp.agreements || [], mp.is_export ? 'export' : 'import').changed) agreementsChanged = true;
     meters.push(dev);
   }
   for (const gp of prop.gas_meter_points || []) {
     const dev = upsertDevice(site.id, 'meter_gas', gp.mprn, 'Gas meter', {
       serials: (gp.meters || []).map((m) => m.serial_number), annualKwh: gp.consumption_standard,
     });
-    replaceAgreements(site.id, dev.id, gp.agreements || [], 'import');
+    if (replaceAgreements(site.id, dev.id, gp.agreements || [], 'import').changed) agreementsChanged = true;
     meters.push(dev);
   }
+  meters.agreementsChanged = agreementsChanged;
   return meters;
 }
 

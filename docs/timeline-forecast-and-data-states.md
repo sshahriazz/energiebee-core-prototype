@@ -69,12 +69,12 @@ Each step succeeds or fails on its own; a failure is shown on its connection.
    - the account (meters, profile class, annual estimates, tariff agreements);
    - gas units and gas zone (LDZ) from Kraken;
    - meter readings with a 4-day look-back (14 days the first time);
-   - rates for the tariffs in force;
+   - rates for the tariffs in force, plus, when no time-stamped IOG prices are held, those of the home's earlier IOG tariffs (section 5.4);
    - Kraken dispatches and devices.
 5. **Gas calorific value:** National Gas's daily value for the meter's gas zone (section 5.3).
 6. **Comparison tariffs:** Agile and Agile Outgoing for the region (public prices).
 7. **Quartz:** only when panel size, tilt and direction are known. It runs with the estimated angles (section 7). Recent output is not sent, because that made Quartz overshoot (section 3).
-8. **Build:** every half-hour is rebuilt from the earliest day forward.
+8. **Build:** rebuilds from the earliest half-hour whose facts changed in this sync (and always today), continuing from the battery stock saved at the end of the previous day. Never before the home's first inverter or meter data.
 9. **Forecast record:** the forecast's house use, grid import and solar per half-hour are stored once an hour as `core_forecast`.
 
 Fetching again is harmless:
@@ -147,7 +147,7 @@ The build engine runs over every UTC half-hour of every local day. A local day h
 | Battery efficiency | measured | Shows the value and how it was measured |
 | Battery stock | — | Warns that opening energy has unknown cost |
 
-**Rebuild:** the battery stock carries from one half-hour to the next, so a rebuild always runs forward from the earliest day. 15 days take about 0.2 s, and the totals come out identical every time (Data & trust → Rebuild).
+**Rebuild:** the battery stock carries from one half-hour to the next. Each day saves its closing stock (`site_day.battery_stock`), so a rebuild can start at any day and continue from the day before. A normal sync rebuilds only from the earliest changed day (1 day, 13–18 ms). A full rebuild (Data & trust → Rebuild, about 0.2 s for 15 days) gives byte-identical rows.
 
 ### 1.4 Worked example: Fri 9 Oct, 11:00–11:30 (10 Acresbrook)
 
@@ -301,8 +301,8 @@ The forecast covers the next 48 half-hours × 2. Every parameter is learned from
 
 ### 5.1 Battery round-trip efficiency
 
-- **Formula:** energy out ÷ (energy in − change in stored energy) over the window. Energy in and out come from the Sunsynk counters; stored-energy change = Δ charge level × capacity.
-- **Result** (recomputed on every build; at the time of writing): 110.2 kWh out ÷ 115.6 kWh in = **95.2%**. The forecast's own measure over unbroken half-hour pairs is **95.4%**.
+- **Formula, per day:** energy out ÷ (energy in − change in stored energy) over the 30 days ending that day. Energy in and out come from the inverter's own daily counters; stored-energy change = Δ charge level × capacity. A day's value depends only on facts up to that day, so it is the same whether the day is rebuilt alone or in a full rebuild. Stored per day in `site_day.battery_eff`.
+- **Result on 16 Oct:** 118.4 kWh out ÷ (129.1 kWh in − 3.2 kWh change in stored energy) = **94.0%**. The forecast's own measure, from 5-minute data over unbroken half-hour pairs, is 95.4%. The two methods differ by 1.4 points; the inverter's counters are used for valuation.
 - **Affects:** the stored cost of grid-charged battery energy (price ÷ efficiency), and therefore `battery_to_home_cost`, blended cost, stored-energy p/kWh on the Battery and Breakdown pages, and forecast battery losses.
 - **Without enough data:** no loss is applied and the check says "not measured".
 
@@ -357,7 +357,7 @@ The core uses capacity mainly to turn the battery's charge level (%) into kWh, s
 | **Measured from use** | **11.0 kWh per 100%** = 104.6 kWh discharged over 951 points of charge drop, 1,724 discharge-only 5-minute steps in 30 days | Sunsynk 5-minute power and charge level (`src/core/derive.js`) | **yes** |
 | Battery's own reading | 200 Ah (`correctCap`) × voltage at that moment: 10.3, 10.6, 10.7 kWh on three readings | Sunsynk battery payload (raw kept) | cross-check only; it drifts with voltage |
 
-- **Lifetime counters** (Sunsynk): 8,173.1 kWh charged, 7,873.7 kWh discharged, 96.3% over the battery's life. That is consistent with the 95.2% measured over the recent window (5.1).
+- **Lifetime counters** (Sunsynk): 8,173.1 kWh charged, 7,873.7 kWh discharged, 96.3% over the battery's life, against 94.0% over the last 30 days (5.1).
 - **Affects:** kWh of stored energy, cycles, the stored-energy term in efficiency, opening stock, and forecast battery limits.
 
 ### 5.6 Location and region

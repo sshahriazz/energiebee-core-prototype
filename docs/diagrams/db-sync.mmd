@@ -2,7 +2,7 @@ flowchart TB
   T["Scheduler tick, every 10 minutes (SYNC_EVERY_MINUTES)<br/>syncSite for each site; a site already syncing is skipped"]
   R0["INSERT sync_run (status running)"]
   S1["Sunsynk: plant, 5-minute series for yesterday and today, month totals, live flow<br/>raw_payload · reading · interval_fact · UPDATE site, connection"]
-  S1b["measureBatteryCapacity: UPDATE connection.meta (sunsynk)"]
+  S1b["measureBatteryCapacity: UPDATE connection.meta (sunsynk);<br/>site.battery_kwh only when BATTERY_KWH is not configured"]
   S2["Location, only when a key is missing: postcodes.io, Octopus GSP, NESO region<br/>raw_payload · UPDATE site"]
   S3["Weather, Open-Meteo: past hours as reading and interval_fact<br/>next 3 days as one forecast_fact issue"]
   S4["Carbon, NESO: past slots as interval_fact (region series)<br/>next 48 h as one forecast_fact issue"]

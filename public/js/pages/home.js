@@ -62,6 +62,10 @@ async function render(state) {
   const minP = Math.min(0, ...ps); const maxP = Math.max(minP + 1, ...ps);
   const barH = (v) => 20 + (((v ?? 0) - minP) / (maxP - minP)) * 80;
   const n24 = fc.next24h;
+  // Low–high case after the expected value, when the forecast has one.
+  const range = (lo, hi, f) => (lo != null && hi != null ? ` <span class="faint">(${f(lo)}–${f(hi)})</span>` : '');
+  const kwhRange = (k) => range(n24[`${k}_low`], n24[`${k}_high`], (v) => v.toFixed(1));
+  const solarSrc = { quartz: 'Quartz', sunlight: 'Open-Meteo sunlight × this home’s learned response' }[fc.model?.solar?.path];
   const priceCard = card('Price and outlook', now.price.tariff ? `<span class="mono">${esc(now.price.tariff)}</span>` : 'No tariff found', `
     <div class="price-now">
       <div><div class="faint">Import now</div><div class="big">${fmt.pkwh(now.price.import)}</div></div>
@@ -72,14 +76,14 @@ async function render(state) {
     <div class="mini-prices" title="Import price, next 3 hours">${[now.price, ...next].map((x) => `<i style="height:${barH(x.import)}%" title="${tf.time(x.slot)} ${fmt.pkwh(x.import)}"></i>`).join('')}</div>
     <h3 style="margin:16px 0 6px">Next 24 hours (forecast)</h3>
     <div class="rows">
-      <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.solar}"></i>Solar expected</span><b>${fmt.kwh(n24.solar)}</b></div>
-      <div class="row"><span class="k">Home use expected</span><b>${fmt.kwh(n24.home)}</b></div>
-      <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>Import expected</span><b>${fmt.kwh(n24.import)}</b></div>
-      <div class="row"><span class="k">Cost while prices are known</span><b>${fmt.gbp(n24.cost)} <span class="faint">(${n24.pricedSlots / 2} h)</span></b></div>
+      <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.solar}"></i>Solar expected</span><b>${fmt.kwh(n24.solar)}${kwhRange('solar')}</b></div>
+      <div class="row"><span class="k">Home use expected</span><b>${fmt.kwh(n24.home)}${kwhRange('home')}</b></div>
+      <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>Import expected</span><b>${fmt.kwh(n24.import)}${kwhRange('import')}</b></div>
+      <div class="row"><span class="k">Cost while prices are known <span class="faint">(${n24.pricedSlots / 2} h)</span></span><b>${fmt.gbp(n24.cost)}${range(n24.cost_low, n24.cost_high, fmt.gbp)}</b></div>
       <div class="row"><span class="k">Expected saving</span><b>${fmt.gbp(n24.saving)}</b></div>
       ${fc.cheapestWindow ? `<div class="row"><span class="k">Cheapest 2 hours</span><b>${tf.time(fc.cheapestWindow.start)}–${tf.time(fc.cheapestWindow.end)} · ${fmt.pkwh(fc.cheapestWindow.avg)}</b></div>` : ''}
     </div>
-    <p class="faint" style="margin:8px 0 0;font-size:12px">Prices published until ${fc.pricesPublishedUntil ? tf.dayTime(fc.pricesPublishedUntil) : '–'}. Solar forecast issued ${fc.solarIssuedAt ? ago(fc.solarIssuedAt) : '–'} (Quartz).</p>`);
+    <p class="faint" style="margin:8px 0 0;font-size:12px">Prices published until ${fc.pricesPublishedUntil ? tf.dayTime(fc.pricesPublishedUntil) : '–'}. ${solarSrc ? `Solar forecast issued ${ago(fc.solarIssuedAt)} (${solarSrc}).` : 'No solar forecast yet.'}</p>`);
 
   // ── KPIs ──
   const kpis = `<div class="kpis">
@@ -97,6 +101,7 @@ async function render(state) {
   const costRows = `<div class="rows">
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>Grid power used at home</span><b>${fmt.gbp(c.grid_to_home_cost)}</b></div>
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.battery}"></i>Grid power stored in the battery</span><b>${fmt.gbp(c.grid_to_battery_cost)}</b></div>
+    ${c.loss_cost > 0.5 ? `<div class="row"><span class="k"><i class="swatch" style="background:var(--text-3)"></i>Grid power lost in the inverter</span><b>${fmt.gbp(c.loss_cost)}</b></div>` : ''}
     <div class="row"><span class="k">Standing charges</span><b>${fmt.gbp(c.standing_cost)}</b></div>
     ${c.gas ? `<div class="row"><span class="k">Gas</span><b>${fmt.gbp(c.gas_cost)}</b></div>` : ''}
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.export}"></i>Export credit</span><b>−${fmt.gbp(c.export_credit)}</b></div>

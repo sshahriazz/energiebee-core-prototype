@@ -1,0 +1,56 @@
+erDiagram
+  direction LR
+  site ||--o{ site_hh : "site_id, cascade"
+  site ||--o{ site_day : "site_id, cascade"
+  site_day ||..|{ site_hh : "site_id, local_date (logical)"
+  site ||--o{ check_result : "site_id, cascade"
+  site ||--o{ rebuild_queue : "site_id, cascade"
+  site ||--o{ sync_run : "site_id, cascade"
+
+  site {
+    INTEGER id PK
+    TEXT timezone
+  }
+  site_hh {
+    INTEGER site_id PK,FK
+    INTEGER slot_start PK "multiple of 1800"
+    TEXT local_date "indexed with site_id"
+    TEXT state "provisional, final, missing"
+    INTEGER quality "bit flags"
+    REAL flows_prices_costs "41 REAL columns in all"
+    TEXT lineage "JSON"
+    TEXT method_version
+    INTEGER built_at
+  }
+  site_day {
+    INTEGER site_id PK,FK
+    TEXT local_date PK
+    INTEGER slots
+    REAL sums_and_ratios "41 REAL columns in all"
+    REAL integrity
+    TEXT method_version
+  }
+  check_result {
+    INTEGER site_id PK,FK
+    TEXT local_date PK
+    TEXT check_code PK
+    TEXT status "pass, warn, fail, skip"
+    REAL measured
+    TEXT detail
+  }
+  rebuild_queue {
+    INTEGER id PK
+    INTEGER site_id FK
+    INTEGER from_ts
+    INTEGER to_ts
+    INTEGER enqueued_at
+    INTEGER done_at
+  }
+  sync_run {
+    INTEGER id PK
+    INTEGER site_id FK
+    INTEGER started_at
+    INTEGER finished_at
+    TEXT status "running, ok, partial, error"
+    TEXT detail "JSON step log"
+  }

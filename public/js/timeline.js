@@ -6,8 +6,10 @@ const fromForecast = (s) => ({
   slot_start: s.slot_start, local_date: s.local_date, _fc: true,
   solar: s.solar, home: s.home, ev: s.ev, soc_end: s.soc_end,
   solar_to_home: s.solar != null && s.home != null ? Math.min(s.solar, s.home) : null,
-  solar_to_battery: s.battery_charge, solar_to_grid: s.grid_export,
-  battery_to_home: s.battery_discharge, grid_to_home: s.grid_import, grid_to_battery: 0, battery_to_grid: 0,
+  // Grid import in the forecast includes grid charging of the battery; split it the same way the build does.
+  solar_to_battery: s.solar_to_battery ?? null, solar_to_grid: s.grid_export,
+  battery_to_home: s.battery_discharge, grid_to_battery: s.grid_to_battery ?? 0, battery_to_grid: 0,
+  grid_to_home: s.grid_import != null ? Math.max(0, s.grid_import - (s.grid_to_battery ?? 0)) : null,
   grid_import: s.grid_import, grid_export: s.grid_export, battery_charge: s.battery_charge, battery_discharge: s.battery_discharge,
   import_rate: s.import_rate, export_rate: s.export_rate, carbon_intensity: s.carbon_intensity,
   total_cost: s.cost, grid_only_cost: s.grid_only_cost, saving: s.saving, solar_forecast: s.solar,

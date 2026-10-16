@@ -15,8 +15,8 @@ npm install
 npm start             # http://localhost:4100
 ```
 
-On first start the server creates a **demo home** (unless real credentials are
-set), loads 14 days, builds the timeline and then syncs every 10 minutes.
+On first start the server creates the home configured in `.env`, loads 14 days,
+builds the timeline and then syncs every 10 minutes.
 `npm run dev` restarts on file changes. `npm run reset` deletes the database and
 the raw payloads.
 
@@ -27,29 +27,23 @@ Fill these in `.env` and restart:
 | Key | What |
 |---|---|
 | `SITE_POSTCODE` | Home postcode. Used for the price region, weather, carbon and the solar forecast. |
-| `PV_KWP`, `PV_TILT`, `PV_ORIENTATION`, `BATTERY_KWH` | System size. Sunsynk fills `PV_KWP` and battery size if they are left empty. |
+| `PV_KWP`, `PV_TILT`, `PV_ORIENTATION`, `BATTERY_KWH` | Installer values when known. Empty kWp uses Sunsynk's plant size; empty battery uses the measured kWh per 1% of charge. Tilt and direction can be estimated from the home's output (`estimatePanelAngles` in `src/core/derive.js`); mark them as estimates. |
+| `SUNSYNK_PLANT_ID` | The plant to use when the login sees several. |
 | `SUNSYNK_USERNAME`, `SUNSYNK_PASSWORD` | Sunsynk Connect login. |
 | `OCTOPUS_API_KEY`, `OCTOPUS_ACCOUNT_NUMBER` | Octopus dashboard API key and account number (A-XXXXXXXX). |
 
-The home from `.env` then appears next to the demo home in the home picker.
 Each provider is synced on its own. Sunsynk alone gives the energy flows; costs need Octopus, which supplies the tariff and prices.
 
 > Sunsynk's Terms of Use forbid automated scraping of the consumer app. This
 > prototype uses the owner's own login at a low rate. A production system needs a
 > partner key.
 
-## The demo home
+## No invented data
 
-The demo is a simulated house in `DEMO_POSTCODE` (Bristol by default) with 5 kWp of
-solar, a 10 kWh battery and an EV. **Prices are the real Agile Octopus and
-Outgoing Octopus rates for the region, and sunlight is the real weather there**
-(Open-Meteo). Carbon and the Quartz solar forecast are live too.
-
-The generator writes payloads in each provider's own format: Sunsynk day, month
-and flow, Octopus half-hourly consumption, and Kraken dispatches. These pass
-through the same normalisers as live data. Meter data arrives a day late, as it
-does from Octopus, and reads about 1% above the inverter clamp, as real
-installations do.
+Every number comes from a provider, from a calculation on that data, or from a cited
+public source. Where none applies the value stays empty or the step is skipped; nothing
+falls back to a default. See `docs/timeline-forecast-and-data-states.md` for where every
+number comes from, how learned values are detected, and what each one affects.
 
 ## Pages
 
@@ -86,13 +80,19 @@ provider API ─► adapter ─► raw payload ─► facts ─► build engine 
   VAT, and VAT is added from a dated table. This is because Octopus restates
   VAT-inclusive history at today's rate; domestic electricity has been 0% since
   1 Oct 2026.
-- **Build engine** (`src/core/build.js`, method `v1-slot-priority`) runs five steps
+- **Build engine** (`src/core/build.js`, method `v2-measured-load`) runs five steps
   for each UTC half-hour:
   1. **Align**: integrate the 5-minute samples and fit them to the inverter's daily counters.
   2. **Reconcile**: the smart meter is used over the clamp when both exist. Home use is calculated from the energy balance.
   3. **Allocate**: split energy into the seven flows (solar to home, battery or grid; battery to home or grid; grid to home or battery).
   4. **Price**: take the rate for each slot, add VAT and the standing charge share, and value battery stock first in, first out.
   5. **Check**: run the balance, meter-against-clamp, counter fit, rate coverage and completeness checks.
+
+  House use is the inverter's measured load. What the sources supplied beyond
+  that, exports and charging is the inverter's own conversion and standby loss,
+  carried as its own flow (`*_to_loss`, `loss_cost`), so it is in the bill but not
+  counted as house use. Gas units come from Octopus (`consumptionUnits`: m³ on
+  SMETS2 meters, converted at 39.5 MJ/m³); a usage-based guess is only the fallback.
 
   Each slot ends up as `final`, `provisional` or `missing`, with a quality
   bitmask and a lineage record. The same facts and method always give the same
@@ -114,7 +114,7 @@ src/
   server.js            Express API and static pages
   db/                  schema.sql, registry (sources + contracts, metrics, VAT), db.js
   core/                time, facts, pricing, build, forecast, insights
-  adapters/            geo, octopus, sunsynk, carbon, openmeteo, quartz, demo
+  adapters/            geo, octopus, sunsynk, carbon, openmeteo, quartz
   jobs/sync.js         per-home sync order and scheduler
 public/                six pages, app.css, js/ (api, layout, charts, timeline, pages/)
 data/                  core.db and raw/ (git-ignored)
@@ -122,7 +122,7 @@ data/                  core.db and raw/ (git-ignored)
 
 ## API
 
-`GET /api/sites` · `POST /api/demo` · `POST /api/sites/:id/sync` · `POST /api/sites/:id/rebuild`
+`GET /api/sites` · `POST /api/sites/:id/sync` · `POST /api/sites/:id/rebuild`
 `GET /api/sites/:id/` + `now`, `timeline?period=today|yesterday|7d|30d`, `summary?period=`, `forecast`,
 `insights`, `ev`, `tariffs`, `evidence?slot=<epoch>`, `health` · `GET /api/raw/:id` · `GET /api/catalog`
 
@@ -131,4 +131,4 @@ data/                  core.db and raw/ (git-ignored)
 - One battery strategy is assumed in the forecast. It does not read the inverter's actual work mode.
 - Economy 7 switch times are assumed to be 00:30–07:30 GMT, because Octopus does not publish them.
 - The Open-Meteo free tier is for non-commercial use; production needs a paid plan.
-- Gas is supported in the schema and the build engine, but the demo home has no gas meter.
+- Gas calorific value is a fixed 39.5 MJ/m³ until the National Gas daily value is added.

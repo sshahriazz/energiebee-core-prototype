@@ -1,0 +1,12 @@
+flowchart TB
+  REG["REGISTRY: source · metric<br/>seeded from src/db/registry.js at every start"]
+  CTX["CONTEXT: site · connection · device · series<br/>the home, its accounts and meters, and every measured series"]
+  TAR["TARIFFS: tariff · tariff_agreement · vat_rate<br/>which tariff applies to which meter, and when"]
+  FACT["FACTS, the truth<br/>raw_payload (+ files in data/raw)<br/>reading · interval_fact · forecast_fact · rate_interval<br/>append-only; a changed value is a new version"]
+  SERV["SERVING, rebuildable: site_hh · site_day<br/>the window is deleted and rewritten by every build"]
+  OPS["OPERATIONS: check_result · rebuild_queue · sync_run"]
+  API["API (src/server.js) and pages"]
+  REG --> CTX --> FACT --> SERV --> API
+  TAR --> SERV
+  OPS --> API
+  FACT -. evidence page and live values .-> API

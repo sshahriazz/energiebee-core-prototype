@@ -1,0 +1,19 @@
+flowchart TB
+  T["Scheduler tick, every 10 minutes (SYNC_EVERY_MINUTES)<br/>syncSite for each site; a site already syncing is skipped"]
+  R0["INSERT sync_run (status running)"]
+  S1["Sunsynk: plant, 5-minute series for yesterday and today, month totals, live flow<br/>raw_payload · reading · interval_fact · UPDATE site, connection"]
+  S1b["measureBatteryCapacity: UPDATE connection.meta (sunsynk)"]
+  S2["Location, only when a key is missing: postcodes.io, Octopus GSP, NESO region<br/>raw_payload · UPDATE site"]
+  S3["Weather, Open-Meteo: past hours as reading and interval_fact<br/>next 3 days as one forecast_fact issue"]
+  S4["Carbon, NESO: past slots as interval_fact (region series)<br/>next 48 h as one forecast_fact issue"]
+  S5["Octopus: account, gas units and LDZ, meter readings (4-day look-back),<br/>rates for tariffs in force, Kraken dispatches and devices<br/>device · tariff · tariff_agreement · interval_fact · rate_interval · forecast_fact"]
+  S6["Gas calorific value, National Gas: one interval_fact per gas day (LDZ series)"]
+  S7["Tariffs from .env, only without an Octopus account"]
+  S8["Comparison tariffs: products list, Agile import and export rates<br/>tariff · rate_interval · connection.meta"]
+  S9["Quartz solar forecast, only with panel size, tilt and direction"]
+  S10["INSERT rebuild_queue, then processQueue:<br/>buildSite from the earliest built day to today<br/>DELETE + INSERT site_hh, site_day, check_result; UPDATE rebuild_queue.done_at"]
+  S11["recordForecast, at most once an hour:<br/>INSERT forecast_fact issue (core_forecast: house use, grid import, solar)"]
+  R1["UPDATE sync_run: finished_at, status, detail (JSON step log)"]
+  T --> R0 --> S1 --> S1b --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11 --> R1
+  NOTE["Every provider step also UPDATEs its connection row:<br/>status, last_success_at, last_error"]
+  S5 -.- NOTE

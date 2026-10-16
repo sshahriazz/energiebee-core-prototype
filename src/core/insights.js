@@ -36,7 +36,7 @@ export function insightsFor(siteId) {
       .get(siteId, y.local_date);
     if (hh?.imp != null && hh?.exp != null && hh.imp > hh.exp) {
       add('export', 'tip', `${kwh(y.grid_export)} exported yesterday at ${hh.exp.toFixed(1)}p`,
-        `Using it at home instead was worth ${hh.imp.toFixed(1)}p/kWh at those times. Running the washing machine or dishwasher in sunny hours keeps more of that value.`,
+        `Using it at home instead was worth ${hh.imp.toFixed(1)}p/kWh at those times.`,
         ['site_hh.solar_to_grid', 'site_hh.export_rate', 'site_hh.import_rate_ex']);
     }
   }
@@ -64,7 +64,7 @@ export function insightsFor(siteId) {
       const s = zonedParts(tz, f.cheapestWindow.start);
       const e = zonedParts(tz, f.cheapestWindow.end);
       add('cheapest', 'tip', `Cheapest power: ${String(s.hh).padStart(2, '0')}:${String(s.mm).padStart(2, '0')}–${String(e.hh).padStart(2, '0')}:${String(e.mm).padStart(2, '0')}`,
-        `Average ${f.cheapestWindow.avg.toFixed(1)}p/kWh over two hours. A good time for the car, dishwasher or a battery top-up.`, ['rate_interval']);
+        `Average ${f.cheapestWindow.avg.toFixed(1)}p/kWh over two hours, from your tariff's published prices.`, ['rate_interval']);
     }
     if (f.next24h.solar > 0) {
       const ySolar = y?.solar;
@@ -77,6 +77,13 @@ export function insightsFor(siteId) {
         `About ${Math.round(f.greenestWindow.avg)} gCO2/kWh for two hours.`, ['forecast_fact (carbon_regional)']);
     }
   } catch { /* forecast needs history */ }
+  if (week.length >= 3) {
+    const lossKwh = week.reduce((s, d) => s + Math.max(0, d.loss || 0), 0);
+    const lossCost = week.reduce((s, d) => s + (d.loss_cost || 0), 0);
+    const homeKwh = week.reduce((s, d) => s + (d.home || 0), 0);
+    if (lossKwh > 1) add('inverter', 'info', `The inverter uses about ${(lossKwh / week.length).toFixed(1)} kWh a day itself`,
+      `Standby draw plus conversion losses: ${Math.round((lossKwh / (homeKwh || 1)) * 100)}% on top of what the house used. The grid part of it cost ${gbp(lossCost)} over ${week.length} days.`, ['site_hh.loss', 'site_hh.loss_cost']);
+  }
   const prov = days.filter((d) => d.slots_provisional > 0 && d.local_date < today);
   if (prov.length) {
     add('data', 'warn', `${prov.length} past day(s) still provisional`,

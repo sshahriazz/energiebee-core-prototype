@@ -1,5 +1,4 @@
-// Sunsynk Connect adapter. The normalisers are exported separately so the demo
-// generator can feed provider-shaped payloads through exactly the same path.
+// Sunsynk Connect adapter: login, plant selection, 5-minute series, daily totals and live flow.
 //
 // Note: Sunsynk's Terms of Use (1 Nov 2025) forbid automated scraping of the
 // consumer app. This prototype uses the owner's own login at a low rate; a
@@ -46,7 +45,7 @@ async function api(token, pathAndQuery, siteId) {
   return { json, url };
 }
 
-// ───────────── Normalisers (shared with the demo generator) ─────────────
+// ───────────── Normalisers ─────────────
 
 const DAY_LABELS = { PV: 'solar', Battery: 'battery', SOC: 'soc', Load: 'load', Grid: 'grid' };
 
@@ -168,10 +167,19 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
     out.live = normaliseFlow(site.id, flow.json, rawId).facts || 0;
     if (!site.battery_kwh) {
       try {
+        // Usable capacity = the battery's reported capacity (Ah) × its voltage at that moment.
+        // The payload is kept and the inputs recorded, so the figure can be traced.
         const b = await api(token, `/v1/inverter/battery/${sn}/realtime?sn=${sn}&lan=en`, site.id);
+        const { rawId } = landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: b.url }, body: b.json });
         const ah = Number(b.json.data?.correctCap) || Number(b.json.data?.capacity) || 0;
         const volts = Number(b.json.data?.voltage) || 0;
-        if (ah > 0 && volts > 0) db.prepare('UPDATE site SET battery_kwh = ? WHERE id = ?').run(Math.round((ah * volts) / 100) / 10, site.id);
+        if (ah > 0 && volts > 0) {
+          const kwh = Math.round((ah * volts) / 100) / 10;
+          db.prepare('UPDATE site SET battery_kwh = ? WHERE id = ?').run(kwh, site.id);
+          const meta = JSON.parse(conn?.meta || '{}');
+          meta.batteryCapacity = { kwh, ah, volts, field: Number(b.json.data?.correctCap) ? 'correctCap' : 'capacity', rawId, at: nowSec() };
+          db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'sunsynk'").run(JSON.stringify(meta), site.id);
+        }
       } catch { /* battery details are optional */ }
     }
   }

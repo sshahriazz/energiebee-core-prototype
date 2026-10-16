@@ -31,7 +31,6 @@ async function render(state) {
     ${kpi('Smart charging benefit', fmt.gbp(saved), `vs the average price ${fmt.pkwh(ev.averageImportRate)}`)}
     ${kpi('From solar', fmt.kwh(solar), kwh ? `${fmt.pct(solar / kwh)} of charging` : '')}
     ${kpi('Share of home use', c.home ? fmt.pct((c.ev || 0) / c.home) : '–', `${fmt.kwh(c.ev)} of ${fmt.kwh(c.home)}`)}
-    ${kpi('Miles added', kwh ? `≈ ${Math.round(kwh * 3.5)}` : '–', 'at about 3.5 miles per kWh')}
   </div>`;
 
   const planned = ev.planned.length ? `<div class="rows">${ev.planned.map((p) => `<div class="row"><span class="k">${tf.dayTime(p.slot)}</span><b>${fmt.kwh(p.kwh, 2)} · ${fmt.pkwh(p.rate)}</b></div>`).join('')}

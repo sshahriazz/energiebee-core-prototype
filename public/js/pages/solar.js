@@ -36,7 +36,7 @@ async function render(state) {
   const multiDay = tl.step === 'hh' && new Set(tl.rows.map((r) => r.local_date)).size > 2;
   document.getElementById('content').innerHTML = `
     ${kpis}
-    <div class="section">${card('Solar output and where it went', `Half-hour energy from the inverter, split by destination. Dashed: the Quartz forecast that was current at the time. ${tl.nowIndex != null ? 'After “now”: the latest forecast.' : ''}`,
+    <div class="section">${card('Solar output and where it went', `Half-hour energy from the inverter, split by destination. Dashed: the forecast made before each half-hour happened (kept from 16 Oct onward). ${tl.nowIndex != null ? 'After “now”: the latest forecast.' : ''}`,
       `${legend([{ label: 'Used at home', color: COLORS.solar }, { label: 'Into battery', color: COLORS.battery }, { label: 'Exported', color: COLORS.export }, { label: 'Forecast', color: 'var(--text-2)', type: 'dash' }])}<div id="solar-chart"></div>`)}</div>
     <div class="section grid cols-main">
       ${card('Last 30 days', 'Daily generation and forecast', `${legend([{ label: 'Used at home', color: COLORS.solar }, { label: 'Into battery', color: COLORS.battery }, { label: 'Exported', color: COLORS.export }, { label: 'Forecast', color: 'var(--text-2)', type: 'dash' }])}<div id="month-chart"></div>`)}

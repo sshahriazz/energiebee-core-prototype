@@ -28,9 +28,12 @@ function workedExample(r, tf) {
 async function render(state) {
   const id = state.site.id;
   const tf = timeFmt(state.tz);
-  const [summary, tl, now] = await Promise.all([
+  const [summary, tl, now, fc] = await Promise.all([
     api(`/api/sites/${id}/summary?period=${state.period}`), loadTimeline(state, { forecastHours: 24 }), api(`/api/sites/${id}/now`),
+    api(`/api/sites/${id}/forecast?hours=1`).catch(() => null),
   ]);
+  // Round trip measured from this battery's own counters (see the forecast model), never assumed.
+  const eff = typeof fc?.model?.battery?.efficiency === 'number' ? fc.model.battery.efficiency : null;
   const c = summary.current; const p = summary.previous; const vs = summary.previousLabel;
   const cap = state.site.battery_kwh;
   const soc = now.live?.battery_soc_pct;
@@ -65,7 +68,7 @@ async function render(state) {
         <div class="row total"><span class="k">Battery saving</span><b>${fmt.gbp(c.battery_value)}</b></div>
       </div>
       <p class="faint" style="font-size:12px;margin:10px 0 0">Charging from solar costs nothing, so that part of the saving comes from moving free daytime energy into the evening.
-      Charging from the grid pays off when it is cheaper than the price at the time of use, after about 10% round-trip loss.</p>`)}
+      Charging from the grid pays off when it is cheaper than the price at the time of use, after the battery's round-trip loss${eff != null ? ` (measured: ${((1 - eff) * 100).toFixed(1)}%)` : ' (not measured yet)'}.</p>`)}
     </div>`;
 
   const ticks = tl.step === 'day' ? (r, i) => (i % 3 === 0 ? tf.date(r.local_date).split(' ').slice(1).join(' ') : null) : hhTicks(tf, multiDay);

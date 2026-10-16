@@ -1,0 +1,33 @@
+flowchart TB
+  P["Provider APIs<br/>Sunsynk · Octopus REST · Octopus Kraken · NESO carbon<br/>Open-Meteo · Quartz · National Gas · postcodes.io"]
+  A["Adapter, src/adapters/*.js<br/>applies the source's contract (source.contract):<br/>time zone, signs, units, missing data, revisions"]
+  QUAR["Shape not as the contract expects:<br/>write file, INSERT raw_payload status quarantined + reason<br/>no facts"]
+  H{"hash of source, request and body<br/>already stored?"}
+  RAW["Write data/raw/source/fetch-day/hash.json<br/>INSERT raw_payload (accepted)"]
+  REUSE["Reuse the existing raw_id<br/>no new file or row"]
+  FACTS[("Facts, each row carries raw_id<br/>reading · interval_fact · forecast_fact · rate_interval<br/>identical values skipped, changed values versioned")]
+  CTX[("Context and tariffs<br/>UPDATE site · upsert device, tariff<br/>DELETE + INSERT tariff_agreement · UPDATE connection")]
+  Q[("rebuild_queue: INSERT one row per sync")]
+  B["Build, src/core/build.js buildSite<br/>align · reconcile · allocate · price · check"]
+  S[("Serving: site_hh · site_day · check_result")]
+  FC["Forecast, src/core/forecast.js<br/>computed on request from site_hh and forecast_fact"]
+  API["API, src/server.js"]
+  UI["Pages, public/js/pages"]
+  P --> A
+  A -. bad shape .-> QUAR
+  A --> H
+  H -- no --> RAW
+  H -- yes --> REUSE
+  RAW -- normalise --> FACTS
+  REUSE -- normalise --> FACTS
+  A --> CTX
+  FACTS --> Q --> B
+  CTX --> B
+  B -- "DELETE window, INSERT rebuilt rows" --> S
+  S --> FC
+  FACTS --> FC
+  FC -- "at most hourly: INSERT issue as core_forecast" --> FACTS
+  S --> API
+  FC --> API
+  FACTS -- "evidence page, live values" --> API
+  API --> UI

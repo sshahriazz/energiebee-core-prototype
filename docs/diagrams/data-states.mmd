@@ -1,0 +1,8 @@
+stateDiagram-v2
+  [*] --> forecast: before the half-hour
+  forecast --> provisional: half-hour ends, inverter data arrives
+  forecast --> missing: half-hour ends, no grid data from any source
+  missing --> provisional: inverter data arrives late
+  provisional --> final: smart-meter reading arrives (day closed)
+  missing --> final: smart-meter reading arrives
+  final --> final: provider revises data → rebuilt, marked "revised"

@@ -2,8 +2,8 @@
 import { api, ago, esc } from './api.js';
 
 const PAGES = [
-  ['index', 'Home', '/'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
-  ['grid', 'Grid', '/grid'], ['ev', 'EV', '/ev'], ['data', 'Data & trust', '/data'],
+  ['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
+  ['grid', 'Grid', '/grid'], ['tariffs', 'Tariffs', '/tariffs'], ['ev', 'EV', '/ev'], ['data', 'Data & trust', '/data'],
 ];
 const PERIODS = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7d', '7 days'], ['30d', '30 days']];
 
@@ -71,11 +71,6 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     if (!s) { slot.innerHTML = ''; return; }
     const errors = s.connections.filter((c) => c.status === 'error');
     let html = '';
-    if (s.is_demo) {
-      html += `<div class="banner"><span>🐝</span><div><b>Demo home.</b> A simulated house in ${esc(s.postcode)} with ${s.pv_kwp} kWp of solar, a ${s.battery_kwh} kWh battery and an EV.
-        Prices are the real Agile Octopus and Outgoing Octopus rates for region ${esc(s.gsp_region || '?')}; sunlight is the real weather there.
-        Its data is shaped like Sunsynk and Octopus payloads and goes through the same pipeline as a real home.</div></div>`;
-    }
     if (errors.length) {
       html += `<div class="banner bad"><span>!</span><div>${errors.map((c) => `<b>${esc(c.provider)}</b>: ${esc(c.last_error)}`).join('<br>')}</div></div>`;
     }
@@ -90,8 +85,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     if (!state.sites.find((s) => s.id === state.siteId)) state.siteId = state.sites[0]?.id || null;
     state.site = state.sites.find((s) => s.id === state.siteId) || null;
     state.tz = state.site?.timezone || 'Europe/London';
-    select.innerHTML = state.sites.map((s) => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}${s.is_demo ? ' (demo)' : ''}</option>`).join('')
-      + (state.sites.some((s) => s.is_demo) ? '' : '<option value="demo">+ Add demo home</option>');
+    select.innerHTML = state.sites.map((s) => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
     syncBtn.disabled = !!state.site?.syncing;
     syncBtn.innerHTML = state.site?.syncing ? '<span class="spin">↻</span> Syncing' : '↻ Sync';
     syncBtn.title = state.site?.lastSync ? `Last sync ${ago(state.site.lastSync.finished_at || state.site.lastSync.started_at)} (${state.site.lastSync.status})` : 'Never synced';
@@ -116,10 +110,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   }
 
   select.addEventListener('change', async () => {
-    if (select.value === 'demo') {
-      const r = await api('/api/demo', { method: 'POST' });
-      state.siteId = r.id;
-    } else state.siteId = Number(select.value);
+    state.siteId = Number(select.value);
     store.set('eb.site', String(state.siteId));
     await loadSites();
     await rerender();
@@ -149,8 +140,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
 
   await loadSites();
   if (!state.site) {
-    document.getElementById('content').innerHTML = `<div class="card empty"><h2>No home yet</h2><p>Add the demo home, or put Sunsynk and Octopus details in <span class="mono">.env</span> and restart.</p><button class="btn btn-primary" id="add-demo">Add demo home</button></div>`;
-    document.getElementById('add-demo').onclick = async () => { const r = await api('/api/demo', { method: 'POST' }); state.siteId = r.id; await loadSites(); waitForSync(); };
+    document.getElementById('content').innerHTML = `<div class="card empty"><h2>No home yet</h2><p>Put Sunsynk and Octopus details in <span class="mono">.env</span> and restart.</p></div>`;
     return state;
   }
   await rerender();

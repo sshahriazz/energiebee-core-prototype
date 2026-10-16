@@ -1,0 +1,17 @@
+flowchart TB
+  P["Providers, pulled every 10 minutes<br/>Sunsynk: 5-min power, daily totals, live flow, battery<br/>Octopus REST: meters, agreements, rates, products<br/>Octopus Kraken: EV dispatches, devices, gas units, gas zone<br/>National Gas: daily calorific value per gas zone<br/>NESO: carbon intensity · Open-Meteo: temperature, sunlight<br/>Quartz: solar forecast"]
+  P --> AD["Adapters<br/>apply each source's contract:<br/>clock, signs, units, gaps, revisions"]
+  AD --> RAW[("Raw payloads<br/>kept on disk, hashed")]
+  AD -. fails contract .-> QU[("Quarantine")]
+  AD --> F[("Facts<br/>readings · intervals · forecasts · rates<br/>append-only, versioned")]
+  F --> B["Build engine<br/>align → reconcile → allocate → price → check"]
+  B --> HH[("site_hh<br/>one row per half-hour")]
+  B --> DAY[("site_day<br/>one row per local day")]
+  B --> CK[("check_result")]
+  HH --> FC["Forecast<br/>learned from site_hh + provider forecasts"]
+  F --> FC
+  FC -. stored hourly as core_forecast .-> F
+  HH --> API["API"]
+  DAY --> API
+  FC --> API
+  API --> UI["Pages"]

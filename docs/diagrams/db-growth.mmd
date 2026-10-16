@@ -1,0 +1,32 @@
+flowchart TB
+  subgraph F["Facts: putReadings, putIntervals (facts.js), putRates (octopus.js)"]
+    direction TB
+    E1["A value arrives for a key:<br/>series and time, or tariff, component, register and period"]
+    I1["INSERT version 1"]
+    N1["nothing written"]
+    U1["UPDATE old row: superseded_at = now (ms)<br/>INSERT new version: recorded_at = now (ms)<br/>putRates also splits a current row that now overlaps"]
+    E1 -- "no current version" --> I1
+    E1 -- "same value" --> N1
+    E1 -- "different value" --> U1
+  end
+  subgraph FC["Forecasts: putForecasts (facts.js)"]
+    direction TB
+    E2["Every fetch (each sync) and our own forecast (hourly)"] --> I2["INSERT one row per target period, all with<br/>the same new issued_at; never superseded"]
+  end
+  subgraph R["Raw: landRaw (facts.js)"]
+    direction TB
+    E3["Every HTTP response"]
+    N3["no new file or row; existing raw_id reused"]
+    I3["write file, INSERT raw_payload"]
+    E3 -- "hash already stored" --> N3
+    E3 -- "new hash" --> I3
+  end
+  subgraph S["Serving: buildSite (build.js)"]
+    direction TB
+    E4["Every build"] --> D4["DELETE the window from site_hh, site_day, check_result,<br/>INSERT the rebuilt rows: the count grows only with new days"]
+  end
+  subgraph O["Operations: syncSite (sync.js)"]
+    direction TB
+    E5["Every sync"] --> I5["INSERT sync_run and rebuild_queue; neither is ever deleted"]
+  end
+  F ~~~ FC ~~~ R ~~~ S ~~~ O

@@ -1,0 +1,60 @@
+erDiagram
+  direction TB
+  site ||--o{ device : "site_id, cascade"
+  site ||--o{ tariff_agreement : "site_id, cascade"
+  device ||--o{ tariff_agreement : "device_id, cascade"
+  tariff ||--o{ tariff_agreement : "tariff_id"
+  tariff ||--o{ rate_interval : "tariff_id"
+  site |o--o{ rate_interval : "site_id (never set)"
+  raw_payload |o--o{ rate_interval : "raw_id"
+  vat_rate }o..o{ tariff : "fuel, direction (logical)"
+
+  site {
+    INTEGER id PK
+    TEXT gsp_region
+  }
+  device {
+    INTEGER id PK
+    INTEGER site_id FK
+    TEXT kind "meter_import, meter_export, meter_gas, ev"
+  }
+  raw_payload {
+    INTEGER id PK
+  }
+  tariff {
+    INTEGER id PK
+    TEXT tariff_code UK
+    TEXT fuel "electricity or gas"
+    TEXT direction "import or export"
+    TEXT structure
+    TEXT region
+  }
+  tariff_agreement {
+    INTEGER id PK
+    INTEGER site_id FK
+    INTEGER device_id FK "UK with valid_from"
+    INTEGER tariff_id FK
+    INTEGER valid_from
+    INTEGER valid_to "NULL = open-ended"
+  }
+  rate_interval {
+    INTEGER id PK
+    INTEGER tariff_id FK
+    INTEGER site_id FK
+    TEXT component "unit or standing"
+    TEXT register "single, day, night"
+    TEXT payment_method
+    INTEGER valid_from
+    INTEGER valid_to "NULL = open-ended"
+    REAL price_ex_vat "pence"
+    INTEGER recorded_at "ms"
+    INTEGER superseded_at "ms"
+    INTEGER raw_id FK
+  }
+  vat_rate {
+    TEXT fuel PK
+    TEXT direction PK
+    INTEGER valid_from PK
+    INTEGER valid_to
+    REAL rate
+  }

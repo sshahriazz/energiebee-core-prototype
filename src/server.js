@@ -8,10 +8,11 @@ import { db, dataDir, dbFile } from './db/db.js';
 import { buildSite, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
 import { insightsFor } from './core/insights.js';
+import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, SLOT, floorTo, zonedParts } from './core/time.js';
 import { seriesId, readReadings } from './core/facts.js';
 import { loadPricing, priceAt } from './core/pricing.js';
-import { ensureEnvSite, createDemoSite, syncSite, startScheduler, isSyncing } from './jobs/sync.js';
+import { ensureEnvSite, syncSite, startScheduler, isSyncing } from './jobs/sync.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -47,12 +48,6 @@ app.get('/api/sites', (req, res) => {
     lastSync: db.prepare('SELECT * FROM sync_run WHERE site_id = ? ORDER BY id DESC LIMIT 1').get(s.id) || null,
     days: db.prepare('SELECT MIN(local_date) AS first, MAX(local_date) AS last, COUNT(*) AS n FROM site_day WHERE site_id = ?').get(s.id),
   })));
-});
-
-app.post('/api/demo', (req, res) => {
-  const id = createDemoSite();
-  syncSite(id).catch((err) => console.error('demo sync:', err.message));
-  res.json({ id, started: true });
 });
 
 app.post('/api/sites/:id/sync', (req, res) => {
@@ -130,9 +125,12 @@ function summarise(s, from, to, before = 9000000000) {
       SUM(solar_to_home) AS solar_to_home, SUM(solar_to_battery) AS solar_to_battery, SUM(solar_to_grid) AS solar_to_grid,
       SUM(battery_to_home) AS battery_to_home, SUM(battery_to_grid) AS battery_to_grid, SUM(grid_to_home) AS grid_to_home, SUM(grid_to_battery) AS grid_to_battery,
       SUM(grid_to_home_cost) AS grid_to_home_cost, SUM(grid_to_battery_cost) AS grid_to_battery_cost, SUM(battery_to_home_cost) AS battery_to_home_cost,
+      SUM(solar_to_loss) AS solar_to_loss, SUM(battery_to_loss) AS battery_to_loss, SUM(grid_to_loss) AS grid_to_loss, SUM(loss_cost) AS loss_cost,
+      SUM(CASE WHEN loss > 0 THEN loss END) AS inverter_loss,
       SUM(export_credit) AS export_credit, SUM(standing_cost) AS standing_cost, SUM(gas_cost) AS gas_cost,
       SUM(total_cost) AS total_cost, SUM(grid_only_cost) AS grid_only_cost, SUM(saving) AS saving, SUM(rate_found = 0) AS unpriced,
       SUM(carbon_g) AS carbon_g, SUM(carbon_saved_g) AS carbon_saved_g,
+      SUM(CASE WHEN battery_to_home_cost IS NOT NULL THEN battery_to_home END) AS battery_to_home_costed,
       SUM(solar_to_home * ${IMP}) AS solar_home_value, SUM(solar_to_grid * export_rate) AS solar_export_value,
       SUM(battery_to_home * ${IMP}) AS battery_avoided, SUM(battery_to_grid * export_rate) AS battery_export_value,
       SUM(grid_import * ${IMP}) AS import_paid, AVG(${IMP}) AS avg_import_rate, AVG(export_rate) AS avg_export_rate,
@@ -146,10 +144,12 @@ function summarise(s, from, to, before = 9000000000) {
     ...t,
     self_sufficiency: t.home ? 1 - t.grid_to_home / t.home : null,
     self_consumption: t.solar ? (t.solar_to_home + t.solar_to_battery) / t.solar : null,
-    blended_rate: d(t.grid_to_home_cost + t.battery_to_home_cost, t.home),
+    // Unknown when some battery energy used has no known stored cost.
+    blended_rate: (t.battery_to_home || 0) - (t.battery_to_home_costed || 0) > 0.01 ? null : d(t.grid_to_home_cost + t.battery_to_home_cost, t.home),
     import_rate_paid: d(t.import_paid, t.grid_import),
     export_rate_avg: d(t.export_credit, t.grid_export),
-    battery_stored_rate: d(t.battery_to_home_cost, t.battery_to_home),
+    // Only half-hours whose stored energy has a known cost.
+    battery_stored_rate: d(t.battery_to_home_cost, t.battery_to_home_costed),
     battery_value: t.battery_avoided != null ? t.battery_avoided + (t.battery_export_value || 0) - (t.grid_to_battery_cost || 0) : null,
     solar_value: t.solar_home_value != null ? t.solar_home_value + (t.solar_export_value || 0) : null,
     battery_cycles: s.battery_kwh ? t.battery_discharge / s.battery_kwh : null,
@@ -200,6 +200,7 @@ app.get('/api/sites/:id/breakdown', (req, res) => {
       SUM(CASE WHEN rate_found = 1 THEN solar_to_home * ${IMP} END) AS solar_direct,
       SUM(CASE WHEN rate_found = 1 THEN battery_to_home * ${IMP} END) AS battery_cover,
       SUM(CASE WHEN rate_found = 1 THEN grid_to_battery_cost END) AS grid_charging,
+      SUM(CASE WHEN rate_found = 1 THEN loss_cost END) AS loss_priced,
       SUM(CASE WHEN rate_found = 1 THEN export_credit END) AS export_earned,
       SUM(CASE WHEN rate_found = 1 THEN standing_cost END) AS standing, SUM(CASE WHEN rate_found = 1 THEN gas_cost END) AS gas_cost,
       SUM(CASE WHEN rate_found = 1 THEN home * ${IMP} END) AS home_at_grid_price,
@@ -245,6 +246,102 @@ app.get('/api/sites/:id/breakdown', (req, res) => {
   const ledger = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date DESC').all(s.id, ledgerFrom, to);
 
   res.json({ from, to, days: (Date.parse(to) - Date.parse(from)) / 86400000 + 1, totals: { ...t, ...x }, profile, bands: bands.filter((b) => b.kwh > 0 || b.lo >= 0), ledger, ledgerFrom });
+});
+
+app.get('/api/sites/:id/compare', (req, res) => {
+  const s = site(req);
+  const { from, to } = periodRange(s, req.query.period || '7d', req.query.from, req.query.to);
+  res.json(compareSite(s.id, from, to));
+});
+
+// Everything on one time axis: half-hours (past and forecast), the parts of the
+// system with their sources, and events (syncs, data arrivals, tariff changes,
+// smart-charge slots, forecast issues, warnings, quarantined payloads).
+app.get('/api/sites/:id/everything', (req, res) => {
+  const s = site(req);
+  const { from, to } = periodRange(s, req.query.period, req.query.from, req.query.to);
+  const [start] = dayBounds(s.timezone, from);
+  const [, end] = dayBounds(s.timezone, to);
+  const now = nowSec();
+  const rows = db.prepare(`SELECT slot_start, local_date, state, quality, solar, grid_import, grid_export, battery_charge, battery_discharge, home, gas, ev, soc_end,
+      solar_to_home, battery_to_home, grid_to_home, solar_to_battery, grid_to_battery, solar_to_grid, battery_to_grid, loss, loss_cost,
+      ${IMP} AS import_rate, export_rate, total_cost, grid_only_cost, saving, gas_cost, carbon_intensity, outdoor_temp, solar_forecast,
+      grid_to_home_cost, battery_to_home_cost, lineage
+    FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start`).all(s.id, start, end)
+    .map((r) => { const l = JSON.parse(r.lineage || '{}'); delete r.lineage; return { ...r, import_source: l.import, tariff: l.tariff, register: l.register }; });
+
+  // After now: the forecast, so the chart runs past, now and ahead on one axis.
+  let forecast = [];
+  if (end > now) {
+    const f = forecastSite(s.id, 48);
+    const last = rows.length ? rows[rows.length - 1].slot_start : 0;
+    forecast = f.slots.filter((x) => x.slot_start > last && x.slot_start < Math.max(end, now + 12 * 3600)).map((x) => ({
+      slot_start: x.slot_start, local_date: x.local_date, state: 'forecast', solar: x.solar, home: x.home, ev: x.ev, soc_end: x.soc_end,
+      grid_import: x.grid_import, grid_export: x.grid_export, battery_charge: x.battery_charge, battery_discharge: x.battery_discharge,
+      solar_to_home: x.solar != null && x.home != null ? Math.min(x.solar, x.home) : null, battery_to_home: x.battery_discharge,
+      // Forecast import includes grid charging of the battery; only the rest went to the house.
+      solar_to_battery: x.solar_to_battery ?? null, grid_to_battery: x.grid_to_battery ?? 0,
+      grid_to_home: x.grid_import != null ? Math.max(0, x.grid_import - (x.grid_to_battery ?? 0)) : null,
+      import_rate: x.import_rate, export_rate: x.export_rate, total_cost: x.cost, grid_only_cost: x.grid_only_cost, saving: x.saving,
+      carbon_intensity: x.carbon_intensity, solar_forecast: x.solar,
+    }));
+  }
+  const tEnd = forecast.length ? forecast[forecast.length - 1].slot_start + SLOT : end;
+
+  const events = [];
+  for (const r of db.prepare('SELECT * FROM sync_run WHERE site_id = ? AND started_at >= ? AND started_at < ? ORDER BY started_at').all(s.id, start, tEnd)) {
+    const steps = JSON.parse(r.detail || '[]');
+    const failed = steps.filter((x) => x.ok === false).map((x) => x.step);
+    events.push({ ts: r.started_at, kind: 'sync', status: r.status, label: `Sync ${r.status}`, detail: failed.length ? `failed: ${failed.join(', ')}` : `${steps.length} steps ok` });
+  }
+  // When each day's meter data first arrived (Octopus delivers about a day late).
+  const meterSeries = db.prepare(`SELECT se.id, d.kind FROM series se JOIN device d ON se.subject_kind = 'device' AND se.subject_id = CAST(d.id AS TEXT)
+    WHERE d.site_id = ? AND d.kind IN ('meter_import','meter_export','meter_gas')`).all(s.id);
+  for (const m of meterSeries) {
+    const arrivals = new Map();
+    for (const f of db.prepare('SELECT start_ts, MIN(recorded_at) AS rec, COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? GROUP BY start_ts').all(m.id, start - 2 * 86400, tEnd)) {
+      const day = localDate(s.timezone, f.start_ts);
+      const a = arrivals.get(day) || { rec: Infinity, n: 0 };
+      a.rec = Math.min(a.rec, f.rec); a.n++;
+      arrivals.set(day, a);
+    }
+    const name = { meter_import: 'Import meter', meter_export: 'Export meter', meter_gas: 'Gas meter' }[m.kind];
+    for (const [day, a] of arrivals) {
+      const ts = Math.floor(a.rec / 1000);
+      if (ts >= start && ts < tEnd) events.push({ ts, kind: 'data', label: `${name} data arrived`, detail: `${a.n} half-hours for ${day} (Octopus)` });
+    }
+  }
+  for (const a of db.prepare(`SELECT a.valid_from, t.tariff_code, d.kind FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id JOIN device d ON d.id = a.device_id
+      WHERE a.site_id = ? AND a.valid_from >= ? AND a.valid_from < ?`).all(s.id, start, tEnd)) {
+    events.push({ ts: a.valid_from, kind: 'tariff', label: 'Tariff change', detail: `${a.kind.replace('meter_', '')}: ${a.tariff_code}` });
+  }
+  for (const q of db.prepare(`SELECT p.fetched_at, p.reason, src.code FROM raw_payload p JOIN source src ON src.id = p.source_id
+      WHERE p.site_id = ? AND p.status = 'quarantined' AND p.fetched_at >= ? AND p.fetched_at < ?`).all(s.id, start, tEnd)) {
+    events.push({ ts: q.fetched_at, kind: 'quarantine', label: `Quarantined ${q.code} payload`, detail: q.reason });
+  }
+  const quartz = seriesId('site', s.id, 'solar_kwh', 'quartz');
+  for (const f of db.prepare('SELECT issued_at, SUM(value) AS kwh FROM forecast_fact WHERE series_id = ? AND issued_at >= ? AND issued_at < ? GROUP BY issued_at').all(quartz, start, tEnd)) {
+    events.push({ ts: f.issued_at, kind: 'forecast', label: 'Solar forecast issued', detail: `Quartz, ${f.kwh.toFixed(1)} kWh over the next 48 h` });
+  }
+  for (const c of db.prepare("SELECT * FROM check_result WHERE site_id = ? AND status IN ('warn','fail') AND local_date >= ? AND local_date <= ?").all(s.id, from, to)) {
+    events.push({ ts: dayBounds(s.timezone, c.local_date)[0], kind: 'check', status: c.status, label: `Check ${c.status}: ${c.check_code.replace(/_/g, ' ')}`, detail: c.detail });
+  }
+  const evSeries = seriesId('site', s.id, 'ev_charge_kwh', 'octopus_kraken');
+  for (const d of db.prepare('SELECT start_ts, end_ts, value FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND end_ts > ? AND start_ts < ?').all(evSeries, start, tEnd)) {
+    events.push({ ts: d.start_ts, end: d.end_ts, kind: 'dispatch', label: 'Smart-charge slot', detail: `${d.value != null ? `${d.value.toFixed(2)} kWh` : 'energy unknown'} (Kraken)` });
+  }
+  events.sort((a, b) => a.ts - b.ts);
+
+  // The parts of the system, with what feeds each one and how fresh it is.
+  const conns = Object.fromEntries(db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ?').all(s.id).map((c) => [c.provider, c]));
+  const devices = db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ?').all(s.id);
+  const mask = (ref) => (ref && ref.length > 6 ? `…${ref.slice(-4)}` : ref);
+  res.json({
+    from, to, start, end: tEnd, now, timezone: s.timezone, rows, forecast, events,
+    site: { name: s.name, postcode: s.postcode, pv_kwp: s.pv_kwp, battery_kwh: s.battery_kwh, region: s.gsp_region, is_demo: s.is_demo },
+    connections: conns,
+    devices: devices.map((d) => ({ kind: d.kind, provider: d.provider, label: d.label, ref: mask(d.external_ref), state: JSON.parse(d.attrs || '{}').status?.currentState || null })),
+  });
 });
 
 app.get('/api/sites/:id/forecast', (req, res) => res.json(forecastSite(site(req).id, Math.min(Number(req.query.hours) || 48, 48))));
@@ -337,6 +434,13 @@ app.get('/api/sites/:id/health', (req, res) => {
   });
 });
 
+// Devices the providers report for this home (meters, EV), with the attributes they gave.
+app.get('/api/sites/:id/devices', (req, res) => {
+  const s = site(req);
+  res.json(db.prepare('SELECT kind, provider, label, attrs FROM device WHERE site_id = ?').all(s.id)
+    .map((d) => { const a = JSON.parse(d.attrs || '{}'); return { kind: d.kind, provider: d.provider, label: d.label, profileClass: a.profileClass ?? null, annualKwh: a.annualKwh ?? null, gasUnit: a.gasUnit ?? null, state: a.status?.currentState ?? null }; }));
+});
+
 app.get('/api/catalog', (req, res) => {
   res.json({
     sources: db.prepare('SELECT code, name, contract FROM source ORDER BY id').all().map((s) => ({ ...s, contract: JSON.parse(s.contract) })),
@@ -352,11 +456,10 @@ app.use((err, req, res, next) => {
 // ───────────── Start ─────────────
 
 const envSite = ensureEnvSite();
-if (!db.prepare('SELECT 1 FROM site').get()) createDemoSite();
 const port = Number(process.env.PORT) || 4100;
 app.listen(port, () => {
   const minutes = startScheduler();
-  console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, demo home only'})`);
+  console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
   for (const { id, name } of db.prepare('SELECT id, name FROM site').all()) {
     syncSite(id).then((r) => console.log(`synced ${name}: ${r.ok ? 'ok' : 'partial'}`)).catch((err) => console.error(`sync ${name}:`, err.message));
   }

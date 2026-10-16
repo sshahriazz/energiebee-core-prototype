@@ -1,0 +1,91 @@
+erDiagram
+  direction TB
+  source ||--o{ series : "source_id"
+  metric ||--o{ series : "metric_id"
+  site ||..o{ series : "subject_id (logical)"
+  device ||..o{ series : "subject_id (logical)"
+  site ||--o{ device : "site_id, cascade"
+  site ||--o{ connection : "site_id, cascade"
+  source ||--o{ raw_payload : "source_id"
+  site |o..o{ raw_payload : "site_id (logical)"
+  series ||--o{ reading : "series_id"
+  series ||--o{ interval_fact : "series_id"
+  series ||--o{ forecast_fact : "series_id"
+  raw_payload |o--o{ reading : "raw_id"
+  raw_payload |o--o{ interval_fact : "raw_id"
+  raw_payload |o--o{ forecast_fact : "raw_id"
+
+  source {
+    INTEGER id PK
+    TEXT code UK
+    TEXT contract "JSON"
+  }
+  metric {
+    INTEGER id PK
+    TEXT code UK
+    TEXT unit
+    TEXT time_role "instant or interval"
+    TEXT aggregation
+  }
+  site {
+    INTEGER id PK
+    TEXT timezone
+    TEXT gsp_region "Octopus price region"
+    INTEGER carbon_region "NESO region"
+    TEXT env_key UK
+  }
+  connection {
+    INTEGER id PK
+    INTEGER site_id FK
+    TEXT provider "UK with site_id"
+    TEXT status
+    TEXT meta "JSON"
+  }
+  device {
+    INTEGER id PK
+    INTEGER site_id FK
+    TEXT kind
+    TEXT provider
+    TEXT external_ref "UK with site_id, provider"
+    TEXT attrs "JSON"
+  }
+  series {
+    INTEGER id PK
+    TEXT subject_kind "site, device or region"
+    TEXT subject_id "e.g. 1, 5, carbon:3"
+    INTEGER metric_id FK
+    INTEGER source_id FK
+  }
+  raw_payload {
+    INTEGER id PK
+    INTEGER source_id FK
+    INTEGER site_id
+    TEXT hash UK
+    TEXT file
+    TEXT status "accepted or quarantined"
+  }
+  reading {
+    INTEGER series_id PK,FK
+    INTEGER ts PK
+    INTEGER recorded_at PK "ms"
+    REAL value
+    INTEGER superseded_at "ms"
+    INTEGER raw_id FK
+  }
+  interval_fact {
+    INTEGER series_id PK,FK
+    INTEGER start_ts PK
+    INTEGER end_ts PK
+    INTEGER recorded_at PK "ms"
+    REAL value
+    INTEGER superseded_at "ms"
+    INTEGER raw_id FK
+  }
+  forecast_fact {
+    INTEGER series_id PK,FK
+    INTEGER start_ts PK
+    INTEGER issued_at PK
+    INTEGER end_ts
+    REAL value
+    INTEGER raw_id FK
+  }

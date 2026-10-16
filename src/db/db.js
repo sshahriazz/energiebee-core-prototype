@@ -47,6 +47,13 @@ function seedRegistry() {
 }
 seedRegistry();
 
+// Columns added after a database was created. Serving tables are rebuilt from facts, so adding is safe.
+function addColumns(table, cols) {
+  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  for (const c of cols) if (!have.has(c)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} REAL`);
+}
+for (const t of ['site_hh', 'site_day']) addColumns(t, ['solar_to_loss', 'battery_to_loss', 'grid_to_loss', 'loss_cost']);
+
 const sourceIds = new Map(db.prepare('SELECT code, id FROM source').all().map((r) => [r.code, r.id]));
 const metricIds = new Map(db.prepare('SELECT code, id FROM metric').all().map((r) => [r.code, r.id]));
 

@@ -2,16 +2,19 @@
 // whatever changed. Each step fails on its own; one provider being down never
 // stops the others, and the failure is recorded on the connection.
 import { db } from '../db/db.js';
-import { markDirty } from '../core/facts.js';
+import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
-import { nowSec, localDate, addDays, dayBounds, daysBetween } from '../core/time.js';
+import { forecastSite } from '../core/forecast.js';
+import { SLOT, nowSec, localDate, addDays, dayBounds, daysBetween } from '../core/time.js';
 import { resolveSiteGeo } from '../adapters/geo.js';
 import { syncCarbon } from '../adapters/carbon.js';
 import { syncWeather } from '../adapters/openmeteo.js';
 import { syncQuartz } from '../adapters/quartz.js';
-import { syncDemo } from '../adapters/demo.js';
 import { syncSunsynk } from '../adapters/sunsynk.js';
-import { syncOctopusAccount, syncOctopusConsumption, syncTariffRates, syncKraken, upsertTariff } from '../adapters/octopus.js';
+import { syncOctopusAccount, syncOctopusConsumption, syncTariffRates, syncKraken, upsertTariff, syncGasUnits } from '../adapters/octopus.js';
+import { syncComparison } from '../core/compare.js';
+import { syncGasCv } from '../adapters/nationalgas.js';
+import { measureBatteryCapacity } from '../core/derive.js';
 
 const env = process.env;
 const INITIAL_DAYS = Math.min(Number(env.INITIAL_DAYS) || 14, 60);
@@ -48,7 +51,7 @@ export function ensureEnvSite() {
   if (hasSunsynk) ensureConnection(site.id, 'sunsynk');
   if (hasOctopus) ensureConnection(site.id, 'octopus', env.OCTOPUS_ACCOUNT_NUMBER);
   if (env.IMPORT_TARIFF_CODE || env.EXPORT_TARIFF_CODE) ensureConnection(site.id, 'tariff');
-  for (const p of ['weather', 'carbon', 'solar_forecast']) ensureConnection(site.id, p);
+  for (const p of ['weather', 'carbon', 'solar_forecast', 'compare']) ensureConnection(site.id, p);
   return site.id;
 }
 
@@ -79,14 +82,20 @@ async function syncEnvTariffs(site, fromTs) {
   return { tariffs: used, rates };
 }
 
-export function createDemoSite() {
-  const existing = db.prepare('SELECT id FROM site WHERE is_demo = 1').get();
-  if (existing) return existing.id;
-  const r = db.prepare(`INSERT INTO site (name, postcode, pv_kwp, pv_tilt, pv_orientation, battery_kwh, is_demo, created_at)
-                        VALUES ('Demo home', ?, 5, 35, 180, 10, 1, ?)`).run(env.DEMO_POSTCODE || 'BS1 6QF', nowSec());
-  const id = Number(r.lastInsertRowid);
-  for (const p of ['demo', 'weather', 'carbon', 'solar_forecast']) ensureConnection(id, p);
-  return id;
+// Our own forecast is stored as an issue like any provider's, so it can later be
+// scored against what the home actually did. Once an hour is enough to score it.
+function recordForecast(siteId) {
+  const now = nowSec();
+  const homeS = seriesId('site', siteId, 'load_kwh', 'core_forecast');
+  const last = db.prepare('SELECT MAX(issued_at) AS t FROM forecast_fact WHERE series_id = ?').get(homeS)?.t;
+  if (last != null && now - last < 3600) return { skipped: 'issued within the last hour' };
+  const fc = forecastSite(siteId, 48);
+  const rows = (k) => fc.slots.filter((s) => s[k] != null).map((s) => ({ start: s.slot_start, end: s.slot_start + SLOT, value: s[k] }));
+  const forecasts = putForecasts(homeS, now, rows('home'))
+    + putForecasts(seriesId('site', siteId, 'grid_import_kwh', 'core_forecast'), now, rows('grid_import'))
+    // Solar too, so the build can show what was forecast for each half-hour before it happened.
+    + putForecasts(seriesId('site', siteId, 'solar_kwh', 'core_forecast'), now, rows('solar'));
+  return { forecasts };
 }
 
 async function step(log, siteId, provider, fn) {
@@ -131,38 +140,70 @@ export async function syncSite(siteId) {
       // The 5-minute history is kept upstream for 90 days only.
       const dates = daysBetween(firstRun ? addDays(today, -Math.min(INITIAL_DAYS, 89)) : addDays(today, -1), today);
       await step(log, siteId, 'sunsynk', () => syncSunsynk(site, { username: env.SUNSYNK_USERNAME, password: env.SUNSYNK_PASSWORD, plantId: env.SUNSYNK_PLANT_ID }, dates));
+      try { measureBatteryCapacity(siteId); } catch (err) { console.error('battery capacity:', err.message); }
       site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
     }
     await step(log, siteId, null, async () => { site = await resolveSiteGeo(site); return { postcode: site.postcode, region: site.gsp_region, outcode: site.outcode }; });
 
-    // Weather first: the demo home uses it to make its solar output.
-    await step(log, siteId, 'weather', () => syncWeather(site, firstRun ? INITIAL_DAYS + 1 : 3));
+    // Sunlight history must cover the forecast's 14-day learning window; fetch it all until it does.
+    const ghiFrom = db.prepare(`SELECT MIN(f.start_ts) AS t FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
+      WHERE se.subject_kind = 'site' AND se.subject_id = ? AND m.code = 'ghi_wm2'`).get(String(siteId))?.t;
+    const sunShort = !ghiFrom || ghiFrom > nowSec() - INITIAL_DAYS * 86400;
+    await step(log, siteId, 'weather', () => syncWeather(site, firstRun || sunShort ? INITIAL_DAYS + 1 : 3));
     await step(log, siteId, 'carbon', () => syncCarbon(site, fromTs, nowSec()));
-
-    if (conns.has('demo')) await step(log, siteId, 'demo', () => syncDemo(site, INITIAL_DAYS));
 
     if (conns.has('octopus')) {
       const creds = { apiKey: env.OCTOPUS_API_KEY, accountNumber: env.OCTOPUS_ACCOUNT_NUMBER };
+      // A provider connected after the home was first built still needs the full initial window.
+      const octoFirst = firstRun || !db.prepare("SELECT last_success_at FROM connection WHERE site_id = ? AND provider = 'octopus'").get(siteId)?.last_success_at;
+      const octoFrom = octoFirst ? dayBounds(tz, addDays(today, -INITIAL_DAYS))[0] : fromTs;
       await step(log, siteId, 'octopus', async () => {
         await syncOctopusAccount(site, creds);
+        // Gas units straight from Octopus; if they changed, re-read the whole gas history.
+        let gasUnits = null;
+        try { gasUnits = await syncGasUnits(site, creds); } catch (err) { gasUnits = { error: err.message }; }
         // Meter data arrives about a day late and can be revised, so always look back a few days.
-        const meterFrom = firstRun ? fromTs : dayBounds(tz, addDays(today, -4))[0];
-        const consumption = await syncOctopusConsumption(site, creds, meterFrom, nowSec());
-        const tariffs = db.prepare('SELECT DISTINCT t.* FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id WHERE a.site_id = ?').all(siteId);
+        const meterFrom = octoFirst ? octoFrom : dayBounds(tz, addDays(today, -4))[0];
+        // Re-read the whole gas history when the unit changed, or when m3 readings are not stored yet.
+        const noGasM3 = !db.prepare(`SELECT 1 FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
+          JOIN device d ON se.subject_kind = 'device' AND se.subject_id = CAST(d.id AS TEXT) WHERE d.site_id = ? AND m.code = 'gas_m3' LIMIT 1`).get(siteId);
+        const gasFrom = gasUnits?.changed || noGasM3 ? dayBounds(tz, addDays(today, -INITIAL_DAYS))[0] : undefined;
+        const consumption = await syncOctopusConsumption(site, creds, meterFrom, nowSec(), { gasFrom });
+        // Only tariffs in force somewhere in the window; the account history goes back years.
+        const tariffs = db.prepare(`SELECT DISTINCT t.* FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
+                                    WHERE a.site_id = ? AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
         let rates = 0;
-        for (const t of tariffs) rates += await syncTariffRates(t, fromTs - 86400, nowSec() + 2 * 86400, siteId);
+        for (const t of tariffs) rates += await syncTariffRates(t, octoFrom - 86400, nowSec() + 2 * 86400, siteId);
         let kraken = null;
         try { kraken = await syncKraken(site, creds); } catch (err) { kraken = { error: err.message }; }
-        return { consumption, rates, tariffs: tariffs.length, kraken };
+        return { consumption, rates, tariffs: tariffs.length, kraken, gasUnits };
       });
     }
+    // Daily calorific value for the gas meter's zone, to convert m3 to kWh.
+    if (db.prepare("SELECT 1 FROM device WHERE site_id = ? AND kind = 'meter_gas'").get(siteId)) {
+      ensureConnection(siteId, 'gas_cv');
+      const cvFirst = !db.prepare("SELECT last_success_at FROM connection WHERE site_id = ? AND provider = 'gas_cv'").get(siteId)?.last_success_at;
+      await step(log, siteId, 'gas_cv', () => syncGasCv(site, cvFirst ? dayBounds(tz, addDays(today, -INITIAL_DAYS))[0] : fromTs - 86400, nowSec()));
+    }
     if (conns.has('tariff')) await step(log, siteId, 'tariff', () => syncEnvTariffs(site, fromTs));
+    // Reference tariffs for the comparison page (public prices).
+    ensureConnection(siteId, 'compare');
+    const cmpFirst = !db.prepare("SELECT last_success_at FROM connection WHERE site_id = ? AND provider = 'compare'").get(siteId)?.last_success_at;
+    const cmpFrom = cmpFirst ? dayBounds(tz, addDays(today, -Math.max(INITIAL_DAYS, 30)))[0] : fromTs;
+    await step(log, siteId, 'compare', () => syncComparison(site, cmpFrom - 86400, nowSec() + 2 * 86400));
     await step(log, siteId, 'solar_forecast', () => syncQuartz(site));
 
     markDirty(siteId, fromTs, nowSec(), firstRun ? 'initial load' : 'sync');
     const t0 = Date.now();
     const rebuilt = processQueue();
     log.push({ step: 'build', ok: true, ms: Date.now() - t0, rebuilt });
+    const t1 = Date.now();
+    try {
+      const res = recordForecast(siteId);
+      log.push({ step: 'forecast', ok: true, ms: Date.now() - t1, ...res });
+    } catch (err) {
+      log.push({ step: 'forecast', ok: false, ms: Date.now() - t1, error: err.message });
+    }
     const ok = log.every((l) => l.ok);
     db.prepare('UPDATE sync_run SET finished_at = ?, status = ?, detail = ? WHERE id = ?').run(nowSec(), ok ? 'ok' : 'partial', JSON.stringify(log), runId);
     return { ok, log };

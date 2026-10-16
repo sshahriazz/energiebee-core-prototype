@@ -38,7 +38,7 @@ export function parseTariffCode(code) {
   const region = parts[parts.length - 1];
   const product = parts.slice(2, -1).join('-');
   let structure = 'flat';
-  if (/^INTELLI/.test(product)) structure = 'iog';
+  if (/^(INTELLI|IOG)/.test(product)) structure = 'iog';
   else if (registers === '2R') structure = 'e7';
   else if (/^AGILE/.test(product)) structure = 'agile';
   else if (/^(SILVER|TRACKER)/.test(product)) structure = 'tracker';
@@ -130,7 +130,10 @@ export async function syncTariffRates(tariff, fromTs, toTs, siteId) {
 
 // ───────────── Account, meters and agreements ─────────────
 
-function upsertDevice(siteId, kind, ref, label, attrs) {
+function upsertDevice(siteId, kind, ref, label, fresh) {
+  // Keep what the core learned about the device (e.g. the gas unit) when the account is re-read.
+  const old = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
+  const attrs = { ...JSON.parse(old?.attrs || '{}'), ...fresh };
   db.prepare(
     `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs) VALUES (?, ?, 'octopus', ?, ?, ?)
      ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET kind = excluded.kind, label = excluded.label, attrs = excluded.attrs`)
@@ -189,38 +192,54 @@ export async function syncOctopusAccount(site, { apiKey, accountNumber }) {
   return meters;
 }
 
-// Gas arrives in m3 on newer (SMETS2) meters and kWh on older ones, with no unit field.
-// Compare the yearly rate of what we received with the industry annual estimate.
-function gasFactor(values, days, annualKwh) {
+// Gas arrives in m3 on some meters and kWh on others, with no unit field in the
+// readings. Octopus states the unit per meter in Kraken (syncGasUnits), which is
+// the source used. Only if Kraken gives none is it inferred from the readings:
+// 1. A half-hour above 2.5 can only be kWh (as m3 it would exceed any home boiler).
+// 2. Otherwise compare the yearly rate with the meter's annual estimate (kWh):
+//    m3 sits near 1/11 of it; kWh near 1. Without data, the unit stays unknown.
+// Readings are stored exactly as delivered; m3 is converted to kWh in the build
+// with National Gas's published calorific value for each gas day.
+function gasUnit(values, days, annualKwh) {
+  const max = Math.max(0, ...values);
+  if (max > 2.5) return { unit: 'kWh', reason: `largest half-hour ${max.toFixed(2)}; as m3 it would exceed any home boiler`, source: 'readings' };
   const sum = values.reduce((s, v) => s + v, 0);
-  if (!annualKwh || !sum || days < 3) return 11.2;    // default: assume m3 (most meters are SMETS2)
-  const yearly = (sum / days) * 365;
-  const ratio = annualKwh / yearly;
-  return ratio > 5 && ratio < 25 ? 1.02264 * 39.5 / 3.6 : 1;
+  if (!annualKwh || !sum || days < 3) return null;
+  const ratio = annualKwh / ((sum / days) * 365);
+  return { unit: ratio > 6 ? 'm3' : 'kWh', reason: `yearly rate is 1/${ratio.toFixed(1)} of the ${annualKwh} kWh estimate`, source: 'readings' };
 }
 
-export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs) {
+export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { gasFrom } = {}) {
   const devices = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus'").all(site.id);
   let n = 0;
   for (const dev of devices) {
     const attrs = JSON.parse(dev.attrs || '{}');
     const isGas = dev.kind === 'meter_gas';
-    const metric = isGas ? 'gas_kwh' : dev.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
-    const series = seriesId('device', dev.id, metric, 'octopus_meter');
+    const from = isGas && gasFrom != null ? Math.min(gasFrom, fromTs) : fromTs;
     for (const serial of attrs.serials || []) {
       const path = isGas ? `gas-meter-points/${dev.external_ref}` : `electricity-meter-points/${dev.external_ref}`;
-      const url = `${BASE}/${path}/meters/${serial}/consumption/?period_from=${isoUtc(fromTs)}&period_to=${isoUtc(toTs)}&page_size=25000&order_by=period`;
+      const url = `${BASE}/${path}/meters/${serial}/consumption/?period_from=${isoUtc(from)}&period_to=${isoUtc(toTs)}&page_size=25000&order_by=period`;
       const rows = await getAll(url, auth(apiKey), 'octopus_meter', site.id);
       if (!rows.length) continue;
-      const factor = isGas ? gasFactor(rows.map((r) => r.consumption), (toTs - fromTs) / 86400, attrs.annualKwh) : 1;
-      n += normaliseConsumption(series, rows, factor, rows[0]._rawId);
+      let metric = dev.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
+      if (isGas) {
+        // Decide once on a good sample, then keep it so the unit never flips between syncs.
+        const u = attrs.gasUnit || gasUnit(rows.map((r) => r.consumption), (toTs - from) / 86400, attrs.annualKwh);
+        if (!u) continue;   // unit unknown: not stored rather than guessed
+        if (!attrs.gasUnit && rows.length >= 96) {
+          attrs.gasUnit = u;
+          db.prepare('UPDATE device SET attrs = ? WHERE id = ?').run(JSON.stringify(attrs), dev.id);
+        }
+        metric = u.unit === 'm3' ? 'gas_m3' : 'gas_kwh';
+      }
+      n += normaliseConsumption(seriesId('device', dev.id, metric, 'octopus_meter'), rows, 1, rows[0]._rawId);
     }
   }
   return n;
 }
 
 // Half-hour meter rows. interval_start carries the local offset (+01:00 in
-// summer); Date.parse converts it to UTC. Exported for the demo generator.
+// summer); Date.parse converts it to UTC.
 export function normaliseConsumption(series, rows, factor, rawId) {
   return putIntervals(series, rows.map((r) => ({
     start: parseIso(r.interval_start), end: parseIso(r.interval_end), value: r.consumption * factor, quality: QUALITY.MEASURED, rawId: r._rawId,
@@ -253,6 +272,37 @@ async function gql(token, query, variables, siteId, { land = true } = {}) {
   }
   const rawId = land ? landRaw({ source: 'octopus_kraken', siteId, request: { query: query.slice(0, 120), variables: { ...variables, key: undefined } }, body: json }).rawId : null;
   return { ...json.data, _rawId: rawId };
+}
+
+// Octopus states each gas meter's units in Kraken (m³ on SMETS2, kWh on SMETS1).
+// That is the source of truth; the guess in gasUnit() is only a fallback.
+// Returns true when the unit changed, so the caller can re-read the gas history.
+export async function syncGasUnits(site, { apiKey, accountNumber }) {
+  const gasDevices = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND kind = 'meter_gas'").all(site.id);
+  if (!gasDevices.length) return { changed: false };
+  const tokenData = await gql(null, 'mutation($key:String!){obtainKrakenToken(input:{APIKey:$key}){token}}', { key: apiKey }, site.id, { land: false });
+  const token = tokenData?.obtainKrakenToken?.token;
+  // The meter's local distribution zone (LDZ) picks National Gas's calorific value series.
+  const data = await gql(token, 'query($a:String!){account(accountNumber:$a){properties{gasMeterPoints{mprn ldz exitZone meters{serialNumber consumptionUnits}}}}}', { a: accountNumber }, site.id);
+  let changed = false;
+  for (const p of data?.account?.properties || []) {
+    for (const gp of p.gasMeterPoints || []) {
+      const dev = gasDevices.find((d) => d.external_ref === gp.mprn);
+      const units = (gp.meters || []).map((m) => m.consumptionUnits).find(Boolean);
+      if (!dev || !units) continue;
+      const isM3 = /m/.test(units) && !/kwh/i.test(units);
+      const attrs = JSON.parse(dev.attrs || '{}');
+      const unit = { unit: isM3 ? 'm3' : 'kWh', reason: `Octopus reports ${units} for this meter`, source: 'octopus_kraken' };
+      if (!attrs.gasUnit || attrs.gasUnit.unit !== unit.unit || attrs.gasUnit.source !== 'octopus_kraken' || 'factor' in attrs.gasUnit || attrs.ldz !== gp.ldz) {
+        changed = changed || !attrs.gasUnit || attrs.gasUnit.unit !== unit.unit || 'factor' in attrs.gasUnit;
+        attrs.gasUnit = unit;
+        attrs.ldz = gp.ldz ?? null;
+        attrs.exitZone = gp.exitZone ?? null;
+        db.prepare('UPDATE device SET attrs = ? WHERE id = ?').run(JSON.stringify(attrs), dev.id);
+      }
+    }
+  }
+  return { changed };
 }
 
 export async function syncKraken(site, { apiKey, accountNumber }) {

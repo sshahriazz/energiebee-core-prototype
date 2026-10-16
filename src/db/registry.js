@@ -84,17 +84,26 @@ export const SOURCES = [
     },
   },
   {
-    code: 'postcodes_io', name: 'postcodes.io',
-    contract: { timeZone: '-', timeRole: 'reference', signs: '-', units: 'degrees', missing: '404 for unknown postcodes', revisions: '-', upstreamHistory: '-' },
+    code: 'core_forecast', name: 'EnergieBee forecast (our own)',
+    contract: {
+      timeZone: 'UTC epoch seconds', timeRole: 'forecast: 30-minute slots for the next 48 hours',
+      signs: '-', units: 'kWh per half-hour; house use includes planned EV charging, grid import includes battery charging',
+      missing: 'No row for a half-hour without history to forecast house use from',
+      revisions: 'Each sync stores a new issue, at most one an hour; issue time = time of the run', upstreamHistory: 'Ours: kept like any other fact',
+    },
   },
   {
-    code: 'demo', name: 'Demo home generator',
+    code: 'national_gas_cv', name: 'National Gas calorific value',
     contract: {
-      timeZone: 'Generates provider-shaped payloads (Sunsynk HH:mm in plant zone, Octopus local offsets)',
-      timeRole: 'Same as the providers it imitates', signs: 'Same as the providers it imitates',
-      units: 'Same as the providers it imitates', missing: 'Meter data lags one day, like Octopus',
-      revisions: 'None', upstreamHistory: 'Sample data',
+      timeZone: 'Applicable-for date = gas day, 05:00 to 05:00 GB local time (UNC Modification 0461)',
+      timeRole: 'interval: one gas day per local distribution zone (LDZ)', signs: '-', units: 'MJ per standard m3',
+      missing: 'The latest gas day is published the next morning (about 10:30)', revisions: 'latestFlag=Y keeps the latest published value',
+      upstreamHistory: 'Full history on the National Gas Data Portal (data item "Calorific Value, LDZ(xx)")',
     },
+  },
+  {
+    code: 'postcodes_io', name: 'postcodes.io',
+    contract: { timeZone: '-', timeRole: 'reference', signs: '-', units: 'degrees', missing: '404 for unknown postcodes', revisions: '-', upstreamHistory: '-' },
   },
 ];
 
@@ -116,12 +125,15 @@ export const METRICS = [
   { code: 'battery_charge_kwh', label: 'Battery charged', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'battery' },
   { code: 'battery_discharge_kwh', label: 'Battery discharged', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'battery' },
   { code: 'gas_kwh', label: 'Gas used', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'gas' },
+  { code: 'gas_m3', label: 'Gas used (volume)', unit: 'm3', timeRole: 'interval', aggregation: 'sum', domain: 'gas' },
+  { code: 'gas_cv_mjm3', label: 'Gas calorific value', unit: 'MJ/m3', timeRole: 'interval', aggregation: 'mean', domain: 'gas' },
   { code: 'ev_charge_kwh', label: 'EV charged', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'ev' },
   // Context
   { code: 'carbon_intensity', label: 'Grid carbon intensity', unit: 'gCO2/kWh', timeRole: 'interval', aggregation: 'mean', domain: 'carbon' },
   { code: 'outdoor_temp_c', label: 'Outdoor temperature', unit: 'degC', timeRole: 'instant', aggregation: 'mean', domain: 'weather' },
   { code: 'cloud_pct', label: 'Cloud cover', unit: '%', timeRole: 'instant', aggregation: 'mean', domain: 'weather' },
   { code: 'gti_wm2', label: 'Sunlight on the panels', unit: 'W/m2', timeRole: 'interval', aggregation: 'mean', domain: 'weather' },
+  { code: 'ghi_wm2', label: 'Sunlight on flat ground', unit: 'W/m2', timeRole: 'interval', aggregation: 'mean', domain: 'weather' },
 ];
 
 // Dated VAT. Octopus has published domestic electricity at 0% VAT since

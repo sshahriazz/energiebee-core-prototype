@@ -10,8 +10,7 @@ import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY } 
 import { loadPricing, priceAt } from './pricing.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo } from './time.js';
 
-export const METHOD_VERSION = 'v1-slot-priority';
-const CHARGE_EFFICIENCY = 0.9;
+export const METHOD_VERSION = 'v2-measured-load';
 
 const NODES = {
   solar: ['solar_w', 'solar_kwh'], load: ['load_w', 'load_kwh'], imp: ['grid_import_w', 'grid_import_kwh'],
@@ -74,22 +73,71 @@ export function buildSite(siteId, fromDate, toDate) {
 
   const meters = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'").all(siteId);
   const meterFacts = {};
+  // Gas in m3 is converted per gas day with National Gas's calorific value for the meter's zone:
+  // kWh = m3 × 1.02264 (volume correction) × CV (MJ/m3) ÷ 3.6. Without a published CV the
+  // half-hour's gas stays unknown rather than converted with a typical value.
+  let gasM3 = null; let gasCv = []; let gasLdz = null;
   for (const m of meters) {
+    if (m.kind === 'meter_gas') {
+      const attrs = JSON.parse(m.attrs || '{}');
+      if (attrs.gasUnit?.unit === 'm3') {
+        gasM3 = readIntervals([seriesId('device', m.id, 'gas_m3', 'octopus_meter')], winStart, winEnd);
+        gasLdz = attrs.ldz || null;
+        gasCv = gasLdz ? readIntervals([seriesId('region', `ldz:${gasLdz}`, 'gas_cv_mjm3', 'national_gas_cv')], winStart - 86400, winEnd + 86400) : [];
+        meterFacts.meter_gas = gasM3;
+        continue;
+      }
+    }
     const metric = m.kind === 'meter_gas' ? 'gas_kwh' : m.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
     meterFacts[m.kind] = readIntervals([seriesId('device', m.id, metric, 'octopus_meter')], winStart, winEnd);
   }
+  const cvAt = (slot) => gasCv.find((f) => f.start_ts <= slot && f.end_ts > slot)?.value ?? null;
+  const VOLUME_CORRECTION = 1.02264;   // Gas (Calculation of Thermal Energy) Regulations 1996
   const hasImportMeter = !!meterFacts.meter_import;
+  // A configured supplier account means meter data is expected, even before its meters are known.
+  const expectMeter = hasImportMeter || !!db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'octopus'").get(siteId);
   const evFacts = readIntervals([sid('ev_charge_kwh', 'octopus_kraken')], winStart, winEnd);
   const carbonFacts = site.carbon_region != null
     ? readIntervals([seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional')], winStart, winEnd) : [];
   const tempByHour = new Map(readReadings([sid('outdoor_temp_c', 'open_meteo')], winStart - 3600, winEnd).map((r) => [r.ts, r.value]));
-  const solarFc = readForecastOfRecord(sid('solar_kwh', 'quartz'), winStart, winEnd, winEnd);
+  // Solar forecast of record: for each period, the latest issue made before it started,
+  // so a past half-hour is compared only with what was known in advance. Quartz when it
+  // was used (panel angles known), otherwise our own stored forecast.
+  const solarFc = [];
+  for (const source of ['quartz', 'core_forecast']) {
+    const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
+      .all(sid('solar_kwh', source), winStart, winEnd);
+    const best = new Map();
+    for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
+    const covered = new Set(solarFc.map((f) => floorTo(f.start_ts, SLOT)));
+    for (const f of best.values()) if (!covered.has(floorTo(f.start_ts, SLOT))) solarFc.push(f);
+  }
   const pricing = loadPricing(siteId, winStart, winEnd);
 
-  const previous = new Map(db.prepare('SELECT slot_start, state, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
+  const previous = new Map(db.prepare('SELECT slot_start, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
     .all(siteId, winStart, winEnd).map((r) => [r.slot_start, r]));
 
-  let stock = [];                       // battery energy layers: { kwh, p } (p = pence per stored kWh)
+  // Battery round trip, measured from this battery's own data over the window:
+  // energy out ÷ (energy in − change in stored energy). Without enough data no loss
+  // is applied (1.0) and the check says so; nothing is assumed.
+  const sumE = (k) => [...aligned[k].energy.values()].reduce((s, v) => s + v, 0);
+  const socSeries = readings.get(socId) || [];
+  let roundTrip = null; let roundTripNote = 'not enough battery data to measure';
+  if (site.battery_kwh && socSeries.length > 1) {
+    const inKwh = sumE('chg'); const outKwh = sumE('dis');
+    const stored = ((socSeries[socSeries.length - 1].value - socSeries[0].value) / 100) * site.battery_kwh;
+    const net = inKwh - stored;
+    if (inKwh > 5 && net > 0 && outKwh / net > 0.5 && outKwh / net <= 1.02) {
+      roundTrip = Math.min(1, outKwh / net);
+      roundTripNote = `${outKwh.toFixed(1)} kWh out ÷ (${inKwh.toFixed(1)} kWh in − ${stored.toFixed(1)} kWh change in stored energy)`;
+    }
+  }
+  const eff = roundTrip ?? 1;
+  // Battery energy layers, first in first out: { kwh, p } (p = pence per stored kWh).
+  // The energy already in the battery at the first charge-level reading is the first
+  // layer; its cost is unknown (p = null) because it was stored before the data starts.
+  const stock = [];
+  if (site.battery_kwh && socSeries.length) stock.push({ kwh: (socSeries[0].value / 100) * site.battery_kwh, p: null });
   let unknownStock = false;
   const hhRows = [];
   const dayRows = [];
@@ -114,7 +162,7 @@ export function buildSite(siteId, fromDate, toDate) {
     }
     const e = (k, slot) => (aligned[k].energy.get(slot) || 0) * fit[k];
 
-    const day = { rows: [], mImp: 0, ctImpBoth: 0, home: 0, loss: 0, lossN: 0, rated: 0 };
+    const day = { rows: [], mImp: 0, ctImpBoth: 0, home: 0, loss: 0, lossN: 0, rated: 0, gasNoCv: 0 };
     for (const slot of slots) {
       let q = 0;
       const coverage = hasInverter ? (aligned.solar.cover.get(slot) || aligned.imp.cover.get(slot) || 0) / SLOT : 0;
@@ -133,14 +181,20 @@ export function buildSite(siteId, fromDate, toDate) {
       const missing = imp == null;
       if (hasInverter && coverage < 0.8) q |= QUALITY.PARTIAL;
 
-      let home = solar + (imp || 0) + dis - (exp || 0) - chg;
-      if (home < -0.02) q |= QUALITY.SUSPECT;
-      home = Math.max(0, home);
+      // What the sources supplied beyond exports and charging. The house used the
+      // inverter's measured load; the rest is the inverter's own conversion and
+      // standby loss. Without a load reading the balance is all we have.
+      const balance = solar + (imp || 0) + dis - (exp || 0) - chg;
+      if (balance < -0.02) q |= QUALITY.SUSPECT;
       const measuredLoad = hasInverter && coverage > 0 ? e('load', slot) : null;
-      const loss = measuredLoad != null ? home - measuredLoad : null;
+      const home = measuredLoad != null ? Math.min(measuredLoad, Math.max(0, balance)) : Math.max(0, balance);
+      const loss = measuredLoad != null ? balance - measuredLoad : null;
       const meterVsCt = mImp != null && hasInverter && coverage > 0.5 ? mImp - e('imp', slot) : null;
       if (meterVsCt != null) { day.mImp += mImp; day.ctImpBoth += e('imp', slot); }
-      const gas = meterFacts.meter_gas ? slotSum(meterFacts.meter_gas, slot) : null;
+      const gasRaw = meterFacts.meter_gas ? slotSum(meterFacts.meter_gas, slot) : null;
+      const cv = gasM3 && gasRaw != null ? cvAt(slot) : null;
+      const gas = gasRaw == null ? null : gasM3 ? (cv != null ? (gasRaw * VOLUME_CORRECTION * cv) / 3.6 : null) : gasRaw;
+      if (gasM3 && gasRaw != null && cv == null) day.gasNoCv++;
       const ev = slotSum(evFacts, slot);
 
       // ── 3 Allocate (slot-level priority) ──
@@ -150,10 +204,14 @@ export function buildSite(siteId, fromDate, toDate) {
       const sToGrid = Math.min(Math.max(0, sLeft - sToBatt), exp || 0);
       const bToHome = Math.min(dis, Math.max(0, home - sToHome));
       const bToGrid = Math.min(Math.max(0, dis - bToHome), Math.max(0, (exp || 0) - sToGrid));
-      const gToHome = Math.max(0, home - sToHome - bToHome);
+      const gToHome = Math.min(Math.max(0, home - sToHome - bToHome), imp || 0);
       // Grid charging is bounded by what was imported. Any charge left over came
       // from the battery itself (charge and discharge in the same half-hour).
       const gToBatt = Math.min(Math.max(0, chg - sToBatt), Math.max(0, (imp || 0) - gToHome));
+      // Whatever each source supplied beyond those flows went into losses.
+      const sToLoss = Math.max(0, solar - sToHome - sToBatt - sToGrid);
+      const bToLoss = Math.max(0, dis - bToHome - bToGrid);
+      const gToLoss = Math.max(0, (imp || 0) - gToHome - gToBatt);
 
       // ── 4 Price ──
       const pi = priceAt(pricing, 'meter_import', slot);
@@ -164,23 +222,29 @@ export function buildSite(siteId, fromDate, toDate) {
       if (impInc != null) { day.rated++; } else q |= QUALITY.CHECK_FAILED;
 
       // Battery stock, first in, first out: draw what was discharged, then add what was charged.
-      let draw = dis; let drawCost = 0;
+      let draw = dis; let drawCost = 0; let fromUnknown = 0;
       while (draw > 1e-9 && stock.length) {
         const l = stock[0]; const take = Math.min(draw, l.kwh);
-        drawCost += take * l.p; l.kwh -= take; draw -= take;
+        if (l.p == null) fromUnknown += take; else drawCost += take * l.p;
+        l.kwh -= take; draw -= take;
         if (l.kwh <= 1e-9) stock.shift();
       }
-      if (draw > 1e-6) { unknownStock = true; q |= QUALITY.ESTIMATED; }
-      if (gToBatt > 0) stock.push({ kwh: gToBatt * CHARGE_EFFICIENCY, p: (impInc ?? 0) / CHARGE_EFFICIENCY });
-      if (sToBatt > 0) stock.push({ kwh: sToBatt * CHARGE_EFFICIENCY, p: 0 });   // decision D2/D4: stored solar valued at 0p
+      // Unknown when energy comes from the opening layer, or more is drawn than the records hold.
+      const unknownDraw = fromUnknown > 1e-6 || draw > 1e-6;
+      if (unknownDraw) { unknownStock = true; q |= QUALITY.ESTIMATED; }
+      if (gToBatt > 0) stock.push({ kwh: gToBatt * eff, p: (impInc ?? 0) / eff });
+      if (sToBatt > 0) stock.push({ kwh: sToBatt * eff, p: 0 });   // solar has no fuel cost
 
       const standing = pi ? (pi.standingEx * (1 + pi.vat)) / nSlotsDay + (pg ? (pg.standingEx * (1 + pg.vat)) / nSlotsDay : 0) : 0;
       const gasCost = gas != null && pg?.unitEx != null ? gas * pg.unitEx * (1 + pg.vat) : (gas != null ? null : 0);
       const gToHomeCost = impInc != null ? gToHome * impInc : null;
       const gToBattCost = impInc != null ? gToBatt * impInc : null;
-      const bToHomeCost = dis > 0 ? drawCost * (bToHome / dis) : 0;
+      const lossCost = impInc != null ? gToLoss * impInc : null;
+      // Unknown when any of the energy drawn was stored before the data starts.
+      const bToHomeCost = dis > 0 ? (unknownDraw ? null : drawCost * (bToHome / dis)) : 0;
       const exportCredit = (sToGrid + bToGrid) * expRate;
-      const totalCost = impInc != null ? gToHomeCost + gToBattCost + standing + (gasCost || 0) - exportCredit : null;
+      // The bill is every imported kWh at its price (including what the inverter lost), plus standing and gas, minus export.
+      const totalCost = impInc != null ? gToHomeCost + gToBattCost + lossCost + standing + (gasCost || 0) - exportCredit : null;
       const gridOnly = impInc != null ? home * impInc + standing + (gasCost || 0) : null;
       const ci = slotSum(carbonFacts, slot) ?? null;
       const carbonG = ci != null && imp != null ? imp * ci : null;
@@ -192,9 +256,10 @@ export function buildSite(siteId, fromDate, toDate) {
       // ── 5 Check and state ──
       let state = 'final';
       if (missing) state = 'missing';
-      else if ((hasImportMeter && mImp == null) || date >= today) state = 'provisional';
+      else if ((expectMeter && mImp == null) || date >= today) state = 'provisional';
       const prev = previous.get(slot);
-      if (prev && prev.state === 'final' && (Math.abs((prev.home ?? 0) - home) > 0.001 || Math.abs((prev.total_cost ?? 0) - (totalCost ?? 0)) > 0.01)) q |= QUALITY.RESTATED;
+      // Once revised, always marked: the flag survives later rebuilds.
+      if (prev && ((prev.quality & QUALITY.RESTATED) || (prev.state === 'final' && (Math.abs((prev.home ?? 0) - home) > 0.001 || Math.abs((prev.total_cost ?? 0) - (totalCost ?? 0)) > 0.01)))) q |= QUALITY.RESTATED;
 
       const row = {
         site_id: siteId, slot_start: slot, local_date: date, state, quality: q,
@@ -202,6 +267,7 @@ export function buildSite(siteId, fromDate, toDate) {
         soc_end: socBySlot.get(slot) ?? null,
         solar_to_home: sToHome, solar_to_battery: sToBatt, solar_to_grid: sToGrid, battery_to_home: bToHome,
         battery_to_grid: bToGrid, grid_to_home: gToHome, grid_to_battery: gToBatt,
+        solar_to_loss: sToLoss, battery_to_loss: bToLoss, grid_to_loss: gToLoss, loss_cost: lossCost,
         import_rate_ex: pi?.unitEx ?? null, import_vat: pi?.vat ?? null, export_rate: pe?.unitEx ?? null,
         gas_rate_ex: pg?.unitEx ?? null, gas_vat: pg?.vat ?? null,
         grid_to_home_cost: gToHomeCost, grid_to_battery_cost: gToBattCost, battery_to_home_cost: bToHomeCost,
@@ -209,7 +275,7 @@ export function buildSite(siteId, fromDate, toDate) {
         grid_only_cost: gridOnly, saving: gridOnly != null ? gridOnly - totalCost : null,
         carbon_intensity: ci, carbon_g: carbonG, carbon_saved_g: carbonSaved, outdoor_temp: temp, solar_forecast: solarForecast,
         meter_vs_ct: meterVsCt, rate_found: impInc != null ? 1 : 0,
-        lineage: JSON.stringify({ import: impSrc, export: expSrc, solar: hasInverter ? 'sunsynk_5min' : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, carbon: ci != null ? 'carbon_regional' : null, coverage: Math.round(coverage * 100) / 100 }),
+        lineage: JSON.stringify({ import: impSrc, export: expSrc, solar: hasInverter ? 'sunsynk_5min' : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, carbon: ci != null ? 'carbon_regional' : null, coverage: Math.round(coverage * 100) / 100, ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? 'national_gas_cv' : 'not published yet' } : {}) }),
         method_version: METHOD_VERSION, built_at: now,
       };
       day.rows.push(row);
@@ -232,12 +298,13 @@ export function buildSite(siteId, fromDate, toDate) {
       slots_missing: R.filter((r) => r.state === 'missing').length,
       ...Object.fromEntries(['solar', 'grid_import', 'grid_export', 'battery_charge', 'battery_discharge', 'home', 'loss', 'gas', 'ev',
         'solar_to_home', 'solar_to_battery', 'solar_to_grid', 'battery_to_home', 'battery_to_grid', 'grid_to_home', 'grid_to_battery',
+        'solar_to_loss', 'battery_to_loss', 'grid_to_loss', 'loss_cost',
         'grid_to_home_cost', 'grid_to_battery_cost', 'battery_to_home_cost', 'export_credit', 'standing_cost', 'gas_cost',
         'total_cost', 'grid_only_cost', 'saving', 'carbon_g', 'carbon_saved_g'].map((k) => [k, anyNull(k) && ['total_cost', 'grid_only_cost', 'saving'].includes(k) ? null : sum(k)])),
       solar_forecast: R.some((r) => r.solar_forecast != null) ? sum('solar_forecast') : null,
       self_consumption: solarSum > 0.01 ? (sum('solar_to_home') + sum('solar_to_battery')) / solarSum : null,
       self_sufficiency: homeSum > 0.01 ? 1 - sum('grid_to_home') / homeSum : null,
-      blended_cost: homeSum > 0.01 && !anyNull('grid_to_home_cost') ? (sum('grid_to_home_cost') + sum('battery_to_home_cost')) / homeSum : null,
+      blended_cost: homeSum > 0.01 && !anyNull('grid_to_home_cost') && !R.some((r) => r.battery_to_home > 0 && r.battery_to_home_cost == null) ? (sum('grid_to_home_cost') + sum('battery_to_home_cost')) / homeSum : null,
       peak_import_kw: Math.max(0, ...R.map((r) => (r.grid_import ?? 0) * 2)),
       base_load_kw: nightHome.length ? Math.min(...nightHome) : null,
       soc_min: socs.length ? Math.min(...socs) : null, soc_max: socs.length ? Math.max(...socs) : null,
@@ -256,9 +323,11 @@ export function buildSite(siteId, fromDate, toDate) {
       checks.push([date, 'energy_balance', Math.abs(share) <= 0.1 ? 'pass' : 'warn', share, 0.1, `losses and measurement error ${(share * 100).toFixed(1)}% of home use`]);
     }
     checks.push([date, 'rate_coverage', day.rated === R.length ? 'pass' : (day.rated === 0 ? 'fail' : 'warn'), R.length ? day.rated / R.length : 0, 1, `${day.rated} of ${R.length} half-hours priced`]);
+    if (gasM3) checks.push([date, 'gas_calorific_value', day.gasNoCv ? 'warn' : 'pass', day.gasNoCv, 0, day.gasNoCv ? `${day.gasNoCv} half-hours of gas wait for National Gas's calorific value for ${gasLdz}` : `converted with National Gas's calorific value for ${gasLdz}`]);
     checks.push([date, 'completeness', dayRow.slots_missing === 0 ? 'pass' : 'warn', R.length ? 1 - dayRow.slots_missing / R.length : 0, 1, `${dayRow.slots_final} final, ${dayRow.slots_provisional} provisional, ${dayRow.slots_missing} missing`]);
   }
-  if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, 'Battery energy from before this window is valued at 0p']);
+  if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, 'Energy already in the battery when the data starts has unknown cost; those half-hours show no stored cost']);
+  if (checks.length) checks.push([fromDate, 'battery_efficiency', roundTrip != null ? 'pass' : 'skip', roundTrip, null, roundTrip != null ? `measured round trip ${(roundTrip * 100).toFixed(1)}%: ${roundTripNote}` : roundTripNote]);
 
   // ── Write serving rows (replace the window) ──
   tx(() => {

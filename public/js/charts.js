@@ -2,14 +2,14 @@
 // the same axis, a shaded forecast region, a "now" marker and a hover tooltip.
 // One y-axis per chart; anything in another unit gets its own chart.
 const NS = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}, parent) => {
+export const svgEl = (tag, attrs = {}, parent) => {
   const e = document.createElementNS(NS, tag);
   for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
   if (parent) parent.appendChild(e);
   return e;
 };
 
-function niceScale(min, max, ticks = 4) {
+export function niceScale(min, max, ticks = 4) {
   if (max - min < 1e-9) max = min + 1;
   const raw = (max - min) / ticks;
   const mag = 10 ** Math.floor(Math.log10(raw));

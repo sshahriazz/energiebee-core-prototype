@@ -1,0 +1,8 @@
+flowchart TB
+  RAW["raw_payload rows, each with one file in data/raw<br/>#13 sunsynk_5min: day series for 12 Oct<br/>#18 sunsynk_daily: October daily totals<br/>#117 octopus_meter: import meter page<br/>#645 octopus_meter: gas meter page (m3)<br/>#655 national_gas_cv: CV for LDZ NW<br/>#26 carbon_regional: region 3<br/>#123, #125, #126, #127 octopus_rates: price lists<br/>#116, #134 octopus_meter: earlier gas meter pages"]
+  FACTS["Facts covering 18:30 to 19:00 UTC on 12 Oct (current versions)<br/>reading, series 1 to 7: 6 five-minute samples each, raw_id 13<br/>interval_fact, series 8 to 13: daily totals for 12 Oct, raw_id 18<br/>interval_fact, series 29 grid_import_kwh: 0.344, raw_id 117<br/>interval_fact, series 35 gas_m3: 0.459, raw_id 645<br/>interval_fact, series 36 gas_cv_mjm3: 38.9 for gas day 12 Oct, raw_id 655<br/>interval_fact, series 25 carbon_intensity: 29.0, raw_id 26<br/>rate_interval #36 day unit 32.1441 p, #38 standing 44.4133 p/day<br/>rate_interval #39 gas unit 7.7434 p, #40 gas standing 27.6476 p/day"]
+  OLD["Not read by the build: interval_fact, series 28 gas_kwh<br/>version 1: 0.459, raw_id 116, superseded<br/>version 2: 5.1502707, raw_id 134, current<br/>written before m3 readings were kept as m3"]
+  HH["site_hh: site 1, slot_start 1791829800 (19:30 BST, Mon 12 Oct)<br/>grid_import 0.344 · home 0.353 · gas 5.072 kWh · total_cost 53.83 p<br/>state final · quality 129 · method_version v2-measured-load<br/>lineage: import octopus_meter, tariff E-1R-IOG-SMB-FIX-12M-26-06-13-G,<br/>register day, gasM3 0.459, gasCv 38.9, gasLdz NW"]
+  RAW -- "raw_id" --> FACTS
+  FACTS -- "buildSite" --> HH
+  RAW -. "raw_id" .-> OLD

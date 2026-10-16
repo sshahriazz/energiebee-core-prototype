@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS site (
 CREATE TABLE IF NOT EXISTS connection (
   id              INTEGER PRIMARY KEY,
   site_id         INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
-  provider        TEXT NOT NULL,        -- sunsynk, octopus, demo
+  provider        TEXT NOT NULL,        -- sunsynk, octopus, weather, carbon, ...
   external_ref    TEXT,                 -- plant id, account number
   status          TEXT NOT NULL DEFAULT 'new',
   last_success_at INTEGER,
@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS site_hh (
   solar_to_home         REAL, solar_to_battery REAL, solar_to_grid REAL,
   battery_to_home       REAL, battery_to_grid REAL,
   grid_to_home          REAL, grid_to_battery REAL,
+  solar_to_loss         REAL, battery_to_loss REAL, grid_to_loss REAL, loss_cost REAL,
   import_rate_ex        REAL, import_vat REAL, export_rate REAL,
   gas_rate_ex           REAL, gas_vat REAL,
   grid_to_home_cost     REAL, grid_to_battery_cost REAL, battery_to_home_cost REAL,
@@ -249,6 +250,7 @@ CREATE TABLE IF NOT EXISTS site_day (
   home REAL, loss REAL, gas REAL, ev REAL,
   solar_to_home REAL, solar_to_battery REAL, solar_to_grid REAL,
   battery_to_home REAL, battery_to_grid REAL, grid_to_home REAL, grid_to_battery REAL,
+  solar_to_loss REAL, battery_to_loss REAL, grid_to_loss REAL, loss_cost REAL,
   grid_to_home_cost REAL, grid_to_battery_cost REAL, battery_to_home_cost REAL,
   export_credit REAL, standing_cost REAL, gas_cost REAL, total_cost REAL,
   grid_only_cost REAL, saving REAL, carbon_g REAL, carbon_saved_g REAL,

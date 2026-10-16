@@ -1,0 +1,300 @@
+// Stage 5: the build engine. Turns facts into the half-hour timeline.
+//   1 Align      5-min power -> half-hour energy; fit each day to the daily totals
+//   2 Reconcile  one value per node (meter beats CT); home use by energy balance
+//   3 Allocate   who fed whom (solar first to home, then battery, then grid)
+//   4 Price      rate per slot, VAT, cost per flow, battery stock valued first in, first out
+//   5 Check      balance, meter vs CT, counter fit, rate coverage; state per slot
+// Deterministic: the same facts and METHOD_VERSION always give the same rows.
+import { db, tx } from '../db/db.js';
+import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY } from './facts.js';
+import { loadPricing, priceAt } from './pricing.js';
+import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo } from './time.js';
+
+export const METHOD_VERSION = 'v1-slot-priority';
+const CHARGE_EFFICIENCY = 0.9;
+
+const NODES = {
+  solar: ['solar_w', 'solar_kwh'], load: ['load_w', 'load_kwh'], imp: ['grid_import_w', 'grid_import_kwh'],
+  exp: ['grid_export_w', 'grid_export_kwh'], chg: ['battery_charge_w', 'battery_charge_kwh'], dis: ['battery_discharge_w', 'battery_discharge_kwh'],
+};
+
+// Forward-hold integration: each sample holds for up to 5 minutes. Energy is split at slot boundaries.
+function integrate(readings) {
+  const energy = new Map();
+  const cover = new Map();
+  for (let i = 0; i < readings.length; i++) {
+    const r = readings[i];
+    if (r.value == null) continue;
+    const next = readings[i + 1]?.ts ?? r.ts + 300;
+    const end = r.ts + Math.min(next - r.ts, 300);
+    for (let s = r.ts; s < end;) {
+      const slot = floorTo(s, SLOT);
+      const e = Math.min(end, slot + SLOT);
+      energy.set(slot, (energy.get(slot) || 0) + (r.value * (e - s)) / 3.6e6);
+      cover.set(slot, (cover.get(slot) || 0) + (e - s));
+      s = e;
+    }
+  }
+  return { energy, cover };
+}
+
+const groupBy = (rows, key) => rows.reduce((m, r) => (m.get(r[key]) ? m.get(r[key]).push(r) : m.set(r[key], [r]), m), new Map());
+
+function slotSum(intervals, slot) {
+  let v = null;
+  for (const f of intervals) {
+    if (f.end_ts <= slot || f.start_ts >= slot + SLOT || f.value == null) continue;
+    const overlap = Math.min(f.end_ts, slot + SLOT) - Math.max(f.start_ts, slot);
+    v = (v || 0) + (f.value * overlap) / (f.end_ts - f.start_ts);
+  }
+  return v;
+}
+
+export function buildSite(siteId, fromDate, toDate) {
+  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  if (!site) throw new Error(`no site ${siteId}`);
+  const tz = site.timezone;
+  const now = nowSec();
+  const today = localDate(tz, now);
+  if (toDate > today) toDate = today;
+  if (fromDate > toDate) return { days: 0 };
+  const [winStart] = dayBounds(tz, fromDate);
+  const [, winEnd] = dayBounds(tz, toDate);
+  const sid = (metric, source) => seriesId('site', siteId, metric, source);
+
+  // ── Facts for the whole window ──
+  const powerIds = Object.fromEntries(Object.entries(NODES).map(([k, [w]]) => [k, sid(w, 'sunsynk_5min')]));
+  const dailyIds = Object.fromEntries(Object.entries(NODES).map(([k, [, kwh]]) => [k, sid(kwh, 'sunsynk_daily')]));
+  const socId = sid('battery_soc_pct', 'sunsynk_5min');
+  const readings = groupBy(readReadings([...Object.values(powerIds), socId], winStart - 600, winEnd), 'series_id');
+  const aligned = Object.fromEntries(Object.entries(powerIds).map(([k, id]) => [k, integrate(readings.get(id) || [])]));
+  const socBySlot = new Map((readings.get(socId) || []).map((r) => [floorTo(r.ts, SLOT), r.value]));
+  const daily = groupBy(readIntervals(Object.values(dailyIds), winStart, winEnd), 'series_id');
+  const hasInverter = (readings.get(powerIds.solar) || []).length > 0 || (readings.get(powerIds.imp) || []).length > 0;
+
+  const meters = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'").all(siteId);
+  const meterFacts = {};
+  for (const m of meters) {
+    const metric = m.kind === 'meter_gas' ? 'gas_kwh' : m.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
+    meterFacts[m.kind] = readIntervals([seriesId('device', m.id, metric, 'octopus_meter')], winStart, winEnd);
+  }
+  const hasImportMeter = !!meterFacts.meter_import;
+  const evFacts = readIntervals([sid('ev_charge_kwh', 'octopus_kraken')], winStart, winEnd);
+  const carbonFacts = site.carbon_region != null
+    ? readIntervals([seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional')], winStart, winEnd) : [];
+  const tempByHour = new Map(readReadings([sid('outdoor_temp_c', 'open_meteo')], winStart - 3600, winEnd).map((r) => [r.ts, r.value]));
+  const solarFc = readForecastOfRecord(sid('solar_kwh', 'quartz'), winStart, winEnd, winEnd);
+  const pricing = loadPricing(siteId, winStart, winEnd);
+
+  const previous = new Map(db.prepare('SELECT slot_start, state, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
+    .all(siteId, winStart, winEnd).map((r) => [r.slot_start, r]));
+
+  let stock = [];                       // battery energy layers: { kwh, p } (p = pence per stored kWh)
+  let unknownStock = false;
+  const hhRows = [];
+  const dayRows = [];
+  const checks = [];
+
+  for (const date of daysBetween(fromDate, toDate)) {
+    const slots = slotsOfDay(tz, date).filter((s) => s + SLOT <= now);
+    if (!slots.length) continue;
+    const nSlotsDay = slotsOfDay(tz, date).length;
+
+    // ── 1 Align: fit each node's half-hours to the inverter's daily total ──
+    const fit = {};
+    for (const k of Object.keys(NODES)) {
+      const totalRow = (daily.get(dailyIds[k]) || []).find((f) => f.start_ts === dayBounds(tz, date)[0]);
+      const sum = slotsOfDay(tz, date).reduce((s, sl) => s + (aligned[k].energy.get(sl) || 0), 0);
+      fit[k] = 1;
+      if (totalRow && sum > 0.05 && totalRow.value > 0) {
+        const f = totalRow.value / sum;
+        if (f > 0.6 && f < 1.6 && date < today) fit[k] = f;
+        if (k === 'solar') checks.push([date, 'counter_fit_solar', Math.abs(f - 1) <= 0.1 ? 'pass' : 'warn', f, 0.1, `daily total ${totalRow.value} kWh vs integrated ${sum.toFixed(2)} kWh`]);
+      }
+    }
+    const e = (k, slot) => (aligned[k].energy.get(slot) || 0) * fit[k];
+
+    const day = { rows: [], mImp: 0, ctImpBoth: 0, home: 0, loss: 0, lossN: 0, rated: 0 };
+    for (const slot of slots) {
+      let q = 0;
+      const coverage = hasInverter ? (aligned.solar.cover.get(slot) || aligned.imp.cover.get(slot) || 0) / SLOT : 0;
+
+      // ── 2 Reconcile ──
+      const solar = hasInverter ? e('solar', slot) : 0;
+      const chg = hasInverter ? e('chg', slot) : 0;
+      const dis = hasInverter ? e('dis', slot) : 0;
+      const mImp = hasImportMeter ? slotSum(meterFacts.meter_import, slot) : null;
+      const mExp = meterFacts.meter_export ? slotSum(meterFacts.meter_export, slot) : null;
+      let imp = null; let exp = null; let impSrc = null; let expSrc = null;
+      if (mImp != null) { imp = mImp; impSrc = 'octopus_meter'; q |= QUALITY.MEASURED; }
+      else if (hasInverter && coverage > 0) { imp = e('imp', slot); impSrc = 'sunsynk_ct'; q |= QUALITY.FALLBACK; }
+      if (mExp != null) { exp = mExp; expSrc = 'octopus_meter'; }
+      else if (hasInverter && coverage > 0) { exp = e('exp', slot); expSrc = 'sunsynk_ct'; if (meterFacts.meter_export) q |= QUALITY.FALLBACK; }
+      const missing = imp == null;
+      if (hasInverter && coverage < 0.8) q |= QUALITY.PARTIAL;
+
+      let home = solar + (imp || 0) + dis - (exp || 0) - chg;
+      if (home < -0.02) q |= QUALITY.SUSPECT;
+      home = Math.max(0, home);
+      const measuredLoad = hasInverter && coverage > 0 ? e('load', slot) : null;
+      const loss = measuredLoad != null ? home - measuredLoad : null;
+      const meterVsCt = mImp != null && hasInverter && coverage > 0.5 ? mImp - e('imp', slot) : null;
+      if (meterVsCt != null) { day.mImp += mImp; day.ctImpBoth += e('imp', slot); }
+      const gas = meterFacts.meter_gas ? slotSum(meterFacts.meter_gas, slot) : null;
+      const ev = slotSum(evFacts, slot);
+
+      // ── 3 Allocate (slot-level priority) ──
+      const sToHome = Math.min(solar, home);
+      const sLeft = solar - sToHome;
+      const sToBatt = Math.min(sLeft, chg);
+      const sToGrid = Math.min(Math.max(0, sLeft - sToBatt), exp || 0);
+      const bToHome = Math.min(dis, Math.max(0, home - sToHome));
+      const bToGrid = Math.min(Math.max(0, dis - bToHome), Math.max(0, (exp || 0) - sToGrid));
+      const gToHome = Math.max(0, home - sToHome - bToHome);
+      // Grid charging is bounded by what was imported. Any charge left over came
+      // from the battery itself (charge and discharge in the same half-hour).
+      const gToBatt = Math.min(Math.max(0, chg - sToBatt), Math.max(0, (imp || 0) - gToHome));
+
+      // ── 4 Price ──
+      const pi = priceAt(pricing, 'meter_import', slot);
+      const pe = priceAt(pricing, 'meter_export', slot);
+      const pg = gas != null ? priceAt(pricing, 'meter_gas', slot) : null;
+      const impInc = pi?.unitEx != null ? pi.unitEx * (1 + pi.vat) : null;
+      const expRate = pe?.unitEx != null ? pe.unitEx * (1 + pe.vat) : 0;
+      if (impInc != null) { day.rated++; } else q |= QUALITY.CHECK_FAILED;
+
+      // Battery stock, first in, first out: draw what was discharged, then add what was charged.
+      let draw = dis; let drawCost = 0;
+      while (draw > 1e-9 && stock.length) {
+        const l = stock[0]; const take = Math.min(draw, l.kwh);
+        drawCost += take * l.p; l.kwh -= take; draw -= take;
+        if (l.kwh <= 1e-9) stock.shift();
+      }
+      if (draw > 1e-6) { unknownStock = true; q |= QUALITY.ESTIMATED; }
+      if (gToBatt > 0) stock.push({ kwh: gToBatt * CHARGE_EFFICIENCY, p: (impInc ?? 0) / CHARGE_EFFICIENCY });
+      if (sToBatt > 0) stock.push({ kwh: sToBatt * CHARGE_EFFICIENCY, p: 0 });   // decision D2/D4: stored solar valued at 0p
+
+      const standing = pi ? (pi.standingEx * (1 + pi.vat)) / nSlotsDay + (pg ? (pg.standingEx * (1 + pg.vat)) / nSlotsDay : 0) : 0;
+      const gasCost = gas != null && pg?.unitEx != null ? gas * pg.unitEx * (1 + pg.vat) : (gas != null ? null : 0);
+      const gToHomeCost = impInc != null ? gToHome * impInc : null;
+      const gToBattCost = impInc != null ? gToBatt * impInc : null;
+      const bToHomeCost = dis > 0 ? drawCost * (bToHome / dis) : 0;
+      const exportCredit = (sToGrid + bToGrid) * expRate;
+      const totalCost = impInc != null ? gToHomeCost + gToBattCost + standing + (gasCost || 0) - exportCredit : null;
+      const gridOnly = impInc != null ? home * impInc + standing + (gasCost || 0) : null;
+      const ci = slotSum(carbonFacts, slot) ?? null;
+      const carbonG = ci != null && imp != null ? imp * ci : null;
+      const carbonSaved = ci != null ? home * ci - (carbonG || 0) : null;
+      const temp = tempByHour.get(floorTo(slot, 3600)) ?? null;
+      const fcRows = solarFc.filter((f) => f.start_ts >= slot && f.start_ts < slot + SLOT);
+      const solarForecast = fcRows.length ? fcRows.reduce((s, f) => s + (f.value || 0), 0) : null;
+
+      // ── 5 Check and state ──
+      let state = 'final';
+      if (missing) state = 'missing';
+      else if ((hasImportMeter && mImp == null) || date >= today) state = 'provisional';
+      const prev = previous.get(slot);
+      if (prev && prev.state === 'final' && (Math.abs((prev.home ?? 0) - home) > 0.001 || Math.abs((prev.total_cost ?? 0) - (totalCost ?? 0)) > 0.01)) q |= QUALITY.RESTATED;
+
+      const row = {
+        site_id: siteId, slot_start: slot, local_date: date, state, quality: q,
+        solar, grid_import: imp, grid_export: exp, battery_charge: chg, battery_discharge: dis, home, loss, gas, ev,
+        soc_end: socBySlot.get(slot) ?? null,
+        solar_to_home: sToHome, solar_to_battery: sToBatt, solar_to_grid: sToGrid, battery_to_home: bToHome,
+        battery_to_grid: bToGrid, grid_to_home: gToHome, grid_to_battery: gToBatt,
+        import_rate_ex: pi?.unitEx ?? null, import_vat: pi?.vat ?? null, export_rate: pe?.unitEx ?? null,
+        gas_rate_ex: pg?.unitEx ?? null, gas_vat: pg?.vat ?? null,
+        grid_to_home_cost: gToHomeCost, grid_to_battery_cost: gToBattCost, battery_to_home_cost: bToHomeCost,
+        export_credit: exportCredit, standing_cost: standing, gas_cost: gasCost, total_cost: totalCost,
+        grid_only_cost: gridOnly, saving: gridOnly != null ? gridOnly - totalCost : null,
+        carbon_intensity: ci, carbon_g: carbonG, carbon_saved_g: carbonSaved, outdoor_temp: temp, solar_forecast: solarForecast,
+        meter_vs_ct: meterVsCt, rate_found: impInc != null ? 1 : 0,
+        lineage: JSON.stringify({ import: impSrc, export: expSrc, solar: hasInverter ? 'sunsynk_5min' : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, carbon: ci != null ? 'carbon_regional' : null, coverage: Math.round(coverage * 100) / 100 }),
+        method_version: METHOD_VERSION, built_at: now,
+      };
+      day.rows.push(row);
+      day.home += home;
+      if (loss != null) { day.loss += loss; day.lossN++; }
+    }
+    hhRows.push(...day.rows);
+
+    // ── Day row and checks ──
+    const R = day.rows;
+    const sum = (k) => R.reduce((s, r) => s + (r[k] ?? 0), 0);
+    const anyNull = (k) => R.some((r) => r[k] == null);
+    const solarSum = sum('solar');
+    const homeSum = sum('home');
+    const nightHome = R.filter((r) => { const h = zonedParts(tz, r.slot_start).hh; return h >= 1 && h < 5; }).map((r) => r.home * 2);
+    const socs = R.map((r) => r.soc_end).filter((v) => v != null);
+    const dayRow = {
+      site_id: siteId, local_date: date, slots: R.length,
+      slots_final: R.filter((r) => r.state === 'final').length, slots_provisional: R.filter((r) => r.state === 'provisional').length,
+      slots_missing: R.filter((r) => r.state === 'missing').length,
+      ...Object.fromEntries(['solar', 'grid_import', 'grid_export', 'battery_charge', 'battery_discharge', 'home', 'loss', 'gas', 'ev',
+        'solar_to_home', 'solar_to_battery', 'solar_to_grid', 'battery_to_home', 'battery_to_grid', 'grid_to_home', 'grid_to_battery',
+        'grid_to_home_cost', 'grid_to_battery_cost', 'battery_to_home_cost', 'export_credit', 'standing_cost', 'gas_cost',
+        'total_cost', 'grid_only_cost', 'saving', 'carbon_g', 'carbon_saved_g'].map((k) => [k, anyNull(k) && ['total_cost', 'grid_only_cost', 'saving'].includes(k) ? null : sum(k)])),
+      solar_forecast: R.some((r) => r.solar_forecast != null) ? sum('solar_forecast') : null,
+      self_consumption: solarSum > 0.01 ? (sum('solar_to_home') + sum('solar_to_battery')) / solarSum : null,
+      self_sufficiency: homeSum > 0.01 ? 1 - sum('grid_to_home') / homeSum : null,
+      blended_cost: homeSum > 0.01 && !anyNull('grid_to_home_cost') ? (sum('grid_to_home_cost') + sum('battery_to_home_cost')) / homeSum : null,
+      peak_import_kw: Math.max(0, ...R.map((r) => (r.grid_import ?? 0) * 2)),
+      base_load_kw: nightHome.length ? Math.min(...nightHome) : null,
+      soc_min: socs.length ? Math.min(...socs) : null, soc_max: socs.length ? Math.max(...socs) : null,
+      battery_cycles: site.battery_kwh ? sum('battery_discharge') / site.battery_kwh : null,
+      // Share of half-hours that are present, priced and pass the balance; finality is reported separately by state.
+      integrity: R.length ? R.filter((r) => r.state !== 'missing' && !(r.quality & (QUALITY.SUSPECT | QUALITY.CHECK_FAILED))).length / R.length : null,
+      method_version: METHOD_VERSION, built_at: now,
+    };
+    dayRows.push(dayRow);
+    if (day.mImp > 0.1) {
+      const diff = (day.mImp - day.ctImpBoth) / day.mImp;
+      checks.push([date, 'meter_vs_ct', Math.abs(diff) <= 0.05 ? 'pass' : 'warn', diff, 0.05, `meter ${day.mImp.toFixed(2)} kWh vs inverter CT ${day.ctImpBoth.toFixed(2)} kWh`]);
+    }
+    if (day.lossN && day.home > 0.1) {
+      const share = day.loss / day.home;
+      checks.push([date, 'energy_balance', Math.abs(share) <= 0.1 ? 'pass' : 'warn', share, 0.1, `losses and measurement error ${(share * 100).toFixed(1)}% of home use`]);
+    }
+    checks.push([date, 'rate_coverage', day.rated === R.length ? 'pass' : (day.rated === 0 ? 'fail' : 'warn'), R.length ? day.rated / R.length : 0, 1, `${day.rated} of ${R.length} half-hours priced`]);
+    checks.push([date, 'completeness', dayRow.slots_missing === 0 ? 'pass' : 'warn', R.length ? 1 - dayRow.slots_missing / R.length : 0, 1, `${dayRow.slots_final} final, ${dayRow.slots_provisional} provisional, ${dayRow.slots_missing} missing`]);
+  }
+  if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, 'Battery energy from before this window is valued at 0p']);
+
+  // ── Write serving rows (replace the window) ──
+  tx(() => {
+    db.prepare('DELETE FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').run(siteId, winStart, winEnd);
+    db.prepare('DELETE FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').run(siteId, fromDate, toDate);
+    db.prepare('DELETE FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').run(siteId, fromDate, toDate);
+    if (hhRows.length) {
+      const cols = Object.keys(hhRows[0]);
+      const ins = db.prepare(`INSERT INTO site_hh (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+      for (const r of hhRows) ins.run(...cols.map((c) => r[c] ?? null));
+    }
+    if (dayRows.length) {
+      const cols = Object.keys(dayRows[0]);
+      const ins = db.prepare(`INSERT INTO site_day (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+      for (const r of dayRows) ins.run(...cols.map((c) => (typeof r[c] === 'number' && !Number.isFinite(r[c]) ? null : r[c] ?? null)));
+    }
+    const insC = db.prepare('INSERT OR REPLACE INTO check_result (site_id, local_date, check_code, status, measured, tolerance, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const c of checks) insC.run(siteId, ...c);
+  });
+  return { days: dayRows.length, slots: hhRows.length };
+}
+
+// Rebuild everything a queued change touched, from the earliest dirty day to today.
+// The battery stock is carried day to day, so a rebuild always runs forward in order.
+export function processQueue() {
+  const pending = db.prepare('SELECT site_id, MIN(from_ts) AS from_ts FROM rebuild_queue WHERE done_at IS NULL GROUP BY site_id').all();
+  const out = [];
+  for (const p of pending) {
+    const site = db.prepare('SELECT * FROM site WHERE id = ?').get(p.site_id);
+    if (!site) continue;
+    const firstData = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id)?.d;
+    let from = localDate(site.timezone, p.from_ts);
+    if (firstData && firstData < from) from = firstData;
+    const res = buildSite(p.site_id, from, localDate(site.timezone, nowSec()));
+    db.prepare('UPDATE rebuild_queue SET done_at = ? WHERE site_id = ? AND done_at IS NULL').run(nowSec(), p.site_id);
+    out.push({ siteId: p.site_id, from, ...res });
+  }
+  return out;
+}

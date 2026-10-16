@@ -37,6 +37,7 @@ const ro = new ResizeObserver((entries) => {
    rows, height, unit, yFormat,
    pos: [{ key, label, color, get }], neg: [...],   // stacked bars above / below zero
    lines: [{ label, color, get, dash, step, area, width }],
+   bands: [{ color, lo, hi, opacity }],            // optional: shaded range between lo(row) and hi(row)
    tick(row, i) -> label | null, isForecast(row) -> bool, nowIndex,
    tip(row, i) -> html, onPick(row, i), yMin, yMax
  }
@@ -66,6 +67,7 @@ function draw(host, opts) {
     hi = Math.max(hi, pos.reduce((s, x) => s + Math.max(0, x.get(r) || 0), 0));
     lo = Math.min(lo, -neg.reduce((s, x) => s + Math.max(0, x.get(r) || 0), 0));
     for (const l of lines) { const v = l.get(r); if (v != null && Number.isFinite(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); } }
+    for (const b of opts.bands || []) for (const v of [b.lo(r), b.hi(r)]) if (v != null && Number.isFinite(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); }
   });
   if (opts.yMin != null) lo = Math.min(lo, opts.yMin);
   if (opts.yMax != null) hi = Math.max(hi, opts.yMax);
@@ -135,6 +137,26 @@ function draw(host, opts) {
   if (pos.length && gap) {
     // Thin surface gap between stacked segments.
     bars.querySelectorAll('rect').forEach((rect) => { rect.setAttribute('stroke', 'var(--surface)'); rect.setAttribute('stroke-width', '0.75'); });
+  }
+
+  // Ranges: shaded between low and high with thin edges, broken wherever either is missing.
+  for (const b of opts.bands || []) {
+    let run = [];
+    const flush = () => {
+      if (run.length > 1) {
+        const top = run.map(([px, , h]) => `${px.toFixed(1)},${y(h).toFixed(1)}`);
+        const bottom = run.map(([px, l]) => `${px.toFixed(1)},${y(l).toFixed(1)}`);
+        svgEl('path', { d: `M${top.join('L')}L${bottom.reverse().join('L')}Z`, fill: b.color, 'fill-opacity': b.opacity ?? 0.18, stroke: 'none' }, svg);
+        for (const edge of [top, bottom]) svgEl('path', { d: `M${edge.join('L')}`, fill: 'none', stroke: b.color, 'stroke-width': 1, 'stroke-opacity': 0.7 }, svg);
+      }
+      run = [];
+    };
+    rows.forEach((r, i) => {
+      const l = b.lo(r); const h = b.hi(r);
+      if (l == null || h == null || !Number.isFinite(l) || !Number.isFinite(h)) { flush(); return; }
+      run.push([x(i) + band / 2, l, h]);
+    });
+    flush();
   }
 
   // Lines

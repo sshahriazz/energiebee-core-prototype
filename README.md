@@ -36,6 +36,38 @@ npm start                  # open http://localhost:4100
 - **Port and file location:** `PORT` (default 4100) and `DB_FILE` (default `data/core.db`) in `.env`.
 - **To stop:** Ctrl+C in the terminal running it.
 
+### Running it unattended
+
+| Command | What it does |
+|---|---|
+| `npm run serve` | Runs the server under a supervisor (`scripts/supervise.js`). The supervisor restarts the server if it exits (1 s, 2 s, 4 s … up to 60 s apart), and also if it stops answering `/api/status` three minutes in a row. Output goes to `data/logs/server.log`, rotated at 10 MB. |
+| `npm run service:install` | macOS only. Installs the supervisor as a login service (launchd), so it starts when you log in and after a reboot. Run `nvm use 22` first; the service uses that Node. |
+| `npm run service:status` / `service:uninstall` | Shows whether the service is loaded, with the last log lines / removes it. |
+
+What happens when something fails:
+- **A provider is down or slow:** each request is retried twice (after 1 s and 4 s, or as long as the provider's Retry-After asks). Only network errors, timeouts, 429 and 5xx are retried; a 401 (bad key) fails at once. A step that still fails is recorded, and the other providers carry on.
+- **The server or a provider was down for a while:** each provider's next fetch reaches back to its last successful sync, less a day of overlap, so the gap is filled in. How far back it reaches: Sunsynk 89 days and Open-Meteo 92 (the most each provider serves), NESO carbon 60 and Octopus 365 (limits set here to keep one catch-up sync reasonable).
+- **A sync was cut short:** it is marked `interrupted` at the next start. Facts are saved step by step, and the next sync fetches the same window again.
+
+### Tests
+
+```bash
+npm test
+```
+
+25 tests, about 1 second, using Node's built-in test runner. Each test file uses its own throwaway database, so `data/core.db` is never changed.
+- **Unit tests:** HTTP retry rules (against a local server), clock changes, Sunsynk's repeated and missing hour, and resuming after an outage.
+- **Integration tests** (on a copy of `data/core.db`; skipped if there is none):
+  - a partial rebuild matches a full rebuild exactly;
+  - every half-hour balances, and its bill adds up;
+  - the battery stock follows the measured charge level;
+  - a provisional day turns final when meter readings arrive;
+  - gas waits for its calorific value, then fills in;
+  - Quartz is used or refused according to how close it is to actual output;
+  - forecast accuracy scoring works.
+
+  Where a test needs data the providers haven't sent yet, it writes stand-in values into the copy only.
+
 ## Connect a real home
 
 Fill these in `.env` and restart:

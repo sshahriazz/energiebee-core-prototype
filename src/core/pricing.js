@@ -2,6 +2,7 @@
 // covering the slot (home-specific rows win) -> VAT for the fuel, direction and date.
 import { db } from '../db/db.js';
 import { zonedParts, localDate, addDays } from './time.js';
+import { inForce } from './facts.js';
 
 // The account API does not say how the customer pays, so a price is only used when
 // it does not depend on it: a row for any payment method, or rows that all agree.
@@ -14,7 +15,7 @@ export function loadPricing(siteId, fromTs, toTs) {
   const tariffIds = [...new Set(agreements.map((a) => a.tariff_id))];
   const rates = tariffIds.length ? db.prepare(
     `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})
-       AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
+       AND ${inForce()} AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
        AND (site_id IS NULL OR site_id = ?)
      ORDER BY valid_from`).all(...tariffIds, toTs, fromTs - 86400 * 2, siteId) : [];
   const vat = db.prepare('SELECT * FROM vat_rate').all();
@@ -23,7 +24,7 @@ export function loadPricing(siteId, fromTs, toTs) {
     `SELECT f.start_ts, f.end_ts FROM interval_fact f JOIN series s ON s.id = f.series_id
      JOIN source src ON src.id = s.source_id JOIN metric m ON m.id = s.metric_id
      WHERE s.subject_kind = 'site' AND s.subject_id = ? AND src.code = 'octopus_kraken' AND m.code = 'ev_charge_kwh'
-       AND f.superseded_at IS NULL AND f.end_ts > ? AND f.start_ts < ? ORDER BY f.start_ts`).all(String(siteId), fromTs - 86400, toTs);
+       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ? ORDER BY f.start_ts`).all(String(siteId), fromTs - 86400, toTs);
   const site = db.prepare('SELECT timezone, gsp_region FROM site WHERE id = ?').get(siteId);
   const tz = site?.timezone || 'Europe/London';
   return { agreements, rates, vat, dispatches, tz, iogWindow: learnIogWindow(site?.gsp_region, tz), dispatchAllowed: dispatchAllowance(dispatches, tz) };
@@ -60,7 +61,7 @@ export function learnIogWindow(region, tz) {
   if (!region) return null;
   const rows = db.prepare(`SELECT r.tariff_id, r.valid_from, r.valid_to, r.price_ex_vat, t.tariff_code FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
     WHERE t.structure = 'iog' AND t.region = ? AND r.component = 'unit' AND r.register = 'single'
-      AND r.superseded_at IS NULL AND r.valid_to IS NOT NULL ORDER BY r.valid_from DESC LIMIT 500`).all(region);
+      AND ${inForce('r')} AND r.valid_to IS NOT NULL ORDER BY r.valid_from DESC LIMIT 500`).all(region);
   if (!rows.length) return null;
   const minByTariff = new Map();
   for (const r of rows) minByTariff.set(r.tariff_id, Math.min(minByTariff.get(r.tariff_id) ?? Infinity, r.price_ex_vat));

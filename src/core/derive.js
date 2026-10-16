@@ -2,6 +2,7 @@
 import { db } from '../db/db.js';
 import { seriesId } from './facts.js';
 import { nowSec } from './time.js';
+import { setAttribute } from './attributes.js';
 
 // Usable battery capacity as the battery behaves: energy discharged ÷ the drop in
 // charge level, over consecutive 5-minute samples where it only discharged.
@@ -31,7 +32,8 @@ export function measureBatteryCapacity(siteId, days = 30) {
   // The core mostly uses capacity to turn charge level (%) into kWh, so the measured kWh per
   // 1% is the right figure when the installer's value is not configured. The battery's own
   // Ah × voltage reading drifts with the voltage at the moment it is read (10.3–10.7 kWh seen).
-  if (!process.env.BATTERY_KWH && measured) db.prepare('UPDATE site SET battery_kwh = ? WHERE id = ?').run(measured.kwhPer100, siteId);
+  // Recorded as the 'measured' source; an installer value from .env still takes priority.
+  if (measured) setAttribute(siteId, 'battery_kwh', measured.kwhPer100, 'measured', `${measured.energyKwh} kWh discharged over ${measured.socPoints} points of charge drop, ${days} days`);
   return meta.batteryMeasured;
 }
 

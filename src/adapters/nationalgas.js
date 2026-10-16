@@ -4,7 +4,7 @@
 // The LDZ comes from Octopus (Kraken gasMeterPoints.ldz); the data item id is
 // looked up by its published name, "Calorific Value, LDZ(xx)".
 import { db } from '../db/db.js';
-import { fetchJson } from '../core/http.js';
+import { fetchJson, fetchText } from '../core/http.js';
 import { landRaw, quarantine, seriesId, putIntervals, QUALITY } from '../core/facts.js';
 import { localDate, localToUtc, addDays } from '../core/time.js';
 
@@ -50,8 +50,8 @@ export async function syncGasCv(site, fromTs, toTs) {
   const from = addDays(localDate(site.timezone, fromTs), -1);
   const to = localDate(site.timezone, toTs);
   const url = `${BASE}/find-gas-data-download?applicableFor=Y&dateFrom=${from}&dateTo=${to}&dateType=GASDAY&latestFlag=Y&ids=${id}&type=CSV`;
-  const res = await fetch(url, { headers: { 'user-agent': 'EnergieBee core prototype' } });
-  const text = await res.text();
+  const res = await fetchText(url, { headers: { 'user-agent': 'EnergieBee core prototype' }, timeoutMs: 60000 });
+  const text = res.text;
   if (!res.ok || !text.startsWith('Applicable At')) {
     quarantine({ source: 'national_gas_cv', siteId: site.id, request: { url }, body: text.slice(0, 2000), reason: `HTTP ${res.status} or unexpected format` });
     throw new Error(`National Gas CV download failed (HTTP ${res.status})`);

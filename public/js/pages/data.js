@@ -7,7 +7,7 @@ import { init, card } from '../layout.js';
 const QUALITY = [[1, 'measured'], [2, 'fallback source'], [4, 'interpolated'], [8, 'estimated'], [16, 'partial coverage'], [32, 'suspect'], [64, 'check failed'], [128, 'restated']];
 const CHECKS = ['completeness', 'rate_coverage', 'energy_balance', 'meter_vs_ct', 'counter_fit_solar'];
 const CHECK_NAMES = { completeness: 'Complete', rate_coverage: 'Priced', energy_balance: 'Balance', meter_vs_ct: 'Meter vs clamp', counter_fit_solar: 'Counter fit' };
-const badge = (status, text = status) => `<span class="badge ${{ pass: 'good', ok: 'good', final: 'good', warn: 'warn', partial: 'warn', provisional: 'warn', fail: 'bad', error: 'bad', missing: 'bad' }[status] || ''}">${esc(text)}</span>`;
+const badge = (status, text = status) => `<span class="badge ${{ pass: 'good', ok: 'good', final: 'good', warn: 'warn', partial: 'warn', provisional: 'warn', fail: 'bad', error: 'bad', missing: 'bad', interrupted: 'warn' }[status] || ''}">${esc(text)}</span>`;
 
 async function showRaw(id) {
   const dlg = document.getElementById('raw-dialog');

@@ -12,7 +12,10 @@ import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, SLOT, floorTo, zonedParts } from './core/time.js';
 import { seriesId, readReadings } from './core/facts.js';
 import { loadPricing, priceAt } from './core/pricing.js';
-import { ensureEnvSite, syncSite, startScheduler, isSyncing } from './jobs/sync.js';
+import { ensureEnvSite, syncSite, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
+import { runMaintenance } from './core/maintenance.js';
+import { trustFor } from './core/trust.js';
+import { attributeHistory } from './core/attributes.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -39,6 +42,14 @@ function periodRange(s, period, from, to) {
 
 // ───────────── Homes and sync ─────────────
 
+// Liveness for the supervisor: answers only if the process is responsive and the database
+// can be read. Also reports the last sync, so a stuck scheduler is visible.
+const startedAt = nowSec();
+app.get('/api/status', (req, res) => {
+  const last = db.prepare('SELECT started_at, finished_at, status FROM sync_run ORDER BY id DESC LIMIT 1').get();
+  res.json({ ok: true, uptimeS: nowSec() - startedAt, method: METHOD_VERSION, lastSync: last ?? null });
+});
+
 app.get('/api/sites', (req, res) => {
   const sites = db.prepare('SELECT * FROM site ORDER BY is_demo, id').all();
   res.json(sites.map((s) => ({
@@ -63,7 +74,7 @@ app.post('/api/sites/:id/rebuild', (req, res) => {
   if (!first) return res.json({ days: 0 });
   const before = db.prepare('SELECT ROUND(SUM(total_cost), 6) AS c, ROUND(SUM(home), 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
   const t0 = Date.now();
-  const r = buildSite(s.id, first, localDate(s.timezone, nowSec()));
+  const r = buildSite(s.id, first, localDate(s.timezone, nowSec()), { reason: 'full rebuild requested' });
   const after = db.prepare('SELECT ROUND(SUM(total_cost), 6) AS c, ROUND(SUM(home), 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
   res.json({ ...r, ms: Date.now() - t0, method: METHOD_VERSION, before, after });
 });
@@ -159,6 +170,48 @@ function summarise(s, from, to, before = 9000000000) {
   };
 }
 
+// ───────────── Trust ─────────────
+
+// Coverage, arrival, cross-checks, balance, revisions, corrections and system details for a period.
+app.get('/api/sites/:id/trust', (req, res) => {
+  const s = site(req);
+  const { from, to } = periodRange(s, req.query.period || '7d', req.query.from, req.query.to);
+  res.json(trustFor(s.id, from, to));
+});
+
+// Every recorded version of a day (or of all days in a period), oldest first.
+app.get('/api/sites/:id/revisions', (req, res) => {
+  const s = site(req);
+  const { from, to } = req.query.date ? { from: req.query.date, to: req.query.date } : periodRange(s, req.query.period || '30d', req.query.from, req.query.to);
+  const rows = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, id').all(s.id, from, to)
+    .map((r) => ({ ...r, checks: JSON.parse(r.checks || '{}'), inputs: JSON.parse(r.inputs || '{}'), changed: r.changed ? JSON.parse(r.changed) : null }));
+  res.json({ from, to, revisions: rows, attributes: attributeHistory(s.id) });
+});
+
+// A day rebuilt as the core knew it at `at` (unix seconds), next to how it stands now.
+// Nothing is written. Every fact, price and system detail is read as it was at that moment.
+app.get('/api/sites/:id/asof', (req, res) => {
+  const s = site(req);
+  const date = String(req.query.date || '');
+  const at = Number(req.query.at);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(at)) return res.status(400).json({ error: 'date=YYYY-MM-DD and at=<unix seconds> are required' });
+  const first = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(s.id).d;
+  if (!first || date < first) return res.status(404).json({ error: 'no data for that day' });
+  const [dayStart] = dayBounds(s.timezone, date);
+  if (at <= dayStart) return res.json({ date, at, known: false, note: 'the day had not started at that moment' });
+  const t0 = Date.now();
+  const then = buildSite(s.id, first, date, { asOf: Math.min(at, nowSec()), dryRun: true });
+  const pick = (r) => ({ slot_start: r.slot_start, state: r.state, solar: r.solar, home: r.home, grid_import: r.grid_import, grid_export: r.grid_export, gas: r.gas, total_cost: r.total_cost, import_source: JSON.parse(r.lineage || '{}').import ?? null });
+  res.json({
+    date, at, ms: Date.now() - t0, method: METHOD_VERSION, known: true,
+    then: { day: then.dayRows.find((d) => d.local_date === date) ?? null, hh: then.hhRows.filter((r) => r.local_date === date).map(pick),
+      checks: then.checks.filter((c) => c[0] === date).map(([, code, status, measured, tolerance, detail]) => ({ code, status, measured, tolerance, detail })), inputs: then.inputs[date] ?? null },
+    now: { day: db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date = ?').get(s.id, date) ?? null,
+      hh: db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND local_date = ? ORDER BY slot_start').all(s.id, date).map(pick),
+      checks: db.prepare('SELECT check_code AS code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date = ?').all(s.id, date) },
+  });
+});
+
 app.get('/api/sites/:id/summary', (req, res) => {
   const s = site(req);
   const { from, to } = periodRange(s, req.query.period, req.query.from, req.query.to);
@@ -169,6 +222,12 @@ app.get('/api/sites/:id/summary', (req, res) => {
     // "Today so far" is compared with yesterday up to the same time of day.
     previous: summarise(s, addDays(from, -days), addDays(to, -days), req.query.period === 'today' || (!req.query.period && !req.query.from) ? nowSec() - 86400 : undefined),
     previousLabel: req.query.period === 'today' || (!req.query.period && !req.query.from) ? 'same time yesterday' : 'previous period',
+    // What the figures rest on: half-hour states and check results for the same days.
+    basis: {
+      ...db.prepare(`SELECT COUNT(*) AS halfHours, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing
+        FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to),
+      checks: Object.fromEntries(db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? GROUP BY status').all(s.id, from, to).map((r) => [r.status, r.n])),
+    },
   });
 });
 
@@ -345,6 +404,14 @@ app.get('/api/sites/:id/everything', (req, res) => {
 });
 
 app.get('/api/sites/:id/forecast', (req, res) => res.json(forecastSite(site(req).id, Math.min(Number(req.query.hours) || 48, 48))));
+// Solar expected for the weather that happened (stored Open-Meteo sunlight × this home's own
+// response, fitted leaving each day out), per past half-hour and day, against actual output.
+app.get('/api/sites/:id/solar-expected', async (req, res) => {
+  const s = site(req);
+  const { from, to } = periodRange(s, req.query.period, req.query.from, req.query.to);
+  const { solarExpected } = await import('./core/solar-expected.js');
+  res.json(solarExpected(s.id, from, to));
+});
 app.get('/api/sites/:id/insights', (req, res) => res.json(insightsFor(site(req).id)));
 
 // EV sessions: consecutive half-hours with EV charging, priced at the home's cost of energy in each slot.
@@ -396,7 +463,9 @@ app.get('/api/sites/:id/evidence', (req, res) => {
   const vat = db.prepare('SELECT * FROM vat_rate WHERE valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').all(slot, slot);
   const rawIds = [...new Set([...facts, ...rates].map((f) => f.raw_id).filter(Boolean))];
   const raws = rawIds.length ? db.prepare(`SELECT p.id, src.code AS source, p.request, p.fetched_at, p.status, p.file FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.id IN (${rawIds.map(() => '?').join(',')})`).all(...rawIds) : [];
-  res.json({ row: { ...row, lineage: JSON.parse(row.lineage || '{}') }, facts, rates, vat, raws, timezone: s.timezone });
+  const checks = db.prepare('SELECT check_code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date = ? ORDER BY check_code').all(s.id, row.local_date);
+  const revisions = db.prepare('SELECT COUNT(*) AS n, MAX(revised_at) AS last FROM site_day_revision WHERE site_id = ? AND local_date = ?').get(s.id, row.local_date);
+  res.json({ row: { ...row, lineage: JSON.parse(row.lineage || '{}') }, facts, rates, vat, raws, checks, revisions, timezone: s.timezone });
 });
 
 app.get('/api/raw/:rawId', (req, res) => {
@@ -489,12 +558,25 @@ app.use((err, req, res, next) => {
 
 // ───────────── Start ─────────────
 
+closeInterruptedRuns();
 const envSite = ensureEnvSite();
+const maintenance = runMaintenance();
+if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
 const port = Number(process.env.PORT) || 4100;
-app.listen(port, () => {
+const server = app.listen(port, () => {
   const minutes = startScheduler();
   console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
   for (const { id, name } of db.prepare('SELECT id, name FROM site').all()) {
     syncSite(id).then((r) => console.log(`synced ${name}: ${r.ok ? 'ok' : 'partial'}`)).catch((err) => console.error(`sync ${name}:`, err.message));
   }
 });
+
+// Stop cleanly when asked (Ctrl+C, the supervisor, launchd): stop taking requests and close
+// the database. SQLite's write-ahead log keeps it consistent even if a write was cut short.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    server.close();
+    try { db.close(); } catch { /* already closed */ }
+    process.exit(0);
+  });
+}

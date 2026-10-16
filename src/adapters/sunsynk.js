@@ -8,6 +8,7 @@ import { db } from '../db/db.js';
 import { fetchJson } from '../core/http.js';
 import { landRaw, quarantine, seriesId, putReadings, putIntervals, QUALITY } from '../core/facts.js';
 import { localToUtcAll, dayBounds, floorTo, nowSec } from '../core/time.js';
+import { setAttribute } from '../core/attributes.js';
 
 const BASE = 'https://api.sunsynk.net';
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
@@ -149,7 +150,8 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
   const kwp = Number(plant.json.data?.totalPower) || null;
   const lat = Number(plant.json.data?.lat) || null;
   const lon = Number(plant.json.data?.lon) || null;
-  db.prepare('UPDATE site SET timezone = ?, pv_kwp = COALESCE(pv_kwp, ?), lat = COALESCE(lat, ?), lon = COALESCE(lon, ?) WHERE id = ?').run(tz, kwp, lat, lon, site.id);
+  db.prepare('UPDATE site SET timezone = ?, lat = COALESCE(lat, ?), lon = COALESCE(lon, ?) WHERE id = ?').run(tz, lat, lon, site.id);
+  if (kwp) setAttribute(site.id, 'pv_kwp', kwp, 'provider', `Sunsynk plant ${plantId} record (totalPower)`);
 
   const out = { plantId, days: 0, months: 0, live: 0 };
   for (const date of dates) {
@@ -181,7 +183,7 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
         const volts = Number(b.json.data?.voltage) || 0;
         if (ah > 0 && volts > 0) {
           const kwh = Math.round((ah * volts) / 100) / 10;
-          db.prepare('UPDATE site SET battery_kwh = ? WHERE id = ?').run(kwh, site.id);
+          setAttribute(site.id, 'battery_kwh', kwh, 'provider', `battery reading: ${ah} Ah × ${volts} V`);
           const meta = JSON.parse(conn?.meta || '{}');
           meta.batteryCapacity = { kwh, ah, volts, field: Number(b.json.data?.correctCap) ? 'correctCap' : 'capacity', rawId, at: nowSec() };
           db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'sunsynk'").run(JSON.stringify(meta), site.id);

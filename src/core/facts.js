@@ -145,11 +145,30 @@ export function markDirty(siteId, fromTs, toTs, reason) {
   insDirty.run(siteId, fromTs, toTs, reason, nowSec());
 }
 
-// Readings, intervals and forecasts for a set of series over a window (current versions only).
+// "As known at": while set (ms), every fact read returns the version that was in force at
+// that moment instead of the current one. Facts are never overwritten (a new version supersedes
+// the old one), so this reproduces exactly what the core could see then. Used to rebuild a day
+// as it stood at an earlier time; null (normal running) reads current versions.
+let knownAt = null;
+export function withKnownAt(ms, fn) {
+  const prev = knownAt;
+  knownAt = ms == null ? null : Math.floor(Number(ms));
+  try { return fn(); } finally { knownAt = prev; }
+}
+export const knownAtMs = () => knownAt;
+// SQL condition for "the version in force" on a fact table with recorded_at / superseded_at (ms).
+// The moment is inlined as an integer, never user text.
+export function inForce(alias = '') {
+  const a = alias ? `${alias}.` : '';
+  if (knownAt == null || !Number.isFinite(knownAt)) return `${a}superseded_at IS NULL`;
+  return `${a}recorded_at <= ${knownAt} AND (${a}superseded_at IS NULL OR ${a}superseded_at > ${knownAt})`;
+}
+
+// Readings, intervals and forecasts for a set of series over a window (versions in force).
 export function readReadings(seriesIds, from, to) {
   if (!seriesIds.length) return [];
   const q = `SELECT series_id, ts, value, quality, raw_id FROM reading
-             WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND ts >= ? AND ts < ? AND superseded_at IS NULL
+             WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND ts >= ? AND ts < ? AND ${inForce()}
              ORDER BY ts`;
   return db.prepare(q).all(...seriesIds, from, to);
 }
@@ -157,7 +176,7 @@ export function readReadings(seriesIds, from, to) {
 export function readIntervals(seriesIds, from, to) {
   if (!seriesIds.length) return [];
   const q = `SELECT series_id, start_ts, end_ts, value, quality, raw_id FROM interval_fact
-             WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND end_ts > ? AND start_ts < ? AND superseded_at IS NULL
+             WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND end_ts > ? AND start_ts < ? AND ${inForce()}
              ORDER BY start_ts`;
   return db.prepare(q).all(...seriesIds, from, to);
 }

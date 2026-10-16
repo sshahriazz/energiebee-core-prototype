@@ -9,7 +9,12 @@
   },
   "scripts": {
     "start": "node --env-file=.env --disable-warning=ExperimentalWarning src/server.js",
+    "serve": "node scripts/supervise.js",
     "dev": "node --env-file=.env --disable-warning=ExperimentalWarning --watch src/server.js",
+    "test": "node --test --disable-warning=ExperimentalWarning test/*.test.js",
+    "service:install": "sh scripts/service.sh install",
+    "service:uninstall": "sh scripts/service.sh uninstall",
+    "service:status": "sh scripts/service.sh status",
     "reset": "rm -f data/core.db data/core.db-wal data/core.db-shm && rm -rf data/raw/*"
   },
   "dependencies": {

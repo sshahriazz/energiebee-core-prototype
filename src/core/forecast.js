@@ -149,7 +149,8 @@ function calibrateQuartz(hist, wholeDays, quartzBySlot) {
 // This home's response to sunlight, for when Quartz cannot be used: per local hour of
 // day, a least-squares fit through the origin of actual solar against horizontal
 // sunlight energy. Bright half-hours weigh most, so dawn and dusk need no cut-off.
-function learnSunlight(hist, sun, wholeDays) {
+// Also used by solar-expected.js for what the panels should have made in past weather.
+export function learnSunlight(hist, sun, wholeDays) {
   const pairs = hist.filter((r) => r.solar != null && sun.get(r.slot_start) > 0)
     .map((r) => ({ h: r.k >> 1, a: r.solar, g: sun.get(r.slot_start), date: r.local_date }));
   const days = new Set(pairs.map((p) => p.date)).size;

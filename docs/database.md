@@ -555,7 +555,7 @@ erDiagram
     INTEGER site_id FK
     INTEGER started_at
     INTEGER finished_at
-    TEXT status "running, ok, partial, error"
+    TEXT status "running, ok, partial, error, interrupted"
     TEXT detail "JSON step log"
   }
 ```
@@ -708,7 +708,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | | |
 |---|---|
 | Purpose | Instant values: Sunsynk 5-minute power and charge level, live flow, hourly temperature and cloud. |
-| Keys and constraints | PRIMARY KEY (`series_id`, `ts`, `recorded_at`), `WITHOUT ROWID`; partial index **`reading_current`** (`series_id`, `ts`) WHERE `superseded_at IS NULL`; `series_id` → `series`; `raw_id` → `raw_payload` |
+| Keys and constraints | PRIMARY KEY (`series_id`, `ts`, `recorded_at`), `WITHOUT ROWID` (the partial index `reading_current` was dropped: it was never used); `series_id` → `series`; `raw_id` → `raw_payload` |
 | Written by | `facts.js` `putReadings`, called by `sunsynk.js` `normaliseDay` and `normaliseFlow` and by `openmeteo.js` `syncWeather` |
 | Read by | `facts.js` `readReadings` (build, forecast, Quartz's live generation, `/now`); `derive.js` `measureBatteryCapacity`; `server.js` (`/evidence`, `/health`) |
 | Rows now | 29,158, of which 40 are superseded versions |
@@ -799,7 +799,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 
 | | |
 |---|---|
-| Purpose | One row per sync: start, finish, `status` (`running`, `ok`, `partial`, `error`), and `detail`, a JSON list of each step's result (time taken, counts, errors). |
+| Purpose | One row per sync: start, finish, `status` (`running`, `ok`, `partial`, `error`, or `interrupted` when a crash or restart cut it short; set at the next start), and `detail`, a JSON list of each step's result (time taken, counts, errors). |
 | Keys and constraints | `id` PRIMARY KEY; `site_id` → `site` ON DELETE CASCADE |
 | Written by | `sync.js` `syncSite`: insert at start, update at the end |
 | Read by | `server.js` (`/api/sites` latest run, `/health` last 8, `/everything` events in the period) |
@@ -1099,7 +1099,7 @@ The design relies on these features:
 
 | Relied on | Where | Replacement in a server database |
 |---|---|---|
-| Partial indexes (`WHERE superseded_at IS NULL`) | `reading_current`, `interval_current`, `rate_current` | PostgreSQL supports partial indexes directly. A database without them needs a full index, or the current rows in a separate table. |
+| Partial indexes (`WHERE superseded_at IS NULL`) | `interval_current`, `rate_current` | PostgreSQL supports partial indexes directly. A database without them needs a full index, or the current rows in a separate table. |
 | Triggers as an overlap check | `rate_no_overlap`, `agreement_no_overlap` | PostgreSQL exclusion constraints on a time range (`EXCLUDE USING gist`), as the comment in `schema.sql` says. Elsewhere, triggers or a check in the writing code inside the same transaction. |
 | Append-only versions with `recorded_at` and `superseded_at` in milliseconds | all fact tables | Works as is. A timestamp type with time zone can replace the epoch integers. Two versions written in the same millisecond would collide on the key, as now. |
 | `WITHOUT ROWID` tables (rows stored in primary-key order) | `reading`, `interval_fact`, `forecast_fact`, `site_hh`, `site_day`, `check_result` | Ordinary tables with a primary-key index. Range partitioning by time, and by home once facts carry one (7.1), keeps one home's recent data together. |

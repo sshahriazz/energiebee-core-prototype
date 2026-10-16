@@ -5,8 +5,13 @@
 //   4 Price      rate per slot, VAT, cost per flow, battery stock valued first in, first out
 //   5 Check      balance, meter vs CT, counter fit, rate coverage; state per slot
 // Deterministic: the same facts and METHOD_VERSION always give the same rows.
+//
+// buildSite(site, from, to, { asOf }) rebuilds as the core stood at an earlier moment: every
+// fact, price and system detail is read as it was known then, and "now" is that moment.
+// With { dryRun } nothing is written and the rows are returned (for comparing with today's).
 import { db, tx } from '../db/db.js';
-import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY } from './facts.js';
+import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
+import { attributeAt } from './attributes.js';
 import { loadPricing, priceAt } from './pricing.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays } from './time.js';
 
@@ -49,11 +54,29 @@ function slotSum(intervals, slot) {
   return v;
 }
 
-export function buildSite(siteId, fromDate, toDate) {
+export function buildSite(siteId, fromDate, toDate, opts = {}) {
+  return opts.asOf != null ? withKnownAt(opts.asOf * 1000, () => build(siteId, fromDate, toDate, opts)) : build(siteId, fromDate, toDate, opts);
+}
+
+// Counter-fit check codes, one per inverter daily counter.
+const FIT_CHECK = { solar: 'counter_fit_solar', load: 'counter_fit_load', imp: 'counter_fit_import', exp: 'counter_fit_export', chg: 'counter_fit_charge', dis: 'counter_fit_discharge' };
+// Energy balance: the day's inverter loss against this home's own typical loss.
+const LOSS_HISTORY_DAYS = 30; const LOSS_MIN_DAYS = 7;
+const median = (xs) => { const a = [...xs].sort((x, y) => x - y); const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+// Fields a revision compares, with the smallest change that counts.
+const REVISION_FIELDS = [['slots_final', 0], ['slots_provisional', 0], ['slots_missing', 0], ['solar', 0.001], ['home', 0.001], ['grid_import', 0.001],
+  ['grid_export', 0.001], ['gas', 0.001], ['total_cost', 0.01], ['saving', 0.01]];
+
+function build(siteId, fromDate, toDate, opts) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
   const tz = site.timezone;
-  const now = nowSec();
+  const asOf = opts.asOf ?? null;
+  const now = asOf ?? nowSec();
+  // Battery size as known then; before details were versioned, only today's value exists.
+  const battAttr = asOf != null ? attributeAt(siteId, 'battery_kwh', asOf * 1000) : null;
+  const batteryKwh = asOf != null ? (battAttr?.value ?? site.battery_kwh) : site.battery_kwh;
+  const batterySource = asOf != null ? (battAttr ? battAttr.source : 'current value (no earlier record)') : (attributeAt(siteId, 'battery_kwh')?.source ?? null);
   const today = localDate(tz, now);
   if (toDate > today) toDate = today;
   if (fromDate > toDate) return { days: 0 };
@@ -105,8 +128,8 @@ export function buildSite(siteId, fromDate, toDate) {
   // was used (panel angles known), otherwise our own stored forecast.
   const solarFc = [];
   for (const source of ['quartz', 'core_forecast']) {
-    const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
-      .all(sid('solar_kwh', source), winStart, winEnd);
+    const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts AND issued_at <= ?')
+      .all(sid('solar_kwh', source), winStart, winEnd, now);
     const best = new Map();
     for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
     const covered = new Set(solarFc.map((f) => floorTo(f.start_ts, SLOT)));
@@ -114,22 +137,34 @@ export function buildSite(siteId, fromDate, toDate) {
   }
   const pricing = loadPricing(siteId, winStart, winEnd);
 
-  const previous = new Map(db.prepare('SELECT slot_start, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
+  // Rows as stored now: for the "revised" flag and the revision log. An as-of rebuild has no "before".
+  const previous = asOf != null ? new Map() : new Map(db.prepare('SELECT slot_start, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
     .all(siteId, winStart, winEnd).map((r) => [r.slot_start, r]));
+  const previousDays = asOf != null ? new Map() : new Map(db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(siteId, fromDate, toDate).map((r) => [r.local_date, r]));
+  const previousChecks = new Map();
+  if (asOf == null) {
+    for (const c of db.prepare('SELECT local_date, check_code, status FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(siteId, fromDate, toDate)) {
+      previousChecks.set(c.local_date, { ...(previousChecks.get(c.local_date) || {}), [c.check_code]: c.status });
+    }
+  }
+  // This home's daily inverter loss before the window (completed days), for the balance check.
+  const lossHistory = asOf != null ? [] : db.prepare(`SELECT solar_to_loss + battery_to_loss + grid_to_loss AS loss FROM site_day WHERE site_id = ? AND local_date < ? AND local_date >= ?
+      AND solar_to_loss + battery_to_loss + grid_to_loss IS NOT NULL AND solar_to_loss + battery_to_loss + grid_to_loss != 0 ORDER BY local_date`)
+    .all(siteId, fromDate, addDays(fromDate, -LOSS_HISTORY_DAYS)).map((r) => r.loss);
 
   // Battery round trip for each day, measured from the inverter's own daily counters over
   // the 30 days ending that day: energy out ÷ (energy in − change in stored energy).
   // It depends only on facts up to that day, so a day gets the same value whether it is
   // rebuilt alone or as part of a full rebuild. Without enough data no loss is applied (1.0).
-  const counterSum = db.prepare('SELECT SUM(value) AS v FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND start_ts >= ? AND start_ts < ?');
-  const firstSoc = db.prepare('SELECT value FROM reading WHERE series_id = ? AND superseded_at IS NULL AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1');
-  const lastSoc = db.prepare('SELECT value FROM reading WHERE series_id = ? AND superseded_at IS NULL AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1');
+  const counterSum = db.prepare(`SELECT SUM(value) AS v FROM interval_fact WHERE series_id = ? AND ${inForce()} AND start_ts >= ? AND start_ts < ?`);
+  const firstSoc = db.prepare(`SELECT value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1`);
+  const lastSoc = db.prepare(`SELECT value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1`);
   const efficiencyFor = (date) => {
     const [a] = dayBounds(tz, addDays(date, -29)); const [, b] = dayBounds(tz, date);
     const inKwh = counterSum.get(dailyIds.chg, a, b)?.v || 0; const outKwh = counterSum.get(dailyIds.dis, a, b)?.v || 0;
     const s0 = firstSoc.get(socId, a, b)?.value; const s1 = lastSoc.get(socId, a, b)?.value;
-    if (!site.battery_kwh || s0 == null || s1 == null || inKwh <= 5) return { eff: 1, note: 'not enough battery data to measure; no loss applied' };
-    const stored = ((s1 - s0) / 100) * site.battery_kwh; const net = inKwh - stored; const r = net > 0 ? outKwh / net : null;
+    if (!batteryKwh || s0 == null || s1 == null || inKwh <= 5) return { eff: 1, note: 'not enough battery data to measure; no loss applied' };
+    const stored = ((s1 - s0) / 100) * batteryKwh; const net = inKwh - stored; const r = net > 0 ? outKwh / net : null;
     if (r == null || r <= 0.5 || r > 1.02) return { eff: 1, note: `measured ${r?.toFixed(3) ?? '–'}, outside what is possible; no loss applied` };
     return { eff: Math.min(1, r), note: `${outKwh.toFixed(1)} kWh out ÷ (${inKwh.toFixed(1)} kWh in − ${stored.toFixed(1)} kWh change in stored energy), inverter counters, 30 days to ${date}` };
   };
@@ -137,10 +172,11 @@ export function buildSite(siteId, fromDate, toDate) {
   // A rebuild that starts after the first day continues from the stock saved at the end
   // of the day before. On the first day the energy already in the battery at the first
   // charge-level reading is the opening layer; its cost is unknown (p = null).
-  const prevDay = db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(siteId, addDays(fromDate, -1));
+  // An as-of rebuild starts from the opening layer (it always runs from the first day).
+  const prevDay = asOf != null ? null : db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(siteId, addDays(fromDate, -1));
   const socSeries = readings.get(socId) || [];
   const stock = prevDay?.battery_stock ? JSON.parse(prevDay.battery_stock).map(([kwh, p]) => ({ kwh, p })) : [];
-  if (!prevDay?.battery_stock && site.battery_kwh && socSeries.length) stock.push({ kwh: (socSeries[0].value / 100) * site.battery_kwh, p: null });
+  if (!prevDay?.battery_stock && batteryKwh && socSeries.length) stock.push({ kwh: (socSeries[0].value / 100) * batteryKwh, p: null });
   // Adjacent layers at the same price are one layer; first in first out is unchanged.
   const addLayer = (kwh, p) => { const last = stock[stock.length - 1]; if (last && last.p === p) last.kwh += kwh; else stock.push({ kwh, p }); };
   const round6 = (v) => Math.round(v * 1e6) / 1e6;
@@ -148,6 +184,7 @@ export function buildSite(siteId, fromDate, toDate) {
   const hhRows = [];
   const dayRows = [];
   const checks = [];
+  const dayInputs = new Map();
 
   for (const date of daysBetween(fromDate, toDate)) {
     const slots = slotsOfDay(tz, date).filter((s) => s + SLOT <= now);
@@ -165,12 +202,14 @@ export function buildSite(siteId, fromDate, toDate) {
       if (totalRow && sum > 0.05 && totalRow.value > 0) {
         const f = totalRow.value / sum;
         if (f > 0.6 && f < 1.6 && date < today) fit[k] = f;
-        if (k === 'solar') checks.push([date, 'counter_fit_solar', Math.abs(f - 1) <= 0.1 ? 'pass' : 'warn', f, 0.1, `daily total ${totalRow.value} kWh vs integrated ${sum.toFixed(2)} kWh`]);
+        // The counters read in 0.1 kWh steps, so small totals also pass within 0.2 kWh.
+        const ok = Math.abs(f - 1) <= 0.1 || Math.abs(totalRow.value - sum) <= 0.2;
+        if (date < today) checks.push([date, FIT_CHECK[k], ok ? 'pass' : 'warn', f, 0.1, `inverter's daily counter ${totalRow.value} kWh vs 5-minute samples ${sum.toFixed(2)} kWh`]);
       }
     }
     const e = (k, slot) => (aligned[k].energy.get(slot) || 0) * fit[k];
 
-    const day = { rows: [], mImp: 0, ctImpBoth: 0, home: 0, loss: 0, lossN: 0, rated: 0, gasNoCv: 0 };
+    const day = { rows: [], mImp: 0, ctImpBoth: 0, mExp: 0, ctExpBoth: 0, home: 0, loss: 0, lossN: 0, rated: 0, gasNoCv: 0, meterSlots: 0, clampSlots: 0 };
     for (const slot of slots) {
       let q = 0;
       const coverage = hasInverter ? (aligned.solar.cover.get(slot) || aligned.imp.cover.get(slot) || 0) / SLOT : 0;
@@ -199,6 +238,10 @@ export function buildSite(siteId, fromDate, toDate) {
       const loss = measuredLoad != null ? balance - measuredLoad : null;
       const meterVsCt = mImp != null && hasInverter && coverage > 0.5 ? mImp - e('imp', slot) : null;
       if (meterVsCt != null) { day.mImp += mImp; day.ctImpBoth += e('imp', slot); }
+      if (mExp != null && hasInverter && coverage > 0.5) { day.mExp += mExp; day.ctExpBoth += e('exp', slot); }
+      if (impSrc === 'octopus_meter') day.meterSlots++; else if (impSrc === 'sunsynk_ct') day.clampSlots++;
+      // The clamp's own reading, kept when the meter replaced it, so both can be shown side by side.
+      const ct = hasInverter && coverage > 0 ? { imp: Math.round(e('imp', slot) * 1e4) / 1e4, exp: Math.round(e('exp', slot) * 1e4) / 1e4 } : null;
       const gasRaw = meterFacts.meter_gas ? slotSum(meterFacts.meter_gas, slot) : null;
       const cv = gasM3 && gasRaw != null ? cvAt(slot) : null;
       const gas = gasRaw == null ? null : gasM3 ? (cv != null ? (gasRaw * VOLUME_CORRECTION * cv) / 3.6 : null) : gasRaw;
@@ -247,8 +290,8 @@ export function buildSite(siteId, fromDate, toDate) {
       // it ran dry while the battery still held 20%. All layers are scaled together, so their
       // price mix is kept. Stock with no records behind it (only possible before any charge) has unknown cost.
       const socEnd = socBySlot.get(slot);
-      if (socEnd != null && site.battery_kwh) {
-        const held = (socEnd / 100) * site.battery_kwh;
+      if (socEnd != null && batteryKwh) {
+        const held = (socEnd / 100) * batteryKwh;
         const total = stock.reduce((t, l) => t + l.kwh, 0);
         if (total > 1e-6) { const k = held / total; for (const l of stock) l.kwh *= k; } else if (held > 1e-6) stock.push({ kwh: held, p: null });
       }
@@ -293,7 +336,7 @@ export function buildSite(siteId, fromDate, toDate) {
         grid_only_cost: gridOnly, saving: gridOnly != null ? gridOnly - totalCost : null,
         carbon_intensity: ci, carbon_g: carbonG, carbon_saved_g: carbonSaved, outdoor_temp: temp, solar_forecast: solarForecast,
         meter_vs_ct: meterVsCt, rate_found: impInc != null ? 1 : 0,
-        lineage: JSON.stringify({ import: impSrc, export: expSrc, solar: hasInverter ? 'sunsynk_5min' : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, carbon: ci != null ? 'carbon_regional' : null, coverage: Math.round(coverage * 100) / 100, ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? 'national_gas_cv' : 'not published yet' } : {}) }),
+        lineage: JSON.stringify({ import: impSrc, export: expSrc, solar: hasInverter ? 'sunsynk_5min' : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, carbon: ci != null ? 'carbon_regional' : null, coverage: Math.round(coverage * 100) / 100, ...(ct ? { ct } : {}), ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? 'national_gas_cv' : 'not published yet' } : {}) }),
         method_version: METHOD_VERSION, built_at: now,
       };
       day.rows.push(row);
@@ -326,7 +369,7 @@ export function buildSite(siteId, fromDate, toDate) {
       peak_import_kw: Math.max(0, ...R.map((r) => (r.grid_import ?? 0) * 2)),
       base_load_kw: nightHome.length ? Math.min(...nightHome) : null,
       soc_min: socs.length ? Math.min(...socs) : null, soc_max: socs.length ? Math.max(...socs) : null,
-      battery_cycles: site.battery_kwh ? sum('battery_discharge') / site.battery_kwh : null,
+      battery_cycles: batteryKwh ? sum('battery_discharge') / batteryKwh : null,
       // Share of half-hours that are present, priced and pass the balance; finality is reported separately by state.
       integrity: R.length ? R.filter((r) => r.state !== 'missing' && !(r.quality & (QUALITY.SUSPECT | QUALITY.CHECK_FAILED))).length / R.length : null,
       battery_eff: eff,
@@ -338,13 +381,31 @@ export function buildSite(siteId, fromDate, toDate) {
       method_version: METHOD_VERSION, built_at: now,
     };
     dayRows.push(dayRow);
+    dayInputs.set(date, { batteryKwh, batterySource, meterSlots: day.meterSlots, clampSlots: day.clampSlots });
     if (day.mImp > 0.1) {
       const diff = (day.mImp - day.ctImpBoth) / day.mImp;
       checks.push([date, 'meter_vs_ct', Math.abs(diff) <= 0.05 ? 'pass' : 'warn', diff, 0.05, `meter ${day.mImp.toFixed(2)} kWh vs inverter CT ${day.ctImpBoth.toFixed(2)} kWh`]);
     }
-    if (day.lossN && day.home > 0.1) {
-      const share = day.loss / day.home;
-      checks.push([date, 'energy_balance', Math.abs(share) <= 0.1 ? 'pass' : 'warn', share, 0.1, `losses and measurement error ${(share * 100).toFixed(1)}% of home use`]);
+    if (day.mExp > 0.1) {
+      const diff = (day.mExp - day.ctExpBoth) / day.mExp;
+      checks.push([date, 'meter_vs_ct_export', Math.abs(diff) <= 0.05 || Math.abs(day.mExp - day.ctExpBoth) <= 0.2 ? 'pass' : 'warn', diff, 0.05, `meter ${day.mExp.toFixed(2)} kWh vs inverter CT ${day.ctExpBoth.toFixed(2)} kWh exported`]);
+    }
+    // What each source supplied beyond the house, exports and charging is what the inverter
+    // used or lost (the *_to_loss flows, the same figure every page prices). It is judged
+    // against this home's own typical day, not a fixed share: an inverter's standby use is
+    // roughly constant, so a fixed share of house use flags every quiet day.
+    if (day.lossN && date < today) {
+      day.loss = sum('solar_to_loss') + sum('battery_to_loss') + sum('grid_to_loss');
+      const share = day.home > 0.1 ? ` (${((day.loss / day.home) * 100).toFixed(1)}% of home use)` : '';
+      if (lossHistory.length >= LOSS_MIN_DAYS) {
+        const typical = median(lossHistory.slice(-LOSS_HISTORY_DAYS));
+        const band = Math.max(1, 0.5 * typical);
+        const ok = Math.abs(day.loss - typical) <= band && day.loss > -0.5;
+        checks.push([date, 'energy_balance', ok ? 'pass' : 'warn', day.loss, band, `inverter used or lost ${day.loss.toFixed(1)} kWh${share}; typical ${typical.toFixed(1)} kWh (median of the ${Math.min(lossHistory.length, LOSS_HISTORY_DAYS)} days before), allowed ±${band.toFixed(1)} kWh`]);
+      } else {
+        checks.push([date, 'energy_balance', 'skip', day.loss, null, `inverter used or lost ${day.loss.toFixed(1)} kWh${share}; this home's typical day is not known yet (needs ${LOSS_MIN_DAYS} earlier days, has ${lossHistory.length})`]);
+      }
+      lossHistory.push(day.loss);
     }
     checks.push([date, 'rate_coverage', day.rated === R.length ? 'pass' : (day.rated === 0 ? 'fail' : 'warn'), R.length ? day.rated / R.length : 0, 1, `${day.rated} of ${R.length} half-hours priced`]);
     if (gasM3) checks.push([date, 'gas_calorific_value', day.gasNoCv ? 'warn' : 'pass', day.gasNoCv, 0, day.gasNoCv ? `${day.gasNoCv} half-hours of gas wait for National Gas's calorific value for ${gasLdz}` : `converted with National Gas's calorific value for ${gasLdz}`]);
@@ -352,6 +413,36 @@ export function buildSite(siteId, fromDate, toDate) {
   }
   if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, 'Energy already in the battery when the data starts has unknown cost; those half-hours show no stored cost']);
   if (lastEff) checks.push([lastEff.date, 'battery_efficiency', lastEff.eff < 1 ? 'pass' : 'skip', lastEff.eff, null, lastEff.eff < 1 ? `measured round trip ${(lastEff.eff * 100).toFixed(1)}%: ${lastEff.note}` : lastEff.note]);
+
+  if (opts.dryRun) return { days: dayRows.length, slots: hhRows.length, hhRows, dayRows, checks, inputs: Object.fromEntries(dayInputs) };
+
+  // ── Revision log: completed days whose figures, state or checks changed ──
+  const revisions = [];
+  const checksByDay = new Map();
+  for (const [d, code, status] of checks) checksByDay.set(d, { ...(checksByDay.get(d) || {}), [code]: status });
+  for (const r of dayRows) {
+    if (r.local_date >= today) continue;          // today is still filling in
+    const before = previousDays.get(r.local_date);
+    const nowChecks = checksByDay.get(r.local_date) || {};
+    const changed = [];
+    if (before) {
+      for (const [k, eps] of REVISION_FIELDS) {
+        const a = before[k]; const b = r[k];
+        if ((a == null) !== (b == null) || (a != null && Math.abs(a - b) > eps)) changed.push({ field: k, from: a, to: b });
+      }
+      const wasChecks = previousChecks.get(r.local_date) || {};
+      for (const code of new Set([...Object.keys(wasChecks), ...Object.keys(nowChecks)])) {
+        if (wasChecks[code] !== nowChecks[code]) changed.push({ field: `check:${code}`, from: wasChecks[code] ?? null, to: nowChecks[code] ?? null });
+      }
+      if (before.method_version !== r.method_version) changed.push({ field: 'method_version', from: before.method_version, to: r.method_version });
+    }
+    // A day built before this log existed has no earlier record: its first row is where history starts.
+    const first = !db.prepare('SELECT 1 FROM site_day_revision WHERE site_id = ? AND local_date = ? LIMIT 1').get(siteId, r.local_date);
+    if (before && !first && !changed.length) continue;
+    revisions.push([siteId, r.local_date, now, r.method_version, first && before ? `${opts.reason || 'rebuild'} (first record of this day)` : (opts.reason || null),
+      r.slots_final, r.slots_provisional, r.slots_missing, r.solar, r.home, r.grid_import, r.grid_export, r.gas, r.total_cost, r.saving,
+      JSON.stringify(nowChecks), JSON.stringify(dayInputs.get(r.local_date) || {}), before && !first ? JSON.stringify(changed) : null]);
+  }
 
   // ── Write serving rows (replace the window) ──
   tx(() => {
@@ -370,6 +461,9 @@ export function buildSite(siteId, fromDate, toDate) {
     }
     const insC = db.prepare('INSERT OR REPLACE INTO check_result (site_id, local_date, check_code, status, measured, tolerance, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
     for (const c of checks) insC.run(siteId, ...c);
+    const insR = db.prepare(`INSERT INTO site_day_revision (site_id, local_date, revised_at, method_version, reason, slots_final, slots_provisional, slots_missing,
+      solar, home, grid_import, grid_export, gas, total_cost, saving, checks, inputs, changed) VALUES (${Array(18).fill('?').join(',')})`);
+    for (const r of revisions) insR.run(...r);
   });
   return { days: dayRows.length, slots: hhRows.length };
 }
@@ -398,7 +492,8 @@ export function processQueue() {
       if (!prev?.battery_stock) from = firstDay;
     }
     const t0 = Date.now();
-    const res = buildSite(p.site_id, from, localDate(site.timezone, nowSec()));
+    const reasons = db.prepare('SELECT DISTINCT reason FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL AND reason IS NOT NULL').all(p.site_id).map((r) => r.reason);
+    const res = buildSite(p.site_id, from, localDate(site.timezone, nowSec()), { reason: reasons.join('; ') || null });
     // Processed requests are removed; the sync run records what was rebuilt.
     db.prepare('DELETE FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL').run(p.site_id);
     out.push({ siteId: p.site_id, from, ms: Date.now() - t0, ...res });

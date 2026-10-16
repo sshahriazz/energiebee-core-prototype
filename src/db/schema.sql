@@ -295,3 +295,56 @@ CREATE TABLE IF NOT EXISTS sync_run (
   status       TEXT NOT NULL,
   detail       TEXT
 );
+
+-- ───────────── Trust: history the serving tables do not keep ─────────────
+
+-- The system's physical details (panel size and angles, battery size), versioned like facts:
+-- one row per value per source, kept when replaced. The site table holds the resolved current
+-- value (installer > measured > provider > estimated); this table says where it came from and
+-- what was known at any earlier moment, so a day can be rebuilt as it stood then.
+CREATE TABLE IF NOT EXISTS site_attribute (
+  site_id        INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
+  attr           TEXT NOT NULL CHECK (attr IN ('pv_kwp', 'pv_tilt', 'pv_orientation', 'battery_kwh')),
+  source         TEXT NOT NULL CHECK (source IN ('installer', 'measured', 'provider', 'estimated')),
+  value          REAL,
+  detail         TEXT,
+  recorded_at    INTEGER NOT NULL,          -- ms
+  superseded_at  INTEGER,                   -- ms; NULL = current
+  PRIMARY KEY (site_id, attr, source, recorded_at)
+) WITHOUT ROWID;
+
+-- One row each time a completed day's figures, state or checks change in a rebuild:
+-- site_day keeps only the latest version, this keeps how it got there.
+CREATE TABLE IF NOT EXISTS site_day_revision (
+  id                 INTEGER PRIMARY KEY,
+  site_id            INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
+  local_date         TEXT NOT NULL,
+  revised_at         INTEGER NOT NULL,      -- s
+  method_version     TEXT NOT NULL,
+  reason             TEXT,
+  slots_final        INTEGER,
+  slots_provisional  INTEGER,
+  slots_missing      INTEGER,
+  solar              REAL,
+  home               REAL,
+  grid_import        REAL,
+  grid_export        REAL,
+  gas                REAL,
+  total_cost         REAL,
+  saving             REAL,
+  checks             TEXT,                  -- JSON {check_code: status}
+  inputs             TEXT,                  -- JSON: system details used, meter vs clamp half-hours
+  changed            TEXT                   -- JSON [{field, from, to}]; NULL for the first record
+);
+CREATE INDEX IF NOT EXISTS site_day_revision_day ON site_day_revision (site_id, local_date, revised_at);
+
+-- Facts withdrawn by the core itself (not by a provider), with the reason, so a correction
+-- is visible rather than silent.
+CREATE TABLE IF NOT EXISTS fact_correction (
+  id           INTEGER PRIMARY KEY,
+  site_id      INTEGER REFERENCES site(id) ON DELETE CASCADE,
+  corrected_at INTEGER NOT NULL,            -- s
+  series_id    INTEGER REFERENCES series(id),
+  rows         INTEGER NOT NULL,
+  reason       TEXT NOT NULL
+);

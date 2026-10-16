@@ -1,6 +1,6 @@
 # EnergieBee core: timeline, forecast, data states and data provenance
 
-Prototype `energiebee-core-prototype` · Build method `v2-measured-load` · Forecast model v3 · Prepared by Technext · 16 October 2026
+Prototype `energiebee-core-prototype` · Build method `v3-stock-follows-charge` · Forecast model v3 · Prepared by Technext · 16 October 2026
 
 This document explains:
 
@@ -82,12 +82,13 @@ Fetching again is harmless:
 - an identical fact is skipped;
 - a changed fact becomes a new version.
 
-### 1.3 The build engine (method `v2-measured-load`)
+### 1.3 The build engine (method `v3-stock-follows-charge`)
 
 The build engine runs over every UTC half-hour of every local day. A local day has 46, 48 or 50 half-hours, depending on the clock change.
 
 **Step 1: Align (power → energy)**
 - Each 5-minute power sample is held until the next one (at most 5 minutes) and converted to kWh, split exactly at half-hour boundaries.
+- **Clock changes.** Sunsynk gives each sample as a local "HH:mm" for the plant's day. Samples are taken in order and each gets the first matching instant after the previous sample. When clocks go back (last Sunday of October), 01:00–01:59 appears twice: the first run is BST, the repeat GMT, and both are kept (a 50-half-hour day). When clocks go forward, 01:00–01:59 does not exist and any sample with such a time is dropped (a 46-half-hour day). Tested with simulated payloads for 25 Oct 2026 (300 samples, all kept, in order) and 28 Mar 2027 (12 skipped).
 - Each closed day is then scaled to the inverter's own daily counter for that flow.
 - The factor is limited to 0.6–1.6 so that a corrupt counter is ignored. At 10 Acresbrook the factors run 0.94–1.20 (medians 1.01–1.04).
 
@@ -129,7 +130,8 @@ The build engine runs over every UTC half-hour of every local day. A local day h
   - the opening layer is the energy at the first charge-level reading, with **cost unknown** (section 5.2);
   - grid charging adds a layer at price ÷ **measured** round-trip efficiency (section 5.1);
   - solar charging adds a layer at 0p (no fuel cost);
-  - energy drawn from the opening layer has no stored cost (`null`).
+  - energy drawn from the opening layer has no stored cost (`null`);
+  - **the stock follows the measured charge level.** At the end of each half-hour the layers are scaled together so they add up to charge level × capacity. Energy in × efficiency − energy out drifts from what the battery holds, because efficiency and capacity are measured, not exact. Before this step (method `v2-measured-load`) the modelled stock ran dry on 9, 12 and 15 Oct while the battery still held 20%. Those half-hours had no stored cost, so the 7-day blended cost showed as unknown. Scaling keeps each layer's share, so the price mix is unchanged. Bill and saving are not affected.
 - **Bill** = every imported kWh × price (house + battery charging + inverter loss) + standing charge + gas − export credit.
 - **Grid-only** = house use × price + standing + gas.
 - **Saving** = grid-only − bill.
@@ -223,7 +225,7 @@ The forecast covers the next 48 half-hours × 2. Every parameter is learned from
 
 | Part | Method | Learned at 10 Acresbrook |
 |---|---|---|
-| **Solar** | Two methods; the one checked against this home is used. **Learned from this home:** Open-Meteo's forecast of horizontal sunlight × this home's own output per unit of sunlight for each hour of the day, fitted over the last 14 days. **Quartz** (Open Climate Fix), for the configured size and angles, is used only once 2 days and 2 kWh of its forecasts can be compared with actual output; it is then scaled by the observed ratio. No half-hour is forecast above the most this home has produced in one (2.3 kWh). | Learned path, R² 0.72 on 15 days. Quartz is checked from 18 Oct. |
+| **Solar** | Two methods; the one checked against this home is used. **Learned from this home:** Open-Meteo's forecast of horizontal sunlight × this home's own output per unit of sunlight for each hour of the day, fitted over the last 14 days. **Quartz** (Open Climate Fix), for the configured size and angles, is used only once 2 days and 2 kWh of its forecasts can be compared with actual output; it is then scaled by the observed ratio. The comparison uses Quartz's own forecast of record (the latest issue before each half-hour), never our stored forecast. If actual ÷ Quartz is outside 0.5–2, Quartz is not used: a gap that large means it was given the wrong panels, not that it needs scaling. On 16 Oct the panels made **5.78×** Quartz's forecast (6.5 vs 1.1 kWh, one day), with Sunsynk's 6.5 kWp and the estimated 20°/60° angles; the learned path stays in use. No half-hour is forecast above the most this home has produced in one (2.3 kWh). | Learned path, R² 0.72 on 15 days. Quartz is checked from 18 Oct. |
 | **House use** | Median of each half-hour of the day, from days of the same type (weekday or weekend), plus planned EV charging. A temperature adjustment is fitted (heating degree days, base searched 10–20 °C) and applied only if use rises in colder weather with R² ≥ 0.3. | Weekday 11 days, weekend 4; temperature **not applied**: use does not rise in the cold |
 | **Battery** | Starts at the latest charge level. Uses the observed charge range, half-hour limits and measured efficiency. Charges from the grid in the **learned charge window**, holds in the **learned hold window**, stores spare solar, and covers shortfalls otherwise. | 20–100%; 1.94 kWh in / 1.55 kWh out per half-hour; efficiency 95.4%; charge 00:00–02:30 up to ~100%; hold 23:30–00:00 and 02:30–05:30 |
 | **Prices** | Published rates of the home's tariff agreements, with VAT. No price → no cost. | IOG 7.62p / 32.14p |
@@ -309,7 +311,7 @@ The forecast covers the next 48 half-hours × 2. Every parameter is learned from
 ### 5.2 Opening battery stock
 
 - The energy in the battery at the first charge-level reading (70% × 11.0 kWh = 7.7 kWh on 2 Oct 00:00) becomes the first stock layer, **with unknown cost**.
-- **Affects:** `battery_to_home_cost` is `null` for half-hours drawing from it (2–3 Oct only), and blended cost is unknown for periods that include them. The bill and the saving are **not** affected: battery charging is paid when it happens.
+- **Affects:** `battery_to_home_cost` is `null` for half-hours drawing from it (2–3 Oct only; 34 half-hours, 6.4 kWh), and blended cost is unknown for periods that include them. The bill and the saving are **not** affected: battery charging is paid when it happens.
 
 ### 5.3 Gas units and calorific value
 
@@ -410,7 +412,8 @@ These shape how results are summarised, never the measured values:
 - price bands (0–10p, …);
 - the comparison's 16:00–19:00 window;
 - "last 7 days" projections on My energy;
-- the 12-hour lead for accuracy.
+- the 12-hour lead for accuracy;
+- the 0.5–2 range for using Quartz (section 3).
 
 Each is named where it is shown.
 
@@ -459,8 +462,21 @@ The installer's values are not known, and Sunsynk does not report angles. They a
 - **One direction is right for this home.** Sunsynk's live readings show both strings producing almost the same power through the morning (for example 1,959 W and 1,993 W at 10:12), so both face the same way.
 - **Limits:** 14 October days of mixed cloud; afternoon shading would look like an easterly direction.
 
-To confirm the values, in order of reliability:
-1. **The installation paperwork:** the MCS certificate and handover pack list each array's pitch and orientation.
+**Replacing the estimates with the installer's figures.** The UI shows each detail, its value, where it came from and whether it is confirmed: **Data & trust → Your system's details**. The Solar page also shows a notice while the angles are estimates. The steps:
+
+1. **Get the installer's handover pack.** It contains the MCS certificate and the MCS performance estimate. The performance estimate (MCS standard MIS 3002) records the system size (kWp) and each array's inclination (tilt), orientation and shading factor. The installer named on the Sunsynk plant record is shown on the Data & trust page.
+2. **Read the figures:**
+   - system size, kWp → `PV_KWP`;
+   - inclination, degrees from flat → `PV_TILT`;
+   - orientation → `PV_ORIENTATION`, as a compass bearing (east 90, south 180, west 270). If it is given as degrees away from south, use 180 minus it for east of south and 180 plus it for west of south;
+   - the battery's usable capacity, kWh, from its datasheet or the handover pack → `BATTERY_KWH`.
+3. **Put them in `.env` and restart** (`npm start`). On the next sync:
+   - the configured values replace the estimates (`.env` always takes priority);
+   - Quartz forecasts for those panels are compared with actual output for 2 days before they are relied on.
+4. **If the panels face more than one way,** note each array's figures. The prototype models one direction. That is right for this home: both strings produce equal power.
+
+Other ways to confirm the values, in order of reliability:
+1. **The installation paperwork,** as above.
 2. **Measure on site:** a compass app for direction and an inclinometer app on the panel frame for tilt.
 3. **Re-run the estimate** with more days, especially clear ones.
 

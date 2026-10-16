@@ -1,6 +1,6 @@
 # EnergieBee core: the database
 
-Prototype `energiebee-core-prototype` · SQLite through Node's built-in `node:sqlite` · Build method `v2-measured-load` · Prepared by Technext · 16 October 2026
+Prototype `energiebee-core-prototype` · SQLite through Node's built-in `node:sqlite` · Build method `v3-stock-follows-charge` · Prepared by Technext · 16 October 2026
 
 This document explains how the prototype stores its data:
 
@@ -823,7 +823,7 @@ flowchart TB
   RAW["raw_payload rows, each with one file in data/raw<br/>#13 sunsynk_5min: day series for 12 Oct<br/>#18 sunsynk_daily: October daily totals<br/>#117 octopus_meter: import meter page<br/>#645 octopus_meter: gas meter page (m3)<br/>#655 national_gas_cv: CV for LDZ NW<br/>#26 carbon_regional: region 3<br/>#123, #125, #126, #127 octopus_rates: price lists<br/>#116, #134 octopus_meter: earlier gas meter pages"]
   FACTS["Facts covering 18:30 to 19:00 UTC on 12 Oct (current versions)<br/>reading, series 1 to 7: 6 five-minute samples each, raw_id 13<br/>interval_fact, series 8 to 13: daily totals for 12 Oct, raw_id 18<br/>interval_fact, series 29 grid_import_kwh: 0.344, raw_id 117<br/>interval_fact, series 35 gas_m3: 0.459, raw_id 645<br/>interval_fact, series 36 gas_cv_mjm3: 38.9 for gas day 12 Oct, raw_id 655<br/>interval_fact, series 25 carbon_intensity: 29.0, raw_id 26<br/>rate_interval #36 day unit 32.1441 p, #38 standing 44.4133 p/day<br/>rate_interval #39 gas unit 7.7434 p, #40 gas standing 27.6476 p/day"]
   OLD["Not read by the build: interval_fact, series 28 gas_kwh<br/>version 1: 0.459, raw_id 116, superseded<br/>version 2: 5.1502707, raw_id 134, current<br/>written before m3 readings were kept as m3"]
-  HH["site_hh: site 1, slot_start 1791829800 (19:30 BST, Mon 12 Oct)<br/>grid_import 0.344 · home 0.353 · gas 5.072 kWh · total_cost 53.83 p<br/>state final · quality 129 · method_version v2-measured-load<br/>lineage: import octopus_meter, tariff E-1R-IOG-SMB-FIX-12M-26-06-13-G,<br/>register day, gasM3 0.459, gasCv 38.9, gasLdz NW"]
+  HH["site_hh: site 1, slot_start 1791829800 (19:30 BST, Mon 12 Oct)<br/>grid_import 0.344 · home 0.353 · gas 5.072 kWh · total_cost 53.83 p<br/>state final · quality 129 · method_version v3-stock-follows-charge<br/>lineage: import octopus_meter, tariff E-1R-IOG-SMB-FIX-12M-26-06-13-G,<br/>register day, gasM3 0.459, gasCv 38.9, gasLdz NW"]
   RAW -- "raw_id" --> FACTS
   FACTS -- "buildSite" --> HH
   RAW -. "raw_id" .-> OLD
@@ -840,7 +840,7 @@ flowchart TB
 | Calorific value, gas day 12 October (05:00 to 05:00 local) | 36 (region `ldz:NW`, `national_gas_cv`) | 38.9 MJ/m³ | 655 → `raw/national_gas_cv/2026-10-16/21dfac5f62c16f99.json` | `lineage.gasCv = 38.9`; gas = 0.459 × 1.02264 × 38.9 ÷ 3.6 = **5.0720 kWh** |
 | Regional carbon intensity | 25 (region `carbon:3`) | 29.0 g/kWh, quality 8 (estimated) | 26 | `carbon_intensity = 29.0`; `carbon_g = 0.344 × 29.0 = 9.976` |
 
-The resulting row (Q-example in the appendix): `state = 'final'`, `quality = 129` (measured + revised), `grid_import = 0.344`, `home = 0.352644`, `gas = 5.072039`, `total_cost = 53.8262`, `method_version = 'v2-measured-load'`. The `lineage` JSON is:
+The resulting row (Q-example in the appendix): `state = 'final'`, `quality = 129` (measured + revised), `grid_import = 0.344`, `home = 0.352644`, `gas = 5.072039`, `total_cost = 53.8262`, `method_version = 'v3-stock-follows-charge'`. The `lineage` JSON is:
 
 ```json
 {"import":"octopus_meter","export":"octopus_meter","solar":"sunsynk_5min",
@@ -1177,7 +1177,7 @@ ls -l data/core.db data/core.db-wal               # 3284992, 4688592
 for i in 1 2 3 4 5; do
   curl -s -X POST -w '\t%{time_total}\n' http://localhost:4100/api/sites/1/rebuild
 done
-# {"days":15,"slots":693,"ms":174,"method":"v2-measured-load",
+# {"days":15,"slots":693,"ms":174,"method":"v3-stock-follows-charge",
 #  "before":{"c":5218.894836,"h":318.894133,"n":693},"after":{"c":5218.894836,"h":318.894133,"n":693}}  0.175526
 ```
 

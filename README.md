@@ -2,23 +2,39 @@
 
 A working prototype of the EnergieBee unified energy core. It takes data from
 each provider, turns it into one trusted half-hour timeline of energy flows and
-costs (past, now and forecast), and shows it on six plain HTML pages. You can
+costs (past, now and forecast), and shows it on ten plain HTML pages. You can
 trace every number back to the provider payload it came from.
 
 The stack is Node 22, Express and SQLite (Node's built-in `node:sqlite`). Express is the only dependency, and there is no build step.
 
+## What you need
+
+- **Node.js 22.13 or newer** (it uses Node's built-in SQLite, `node:sqlite`). Check with `node -v`.
+- **npm** (comes with Node).
+- **Internet access** to the providers: Sunsynk, Octopus, National Gas, NESO, Open-Meteo, Quartz and postcodes.io.
+- **The home's credentials** in `.env` (see the next section):
+  - **Sunsynk:** the Sunsynk Connect login, plus the plant id if the login sees more than one plant.
+  - **Octopus:** an API key from the Octopus dashboard (Personal details → API access) and the account number.
+- Optional: the installer's panel size, tilt and direction and battery size, if you have them.
+
+No other database or service is needed; everything is stored in `data/`.
+
 ## Run
 
 ```bash
-nvm use 22            # Node 22.13 or newer
-npm install
-npm start             # http://localhost:4100
+cd energiebee-core-prototype
+nvm use 22                 # or any Node 22.13+
+npm install                # installs Express, the only dependency
+cp .env.example .env       # then fill in the values (next section)
+npm start                  # open http://localhost:4100
 ```
 
-On first start the server creates the home configured in `.env`, loads 14 days,
-builds the timeline and then syncs every 10 minutes.
-`npm run dev` restarts on file changes. `npm run reset` deletes the database and
-the raw payloads.
+- **First start:** the server creates the home from `.env`, loads 14 days of history and builds the timeline. This takes up to about a minute; until it finishes the pages show a "Loading data from the providers…" banner.
+- **After that:** it syncs every 10 minutes (`SYNC_EVERY_MINUTES`). The **Sync** button on any page syncs immediately.
+- **`npm run dev`:** restarts the server when a file changes.
+- **`npm run reset`:** deletes the database and the stored raw payloads, so the next start begins from scratch.
+- **Port and file location:** `PORT` (default 4100) and `DB_FILE` (default `data/core.db`) in `.env`.
+- **To stop:** Ctrl+C in the terminal running it.
 
 ## Connect a real home
 
@@ -37,6 +53,24 @@ Each provider is synced on its own. Sunsynk alone gives the energy flows; costs 
 > Sunsynk's Terms of Use forbid automated scraping of the consumer app. This
 > prototype uses the owner's own login at a low rate. A production system needs a
 > partner key.
+
+## Your system's details (from the MCS paperwork)
+
+The solar forecast and the battery figures use four details about the system. When the installer's figures aren't entered, the core fills them from the providers or from the home's own data and labels them. **Data & trust → Your system's details** shows each value, where it came from, and whether it is confirmed.
+
+| `.env` setting | What it is | Where to find it | Used now if empty |
+|---|---|---|---|
+| `PV_KWP` | Panel system size (kWp) | MCS certificate and MCS performance estimate | Sunsynk plant record (6.5 kWp here) |
+| `PV_TILT` | Panel tilt from flat (degrees) | MCS performance estimate: inclination | Estimated from the home's output (20° here) |
+| `PV_ORIENTATION` | Direction the panels face, as a compass bearing (east 90, south 180, west 270) | MCS performance estimate: orientation. If it is given as degrees away from south, use 180 minus it for east of south, 180 plus it for west of south. | Estimated from the home's output (60° here) |
+| `BATTERY_KWH` | Battery usable capacity (kWh) | Battery datasheet or handover pack | Measured from use (kWh per 1% of charge; 11.0 here) |
+
+To replace the estimates:
+1. Get the handover pack from the installer. It contains the MCS certificate and the MCS performance estimate; the Data & trust page shows the installer named on the Sunsynk plant record.
+2. Put the four figures in `.env`.
+3. Restart with `npm start`.
+
+The next sync uses them. The solar forecast switches to Quartz for those panels once its forecasts have been compared with the home's actual output for 2 days.
 
 ## No invented data
 
@@ -80,7 +114,7 @@ provider API ─► adapter ─► raw payload ─► facts ─► build engine 
   VAT, and VAT is added from a dated table. This is because Octopus restates
   VAT-inclusive history at today's rate; domestic electricity has been 0% since
   1 Oct 2026.
-- **Build engine** (`src/core/build.js`, method `v2-measured-load`) runs five steps
+- **Build engine** (`src/core/build.js`, method `v3-stock-follows-charge`) runs five steps
   for each UTC half-hour:
   1. **Align**: integrate the 5-minute samples and fit them to the inverter's daily counters.
   2. **Reconcile**: the smart meter is used over the clamp when both exist. Home use is calculated from the energy balance.
@@ -129,6 +163,8 @@ data/                  core.db and raw/ (git-ignored)
 ## Known limits (prototype)
 
 - One battery strategy is assumed in the forecast. It does not read the inverter's actual work mode.
-- Economy 7 switch times are assumed to be 00:30–07:30 GMT, because Octopus does not publish them.
+- Economy 7 is not priced, because no source gives its switch times.
 - The Open-Meteo free tier is for non-commercial use; production needs a paid plan.
-- Gas calorific value is a fixed 39.5 MJ/m³ until the National Gas daily value is added.
+- Gas is converted from m³ with National Gas's daily calorific value for the home's LDZ; gas days without a published value wait (check `gas_calorific_value`).
+- Panel tilt and direction are estimates until the installer's figures are entered (see "Your system's details" above).
+- EV charging is measured only through Octopus smart-charge dispatches. For a car whose smart control is not available it is not measured (the EV page says so); it is still inside the house's use.

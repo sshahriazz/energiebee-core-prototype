@@ -62,7 +62,7 @@ async function render(state) {
   const story = `<div class="card"><div class="q">In short · ${periodText}</div>
     <p style="margin:4px 0 0;font-size:15px;line-height:1.6">The panels <b>produced ${fmt.kwh(t.solar)}</b>. The home <b>used ${fmt.kwh(t.home)}</b>:
     ${pct(t.solar_to_home)} straight from solar, ${pct(t.battery_to_home)} from the battery and ${pct(t.grid_to_home)} from the grid.
-    ${fmt.kwh(t.grid_import)} was <b>imported</b> for ${fmt.gbp((t.grid_to_home_cost || 0) + (t.grid_to_battery_cost || 0))}${t.grid_to_battery > 0.05 ? ` (${fmt.kwh(t.grid_to_battery)} of it to charge the battery)` : ''},
+    ${fmt.kwh(t.grid_import)} was <b>imported</b> for ${fmt.gbp((t.grid_to_home_cost || 0) + (t.grid_to_battery_cost || 0) + (t.loss_cost || 0))}${t.grid_to_battery > 0.05 ? ` (${fmt.kwh(t.grid_to_battery)} of it to charge the battery)` : ''},
     and ${fmt.kwh(t.grid_export)} was <b>exported</b> for ${fmt.gbp(t.export_credit)}.${t.inverter_loss > 0.1 ? ` The inverter used or lost ${fmt.kwh(t.inverter_loss)} in conversion and standby.` : ''}${t.gas ? ` The home also used <b>${fmt.kwh(t.gas)} of gas</b> for ${fmt.gbp(t.gas_cost)}.` : ''}
     With standing charges the bill is <b>${fmt.gbp(t.total_cost)}</b>; on grid power alone it would have been ${fmt.gbp(t.grid_only_cost)}, so
     ${t.saving >= 0 ? `<b style="color:var(--good)">${fmt.gbp(t.saving)} saved</b>.` : `<b>${fmt.gbp(-t.saving)} more than grid-only so far</b>: grid energy bought cheaply for the battery counts now and pays back when the battery covers dearer hours.`}</p>
@@ -99,7 +99,7 @@ async function render(state) {
     <div class="row"><span class="k">Used by the home</span><b>${fmt.kwh(t.home)}</b></div>
     <div class="row sub"><span class="k">not bought from the grid (self-sufficiency)</span><b>${fmt.pct(t.self_sufficiency)}</b></div>
     ${t.ev ? `<div class="row sub"><span class="k"><i class="swatch" style="background:${COLORS.ev}"></i>of which the EV</span><b>${fmt.kwh(t.ev)}</b></div>` : ''}
-    <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>Imported</span><b>${fmt.kwh(t.grid_import)} · ${fmt.gbp((t.grid_to_home_cost || 0) + (t.grid_to_battery_cost || 0))}</b></div>
+    <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>Imported</span><b>${fmt.kwh(t.grid_import)} · ${fmt.gbp((t.grid_to_home_cost || 0) + (t.grid_to_battery_cost || 0) + (t.loss_cost || 0))}</b></div>
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.export}"></i>Exported</span><b>${fmt.kwh(t.grid_export)} · ${fmt.gbp(t.export_credit)}</b></div>
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.battery}"></i>Battery in / out</span><b>${fmt.kwh(t.battery_charge)} / ${fmt.kwh(t.battery_discharge)}</b></div>
     ${t.inverter_loss > 0.05 ? `<div class="row"><span class="k"><i class="swatch" style="background:var(--text-3)"></i>Inverter losses</span><b>${fmt.kwh(t.inverter_loss)} · ${fmt.gbp(t.loss_cost)} of grid power</b></div>` : ''}
@@ -136,7 +136,7 @@ async function render(state) {
   const ledger = `<div class="table-wrap"><table>
     <thead><tr><th>Day</th><th class="r">Produced</th><th class="r">Used</th><th>Home from</th><th class="r">Imported</th><th class="r">Exported</th><th class="r">Battery in / out</th><th class="r">Bill</th><th class="r">Saved</th><th class="r">CO₂</th><th>Data</th></tr></thead>
     <tbody>${L.map((d) => `<tr><td>${tf.date(d.local_date)}</td><td class="r">${fmt.kwh(d.solar)}</td><td class="r">${fmt.kwh(d.home)}</td><td>${mixBar(d)}</td>
-      <td class="r">${fmt.kwh(d.grid_import)} <span class="faint">${fmt.gbp((d.grid_to_home_cost || 0) + (d.grid_to_battery_cost || 0))}</span></td>
+      <td class="r">${fmt.kwh(d.grid_import)} <span class="faint">${fmt.gbp((d.grid_to_home_cost || 0) + (d.grid_to_battery_cost || 0) + (d.loss_cost || 0))}</span></td>
       <td class="r">${fmt.kwh(d.grid_export)} <span class="faint">${fmt.gbp(d.export_credit)}</span></td>
       <td class="r">${fmt.kwh(d.battery_charge)} / ${fmt.kwh(d.battery_discharge)}</td><td class="r"><b>${fmt.gbp(d.total_cost)}</b></td><td class="r" style="color:var(--good)">${fmt.gbp(d.saving)}</td><td class="r">${fmt.kg(d.carbon_g)}</td><td>${stateBadge(d)}</td></tr>`).join('')}
       <tr class="total" style="font-weight:600"><td>Total</td><td class="r">${fmt.kwh(sum('solar'))}</td><td class="r">${fmt.kwh(sum('home'))}</td><td>${mixBar({ home: sum('home'), solar_to_home: sum('solar_to_home'), battery_to_home: sum('battery_to_home'), grid_to_home: sum('grid_to_home') })}</td>
@@ -186,7 +186,7 @@ async function render(state) {
     ],
     links: fl.map((f) => ({ from: f.from, to: f.to, value: f.kwh, color: SRC.find((s) => s.key === f.from).color, tip: fmtLink(f) })),
     nodeNote: (n) => {
-      const money = { solar: null, battery: null, grid: (t.grid_to_home_cost || 0) + (t.grid_to_battery_cost || 0), home: null, export: t.export_credit }[n.key];
+      const money = { solar: null, battery: null, grid: (t.grid_to_home_cost || 0) + (t.grid_to_battery_cost || 0) + (t.loss_cost || 0), home: null, export: t.export_credit }[n.key];
       return `${fmt.kwh(n.value)}${money != null ? ` · ${fmt.gbp(money)}` : ''}`;
     },
   });

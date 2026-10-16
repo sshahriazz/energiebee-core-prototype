@@ -20,7 +20,7 @@ function lanesFor(d) {
   const fresh = (...ps) => { const c = ps.map((p) => conn[p]).find(Boolean); return c ? { at: c.last_success_at, status: c.status, error: c.last_error } : null; };
   const meterSource = conn.demo ? 'Demo meter (Octopus-shaped)' : 'Octopus smart meter; inverter clamp until it arrives';
   return [
-    { key: 'solar', label: 'Solar', part: `Panels ${d.site.pv_kwp ? `${d.site.pv_kwp} kWp ` : ''}→ inverter`, source: conn.demo ? 'Demo inverter · Quartz forecast' : 'Sunsynk 5-min · Quartz forecast', h: 58, unit: 'kWh', color: COLORS.solar, fresh: fresh('sunsynk', 'demo'),
+    { key: 'solar', label: 'Solar', part: `Panels ${d.site.pv_kwp ? `${d.site.pv_kwp} kWp ` : ''}→ inverter`, source: 'Sunsynk 5-min · forecast', h: 58, unit: 'kWh', color: COLORS.solar, fresh: fresh('sunsynk', 'demo'),
       pos: [{ get: (r) => r.solar, color: COLORS.solar }], line: { get: (r) => (r.state === 'forecast' ? null : r.solar_forecast), color: 'var(--text-2)', dash: true } },
     { key: 'battery', label: 'Battery', part: `Battery ${d.site.battery_kwh ? `${d.site.battery_kwh} kWh` : ''}`, source: conn.demo ? 'Demo inverter' : 'Sunsynk 5-min', h: 58, unit: 'kWh', color: COLORS.battery, fresh: fresh('sunsynk', 'demo'),
       pos: [{ get: (r) => r.battery_discharge, color: COLORS.battery }], neg: [{ get: (r) => r.battery_charge, color: faded(COLORS.battery, 55) }] },

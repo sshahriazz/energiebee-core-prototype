@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { db } from '../db/db.js';
 import { fetchJson } from '../core/http.js';
 import { landRaw, quarantine, seriesId, putReadings, putIntervals, QUALITY } from '../core/facts.js';
-import { localToUtc, dayBounds, floorTo, nowSec } from '../core/time.js';
+import { localToUtcAll, dayBounds, floorTo, nowSec } from '../core/time.js';
 
 const BASE = 'https://api.sunsynk.net';
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
@@ -58,9 +58,15 @@ export function normaliseDay(siteId, tz, date, json, rawId) {
   for (const info of infos) {
     const kind = DAY_LABELS[info.label];
     if (!kind) continue;                       // e.g. "Micro Inverter" is not modelled yet
+    // Records come in time order on the plant's clock. When clocks go back, 01:00-01:59
+    // appears twice: the first run is the earlier instant (BST), the repeat the later (GMT).
+    // Each record takes the first instant after the previous record's.
+    let prev = -Infinity;
     for (const rec of info.records || []) {
       const [hh, mm] = String(rec.time).split(':').map(Number);
-      const ts = localToUtc(tz, y, m, d, hh, mm);
+      const ts = localToUtcAll(tz, y, m, d, hh, mm).find((t) => t > prev);
+      if (ts == null) continue;                // a time that does not exist (clocks went forward) or out of order
+      prev = ts;
       const v = rec.value === null || rec.value === '' ? null : Number(rec.value);
       if (v === null || Number.isNaN(v)) continue;
       if (kind === 'solar') out.solar_w.push({ ts, value: Math.max(0, v) });

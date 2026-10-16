@@ -83,10 +83,34 @@ async function evidence(state, slot) {
   box.querySelectorAll('[data-raw]').forEach((b) => b.addEventListener('click', () => showRaw(b.dataset.raw)));
 }
 
+// The system's physical details, where each value comes from, and how to replace
+// estimates with the installer's figures from the MCS paperwork.
+function systemCard(sys) {
+  const tag = { installer: ['good', 'from installer'], provider: ['info', 'from provider'], measured: ['info', 'measured'], estimated: ['warn', 'estimate'], unknown: ['bad', 'not known'] };
+  const rows = sys.items.map((i) => `<tr><td><b>${esc(i.label)}</b></td><td class="r mono">${i.value != null ? `${i.value} ${esc(i.unit)}` : '–'}</td>
+    <td><span class="badge ${tag[i.status][0]}">${tag[i.status][1]}</span></td><td class="muted" style="white-space:normal">${esc(i.source)}</td>
+    <td class="mono" style="white-space:nowrap">${esc(i.key)}</td><td class="muted" style="white-space:normal">${esc(i.mcs)}</td></tr>`).join('');
+  const needsInstaller = sys.items.some((i) => i.status !== 'installer');
+  return card("Your system's details", 'Used by the solar forecast and the battery figures. Each value shows where it comes from.', `
+    <div class="table-wrap"><table>
+      <thead><tr><th>Detail</th><th class="r">Value</th><th>Status</th><th>Where it comes from</th><th>Setting in .env</th><th>Where to find it</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    ${needsInstaller ? `<div class="banner warn" style="margin-top:12px"><span>i</span><div>
+      <b>Replace estimates with the installer's figures</b>
+      <ol style="margin:6px 0 0 18px;padding:0">
+        <li>Find the handover pack from your installer${sys.installer ? ` (${esc(sys.installer)}, from ${esc(sys.installerSource)})` : ''}. It contains the <b>MCS certificate</b> and the <b>MCS performance estimate</b>. If you don't have it, ask the installer for a copy.</li>
+        <li>From the performance estimate, read the <b>system size</b> (kWp) and, for the panels, the <b>inclination</b> (tilt from flat, in degrees) and the <b>orientation</b> (the direction they face). From the battery datasheet or the handover pack, read the battery's <b>usable capacity</b> (kWh).</li>
+        <li>Write the direction as a compass bearing: east 90, south-east 135, south 180, south-west 225, west 270. If it is given as degrees away from south, use 180 minus that number for panels turned towards the east, or 180 plus it for panels turned towards the west.</li>
+        <li>Put them in <span class="mono">.env</span> as <span class="mono">PV_KWP</span>, <span class="mono">PV_TILT</span>, <span class="mono">PV_ORIENTATION</span> and <span class="mono">BATTERY_KWH</span>, then restart the server (<span class="mono">npm start</span>).</li>
+      </ol>
+      <p style="margin:6px 0 0">The new values replace the estimates on the next sync. The solar forecast then uses Quartz for those panels, compared with this home's actual output for 2 days before it is relied on. If panels face more than one direction, note each array's figures. This prototype models one direction, which the output data suggests is right here (both strings produce equal power).</p>
+    </div></div>` : ''}`);
+}
+
 async function render(state) {
   const id = state.site.id;
   const tf = timeFmt(state.tz);
-  const [h, catalog] = await Promise.all([api(`/api/sites/${id}/health`), api('/api/catalog')]);
+  const [h, catalog, sys] = await Promise.all([api(`/api/sites/${id}/health`), api('/api/catalog'), api(`/api/sites/${id}/system`)]);
   const checksBy = {};
   for (const c of h.checks) (checksBy[c.local_date] ||= {})[c.check_code] = c;
   const q = new URLSearchParams(location.search);
@@ -125,7 +149,8 @@ async function render(state) {
     </tbody></table></div>`;
 
   document.getElementById('content').innerHTML = `
-    <div class="banner"><span>⛓</span><div><b>Pipeline:</b> provider API → adapter (applies the source contract) → raw payload kept → facts (append-only, versioned) → build engine (${esc(h.method)}) → half-hour timeline → these pages.
+    <div id="system">${systemCard(sys)}</div>
+    <div class="banner section"><span>⛓</span><div><b>Pipeline:</b> provider API → adapter (applies the source contract) → raw payload kept → facts (append-only, versioned) → build engine (${esc(h.method)}) → half-hour timeline → these pages.
       Pages never call a provider; they read the timeline.</div></div>
     <div class="grid cols-2">${card('Connections', 'One per provider for this home', conns)}${card('Recent syncs', 'Each step runs on its own; one failure never blocks the rest', runs)}</div>
     <div class="section">${card('Days', 'State of each half-hour and the daily checks. Hover a badge for its detail.', days)}</div>

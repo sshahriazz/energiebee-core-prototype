@@ -37,6 +37,19 @@ export function localToUtc(tz, y, m, d, hh = 0, mm = 0) {
   return t;
 }
 
+// Every UTC instant that shows as this local wall-clock time: one normally, two in the
+// hour repeated when clocks go back, none in the hour skipped when they go forward.
+export function localToUtcAll(tz, y, m, d, hh = 0, mm = 0) {
+  const guess = Date.UTC(y, m - 1, d, hh, mm) / 1000;
+  const out = new Set();
+  for (const probe of [guess - 43200, guess + 43200]) {
+    const t = guess - offsetSeconds(tz, probe);
+    const p = zonedParts(tz, t);
+    if (p.y === y && p.m === m && p.d === d && p.hh === hh && p.mm === mm) out.add(t);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 export function localDate(tz, ts) {
   const p = zonedParts(tz, ts);
   return `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`;

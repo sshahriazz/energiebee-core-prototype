@@ -21,6 +21,7 @@ const HISTORY_DAYS = 14;
 const LOW_Q = 0.1; const HIGH_Q = 0.9;
 const MIN_DAYS = 3;                                   // a day type, a range or the sunlight fit needs 3 days
 const HDD_BASES = Array.from({ length: 21 }, (_, i) => 10 + i * 0.5);   // degC searched for the heating base
+const QUARTZ_RATIO = [0.5, 2];                        // actual ÷ Quartz outside this points to wrong panel details
 const ACCURACY_LEAD = 12 * 3600;                      // score what a user saw the evening before
 
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -103,24 +104,43 @@ function fitTemperature(hist, wholeDays) {
   };
 }
 
+// Quartz's forecast of record for past half-hours: for each, the latest issue made before
+// it started. Read from Quartz's own series, so our stored forecast never counts as Quartz.
+function quartzOfRecord(seriesKey, from, to) {
+  const rows = db.prepare('SELECT start_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
+    .all(seriesKey, from, to);
+  const best = new Map();
+  for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
+  const bySlot = new Map();
+  for (const f of best.values()) { const s = floorTo(f.start_ts, SLOT); bySlot.set(s, (bySlot.get(s) || 0) + (f.value || 0)); }
+  return bySlot;
+}
+
 // How this home's panels compare with Quartz: shading, soiling, clipping and
-// inverter limits that a forecast for the location cannot know.
-function calibrateQuartz(hist, wholeDays) {
+// inverter limits that a forecast for the location cannot know. A ratio far from 1
+// is not scaled away: it means Quartz was given the wrong panels.
+function calibrateQuartz(hist, wholeDays, quartzBySlot) {
   const days = new Map();
   for (const r of hist) {
-    if (r.solar == null || r.solar_forecast == null || !(r.solar > 0 || r.solar_forecast > 0)) continue;   // night
+    const q = quartzBySlot.get(r.slot_start);
+    if (r.solar == null || q == null || !(r.solar > 0 || q > 0)) continue;   // night
     const d = days.get(r.local_date) || days.set(r.local_date, { actual: 0, forecast: 0 }).get(r.local_date);
-    d.actual += r.solar; d.forecast += r.solar_forecast;
+    d.actual += r.solar; d.forecast += q;
   }
   const actual = [...days.values()].reduce((s, d) => s + d.actual, 0);
   const forecast = [...days.values()].reduce((s, d) => s + d.forecast, 0);
-  const applied = days.size >= 2 && forecast >= 2;
-  const factor = applied ? actual / forecast : 1;
+  const ratio = forecast > 0 ? actual / forecast : null;
+  const enough = days.size >= 2 && forecast >= 2;
+  const plausible = ratio != null && ratio >= QUARTZ_RATIO[0] && ratio <= QUARTZ_RATIO[1];
+  const applied = enough && plausible;
+  const factor = applied ? ratio : 1;
   // Spread from whole days only: a part day (today so far) is mostly morning.
   const ratios = [...days].filter(([date, d]) => wholeDays.has(date) && d.forecast > 0).map(([, d]) => d.actual / d.forecast);
   return {
-    applied, factor, ratio: forecast > 0 ? actual / forecast : null, days: days.size, forecastKwh: forecast, actualKwh: actual,
-    reason: applied ? null : `${days.size} day(s) and ${forecast.toFixed(1)} kWh of forecast to compare; needs 2 days and 2 kWh`,
+    applied, factor, ratio, days: days.size, forecastKwh: forecast, actualKwh: actual,
+    reason: applied ? null : !enough
+      ? `${days.size} day(s) and ${forecast.toFixed(1)} kWh of forecast to compare; needs 2 days and 2 kWh`
+      : `this home made ${ratio.toFixed(2)}× Quartz's forecast over ${days.size} days; outside ${QUARTZ_RATIO[0]}–${QUARTZ_RATIO[1]}×, which points to wrong panel details (check them against the MCS paperwork)`,
     range: ratios.length >= MIN_DAYS ? { basis: 'daily actual/Quartz ratios', days: ratios.length, low: Math.min(factor, quantile(ratios, LOW_Q)), high: Math.max(factor, quantile(ratios, HIGH_Q)) } : null,
     rangeReason: ratios.length >= MIN_DAYS ? null : `${ratios.length} whole day(s) of actual-vs-forecast history; needs ${MIN_DAYS}`,
   };
@@ -323,7 +343,7 @@ export function forecastSite(siteId, hours = 48) {
   const quartzFc = anglesKnown ? readForecastOfRecord(sid('solar_kwh', 'quartz'), from, to, now + 60) : [];
   const ghiS = sid('ghi_wm2', 'open_meteo');
   const sunFc = readForecastOfRecord(ghiS, from - 3600, to, now + 60);
-  const quartzCal = calibrateQuartz(hist, wholeDays);
+  const quartzCal = calibrateQuartz(hist, wholeDays, anglesKnown ? quartzOfRecord(sid('solar_kwh', 'quartz'), histFrom, from) : new Map());
   const sunlight = learnSunlight(hist, sunByHalfHour(readIntervals([ghiS], histFrom - 3600, from)), wholeDays);
   // Quartz is used once it has been checked against this home's output (calibrated). Until then the
   // forecast learned from this home's own output and sunlight is used, because uncalibrated Quartz
@@ -530,7 +550,7 @@ export function forecastSite(siteId, hours = 48) {
       `History: the last ${HISTORY_DAYS} days of half-hours; whole days are days with every half-hour built.`,
       `Ranges: 10th and 90th percentiles; a day type, a solar range or the sunlight fit needs ${MIN_DAYS} days.`,
       `Temperature: applied with at least 7 whole days, use rising in the cold and R² of at least 0.3; base searched from ${HDD_BASES[0]} to ${HDD_BASES[HDD_BASES.length - 1]} °C in 0.5 °C steps.`,
-      'Quartz calibration: needs 2 days and 2 kWh of forecast to compare.',
+      `Quartz calibration: needs 2 days and 2 kWh of forecast to compare, and actual ÷ Quartz between ${QUARTZ_RATIO[0]} and ${QUARTZ_RATIO[1]}; outside that Quartz is not used.`,
       'Grid charging: a half-hour counts when the battery took over 0.05 kWh from the grid on at least half of the days.',
       'Accuracy: forecasts issued at least 12 hours ahead, over the last 7 days; shown once a whole day has been scored.',
       'Cheapest and greenest windows: 2 hours within the next 24.',

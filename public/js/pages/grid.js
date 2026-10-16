@@ -17,7 +17,7 @@ async function render(state) {
 
   const kpis = `<div class="kpis">
     ${kpi('Imported', fmt.kwh(c.grid_import), delta(c.grid_import, p.grid_import, { lowerIsBetter: true, format: (v) => fmt.kwh(v), vs }), COLORS.grid)}
-    ${kpi('Import cost', fmt.gbp((c.grid_to_home_cost || 0) + (c.grid_to_battery_cost || 0)), `+ ${fmt.gbp(c.standing_cost)} standing charges`)}
+    ${kpi('Import cost', fmt.gbp((c.grid_to_home_cost || 0) + (c.grid_to_battery_cost || 0) + (c.loss_cost || 0)), `every imported kWh, incl. ${fmt.gbp(c.loss_cost || 0)} the inverter used · + ${fmt.gbp(c.standing_cost)} standing`)}
     ${kpi('Average price paid', fmt.pkwh(c.import_rate_paid), shift != null ? `${shift >= 0 ? `${fmt.p(shift)} below` : `${fmt.p(-shift)} above`} the average price (${fmt.pkwh(c.avg_import_rate)})` : '')}
     ${kpi('Exported', fmt.kwh(c.grid_export), `${fmt.gbp(c.export_credit)} at ${fmt.pkwh(c.export_rate_avg)}`, COLORS.export)}
     ${kpi('Peak import', fmt.kw(c.peak_import_kw), 'highest half-hour, as average kW')}
@@ -70,7 +70,7 @@ async function render(state) {
     tip: (r) => tipHtml(head(r), [
       ['Imported', COLORS.grid, fmt.kwh(r.grid_import, 2)], ['Exported', COLORS.export, fmt.kwh(r.grid_export, 2)],
       r.import_rate != null ? ['Import price', null, fmt.pkwh(r.import_rate)] : null,
-      ['Import cost', null, fmt.gbp((r.grid_to_home_cost || 0) + (r.grid_to_battery_cost || 0))],
+      ['Import cost', null, fmt.gbp((r.grid_to_home_cost || 0) + (r.grid_to_battery_cost || 0) + (r.loss_cost || 0))],
       r.export_credit ? ['Export credit', null, fmt.gbp(r.export_credit)] : null,
       r.meter_vs_ct != null ? ['Meter − clamp', null, fmt.kwh(r.meter_vs_ct, 3)] : null,
     ], r.state === 'provisional' ? 'Provisional: inverter clamp until meter data arrives' : ''),

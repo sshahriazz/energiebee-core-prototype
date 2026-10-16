@@ -28,7 +28,7 @@ export function insightsFor(siteId) {
   if (week.length >= 3) {
     const s = week.reduce((a, d) => a + (d.saving || 0), 0);
     const c = week.reduce((a, d) => a + (d.total_cost || 0), 0);
-    add('week', 'info', `Last ${week.length} days: ${gbp(c)} spent, ${gbp(s)} saved`,
+    add('week', 'info', `Last ${week.length} full days: ${gbp(c)} spent, ${gbp(s)} saved`,
       `About ${gbp((s / week.length) * 365)} a year at this rate.`, ['site_day.saving', 'site_day.total_cost']);
   }
   if (y && y.grid_export > 0.5 && y.home > 0) {
@@ -53,9 +53,11 @@ export function insightsFor(siteId) {
     const base = week.map((d) => d.base_load_kw).filter((v) => v != null);
     if (base.length) {
       const kw = Math.min(...base);
-      const rate = db.prepare('SELECT AVG(import_rate_ex * (1 + import_vat)) AS r FROM site_hh WHERE site_id = ? AND local_date >= ?').get(siteId, addDays(today, -7)).r;
+      // The price actually paid per kWh of grid power used at home, the same basis as the My energy page.
+      const gridKwh = week.reduce((a, d) => a + (d.grid_to_home || 0), 0);
+      const rate = gridKwh > 0.1 ? week.reduce((a, d) => a + (d.grid_to_home_cost || 0), 0) / gridKwh : null;
       if (rate) add('baseload', 'info', `Always-on use is about ${Math.round(kw * 1000)} W`,
-        `Overnight minimum; that is ${Math.round(kw * 8760)} kWh and about ${gbp(kw * 8760 * rate)} a year.`, ['site_day.base_load_kw', 'site_hh.import_rate_ex']);
+        `Overnight minimum; that is ${Math.round(kw * 8760)} kWh and about ${gbp(kw * 8760 * rate)} a year at your average grid price over the last ${week.length} full days (${rate.toFixed(1)}p/kWh).`, ['site_day.base_load_kw', 'site_day.grid_to_home_cost']);
     }
   }
   try {

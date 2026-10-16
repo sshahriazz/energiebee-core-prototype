@@ -91,7 +91,7 @@ async function render(state) {
     ${kpi('Saved', fmt.gbp(c.saving), `vs ${fmt.gbp(c.grid_only_cost)} with grid only`)}
     ${kpi('Self-sufficiency', fmt.pct(c.self_sufficiency), 'home use not bought from the grid')}
     ${kpi('Solar generated', fmt.kwh(c.solar), delta(c.solar, p.solar, { format: (v) => fmt.kwh(v), vs: summary.previousLabel }), COLORS.solar)}
-    ${kpi('Imported', fmt.kwh(c.grid_import), `${fmt.gbp((c.grid_to_home_cost || 0) + (c.grid_to_battery_cost || 0))} · avg ${fmt.pkwh(c.import_rate_paid)}`, COLORS.grid)}
+    ${kpi('Imported', fmt.kwh(c.grid_import), `${fmt.gbp((c.grid_to_home_cost || 0) + (c.grid_to_battery_cost || 0) + (c.loss_cost || 0))} · avg ${fmt.pkwh(c.import_rate_paid)}`, COLORS.grid)}
     ${kpi('Exported', fmt.kwh(c.grid_export), `${fmt.gbp(c.export_credit)} credit`, COLORS.export)}
     ${kpi('Cost of energy used', fmt.pkwh(c.blended_rate), `grid average ${fmt.pkwh(c.avg_import_rate)}`)}
     ${kpi('Carbon avoided', fmt.kg(c.carbon_saved_g), `${fmt.kg(c.carbon_g)} from the grid`)}

@@ -227,9 +227,10 @@ export function sankey(host, opts) {
   const links = opts.links.filter((l) => l.value > Math.max(1e-6, grand * 0.005));
   host.innerHTML = '';
   if (!links.length) { host.innerHTML = '<div class="skeleton">No energy flows in this period.</div>'; return; }
-  const sumOf = (side, key) => links.filter((l) => (side === 'left' ? l.from : l.to) === key).reduce((s, l) => s + l.value, 0);
-  const L = opts.left.map((n) => ({ ...n, value: sumOf('left', n.key) })).filter((n) => n.value > 1e-6);
-  const R = opts.right.map((n) => ({ ...n, value: sumOf('right', n.key) })).filter((n) => n.value > 1e-6);
+  const sumOf = (set, side, key) => set.filter((l) => (side === 'left' ? l.from : l.to) === key).reduce((s, l) => s + Math.max(0, l.value), 0);
+  // Node height follows the drawn bands; the label keeps the full total, thin flows included.
+  const L = opts.left.map((n) => ({ ...n, value: sumOf(links, 'left', n.key), total: sumOf(opts.links, 'left', n.key) })).filter((n) => n.value > 1e-6);
+  const R = opts.right.map((n) => ({ ...n, value: sumOf(links, 'right', n.key), total: sumOf(opts.links, 'right', n.key) })).filter((n) => n.value > 1e-6);
   const ih = height - m.t - m.b;
   // Every node keeps at least a label's height of room, so two small nodes never overprint.
   const slot = 30;
@@ -289,7 +290,7 @@ export function sankey(host, opts) {
     const t1 = svgEl('text', { x, y: cy - 2, 'text-anchor': anchor, style: 'fill:var(--text);font-size:12.5px;font-weight:600' }, svg);
     t1.textContent = n.label;
     const t2 = svgEl('text', { x, y: cy + 13, 'text-anchor': anchor, style: 'fill:var(--text-2);font-size:11.5px' }, svg);
-    t2.textContent = opts.nodeNote ? opts.nodeNote(n) : (opts.format ? opts.format(n.value) : n.value.toFixed(1));
+    t2.textContent = opts.nodeNote ? opts.nodeNote({ ...n, value: n.total }) : (opts.format ? opts.format(n.total) : n.total.toFixed(1));
   };
   for (const n of L) label(n, x0 - 8, 'end');
   for (const n of R) label(n, x1 + bar + 8, 'start');

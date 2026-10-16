@@ -7,10 +7,12 @@ import { loadTimeline, isFc } from '../timeline.js';
 async function render(state) {
   const id = state.site.id;
   const tf = timeFmt(state.tz);
-  const [summary, tl, month] = await Promise.all([
+  const [summary, tl, month, sys] = await Promise.all([
     api(`/api/sites/${id}/summary?period=${state.period}`), loadTimeline(state, { forecastHours: 30 }),
     api(`/api/sites/${id}/timeline?period=30d&step=day`),
+    api(`/api/sites/${id}/system`).catch(() => null),
   ]);
+  const unconfirmed = (sys?.items || []).filter((i) => i.key.startsWith('PV_') && i.status !== 'installer');
   const c = summary.current; const p = summary.previous; const vs = summary.previousLabel;
   const kwp = state.site.pv_kwp;
   const days = summary.days;
@@ -21,7 +23,7 @@ async function render(state) {
     ${kpi('Exported', fmt.kwh(c.solar_to_grid), `${fmt.gbp(c.solar_export_value)} at ${fmt.pkwh(c.export_rate_avg)}`, COLORS.export)}
     ${kpi('Value of solar', fmt.gbp(c.solar_value), 'grid power it replaced + export credit')}
     ${kpi('Yield', kwp && c.solar != null ? `${(c.solar / kwp / days).toFixed(2)} kWh/kWp` : '–', `per day, ${kwp ?? '?'} kWp system`)}
-    ${kpi('Forecast accuracy', c.forecast_accuracy != null ? fmt.pct(c.forecast_accuracy) : '–', c.solar_forecast != null ? `actual vs Quartz, ${fmt.kwh(c.solar_with_forecast)} vs ${fmt.kwh(c.solar_forecast)}` : 'builds up as forecasts are kept')}
+    ${kpi('Actual vs forecast', c.forecast_accuracy != null ? `${c.forecast_accuracy.toFixed(2)}×` : '–', c.solar_forecast != null ? `${fmt.kwh(c.solar_with_forecast)} made vs ${fmt.kwh(c.solar_forecast)} forecast before each half-hour (1.00× = exact)` : 'builds up as forecasts are kept')}
   </div>`;
 
   const valueRows = `<div class="rows">
@@ -35,6 +37,8 @@ async function render(state) {
 
   const multiDay = tl.step === 'hh' && new Set(tl.rows.map((r) => r.local_date)).size > 2;
   document.getElementById('content').innerHTML = `
+    ${unconfirmed.length ? `<div class="banner warn"><span>i</span><div>${unconfirmed.map((i) => `${i.label}: <b>${i.value ?? '–'} ${i.unit}</b> (${i.status === 'estimated' ? 'estimated from this home\'s output' : i.status === 'provider' ? 'from Sunsynk' : 'not known'})`).join(' · ')}.
+      These shape the solar forecast. <a href="/data?site=${id}#system">How to replace them with the installer's figures (MCS paperwork) →</a></div></div>` : ''}
     ${kpis}
     <div class="section">${card('Solar output and where it went', `Half-hour energy from the inverter, split by destination. Dashed: the forecast made before each half-hour happened (kept from 16 Oct onward). ${tl.nowIndex != null ? 'After “now”: the latest forecast.' : ''}`,
       `${legend([{ label: 'Used at home', color: COLORS.solar }, { label: 'Into battery', color: COLORS.battery }, { label: 'Exported', color: COLORS.export }, { label: 'Forecast', color: 'var(--text-2)', type: 'dash' }])}<div id="solar-chart"></div>`)}</div>

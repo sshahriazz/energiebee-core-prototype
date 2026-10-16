@@ -10,7 +10,7 @@ import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY } 
 import { loadPricing, priceAt } from './pricing.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays } from './time.js';
 
-export const METHOD_VERSION = 'v2-measured-load';
+export const METHOD_VERSION = 'v3-stock-follows-charge';
 
 const NODES = {
   solar: ['solar_w', 'solar_kwh'], load: ['load_w', 'load_kwh'], imp: ['grid_import_w', 'grid_import_kwh'],
@@ -242,6 +242,16 @@ export function buildSite(siteId, fromDate, toDate) {
       if (unknownDraw) { unknownStock = true; q |= QUALITY.ESTIMATED; }
       if (gToBatt > 0) addLayer(gToBatt * eff, (impInc ?? 0) / eff);
       if (sToBatt > 0) addLayer(sToBatt * eff, 0);   // solar has no fuel cost
+      // The stock follows the measured charge level. Energy in × efficiency − energy out drifts
+      // from what the battery holds (efficiency and capacity are measured, not exact); left alone
+      // it ran dry while the battery still held 20%. All layers are scaled together, so their
+      // price mix is kept. Stock with no records behind it (only possible before any charge) has unknown cost.
+      const socEnd = socBySlot.get(slot);
+      if (socEnd != null && site.battery_kwh) {
+        const held = (socEnd / 100) * site.battery_kwh;
+        const total = stock.reduce((t, l) => t + l.kwh, 0);
+        if (total > 1e-6) { const k = held / total; for (const l of stock) l.kwh *= k; } else if (held > 1e-6) stock.push({ kwh: held, p: null });
+      }
 
       const standing = pi ? (pi.standingEx * (1 + pi.vat)) / nSlotsDay + (pg ? (pg.standingEx * (1 + pg.vat)) / nSlotsDay : 0) : 0;
       const gasCost = gas != null && pg?.unitEx != null ? gas * pg.unitEx * (1 + pg.vat) : (gas != null ? null : 0);

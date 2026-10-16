@@ -25,6 +25,16 @@ async function render(state) {
   const rate = kwh ? cost / kwh : null;
   const saved = rate != null && ev.averageImportRate != null ? (ev.averageImportRate - rate) * kwh : null;
 
+  // No sessions from any source means charging is not measured, not that there was none.
+  if (!ev.sessions.length && !ev.planned.length) {
+    const d = ev.devices[0]; const st = JSON.parse(d?.attrs || '{}').status?.currentState;
+    content.innerHTML = `<div class="banner warn"><span>i</span><div><b>EV charging is not measured for ${esc(d?.label || 'this car')}.</b>
+      ${st === 'SMART_CONTROL_NOT_AVAILABLE' ? 'Octopus reports its smart control as not available, so Octopus records no charging sessions for it.' : 'No source has reported a charging session for it.'}
+      Any charging at home is included in the house's use on the other pages, but it can't be separated out without a source for it: Octopus smart charging working again, or a charger or car connection.</div></div>
+      ${card('Planned', 'Smart-charge dispatches for the next 24 hours', '<div class="skeleton">No charging planned in the next 24 hours.</div>')}`;
+    return;
+  }
+
   const kpis = `<div class="kpis">
     ${kpi('Charged', fmt.kwh(kwh), `${ev.sessions.length} session${ev.sessions.length === 1 ? '' : 's'}`, COLORS.ev)}
     ${kpi('Cost', fmt.gbp(cost), `${fmt.pkwh(rate)} on average`)}

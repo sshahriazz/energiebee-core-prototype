@@ -434,6 +434,40 @@ app.get('/api/sites/:id/health', (req, res) => {
   });
 });
 
+// The system's physical details, each with where its value comes from, so the UI can show
+// which are confirmed and which are estimates waiting for the installer's figures.
+app.get('/api/sites/:id/system', (req, res) => {
+  const s = site(req);
+  const env = process.env;
+  const meta = JSON.parse(db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(s.id)?.meta || '{}');
+  const est = meta.panelAnglesEstimate;
+  const anglesEstimated = est && s.pv_tilt === est.tilt && s.pv_orientation === est.bearing;
+  const plant = db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(s.id)?.external_ref;
+  // Installer as recorded on the Sunsynk plant (latest stored plant payload).
+  const plantRaw = plant ? db.prepare("SELECT file FROM raw_payload WHERE site_id = ? AND request LIKE ? ORDER BY id DESC LIMIT 1").get(s.id, `%/v1/plant/${plant}?%`) : null;
+  let installer = null;
+  try { installer = plantRaw ? JSON.parse(fs.readFileSync(path.join(dataDir, plantRaw.file), 'utf8'))?.data?.installer || null : null; } catch { /* payload unreadable: leave unknown */ }
+  res.json({
+    installer, installerSource: installer ? 'Sunsynk plant record' : null,
+    items: [
+      { key: 'PV_KWP', label: 'Panel size', value: s.pv_kwp, unit: 'kWp', mcs: 'System size (kWp) on the MCS certificate and performance estimate',
+        status: env.PV_KWP ? 'installer' : s.pv_kwp != null ? 'provider' : 'unknown',
+        source: env.PV_KWP ? 'Entered in .env' : s.pv_kwp != null ? `Sunsynk plant record${plant ? ` (plant ${plant})` : ''}` : 'Not known' },
+      { key: 'PV_TILT', label: 'Panel tilt', value: s.pv_tilt, unit: '°', mcs: 'Inclination (roof pitch) in the MCS performance estimate',
+        status: anglesEstimated ? 'estimated' : env.PV_TILT ? 'installer' : 'unknown',
+        source: anglesEstimated ? `Estimated from this home's output (best fit R² ${est.r2}; ${est.nearTop})` : env.PV_TILT ? 'Entered in .env' : 'Not known' },
+      { key: 'PV_ORIENTATION', label: 'Panel direction', value: s.pv_orientation, unit: '° (compass)', mcs: 'Orientation in the MCS performance estimate',
+        status: anglesEstimated ? 'estimated' : env.PV_ORIENTATION ? 'installer' : 'unknown',
+        source: anglesEstimated ? `Estimated from this home's output (south 30° fits ${est.south30}; ${est.strings})` : env.PV_ORIENTATION ? 'Entered in .env' : 'Not known' },
+      { key: 'BATTERY_KWH', label: 'Battery size', value: s.battery_kwh, unit: 'kWh', mcs: 'Usable capacity on the battery datasheet or in the handover pack',
+        status: env.BATTERY_KWH ? 'installer' : meta.batteryMeasured?.kwhPer100 ? 'measured' : s.battery_kwh != null ? 'provider' : 'unknown',
+        source: env.BATTERY_KWH ? 'Entered in .env' : meta.batteryMeasured?.kwhPer100
+          ? `Measured: ${meta.batteryMeasured.energyKwh} kWh discharged over ${meta.batteryMeasured.socPoints} points of charge drop`
+          : s.battery_kwh != null ? 'Battery reading (Ah × voltage)' : 'Not known' },
+    ],
+  });
+});
+
 // Devices the providers report for this home (meters, EV), with the attributes they gave.
 app.get('/api/sites/:id/devices', (req, res) => {
   const s = site(req);

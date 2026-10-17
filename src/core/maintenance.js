@@ -4,6 +4,7 @@ import { db, tx } from '../db/db.js';
 import { seriesId } from './facts.js';
 import { nowSec } from './time.js';
 import { seedAttributes } from './attributes.js';
+import { seedDeviceHistory } from './devices.js';
 
 // Earlier code (before 16 Oct 2026) converted this home's gas readings from m³ to kWh with a
 // fixed calorific value as it stored them, and saved the result as Octopus 'gas_kwh' facts.
@@ -50,6 +51,7 @@ export function runMaintenance() {
   const out = {};
   for (const { id } of db.prepare('SELECT id FROM site').all()) {
     seedSiteAttributes(id);
+    seedDeviceHistory(id);
     out[id] = { gasKwhWithdrawn: withdrawDerivedGas(id) };
   }
   return out;

@@ -12,7 +12,7 @@ const HOUR = 3600; const DAY = 86400;
 // half-hour ends its data normally arrives (later = late; not yet = waiting).
 function feedsFor(site) {
   const sid = (metric, source) => seriesId('site', site.id, metric, source);
-  const dev = (kind) => db.prepare('SELECT * FROM device WHERE site_id = ? AND kind = ?').get(site.id, kind);
+  const dev = (kind) => db.prepare("SELECT * FROM device WHERE site_id = ? AND kind = ? AND provider != 'env' AND retired_at IS NULL").get(site.id, kind);
   const out = [];
   if (db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(site.id)) {
     out.push({ key: 'inverter', label: 'Inverter power, every 5 minutes', source: 'Sunsynk', kind: 'reading', series: sid('solar_w', 'sunsynk_5min'), perSlot: 6, dueS: HOUR,
@@ -33,7 +33,7 @@ function feedsFor(site) {
     }
   }
   out.push({ key: 'import_price', label: 'Import price', source: 'Octopus tariff', kind: 'served', column: 'import_rate_ex', use: 'Cost of every imported kWh' });
-  if (dev('meter_export') || db.prepare("SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND t.direction = 'export'").get(site.id)) {
+  if (dev('meter_export') || db.prepare("SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.direction = 'export'").get(site.id)) {
     out.push({ key: 'export_price', label: 'Export price', source: 'Octopus tariff', kind: 'served', column: 'export_rate', use: 'Credit for every exported kWh' });
   }
   if (site.carbon_region != null) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: 'NESO', kind: 'interval', series: seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), perSlot: 1, dueS: DAY,
@@ -161,7 +161,7 @@ export function trustFor(siteId, fromDate, toDate) {
         AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
           OR (se.subject_kind = 'region' AND se.subject_id IN (?, ?))))`)
     .get(fromTs, toTs, String(siteId), siteId, fromTs, toTs, String(siteId), siteId, `carbon:${site.carbon_region}`, `ldz:${ldz ?? ''}`);
-  const revisions = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, id').all(siteId, fromDate, toDate)
+  const revisions = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, revised_at, id').all(siteId, fromDate, toDate)
     .map((r) => ({ ...r, checks: JSON.parse(r.checks || '{}'), inputs: JSON.parse(r.inputs || '{}'), changed: r.changed ? JSON.parse(r.changed) : null }));
   const headline = {
     from: fromDate, to: toDate, halfHours: hh.length, final: state('final'), provisional: state('provisional'), missing: state('missing'),

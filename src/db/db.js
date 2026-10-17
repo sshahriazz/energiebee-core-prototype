@@ -14,6 +14,34 @@ fs.mkdirSync(path.dirname(dbFile), { recursive: true });
 
 export const db = new DatabaseSync(dbFile);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
+// Tariff agreements became versioned (16 Oct 2026). The old table had UNIQUE (device_id, valid_from),
+// which a superseded version would break, so it is rebuilt once before the schema is applied.
+const agreementCols = db.prepare("SELECT name FROM pragma_table_info('tariff_agreement')").all().map((c) => c.name);
+if (agreementCols.length && !agreementCols.includes('recorded_at')) {
+  // SQLite's table-rebuild procedure: foreign-key checks off while rows are copied (it cannot be changed inside a transaction).
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(`BEGIN;
+    DROP TRIGGER IF EXISTS agreement_no_overlap;
+    ALTER TABLE tariff_agreement RENAME TO tariff_agreement_v1;
+    CREATE TABLE tariff_agreement (
+      id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
+      device_id INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE, tariff_id INTEGER NOT NULL REFERENCES tariff(id),
+      valid_from INTEGER NOT NULL, valid_to INTEGER, recorded_at INTEGER, superseded_at INTEGER,
+      CHECK (valid_to IS NULL OR valid_to > valid_from));
+    INSERT INTO tariff_agreement (id, site_id, device_id, tariff_id, valid_from, valid_to) SELECT id, site_id, device_id, tariff_id, valid_from, valid_to FROM tariff_agreement_v1;
+    DROP TABLE tariff_agreement_v1;
+    COMMIT;`);
+  db.exec('PRAGMA foreign_keys = ON');
+}
+// Device columns added with versioning; must exist before the schema's statements run.
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'device'").get()) {
+  const devCols = new Set(db.prepare("SELECT name FROM pragma_table_info('device')").all().map((c) => c.name));
+  for (const c of ['recorded_at', 'retired_at']) if (!devCols.has(c)) db.exec(`ALTER TABLE device ADD COLUMN ${c} INTEGER`);
+}
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'site_day_revision'").get()
+  && !db.prepare("SELECT 1 FROM pragma_table_info('site_day_revision') WHERE name = 'kind'").get()) {
+  db.exec("ALTER TABLE site_day_revision ADD COLUMN kind TEXT NOT NULL DEFAULT 'recorded'");
+}
 db.exec(fs.readFileSync(path.join(here, 'schema.sql'), 'utf8'));
 
 export function tx(fn) {
@@ -56,6 +84,14 @@ for (const t of ['site_hh', 'site_day']) addColumns(t, ['solar_to_loss', 'batter
 // Battery stock carried from one day to the next, so a rebuild can start at any day.
 addColumns('site_day', ['battery_eff']);
 if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'battery_stock')) db.exec('ALTER TABLE site_day ADD COLUMN battery_stock TEXT');
+// Devices and agreements from before versioning: when each was first known is taken from the
+// sync log (the first sync whose step for that provider succeeded), else now. Never left empty,
+// so a rebuild "as known at" a moment always has an answer.
+db.exec(`UPDATE device SET recorded_at = COALESCE((SELECT MIN(r.finished_at) * 1000 FROM sync_run r, json_each(r.detail) j
+    WHERE r.site_id = device.site_id AND json_valid(r.detail) AND json_extract(j.value, '$.step') = (CASE device.provider WHEN 'env' THEN 'tariff' ELSE 'octopus' END)
+      AND json_extract(j.value, '$.ok') = 1), CAST(strftime('%s', 'now') AS INTEGER) * 1000) WHERE recorded_at IS NULL;
+  UPDATE tariff_agreement SET recorded_at = COALESCE((SELECT recorded_at FROM device WHERE device.id = tariff_agreement.device_id), CAST(strftime('%s', 'now') AS INTEGER) * 1000)
+    WHERE recorded_at IS NULL;`);
 // The primary key (series_id, ts, recorded_at) already serves every reading lookup; this index was never used.
 db.exec('DROP INDEX IF EXISTS reading_current');
 

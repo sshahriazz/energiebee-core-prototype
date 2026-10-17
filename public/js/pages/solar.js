@@ -58,18 +58,22 @@ async function render(state) {
   const yieldText = kwp && c.solar != null ? `${(c.solar / kwp / summary.days).toFixed(2)} kWh/kWp a day` : '';
   const et = ex?.totals;
   const wd = et?.wholeDays;
-  const pctRange = wd?.days > 1 ? ` · whole days ${fmt.pct(wd.low)}–${fmt.pct(wd.high)}` : '';
+  // This home's usual spread of actual ÷ expected on whole days (last 30), so one figure can be judged against it.
+  const usual = exm?.totals?.wholeDays?.days > 1 ? exm.totals.wholeDays : wd?.days > 1 ? wd : null;
+  const within = usual && et?.performance != null ? et.performance >= usual.low && et.performance <= usual.high : null;
+  const forecastOff = c.forecast_accuracy != null && (c.forecast_accuracy > 2 || c.forecast_accuracy < 0.5);
+  const anglesEstimated = (sys?.items || []).some((i) => (i.key === 'PV_TILT' || i.key === 'PV_ORIENTATION') && i.status === 'estimated');
 
   const kpis = `<div class="kpis">
     ${kpi('Generated', fmt.kwh(c.solar), [yieldText, delta(c.solar, p.solar, { format: (v) => fmt.kwh(v), vs })].filter(Boolean).join(' · '), COLORS.solar)}
-    ${kpi('Used in the home', fmt.pct(c.self_consumption), `${fmt.kwh(c.solar_to_home)} direct · ${fmt.kwh(c.solar_to_battery)} via battery`)}
+    ${kpi('Kept in the home', fmt.pct(c.self_consumption), `${fmt.kwh(c.solar_to_home)} used straight away · ${fmt.kwh(c.solar_to_battery)} stored in the battery (not exported)`)}
     ${kpi('Exported', fmt.kwh(c.solar_to_grid), `${fmt.gbp(c.solar_export_value)} at ${fmt.pkwh(c.export_rate_avg)}`, COLORS.export)}
     ${kpi('Value of solar', fmt.gbp(c.solar_value), 'grid power it replaced + export credit')}
-    ${kpi('Made vs the weather', fmt.pct(et?.performance), et?.performance != null
-      ? `the panels made ${fmt.pct(et.performance)} of what the weather allowed: ${fmt.kwh(et.actual)} of ${fmt.kwh(et.expected)} expected${pctRange}`
+    ${kpi('Made vs modelled sunlight', fmt.pct(et?.performance), et?.performance != null
+      ? `${fmt.kwh(et.actual)} made in the ${et.compared} half-hours with sunlight data, against ${fmt.kwh(et.expected)} expected from Open-Meteo's modelled sunlight${usual ? `. Whole days usually range ${fmt.pct(usual.low)}–${fmt.pct(usual.high)}, so this is ${within ? 'within normal variation' : 'outside the usual range'}` : ''}`
       : ex ? 'no half-hours with both sunlight data and output yet' : 'expected values not available from the server')}
     ${kpi('Made vs forecast in advance', fmt.pct(c.forecast_accuracy), c.solar_forecast != null
-      ? `${fmt.kwh(c.solar_with_forecast)} made vs ${fmt.kwh(c.solar_forecast)} forecast before each half-hour (100% = exact)`
+      ? `${fmt.kwh(c.solar_with_forecast)} made vs ${fmt.kwh(c.solar_forecast)} forecast before each half-hour (100% = exact)${forecastOff ? `. This far from 100%, the forecast is wrong rather than the panels${anglesEstimated ? ': it uses estimated panel angles' : ''}` : ''}`
       : 'forecasts are kept from 16 Oct 2026; none for this period')}
   </div>`;
 
@@ -88,7 +92,7 @@ async function render(state) {
   const key = [
     [BARS.map((b) => `<i class="swatch" style="background:${b.color}"></i>`).join(''), 'Actual', 'Measured by the inverter (Sunsynk) each half-hour, split by where it went. Click a bar for its evidence.'],
     [`<i class="dash" style="color:${ADVANCE}"></i>`, 'Forecast made in advance', 'The latest solar forecast issued before each half-hour started (Quartz\'s where one was held, otherwise this core\'s own). Kept from 16 Oct 2026, so there is no line before then.'],
-    [`<i class="line" style="color:${EXPECTED}"></i>`, 'Expected for the weather', `An expectation, not a measurement: Open-Meteo's recorded sunlight for that hour × what these panels made per unit of sunlight at the same hour on the other days of the last ${fitDays} (the day itself left out). No sunlight data, no line.`],
+    [`<i class="line" style="color:${EXPECTED}"></i>`, 'Expected for the weather', `An expectation, not a measurement: Open-Meteo's modelled sunlight for that hour (a weather-model estimate, not a measurement) × what these panels made per unit of sunlight at the same hour on the other days of the last ${fitDays} (the day itself left out). No sunlight data, no line.`],
     ...(nowIndex != null ? [[`<i class="swatch" style="background:${COLORS.solar};opacity:.45"></i><i class="swatch" style="background:${RANGE};opacity:.35"></i>`, 'After “now”', 'The latest forecast, split as it expects the solar to be used; the grey band is its 10th–90th percentile range.']] : []),
   ];
 
@@ -96,14 +100,14 @@ async function render(state) {
     ${unconfirmed.length ? `<div class="banner warn"><span>i</span><div>${unconfirmed.map((i) => `${i.label}: <b>${i.value ?? '–'} ${i.unit}</b> (${i.status === 'estimated' ? 'estimated from this home\'s output' : i.status === 'provider' ? 'from Sunsynk' : 'not known'})`).join(' · ')}.
       These shape the solar forecast. <a href="/data?site=${id}#system">How to replace them with the installer's figures (MCS paperwork) →</a></div></div>` : ''}
     ${kpis}
-    <div class="section">${card('Solar output against forecast and weather', `Each half-hour on one axis: what the panels made, what was forecast before it, and what the weather that happened should have given.${nowIndex != null ? ' After “now”: the latest forecast with its range.' : ''}`,
+    <div class="section">${card('Solar output against forecast and weather', `Each half-hour on one axis: what the panels made, what was forecast before it, and what Open-Meteo's modelled sunlight for those hours suggests they should have made.${nowIndex != null ? ' After “now”: the latest forecast with its range.' : ''}`,
       `${legend([...LEGEND, ...(nowIndex != null ? [{ label: 'Forecast range (10th–90th percentile)', color: RANGE, faded: true }] : [])])}<div id="solar-chart"></div>
       <div class="state-notes"><h3>How each series is made</h3><dl>${key.map(([sw, k, text]) => `<dt>${sw}${k}</dt><dd>${text}</dd>`).join('')}</dl></div>`)}</div>
     <div class="section grid cols-main">
       ${card('Last 30 days', 'Daily totals of the same series. A day\'s forecast point is drawn only when every half-hour of it had a forecast made in advance.',
         `${legend(LEGEND)}<div id="month-chart"></div>
         <h3 style="margin:14px 0 2px">Made vs what the weather allowed</h3>
-        <p class="faint" style="margin:0 0 6px;font-size:12.5px">Each day's output ÷ its expected output for the weather, over the half-hours that have both. Above the line: more than expected.</p>
+        <p class="faint" style="margin:0 0 6px;font-size:12.5px">Each day's output ÷ its expected output for the weather, over the half-hours that have both, as % above or below expected.</p>
         <div id="perf-chart"></div>`)}
       ${card('What the solar was worth', state.period === 'today' ? 'Today so far' : `${tf.date(summary.from)} – ${tf.date(summary.to)}`, valueRows)}
     </div>`;
@@ -178,7 +182,7 @@ async function render(state) {
   // Above or below 100% as bars around zero, so a shortfall reads as a shortfall.
   const diff = (r) => (perf(r) == null ? null : (perf(r) - 1) * 100);
   timeChart(document.getElementById('perf-chart'), {
-    rows: month.rows, height: 110, unit: '% vs expected', tick: dayTick,
+    rows: month.rows, height: 110, unit: '%', tick: dayTick,
     yFormat: (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(Math.round(v))}`,
     pos: [{ label: 'Above expected', color: COLORS.solar, get: (r) => Math.max(0, diff(r) ?? 0) }],
     neg: [{ label: 'Below expected', color: 'var(--text-3)', get: (r) => Math.max(0, -(diff(r) ?? 0)) }],

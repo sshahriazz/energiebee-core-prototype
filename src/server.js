@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { db, dataDir, dbFile } from './db/db.js';
 import { buildSite, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
+import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, SLOT, floorTo, zonedParts } from './core/time.js';
@@ -15,7 +16,7 @@ import { loadPricing, priceAt } from './core/pricing.js';
 import { ensureEnvSite, syncSite, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
 import { runMaintenance } from './core/maintenance.js';
 import { trustFor } from './core/trust.js';
-import { attributeHistory } from './core/attributes.js';
+import { attributeHistory, attributeAt } from './core/attributes.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -183,7 +184,7 @@ app.get('/api/sites/:id/trust', (req, res) => {
 app.get('/api/sites/:id/revisions', (req, res) => {
   const s = site(req);
   const { from, to } = req.query.date ? { from: req.query.date, to: req.query.date } : periodRange(s, req.query.period || '30d', req.query.from, req.query.to);
-  const rows = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, id').all(s.id, from, to)
+  const rows = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, revised_at, id').all(s.id, from, to)
     .map((r) => ({ ...r, checks: JSON.parse(r.checks || '{}'), inputs: JSON.parse(r.inputs || '{}'), changed: r.changed ? JSON.parse(r.changed) : null }));
   res.json({ from, to, revisions: rows, attributes: attributeHistory(s.id) });
 });
@@ -205,7 +206,8 @@ app.get('/api/sites/:id/asof', (req, res) => {
   res.json({
     date, at, ms: Date.now() - t0, method: METHOD_VERSION, known: true,
     then: { day: then.dayRows.find((d) => d.local_date === date) ?? null, hh: then.hhRows.filter((r) => r.local_date === date).map(pick),
-      checks: then.checks.filter((c) => c[0] === date).map(([, code, status, measured, tolerance, detail]) => ({ code, status, measured, tolerance, detail })), inputs: then.inputs[date] ?? null },
+      checks: then.checks.filter((c) => c[0] === date).map(([, code, status, measured, tolerance, detail]) => ({ code, status, measured, tolerance, detail })), inputs: then.inputs[date] ?? null,
+      approximations: then.approximations },
     now: { day: db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date = ?').get(s.id, date) ?? null,
       hh: db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND local_date = ? ORDER BY slot_start').all(s.id, date).map(pick),
       checks: db.prepare('SELECT check_code AS code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date = ?').all(s.id, date) },
@@ -237,7 +239,7 @@ app.get('/api/sites/:id/tariffs', (req, res) => {
   const now = nowSec();
   const rows = db.prepare(`SELECT d.kind, d.label, t.tariff_code, t.name, t.structure, t.direction, a.valid_from, a.valid_to
     FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
-    WHERE a.site_id = ? ORDER BY d.kind, a.valid_from DESC`).all(s.id);
+    WHERE a.site_id = ? AND a.superseded_at IS NULL ORDER BY d.kind, a.valid_from DESC`).all(s.id);
   const pricing = loadPricing(s.id, now - SLOT, now + SLOT);
   res.json(rows.map((r) => {
     const live = r.valid_from <= now && (r.valid_to == null || r.valid_to > now);
@@ -371,7 +373,7 @@ app.get('/api/sites/:id/everything', (req, res) => {
     }
   }
   for (const a of db.prepare(`SELECT a.valid_from, t.tariff_code, d.kind FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id JOIN device d ON d.id = a.device_id
-      WHERE a.site_id = ? AND a.valid_from >= ? AND a.valid_from < ?`).all(s.id, start, tEnd)) {
+      WHERE a.site_id = ? AND a.superseded_at IS NULL AND a.valid_from >= ? AND a.valid_from < ?`).all(s.id, start, tEnd)) {
     events.push({ ts: a.valid_from, kind: 'tariff', label: 'Tariff change', detail: `${a.kind.replace('meter_', '')}: ${a.tariff_code}` });
   }
   for (const q of db.prepare(`SELECT p.fetched_at, p.reason, src.code FROM raw_payload p JOIN source src ON src.id = p.source_id
@@ -393,7 +395,7 @@ app.get('/api/sites/:id/everything', (req, res) => {
 
   // The parts of the system, with what feeds each one and how fresh it is.
   const conns = Object.fromEntries(db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ?').all(s.id).map((c) => [c.provider, c]));
-  const devices = db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ?').all(s.id);
+  const devices = db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id);
   const mask = (ref) => (ref && ref.length > 6 ? `…${ref.slice(-4)}` : ref);
   res.json({
     from, to, start, end: tEnd, now, timezone: s.timezone, rows, forecast, events,
@@ -406,10 +408,9 @@ app.get('/api/sites/:id/everything', (req, res) => {
 app.get('/api/sites/:id/forecast', (req, res) => res.json(forecastSite(site(req).id, Math.min(Number(req.query.hours) || 48, 48))));
 // Solar expected for the weather that happened (stored Open-Meteo sunlight × this home's own
 // response, fitted leaving each day out), per past half-hour and day, against actual output.
-app.get('/api/sites/:id/solar-expected', async (req, res) => {
+app.get('/api/sites/:id/solar-expected', (req, res) => {
   const s = site(req);
   const { from, to } = periodRange(s, req.query.period, req.query.from, req.query.to);
-  const { solarExpected } = await import('./core/solar-expected.js');
   res.json(solarExpected(s.id, from, to));
 });
 app.get('/api/sites/:id/insights', (req, res) => res.json(insightsFor(site(req).id)));
@@ -457,7 +458,7 @@ app.get('/api/sites/:id/evidence', (req, res) => {
     ORDER BY metric, start_ts, recorded_at`).all(String(s.id), slot - pad, slot + SLOT, String(s.id), s.id, `carbon:${s.carbon_region}`, slot + SLOT, slot)
     .filter((f) => f.subject_kind !== 'device' || f.kind === 'interval');
   const rates = db.prepare(`SELECT t.tariff_code, t.direction, r.component, r.register, r.payment_method, r.valid_from, r.valid_to, r.price_ex_vat, r.recorded_at, r.superseded_at, r.raw_id
-    FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id JOIN tariff_agreement a ON a.tariff_id = t.id AND a.site_id = ?
+    FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id JOIN tariff_agreement a ON a.tariff_id = t.id AND a.site_id = ? AND a.superseded_at IS NULL
     WHERE r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ? AND a.valid_from <= ? AND IFNULL(a.valid_to, 9000000000) > ?
     ORDER BY t.direction, r.component, r.superseded_at IS NOT NULL, r.recorded_at DESC`).all(s.id, slot, slot, slot, slot);
   const vat = db.prepare('SELECT * FROM vat_rate WHERE valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').all(slot, slot);
@@ -507,32 +508,23 @@ app.get('/api/sites/:id/health', (req, res) => {
 // which are confirmed and which are estimates waiting for the installer's figures.
 app.get('/api/sites/:id/system', (req, res) => {
   const s = site(req);
-  const env = process.env;
-  const meta = JSON.parse(db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(s.id)?.meta || '{}');
-  const est = meta.panelAnglesEstimate;
-  const anglesEstimated = est && s.pv_tilt === est.tilt && s.pv_orientation === est.bearing;
   const plant = db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(s.id)?.external_ref;
   // Installer as recorded on the Sunsynk plant (latest stored plant payload).
   const plantRaw = plant ? db.prepare("SELECT file FROM raw_payload WHERE site_id = ? AND request LIKE ? ORDER BY id DESC LIMIT 1").get(s.id, `%/v1/plant/${plant}?%`) : null;
   let installer = null;
   try { installer = plantRaw ? JSON.parse(fs.readFileSync(path.join(dataDir, plantRaw.file), 'utf8'))?.data?.installer || null : null; } catch { /* payload unreadable: leave unknown */ }
+  // Each detail as resolved from its versions (installer > measured > provider > estimated).
+  const item = (key, attr, label, unit, mcs) => {
+    const a = attributeAt(s.id, attr);
+    return { key, label, value: a?.value ?? null, unit, mcs, status: a?.source ?? 'unknown', source: a?.detail ?? 'Not known' };
+  };
   res.json({
     installer, installerSource: installer ? 'Sunsynk plant record' : null,
     items: [
-      { key: 'PV_KWP', label: 'Panel size', value: s.pv_kwp, unit: 'kWp', mcs: 'System size (kWp) on the MCS certificate and performance estimate',
-        status: env.PV_KWP ? 'installer' : s.pv_kwp != null ? 'provider' : 'unknown',
-        source: env.PV_KWP ? 'Entered in .env' : s.pv_kwp != null ? `Sunsynk plant record${plant ? ` (plant ${plant})` : ''}` : 'Not known' },
-      { key: 'PV_TILT', label: 'Panel tilt', value: s.pv_tilt, unit: '°', mcs: 'Inclination (roof pitch) in the MCS performance estimate',
-        status: anglesEstimated ? 'estimated' : env.PV_TILT ? 'installer' : 'unknown',
-        source: anglesEstimated ? `Estimated from this home's output (best fit R² ${est.r2}; ${est.nearTop})` : env.PV_TILT ? 'Entered in .env' : 'Not known' },
-      { key: 'PV_ORIENTATION', label: 'Panel direction', value: s.pv_orientation, unit: '° (compass)', mcs: 'Orientation in the MCS performance estimate',
-        status: anglesEstimated ? 'estimated' : env.PV_ORIENTATION ? 'installer' : 'unknown',
-        source: anglesEstimated ? `Estimated from this home's output (south 30° fits ${est.south30}; ${est.strings})` : env.PV_ORIENTATION ? 'Entered in .env' : 'Not known' },
-      { key: 'BATTERY_KWH', label: 'Battery size', value: s.battery_kwh, unit: 'kWh', mcs: 'Usable capacity on the battery datasheet or in the handover pack',
-        status: env.BATTERY_KWH ? 'installer' : meta.batteryMeasured?.kwhPer100 ? 'measured' : s.battery_kwh != null ? 'provider' : 'unknown',
-        source: env.BATTERY_KWH ? 'Entered in .env' : meta.batteryMeasured?.kwhPer100
-          ? `Measured: ${meta.batteryMeasured.energyKwh} kWh discharged over ${meta.batteryMeasured.socPoints} points of charge drop`
-          : s.battery_kwh != null ? 'Battery reading (Ah × voltage)' : 'Not known' },
+      item('PV_KWP', 'pv_kwp', 'Panel size', 'kWp', 'System size (kWp) on the MCS certificate and performance estimate'),
+      item('PV_TILT', 'pv_tilt', 'Panel tilt', '°', 'Inclination (roof pitch) in the MCS performance estimate'),
+      item('PV_ORIENTATION', 'pv_orientation', 'Panel direction', '° (compass)', 'Orientation in the MCS performance estimate'),
+      item('BATTERY_KWH', 'battery_kwh', 'Battery size', 'kWh', 'Usable capacity on the battery datasheet or in the handover pack'),
     ],
   });
 });
@@ -540,7 +532,7 @@ app.get('/api/sites/:id/system', (req, res) => {
 // Devices the providers report for this home (meters, EV), with the attributes they gave.
 app.get('/api/sites/:id/devices', (req, res) => {
   const s = site(req);
-  res.json(db.prepare('SELECT kind, provider, label, attrs FROM device WHERE site_id = ?').all(s.id)
+  res.json(db.prepare('SELECT kind, provider, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id)
     .map((d) => { const a = JSON.parse(d.attrs || '{}'); return { kind: d.kind, provider: d.provider, label: d.label, profileClass: a.profileClass ?? null, annualKwh: a.annualKwh ?? null, gasUnit: a.gasUnit ?? null, state: a.status?.currentState ?? null }; }));
 });
 

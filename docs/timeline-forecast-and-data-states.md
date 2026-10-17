@@ -143,11 +143,14 @@ The build engine runs over every UTC half-hour of every local day. A local day h
 |---|---|---|
 | Completeness | no half-hour missing | Every half-hour has a grid reading |
 | Rate coverage | every half-hour priced | No unpriced energy |
-| Energy balance | inverter loss within 10% of house use | Meter, clamp and load agree |
-| Meter vs clamp | daily import within 5% | The clamp is a sound fallback |
-| Counter fit (solar) | within 10% of the daily counter | The 5-minute samples are complete |
+| Energy balance | the inverter's use (the `*_to_loss` flows) within ±max(1 kWh, 50%) of this home's median over the 30 days before; judged from the 8th day | The house, exports and charging account for what came in. A fixed share of house use was dropped: the inverter's standby use is roughly constant, so it warned on 11 of 15 quiet days. |
+| Meter vs clamp, import and export | daily total within 5% (or 0.2 kWh) | Two devices measuring the same connection agree; the clamp is a sound fallback |
+| Counter fit: solar, house, import, export, battery in, battery out | within 10% (or 0.2 kWh) of the inverter's own daily counter | The 5-minute samples are complete. The counters read in 0.1 kWh steps, hence the 0.2 kWh floor. |
+| Gas calorific value | every gas half-hour converted | National Gas has published the value for that gas day |
 | Battery efficiency | measured | Shows the value and how it was measured |
 | Battery stock | — | Warns that opening energy has unknown cost |
+
+Checks run on completed days only; today is still filling in.
 
 **Rebuild:** the battery stock carries from one half-hour to the next. Each day saves its closing stock (`site_day.battery_stock`), so a rebuild can start at any day and continue from the day before. A normal sync rebuilds only from the earliest changed day (1 day, 13–18 ms). A full rebuild (Data & trust → Rebuild, about 0.2 s for 15 days) gives byte-identical rows.
 
@@ -240,6 +243,27 @@ The forecast covers the next 48 half-hours × 2. Every parameter is learned from
 - Agile prices beyond what is published are not estimated.
 - The past dashed "forecast at the time" line on the Solar page fills in from 16 Oct onward. Earlier Quartz forecasts were deleted because they were made with invented panel angles (section 6.3).
 
+### 3.1 Solar made against what the weather allowed
+
+The Solar page sets each past half-hour's output against two yardsticks on one axis: the **forecast made in advance** (`site_hh.solar_forecast`, the latest issue before the half-hour started, dashed) and the output **expected for the weather that actually happened** (solid). The second is an expectation, not a measurement. It comes from `GET /api/sites/:id/solar-expected?period=` (`src/core/solar-expected.js`) and is computed on request, not stored.
+
+| Part | Method |
+|---|---|
+| **Sunlight** | Open-Meteo's horizontal sunlight for each past hour at the home's location (`interval_fact`, `ghi_wm2` / `open_meteo`, versions in force). These are Open-Meteo's model values for past hours, not a sensor at the home. The hour's mean W/m² gives kWh/m² for each of its half-hours, as in the forecast. |
+| **Response** | The forecast's own fit (`learnSunlight`): for each local hour of day, Σ(solar × sunlight) ÷ Σ(sunlight²) over built half-hours (not `missing`) with sunlight above zero. |
+| **Window** | The last 30 days, ending today. This is a reporting choice: it matches the Solar page's longest view. Because the window always ends today, a day gets the same expected value in the Today, 7-day and 30-day views. |
+| **Leave one day out** | Day D is compared with a fit over the window's other days, never D. A day's own output cannot shape its yardstick, so a bad day shows up as bad. |
+| **Expected** | Sunlight × the ratio for that hour. Zero sunlight gives 0. There is no value (null, never 0) when a half-hour has no sunlight fact, when no other day had sun at that hour, or when fewer than 3 other days have both solar and sunlight. |
+| **Made vs expected** | Actual ÷ expected, over the half-hours that have both. A gap on either side is therefore never counted as zero on one side only. It is given per day, for the period, and as a low–high range over whole days. |
+| **Check** | Every daylight half-hour of the window is compared with the fit made without its own day, giving an out-of-sample R² and mean absolute error. |
+
+At 10 Acresbrook (copy of 16 Oct, early afternoon): 15 days in the window. The out-of-sample check gives R² 0.69 and a mean error of 0.22 kWh over 318 daylight half-hours. Over the last 7 days the panels made 78.9 kWh against 73.5 kWh expected (107%). Whole days ranged from 78% to 135%.
+
+**Limits:**
+- Open-Meteo's past sunlight is modelled for the location. Cloud over the home that the model missed shows up as over- or under-performance.
+- The fit is linear per hour of day. It reflects the panels' angles and shading as they were over the window. It does not know the inverter's limit, so on the brightest half-hours the expected value can be more than the inverter could deliver.
+- Days before Open-Meteo's history starts have no expected value. They show as gaps, not zeros.
+
 ---
 
 ## 4. Where every number comes from, and what it affects
@@ -260,7 +284,7 @@ The forecast covers the next 48 half-hours × 2. Every parameter is learned from
 | **Octopus Kraken** | EV dispatches and devices; **gas `consumptionUnits`** and **gas zone (`ldz`)** | `interval_fact` (EV), `device` | EV energy, IOG dispatch pricing, which gas readings are m³, which calorific value applies |
 | **National Gas Data Portal** | Daily calorific value for the gas zone (item "Calorific Value, LDZ(NW)", PUBOB4512) | `interval_fact` (one row per gas day) | Gas kWh, gas cost, bill |
 | **NESO** | Regional carbon intensity (history = NESO's forecast) | `interval_fact`, `forecast_fact` | Carbon emitted/avoided, greenest window |
-| **Open-Meteo** | Temperature; horizontal sunlight; sunlight on the panels (only with tilt and direction) | `reading`, `interval_fact`, `forecast_fact` | Timeline weather row; temperature fit; sunlight-based solar forecast |
+| **Open-Meteo** | Temperature; horizontal sunlight; sunlight on the panels (only with tilt and direction) | `reading`, `interval_fact`, `forecast_fact` | Timeline weather row; temperature fit; sunlight-based solar forecast; Solar page "expected for the weather" (section 3.1) |
 | **Quartz** | Solar forecast for the panels (with size, tilt and direction) | `forecast_fact` | Solar forecast; Solar page forecast line |
 | **`.env`** | Postcode; panel tilt 20° and direction 60° **estimated from the home's output** (section 7); panel size and battery left empty so the providers' values are used | `site` | Quartz request, sunlight on the panels |
 | **postcodes.io / Octopus GSP / NESO region** | Postcode, region keys | `site` | Which prices and carbon series apply |
@@ -413,7 +437,10 @@ These shape how results are summarised, never the measured values:
 - the comparison's 16:00–19:00 window;
 - "last 7 days" projections on My energy;
 - the 12-hour lead for accuracy;
-- the 0.5–2 range for using Quartz (section 3).
+- the 0.5–2 range for using Quartz (section 3);
+- the check tolerances in section 1.3 (5%, 10%, the 0.2 kWh floor, the energy-balance band and its 7-day start);
+- when each source counts as late (section 8.2);
+- the 30-day window for solar expected for the weather (section 3.1).
 
 Each is named where it is shown.
 
@@ -481,6 +508,111 @@ Other ways to confirm the values, in order of reliability:
 3. **Re-run the estimate** with more days, especially clear ones.
 
 ---
+
+## 8. Proving the data: the Data & trust page
+
+The pages show conclusions (costs, savings, charts). The Data & trust page shows why they can be relied on, from the facts themselves. Every view below is computed on request from stored facts (`/api/sites/:id/trust`, `/revisions`, `/asof`); none of it is typed in. Every other page carries a one-line note of what its figures rest on for the selected period (for example "315 half-hours: 77% final, 73 provisional · 70 of 72 cross-checks agree"), linking here.
+
+### 8.1 Headline
+
+For the selected period:
+- **Final share:** half-hours final, provisional and missing.
+- **Cross-checks:** passed, warnings, failed, not yet judged.
+- **Traced:** provider facts in the period that link to the raw response they came from (100% on 16 Oct: 14,880 facts from 127 responses).
+- **Revised:** half-hours changed after they were first shown as final (the `revised` quality bit), days with a recorded revision, and corrections by EnergieBee.
+
+### 8.2 How the timeline comes together (source coverage)
+
+One row per source, one cell per half-hour, plus the build's result (final, provisional, missing) as the last row. A cell's state comes from the facts' own timestamps: the first version's `recorded_at` against the end of the half-hour.
+
+| Source | Expected per half-hour | Counts as late after |
+|---|---|---|
+| Inverter 5-minute power (Sunsynk) | 6 samples (fewer than 5 = partial) | 1 hour |
+| Smart meter import, export, gas (Octopus) | 1 reading | 2 days (Octopus delivers about a day late) |
+| Gas calorific value (National Gas) | 1 value per gas day | 2 days |
+| Grid carbon (NESO), sunlight (Open-Meteo) | 1 value | 1 day |
+| Import and export price | a price in force | — (published ahead) |
+| Solar forecast made in advance | a forecast issued before the half-hour | — (kept from 16 Oct) |
+
+"Loaded with the history" marks data fetched in the first 15 minutes after a source was first connected, for half-hours that had already ended: the initial 14-day load, not lateness. "Waiting" means not received and not yet due.
+
+### 8.3 Independent measurements agree (cross-check grid)
+
+Days across, checks down, each cell with its status and measured value (hover for the exact numbers). The checks are those in section 1.3: the six inverter counters against the 5-minute samples, smart meter against inverter clamp for import and export, the energy balance against this home's typical day, coverage and pricing.
+
+### 8.4 Every kWh accounted for
+
+For each day, where the energy came from (solar, grid, battery) and where it went (house, exports, into the battery, the inverter's own use), drawn to the same scale. In always equals out, because each source's energy is split into flows and what is left after the house, exports and charging is the inverter's use. Next to it: how many inverter counters agreed and the smart-meter against clamp totals.
+
+**Two figures for the inverter's use.** `site_hh.loss` is the energy balance minus the inverter's load reading; it goes negative in half-hours where the load reading exceeds the balance (on 14 Oct the sum was 2.9 kWh). The `*_to_loss` flows are what each source supplied beyond the house, exports and charging (4.0 kWh that day); they are what every page prices and what the balance check now uses.
+
+### 8.5 How each day changed (revision log)
+
+`site_day` keeps only the latest version of a day. Each time a completed day is rebuilt with different figures, state or check results, a row is added to `site_day_revision`: when, why (the reason that queued the rebuild, such as "facts changed" or "full rebuild requested"), what changed (from → to), the build method, and the inputs (battery size and its source, half-hours from the meter and from the clamp). An unchanged rebuild adds nothing. Every row has a kind:
+- **Recorded:** written by a live rebuild. The live log started at 13:53 BST on 16 Oct 2026.
+- **Reconstructed:** added afterwards for the time before the live log, by `npm run history:reconstruct` (`src/core/history.js`).
+  - **How:** each completed day is rebuilt "as known at" (section 8.6) the end of every earlier sync. A version is stored only when it differs from the previous one.
+  - **Inputs:** each row lists any input read as first recorded (section 8.6).
+  - **Link to the live log:** each day's first recorded row then says what changed since the last reconstructed version.
+  - **Run:** it runs once (`--force` redoes it) and writes only to `site_day_revision`.
+- **What a reconstructed version is:** the figures today's build method gives from the facts known at that moment, not a copy of what the pages showed then. The method itself changed during 16 Oct.
+- **Where it starts:** 07:49 BST on 16 Oct, the first sync whose tariff agreements were recorded. Before that the tariff came from `.env` and was not kept, so a bill cannot be reproduced.
+- **Example, 14 Oct (10 Acresbrook):**
+
+  | Time (BST) | Kind | Version |
+  |---|---|---|
+  | 07:49 | reconstructed | 48 half-hours final (meter readings in), gas unknown, bill not priced |
+  | 10:12 | reconstructed | gas 37.3 kWh: the m³ readings and calorific value were stored |
+  | 12:01 | reconstructed | bill £4.46: Octopus's time-stamped IOG prices arrived, so the off-peak window could be learned |
+  | 13:53 | recorded | no change |
+
+  For 10 Acresbrook: 64 syncs replayed in 9.4 s, giving 42 versions across 14 days.
+
+### 8.6 A day as it was known at any moment ("as known at")
+
+Facts are never overwritten, so the build can run as it would have at an earlier moment T. Every fact, price and system detail is read in the version in force at T (`recorded_at ≤ T` and not yet superseded), forecasts count only if issued by T, and "now" is T. The rebuild runs from the first day (so the battery stock is also as known then), writes nothing, and is set beside the day as it is now.
+- **Checked:** "as known now" reproduces the stored rows exactly (698 half-hours, 0 differences; a test).
+- **Example:** 15 Oct as known at 08:00 BST on 16 Oct had 46 provisional half-hours from the clamp and no bill, because the Intelligent Octopus Go off-peak window could not yet be learned. Now it has a bill of £4.70.
+- **What is read as of T:**
+  - facts and prices;
+  - tariff agreements: versioned, a changed account history supersedes the old rows;
+  - meters: a device has a first-known time and is retired, not deleted;
+  - device details (gas unit, gas zone): versioned in `device_attr_version`;
+  - system details.
+- **Limits:** where no version existed yet at T, the earliest recorded one is used and listed with the result as "read as first recorded". For 10 Acresbrook:
+  - device details are versioned from 14:28 BST and system details from 13:53 BST on 16 Oct;
+  - when devices and agreements were first known comes from the sync log: the first sync whose Octopus step succeeded, 07:49 BST;
+  - the `.env` tariff used before that was not kept;
+  - before the first sync nothing was known, so such a moment shows nothing.
+
+### 8.7 System details, meters and tariffs, versioned
+
+Panel size, tilt, direction and battery size are kept in `site_attribute`, one current value per source: installer (`.env`), measured (from the home's data), provider (Sunsynk) or estimated. A new value supersedes the same source's previous one; nothing is deleted. The value used is the highest-ranked source in force: installer, then measured, then provider, then estimated. The site row caches it. "Your system's details" shows each value with its source, and every recorded version.
+
+Meters and tariffs follow the same rule:
+- **Device details** (gas unit, gas zone, EV status) get a new `device_attr_version` row when they change. `device.attrs` holds the current one.
+- **Devices** that stop being used are retired (`retired_at`). For example, the stand-in `.env` tariff meters are retired once the Octopus meters are read.
+- **Agreements:** a changed account history supersedes the old tariff agreements (kept) and adds the new ones.
+- **Timestamps:** a version's time always moves forward, even for two changes in the same millisecond.
+- **Upgrade:** a database from before this upgrades itself on open. The agreement table is rebuilt once, and the first-known times are filled from the sync log.
+
+### 8.8 Corrections by EnergieBee
+
+When the core finds it stored something a provider did not send, it withdraws it (supersedes, never deletes) and logs it in `fact_correction`.
+- **16 Oct 2026:** 626 `gas_kwh` facts labelled as Octopus readings were withdrawn. Earlier code had converted the m³ readings with a fixed calorific value as it stored them (0.118 m³ × 11.22 = 1.324 kWh). Octopus sent m³; those readings are kept as `gas_m3` and converted in the build with the daily value. The build had already ignored them, so no figure changed (a test checks this).
+
+### 8.9 The path of one half-hour
+
+For any half-hour, seven steps from left to right:
+1. the provider responses (each opens as received);
+2. the facts, with older versions;
+3. align (fit factors to the daily counters);
+4. reconcile (meter or clamp, with the clamp's reading kept when the meter replaced it);
+5. allocate (the flows);
+6. price (tariff, register, rate with VAT, bill);
+7. check (state and the day's checks).
+
+The full numbers, facts and prices in force follow below.
 
 ## Sources
 

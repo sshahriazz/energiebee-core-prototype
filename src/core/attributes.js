@@ -30,12 +30,12 @@ function resolve(siteId, attr) {
 export function setAttribute(siteId, attr, value, source, detail = null) {
   if (!ATTRS.includes(attr) || !(source in RANK)) throw new Error(`unknown attribute ${attr}/${source}`);
   const v = value == null || value === '' ? null : Number(value);
-  const cur = db.prepare('SELECT value, detail FROM site_attribute WHERE site_id = ? AND attr = ? AND source = ? AND superseded_at IS NULL').get(siteId, attr, source);
+  const cur = db.prepare('SELECT value, detail, recorded_at FROM site_attribute WHERE site_id = ? AND attr = ? AND source = ? AND superseded_at IS NULL').get(siteId, attr, source);
   if (cur && cur.value === v) {
     if (detail && cur.detail !== detail) db.prepare('UPDATE site_attribute SET detail = ? WHERE site_id = ? AND attr = ? AND source = ? AND superseded_at IS NULL').run(detail, siteId, attr, source);
     return resolve(siteId, attr);
   }
-  const now = Date.now();
+  const now = Math.max(Date.now(), (cur?.recorded_at ?? 0) + 1);   // versions always move forward
   tx(() => {
     db.prepare('UPDATE site_attribute SET superseded_at = ? WHERE site_id = ? AND attr = ? AND source = ? AND superseded_at IS NULL').run(now, siteId, attr, source);
     if (v != null) db.prepare('INSERT INTO site_attribute (site_id, attr, source, value, detail, recorded_at) VALUES (?, ?, ?, ?, ?, ?)').run(siteId, attr, source, v, detail, now);

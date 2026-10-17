@@ -11,7 +11,7 @@ export function loadPricing(siteId, fromTs, toTs) {
   const agreements = db.prepare(
     `SELECT a.*, d.kind, t.tariff_code, t.fuel, t.direction, t.structure, t.name
      FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
-     WHERE a.site_id = ? AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, toTs, fromTs);
+     WHERE a.site_id = ? AND ${inForce('a')} AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, toTs, fromTs);
   const tariffIds = [...new Set(agreements.map((a) => a.tariff_id))];
   const rates = tariffIds.length ? db.prepare(
     `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})

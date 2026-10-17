@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS device (
   provider      TEXT NOT NULL,
   external_ref  TEXT NOT NULL,          -- serial, MPAN, MPRN, device id
   label         TEXT,
-  attrs         TEXT,
+  attrs         TEXT,                   -- current details; every version is in device_attr_version
+  recorded_at   INTEGER,                -- ms: when the core first knew this device
+  retired_at    INTEGER,                -- ms: when it stopped being used (kept, not deleted)
   UNIQUE (site_id, provider, external_ref)
 );
 
@@ -129,24 +131,28 @@ BEGIN
   );
 END;
 
+-- Versioned like facts: a changed account history supersedes the old rows (kept) and adds new ones.
 CREATE TABLE IF NOT EXISTS tariff_agreement (
-  id          INTEGER PRIMARY KEY,
-  site_id     INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
-  device_id   INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE,
-  tariff_id   INTEGER NOT NULL REFERENCES tariff(id),
-  valid_from  INTEGER NOT NULL,
-  valid_to    INTEGER,
-  CHECK (valid_to IS NULL OR valid_to > valid_from),
-  UNIQUE (device_id, valid_from)
+  id             INTEGER PRIMARY KEY,
+  site_id        INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
+  device_id      INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+  tariff_id      INTEGER NOT NULL REFERENCES tariff(id),
+  valid_from     INTEGER NOT NULL,
+  valid_to       INTEGER,
+  recorded_at    INTEGER,               -- ms
+  superseded_at  INTEGER,               -- ms; NULL = current
+  CHECK (valid_to IS NULL OR valid_to > valid_from)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS agreement_current ON tariff_agreement (device_id, valid_from) WHERE superseded_at IS NULL;
 
-CREATE TRIGGER IF NOT EXISTS agreement_no_overlap
+CREATE TRIGGER IF NOT EXISTS agreement_no_overlap_current
 BEFORE INSERT ON tariff_agreement
+WHEN NEW.superseded_at IS NULL
 BEGIN
   SELECT RAISE(ABORT, 'overlapping tariff agreement for this meter')
   WHERE EXISTS (
     SELECT 1 FROM tariff_agreement a
-    WHERE a.device_id = NEW.device_id
+    WHERE a.device_id = NEW.device_id AND a.superseded_at IS NULL
       AND a.valid_from < IFNULL(NEW.valid_to, 9000000000)
       AND IFNULL(a.valid_to, 9000000000) > NEW.valid_from
   );
@@ -334,7 +340,8 @@ CREATE TABLE IF NOT EXISTS site_day_revision (
   saving             REAL,
   checks             TEXT,                  -- JSON {check_code: status}
   inputs             TEXT,                  -- JSON: system details used, meter vs clamp half-hours
-  changed            TEXT                   -- JSON [{field, from, to}]; NULL for the first record
+  changed            TEXT,                  -- JSON [{field, from, to}]; NULL for the first record
+  kind               TEXT NOT NULL DEFAULT 'recorded'   -- recorded (by a live rebuild) or reconstructed (from the facts known then)
 );
 CREATE INDEX IF NOT EXISTS site_day_revision_day ON site_day_revision (site_id, local_date, revised_at);
 
@@ -348,3 +355,13 @@ CREATE TABLE IF NOT EXISTS fact_correction (
   rows         INTEGER NOT NULL,
   reason       TEXT NOT NULL
 );
+
+-- Every version of a device's details (gas unit, gas zone, EV status …): device.attrs holds the
+-- current one. Lets a rebuild read a meter as it was described at an earlier moment.
+CREATE TABLE IF NOT EXISTS device_attr_version (
+  device_id      INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+  attrs          TEXT NOT NULL,
+  recorded_at    INTEGER NOT NULL,      -- ms
+  superseded_at  INTEGER,               -- ms; NULL = current
+  PRIMARY KEY (device_id, recorded_at)
+) WITHOUT ROWID;

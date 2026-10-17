@@ -44,7 +44,8 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     <div class="page-head">
       <div><h1>${esc(title)}</h1>${subtitle ? `<p>${subtitle}</p>` : ''}</div>
       ${periods ? `<div class="segmented" role="group" aria-label="Period">${PERIODS.map(([k, l]) => `<button data-period="${k}" aria-pressed="${k === state.period}">${l}</button>`).join('')}</div>` : ''}
-    </div>`);
+    </div>
+    <div id="basis-slot"></div>`);
   document.body.insertAdjacentHTML('beforeend', `
     <footer class="foot">
       <img src="/img/technext-logo.png" alt="Technext">
@@ -93,11 +94,27 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     keepUrl();
   }
 
+  // What every figure on the page rests on, for the selected period: how many half-hours are
+  // final, provisional or missing, and how the checks went, with a link to the proof.
+  async function basis() {
+    const slot = document.getElementById('basis-slot');
+    if (!periods || page === 'data' || !state.site) { slot.innerHTML = ''; return; }
+    try {
+      const b = (await api(`/api/sites/${state.site.id}/summary?period=${state.period}`)).basis;
+      if (!b?.halfHours) { slot.innerHTML = ''; return; }
+      const c = b.checks || {}; const run = (c.pass || 0) + (c.warn || 0) + (c.fail || 0);
+      const w = (n) => `${(n / b.halfHours) * 100}%`;
+      slot.innerHTML = `<div class="basis"><span class="basis-bar" aria-hidden="true"><i style="width:${w(b.final)};background:var(--good)"></i><i style="width:${w(b.provisional)};background:var(--warn)"></i><i style="width:${w(b.missing)};background:var(--bad)"></i></span>
+        <span>Based on ${b.halfHours} half-hours: <b>${Math.round((b.final / b.halfHours) * 100)}% final</b>${b.provisional ? `, ${b.provisional} provisional (waiting for smart-meter readings)` : ''}${b.missing ? `, ${b.missing} missing` : ''}${run ? ` · ${c.pass} of ${run} cross-checks agree` : ''}</span>
+        <a href="/data?site=${state.siteId}&period=${state.period}#proof">See the proof →</a></div>`;
+    } catch { slot.innerHTML = ''; }
+  }
+
   let rendering = false;
   async function rerender() {
     if (rendering || !state.site) return;
     rendering = true;
-    try { await render(state); } catch (err) { console.error(err); } finally { rendering = false; }
+    try { await Promise.all([render(state), basis()]); } catch (err) { console.error(err); } finally { rendering = false; }
   }
 
   async function waitForSync() {

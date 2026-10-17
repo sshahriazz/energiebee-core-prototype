@@ -12,6 +12,7 @@
 import { db, tx } from '../db/db.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
 import { attributeAt } from './attributes.js';
+import { devicesAt } from './devices.js';
 import { loadPricing, priceAt } from './pricing.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays } from './time.js';
 
@@ -67,6 +68,20 @@ const median = (xs) => { const a = [...xs].sort((x, y) => x - y); const m = a.le
 const REVISION_FIELDS = [['slots_final', 0], ['slots_provisional', 0], ['slots_missing', 0], ['solar', 0.001], ['home', 0.001], ['grid_import', 0.001],
   ['grid_export', 0.001], ['gas', 0.001], ['total_cost', 0.01], ['saving', 0.01]];
 
+// What changed between two versions of a day: figures beyond their smallest step, check results, method.
+export function dayChanges(before, beforeChecks, after, afterChecks) {
+  const changed = [];
+  for (const [k, eps] of REVISION_FIELDS) {
+    const a = before[k]; const b = after[k];
+    if ((a == null) !== (b == null) || (a != null && Math.abs(a - b) > eps)) changed.push({ field: k, from: a ?? null, to: b ?? null });
+  }
+  for (const code of new Set([...Object.keys(beforeChecks || {}), ...Object.keys(afterChecks || {})])) {
+    if (beforeChecks?.[code] !== afterChecks?.[code]) changed.push({ field: `check:${code}`, from: beforeChecks?.[code] ?? null, to: afterChecks?.[code] ?? null });
+  }
+  if (before.method_version && after.method_version && before.method_version !== after.method_version) changed.push({ field: 'method_version', from: before.method_version, to: after.method_version });
+  return changed;
+}
+
 function build(siteId, fromDate, toDate, opts) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
@@ -94,7 +109,12 @@ function build(siteId, fromDate, toDate, opts) {
   const daily = groupBy(readIntervals(Object.values(dailyIds), winStart, winEnd), 'series_id');
   const hasInverter = (readings.get(powerIds.solar) || []).length > 0 || (readings.get(powerIds.imp) || []).length > 0;
 
-  const meters = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'").all(siteId);
+  // Meters in use, with their details (gas unit and zone), as known at the moment being built.
+  const meters = devicesAt(siteId, "kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'", asOf != null ? asOf * 1000 : null);
+  // Inputs read as they are now because no earlier version was kept (as-of rebuilds only).
+  const approximations = [];
+  for (const m of meters) if (m.approximateAttrs) approximations.push(`${m.kind} details as first recorded at ${new Date(m.approximateAttrs).toISOString()}`);
+  if (asOf != null && !battAttr) approximations.push('battery size: current value (no earlier record)');
   const meterFacts = {};
   // Gas in m3 is converted per gas day with National Gas's calorific value for the meter's zone:
   // kWh = m3 × 1.02264 (volume correction) × CV (MJ/m3) ÷ 3.6. Without a published CV the
@@ -362,6 +382,8 @@ function build(siteId, fromDate, toDate, opts) {
         'solar_to_loss', 'battery_to_loss', 'grid_to_loss', 'loss_cost',
         'grid_to_home_cost', 'grid_to_battery_cost', 'battery_to_home_cost', 'export_credit', 'standing_cost', 'gas_cost',
         'total_cost', 'grid_only_cost', 'saving', 'carbon_g', 'carbon_saved_g'].map((k) => [k, anyNull(k) && ['total_cost', 'grid_only_cost', 'saving'].includes(k) ? null : sum(k)])),
+      // Gas with no reading in any half-hour is unknown for the day, not zero.
+      gas: R.some((r) => r.gas != null) ? sum('gas') : null,
       solar_forecast: R.some((r) => r.solar_forecast != null) ? sum('solar_forecast') : null,
       self_consumption: solarSum > 0.01 ? (sum('solar_to_home') + sum('solar_to_battery')) / solarSum : null,
       self_sufficiency: homeSum > 0.01 ? 1 - sum('grid_to_home') / homeSum : null,
@@ -414,7 +436,7 @@ function build(siteId, fromDate, toDate, opts) {
   if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, 'Energy already in the battery when the data starts has unknown cost; those half-hours show no stored cost']);
   if (lastEff) checks.push([lastEff.date, 'battery_efficiency', lastEff.eff < 1 ? 'pass' : 'skip', lastEff.eff, null, lastEff.eff < 1 ? `measured round trip ${(lastEff.eff * 100).toFixed(1)}%: ${lastEff.note}` : lastEff.note]);
 
-  if (opts.dryRun) return { days: dayRows.length, slots: hhRows.length, hhRows, dayRows, checks, inputs: Object.fromEntries(dayInputs) };
+  if (opts.dryRun) return { days: dayRows.length, slots: hhRows.length, hhRows, dayRows, checks, inputs: Object.fromEntries(dayInputs), approximations };
 
   // ── Revision log: completed days whose figures, state or checks changed ──
   const revisions = [];
@@ -424,18 +446,7 @@ function build(siteId, fromDate, toDate, opts) {
     if (r.local_date >= today) continue;          // today is still filling in
     const before = previousDays.get(r.local_date);
     const nowChecks = checksByDay.get(r.local_date) || {};
-    const changed = [];
-    if (before) {
-      for (const [k, eps] of REVISION_FIELDS) {
-        const a = before[k]; const b = r[k];
-        if ((a == null) !== (b == null) || (a != null && Math.abs(a - b) > eps)) changed.push({ field: k, from: a, to: b });
-      }
-      const wasChecks = previousChecks.get(r.local_date) || {};
-      for (const code of new Set([...Object.keys(wasChecks), ...Object.keys(nowChecks)])) {
-        if (wasChecks[code] !== nowChecks[code]) changed.push({ field: `check:${code}`, from: wasChecks[code] ?? null, to: nowChecks[code] ?? null });
-      }
-      if (before.method_version !== r.method_version) changed.push({ field: 'method_version', from: before.method_version, to: r.method_version });
-    }
+    const changed = before ? dayChanges(before, previousChecks.get(r.local_date) || {}, r, nowChecks) : [];
     // A day built before this log existed has no earlier record: its first row is where history starts.
     const first = !db.prepare('SELECT 1 FROM site_day_revision WHERE site_id = ? AND local_date = ? LIMIT 1').get(siteId, r.local_date);
     if (before && !first && !changed.length) continue;

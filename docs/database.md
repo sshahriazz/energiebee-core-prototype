@@ -198,7 +198,8 @@ flowchart TB
 | `GET …/breakdown` | `site_hh`, `site_day` | breakdown |
 | `GET …/tariffs` | `tariff_agreement`, `device`, `tariff`, pricing tables | grid |
 | `GET …/compare` | `site_hh`, `connection.meta`, `tariff`, `rate_interval`, `interval_fact` (dispatch count), pricing tables | my, tariffs |
-| `GET …/forecast` | via `forecastSite`: `site_hh`, `forecast_fact`, `reading`, `interval_fact`, pricing tables | home, battery, grid, my |
+| `GET …/forecast` | via `forecastSite`: `site_hh`, `forecast_fact`, `reading`, `interval_fact`, pricing tables | home, battery, grid, my, solar |
+| `GET …/solar-expected` | `site`, `site_hh`, `interval_fact` (Open-Meteo sunlight) | solar |
 | `GET …/everything` | `site_hh`, `forecastSite`, `sync_run`, `series` + `device` + `interval_fact` (meter arrival times), `tariff_agreement`, `raw_payload` (quarantined), `forecast_fact` (Quartz issues), `check_result`, `connection`, `device` | everything |
 | `GET …/ev` | `device`, `site_hh`, `forecastSite` | ev, my |
 | `GET …/insights` | `site`, `site_day`, `site_hh`, `check_result` | home, my |
@@ -638,10 +639,11 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | | |
 |---|---|
 | Purpose | Meters (`meter_import`, `meter_export`, `meter_gas`), EV and stand-in meters for `.env` tariffs. `external_ref` is the MPAN, MPRN or device id. `attrs` JSON holds meter serials, profile class, annual estimate, the gas unit decision with its source, the gas zone (`ldz`) and EV status. |
+| Versioning (16 Oct 2026) | `recorded_at` (ms): when the core first knew the device; `retired_at` (ms): when it stopped being used. A retired device is kept, not deleted. Every change to `attrs` is also written to `device_attr_version` (`devices.js` `setDeviceAttrs`). Reads of devices in use filter `retired_at IS NULL`; `devicesAt(site, where, T)` gives the devices and details as known at T. |
 | Keys and constraints | `id` PRIMARY KEY; UNIQUE (`site_id`, `provider`, `external_ref`); `site_id` → `site` ON DELETE CASCADE |
 | Written by | `octopus.js` `upsertDevice` (account), `syncGasUnits` (unit and zone from Kraken), `syncOctopusConsumption` (unit fallback), `syncKraken` (EV); `sync.js` `syncEnvTariffs` (inserts `.env` stand-ins, deletes them once Octopus meters exist) |
 | Read by | `build.js` (meters), `pricing.js`, `octopus.js`, `nationalgas.js`, `compare.js`, `sync.js`, `server.js` (`/everything`, `/evidence`, `/ev`, `/devices`, `/tariffs`) |
-| Rows now | 4 (ids 3–6; ids 1 and 2 are gone, consistent with the `.env` stand-ins being deleted once the Octopus meters arrived) |
+| Rows now | 4 (ids 3–6; ids 1 and 2 are gone: before versioning, the `.env` stand-ins were deleted once the Octopus meters arrived; they are now retired instead) |
 | Growth | One row per meter or device per home. |
 
 #### `series`
@@ -672,12 +674,13 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 
 | | |
 |---|---|
-| Purpose | Which tariff applied to which meter, and when. |
-| Keys and constraints | `id` PRIMARY KEY; UNIQUE (`device_id`, `valid_from`); CHECK `valid_to IS NULL OR valid_to > valid_from`; trigger **`agreement_no_overlap`**: before insert, abort if another agreement for the same meter overlaps (an open end counts as 9000000000); `site_id` and `device_id` cascade on delete |
-| Written by | `octopus.js` `replaceAgreements`: on every account sync, in one transaction, delete all rows for the meter, clip upstream overlaps, insert again; `sync.js` `syncEnvTariffs` |
+| Purpose | Which tariff applied to which meter, and when. Versioned (16 Oct 2026): `recorded_at` and `superseded_at` (ms); a changed history supersedes the old rows (`devices.js` `supersedeAgreements`), so prices can be read as known at an earlier moment. Readers of the current history filter `superseded_at IS NULL`; `loadPricing` uses `inForce('a')`. |
+| Keys and constraints (versioned) | `id` PRIMARY KEY; partial UNIQUE index **`agreement_current`** (`device_id`, `valid_from`) WHERE `superseded_at IS NULL`; trigger **`agreement_no_overlap_current`** (current rows only). The old table, with UNIQUE (`device_id`, `valid_from`), is rebuilt once on open (`db.js`, foreign-key checks off for the copy). |
+| Keys and constraints (before) | `id` PRIMARY KEY; UNIQUE (`device_id`, `valid_from`); CHECK `valid_to IS NULL OR valid_to > valid_from`; trigger **`agreement_no_overlap`**: before insert, abort if another agreement for the same meter overlaps (an open end counts as 9000000000); `site_id` and `device_id` cascade on delete |
+| Written by | `octopus.js` `replaceAgreements`: clip upstream overlaps; if the history differs from the current rows, supersede them and insert the new ones (`supersedeAgreements`); `sync.js` `syncEnvTariffs` (`.env` stand-ins, retired once Octopus meters exist) |
 | Read by | `pricing.js` `loadPricing`; `sync.js` (which tariffs were in force in the window); `server.js` (`/tariffs`, `/everything`, `/evidence`) |
 | Rows now | 16, with ids 515–530 (Q22) |
-| Growth | Flat: one row per agreement in the account's history. Each sync replaces the rows, so ids rise by about 16 per sync while the count stays the same. No versions are kept. |
+| Growth | One row per agreement in the account's history, plus a superseded copy each time Octopus changes that history (rare). Unchanged history is never rewritten. |
 
 #### `vat_rate`
 
@@ -777,7 +780,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 
 | | |
 |---|---|
-| Purpose | Checks per local day: `completeness`, `rate_coverage`, `energy_balance`, `meter_vs_ct`, `counter_fit_solar`, `gas_calorific_value`. Two checks for the whole window, `battery_efficiency` and `battery_stock`, are stored on its first day. |
+| Purpose | Checks per completed local day: `completeness`, `rate_coverage`, `energy_balance` (against the home's own 30-day median), `meter_vs_ct` and `meter_vs_ct_export`, `counter_fit_solar`, `_load`, `_import`, `_export`, `_charge`, `_discharge`, `gas_calorific_value`. Two checks for the whole window, `battery_efficiency` and `battery_stock`, are stored on its first day. |
 | Keys and constraints | PRIMARY KEY (`site_id`, `local_date`, `check_code`), `WITHOUT ROWID`; CHECK `status IN ('pass','warn','fail','skip')`; `site_id` → `site` ON DELETE CASCADE |
 | Written by | `build.js` `buildSite`: delete the window, `INSERT OR REPLACE` |
 | Read by | `server.js` (`/everything`, `/health`); `insights.js` |
@@ -807,6 +810,51 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | Growth | 1 row per sync, about 1.1 KB each (Q17); never deleted. |
 
 ---
+
+### Trust (added 16 Oct 2026)
+
+Three tables keep history that the serving tables do not. The Data & trust page and `/api/sites/:id/trust`, `/revisions` and `/asof` read them.
+
+#### `site_attribute`
+
+| | |
+|---|---|
+| Purpose | Panel size, tilt, direction and battery size, one current value per source (`installer`, `measured`, `provider`, `estimated`), versioned like facts. The value in use is the highest-ranked source in force and is cached on `site`. |
+| Keys and constraints | PRIMARY KEY (`site_id`, `attr`, `source`, `recorded_at`), `WITHOUT ROWID`; CHECK on `attr` and `source`; `recorded_at`/`superseded_at` in ms |
+| Written by | `attributes.js` `setAttribute`, called from `.env` (`ensureEnvSite`), the Sunsynk adapter, `measureBatteryCapacity`; first versions seeded from `site` by `maintenance.js` |
+| Read by | `attributeAt` (current, or as known at a moment) in `build.js` as-of rebuilds, `/system`, `/trust` |
+| Growth | A row only when a source's value changes (a few per home per year) |
+
+#### `site_day_revision`
+
+| | |
+|---|---|
+| Purpose | One row each time a completed day's figures, state or checks change in a rebuild: when, why, what changed (from → to), method version, inputs (battery size and source; half-hours from meter and clamp). Each day's first row marks where its history starts. |
+| Keys and constraints | `id` PRIMARY KEY; index (`site_id`, `local_date`, `revised_at`) |
+| Written by | `build.js` `buildSite`, inside the same transaction as the serving rows; an unchanged rebuild writes nothing |
+| Read by | `/trust`, `/revisions`; the "as known at" picker offers its times |
+| Growth | About 2–3 rows per day per home (first record, provisional → final, occasional restatement), plus one per day on a method change |
+| `kind` | `recorded` (a live rebuild) or `reconstructed` (`history.js`: the day rebuilt as known at each earlier sync, for the time before the live log; one-off, `npm run history:reconstruct`) |
+
+#### `device_attr_version`
+
+| | |
+|---|---|
+| Purpose | Every version of a device's details (`attrs` JSON: gas unit, gas zone, EV status …), with `recorded_at` and `superseded_at` (ms) |
+| Keys and constraints | PRIMARY KEY (`device_id`, `recorded_at`), `WITHOUT ROWID`; `device_id` → `device` ON DELETE CASCADE |
+| Written by | `devices.js` `setDeviceAttrs`, only when the details change; first versions seeded by `seedDeviceHistory` |
+| Read by | `devicesAt` / `deviceAttrsAt` in as-of rebuilds; before the first version the earliest one is used and reported as an approximation |
+| Growth | A row only when a device's details change (a few per device per year) |
+
+#### `fact_correction`
+
+| | |
+|---|---|
+| Purpose | Facts withdrawn by EnergieBee itself (not by a provider): series, how many, when and why |
+| Written by | `maintenance.js` at start-up (idempotent); 16 Oct 2026: 626 derived `gas_kwh` rows |
+| Read by | `/trust` |
+
+**As known at.** `facts.js` `withKnownAt(ms, fn)` makes every fact read (readings, intervals, prices, dispatches, the learned IOG window, battery counters) return the version in force at that moment: `recorded_at ≤ T AND (superseded_at IS NULL OR superseded_at > T)`. `buildSite(..., { asOf, dryRun })` uses it to rebuild without writing. Agreements are read with `inForce('a')`, meters with `devicesAt(…, T)` (in use at T, details as known at T), system details with `attributeAt(…, T)`. Where no version existed at T, the earliest recorded one is used and returned in `approximations`.
 
 ## 5. How the tables relate in practice
 
@@ -1100,7 +1148,7 @@ The design relies on these features:
 | Relied on | Where | Replacement in a server database |
 |---|---|---|
 | Partial indexes (`WHERE superseded_at IS NULL`) | `interval_current`, `rate_current` | PostgreSQL supports partial indexes directly. A database without them needs a full index, or the current rows in a separate table. |
-| Triggers as an overlap check | `rate_no_overlap`, `agreement_no_overlap` | PostgreSQL exclusion constraints on a time range (`EXCLUDE USING gist`), as the comment in `schema.sql` says. Elsewhere, triggers or a check in the writing code inside the same transaction. |
+| Triggers as an overlap check | `rate_no_overlap`, `agreement_no_overlap_current` | PostgreSQL exclusion constraints on a time range (`EXCLUDE USING gist`), as the comment in `schema.sql` says. Elsewhere, triggers or a check in the writing code inside the same transaction. |
 | Append-only versions with `recorded_at` and `superseded_at` in milliseconds | all fact tables | Works as is. A timestamp type with time zone can replace the epoch integers. Two versions written in the same millisecond would collide on the key, as now. |
 | `WITHOUT ROWID` tables (rows stored in primary-key order) | `reading`, `interval_fact`, `forecast_fact`, `site_hh`, `site_day`, `check_result` | Ordinary tables with a primary-key index. Range partitioning by time, and by home once facts carry one (7.1), keeps one home's recent data together. |
 | `INSERT OR IGNORE`, `INSERT OR REPLACE`, `ON CONFLICT … DO UPDATE` | `putForecasts`, `vat_rate`, `check_result`, registry, `upsertTariff`, `upsertDevice` | `ON CONFLICT DO NOTHING` / `DO UPDATE` in PostgreSQL. `INSERT OR REPLACE` must become an explicit upsert. |

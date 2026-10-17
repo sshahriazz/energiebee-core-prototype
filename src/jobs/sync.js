@@ -18,6 +18,7 @@ import { syncGasCv } from '../adapters/nationalgas.js';
 import { measureBatteryCapacity } from '../core/derive.js';
 import { setAttribute, withdrawAttribute } from '../core/attributes.js';
 import { seedSiteAttributes } from '../core/maintenance.js';
+import { retireDevice, supersedeAgreements } from '../core/devices.js';
 
 const env = process.env;
 const INITIAL_DAYS = Math.min(Number(env.INITIAL_DAYS) || 14, 60);
@@ -69,22 +70,22 @@ export function ensureEnvSite() {
 // Tariff rates are public, so costs work from the inverter's grid clamp alone.
 // As soon as the account syncs, its own meters and agreements replace these.
 async function syncEnvTariffs(site, fromTs) {
-  if (db.prepare("SELECT 1 FROM device WHERE site_id = ? AND provider = 'octopus'").get(site.id)) {
-    db.prepare("DELETE FROM device WHERE site_id = ? AND provider = 'env'").run(site.id);
+  if (db.prepare("SELECT 1 FROM device WHERE site_id = ? AND provider = 'octopus' AND retired_at IS NULL").get(site.id)) {
+    // Retired, not deleted: the .env tariffs still priced the half-hours before the account was read.
+    for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'env' AND retired_at IS NULL").all(site.id)) retireDevice(d.id);
     return { skipped: 'using Octopus account agreements' };
   }
   let rates = 0;
   const used = [];
   for (const [kind, code, direction] of [['meter_import', env.IMPORT_TARIFF_CODE, 'import'], ['meter_export', env.EXPORT_TARIFF_CODE, 'export']]) {
     if (!code) continue;
-    db.prepare(`INSERT INTO device (site_id, kind, provider, external_ref, label, attrs) VALUES (?, ?, 'env', ?, ?, '{}')
-                ON CONFLICT(site_id, provider, external_ref) DO NOTHING`).run(site.id, kind, kind, `${direction === 'import' ? 'Import' : 'Export'} tariff (.env)`);
+    db.prepare(`INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'env', ?, ?, '{}', ?)
+                ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET retired_at = NULL`).run(site.id, kind, kind, `${direction === 'import' ? 'Import' : 'Export'} tariff (.env)`, Date.now());
     const dev = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'env' AND external_ref = ?").get(site.id, kind);
     const tariff = upsertTariff({ tariffCode: code, direction });
-    const current = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ?').get(dev.id);
+    const current = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').get(dev.id);
     if (!current || current.tariff_id !== tariff.id || current.valid_from > fromTs) {
-      db.prepare('DELETE FROM tariff_agreement WHERE device_id = ?').run(dev.id);
-      db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to) VALUES (?, ?, ?, ?, NULL)').run(site.id, dev.id, tariff.id, Math.min(fromTs, current?.valid_from ?? fromTs));
+      supersedeAgreements(site.id, dev.id, [{ tariffId: tariff.id, from: Math.min(fromTs, current?.valid_from ?? fromTs), to: null }]);
     }
     rates += await syncTariffRates(tariff, fromTs - 86400, nowSec() + 2 * 86400, site.id);
     used.push(code);
@@ -118,7 +119,7 @@ function earliestChange(siteId, site, sinceMs) {
   const args = [String(siteId), siteId, ...regions];
   const r = db.prepare(`SELECT MIN(r.ts) AS t FROM reading r JOIN series se ON se.id = r.series_id WHERE r.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args)?.t;
   const f = db.prepare(`SELECT MIN(f.start_ts) AS t FROM interval_fact f JOIN series se ON se.id = f.series_id WHERE f.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args)?.t;
-  const p = db.prepare(`SELECT MIN(r.valid_from) AS t FROM rate_interval r WHERE r.recorded_at >= ? AND r.tariff_id IN (SELECT tariff_id FROM tariff_agreement WHERE site_id = ?)`).get(sinceMs, siteId)?.t;
+  const p = db.prepare(`SELECT MIN(r.valid_from) AS t FROM rate_interval r WHERE r.recorded_at >= ? AND r.tariff_id IN (SELECT tariff_id FROM tariff_agreement WHERE site_id = ? AND superseded_at IS NULL)`).get(sinceMs, siteId)?.t;
   const ts = [r, f, p].filter((v) => v != null);
   return ts.length ? Math.min(...ts) : null;
 }
@@ -213,7 +214,7 @@ export async function syncSite(siteId) {
         const consumption = await syncOctopusConsumption(site, creds, meterFrom, nowSec(), { gasFrom });
         // Only tariffs in force somewhere in the window; the account history goes back years.
         const tariffs = db.prepare(`SELECT DISTINCT t.* FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
-                                    WHERE a.site_id = ? AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
+                                    WHERE a.site_id = ? AND a.superseded_at IS NULL AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
         let rates = 0;
         for (const t of tariffs) rates += await syncTariffRates(t, octoFrom - 86400, nowSec() + 2 * 86400, siteId);
         // Intelligent Octopus Go tariffs that publish day/night prices give no times. The window
@@ -221,7 +222,7 @@ export async function syncSite(siteId) {
         // the last two weeks of those when no such prices are held yet.
         if (tariffs.some((t) => t.structure === 'iog') && !learnIogWindow(site.gsp_region, tz)) {
           const earlier = db.prepare(`SELECT DISTINCT t.*, a.valid_to AS ended FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
-            WHERE a.site_id = ? AND t.structure = 'iog' AND a.valid_to IS NOT NULL ORDER BY a.valid_to DESC`).all(siteId);
+            WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.structure = 'iog' AND a.valid_to IS NOT NULL ORDER BY a.valid_to DESC`).all(siteId);
           for (const t of earlier) {
             rates += await syncTariffRates(t, t.ended - 14 * 86400, t.ended, siteId);
             if (learnIogWindow(site.gsp_region, tz)) break;

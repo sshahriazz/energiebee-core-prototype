@@ -43,6 +43,7 @@ npm start                  # open http://localhost:4100
 | `npm run serve` | Runs the server under a supervisor (`scripts/supervise.js`). The supervisor restarts the server if it exits (1 s, 2 s, 4 s … up to 60 s apart), and also if it stops answering `/api/status` three minutes in a row. Output goes to `data/logs/server.log`, rotated at 10 MB. |
 | `npm run service:install` | macOS only. Installs the supervisor as a login service (launchd), so it starts when you log in and after a reboot. Run `nvm use 22` first; the service uses that Node. |
 | `npm run service:status` / `service:uninstall` | Shows whether the service is loaded, with the last log lines / removes it. |
+| `npm run history:reconstruct` | One-off: fills the revision log for the time before it was kept by rebuilding each completed day as known at every earlier sync. Writes only to `site_day_revision`; `-- --force` redoes it. |
 
 What happens when something fails:
 - **A provider is down or slow:** each request is retried twice (after 1 s and 4 s, or as long as the provider's Retry-After asks). Only network errors, timeouts, 429 and 5xx are retried; a 401 (bad key) fails at once. A step that still fails is recorded, and the other providers carry on.
@@ -55,7 +56,7 @@ What happens when something fails:
 npm test
 ```
 
-25 tests, about 1 second, using Node's built-in test runner. Each test file uses its own throwaway database, so `data/core.db` is never changed.
+44 tests, about 2 seconds, using Node's built-in test runner. Each test file uses its own throwaway database, so `data/core.db` is never changed.
 - **Unit tests:** HTTP retry rules (against a local server), clock changes, Sunsynk's repeated and missing hour, and resuming after an outage.
 - **Integration tests** (on a copy of `data/core.db`; skipped if there is none):
   - a partial rebuild matches a full rebuild exactly;
@@ -64,7 +65,9 @@ npm test
   - a provisional day turns final when meter readings arrive;
   - gas waits for its calorific value, then fills in;
   - Quartz is used or refused according to how close it is to actual output;
-  - forecast accuracy scoring works.
+  - forecast accuracy scoring works;
+  - trust features: rebuilding "as known now" reproduces the stored rows; a day known before its meter readings is provisional; revisions, versioned system details, devices and tariff agreements, corrections and the reconstructed history;
+  - an old database upgrades in place.
 
   Where a test needs data the providers haven't sent yet, it writes stand-in values into the copy only.
 
@@ -120,7 +123,7 @@ number comes from, how learned values are detected, and what each one affects.
 | **Battery** | Charge level (with forecast), energy in and out by source, stored-energy cost (first in, first out), battery saving, one half-hour costed in full |
 | **Grid** | Imports and exports, average price paid against average price, tariffs in force, upcoming prices, smart meter against inverter clamp |
 | **EV** | Charging sessions, cost, solar share, smart-charging benefit, planned dispatches |
-| **Data & trust** | Connections, sync runs, daily states and checks, evidence for any half-hour (facts, versions, prices, raw payloads), rebuild, source contracts |
+| **Data & trust** | Why the numbers can be trusted: final share, cross-checks and tracing; how each source arrived for every half-hour; independent measurements compared each day; every kWh accounted for; how each day changed and any day as it was known at an earlier moment; the path of one half-hour from provider response to bill; system details with every version; corrections; connections, syncs, rebuild and source contracts. Every other page links here with a one-line note of what its figures rest on. |
 
 Click any half-hour bar on a chart to open its evidence.
 
@@ -189,8 +192,9 @@ data/                  core.db and raw/ (git-ignored)
 ## API
 
 `GET /api/sites` · `POST /api/sites/:id/sync` · `POST /api/sites/:id/rebuild`
-`GET /api/sites/:id/` + `now`, `timeline?period=today|yesterday|7d|30d`, `summary?period=`, `forecast`,
-`insights`, `ev`, `tariffs`, `evidence?slot=<epoch>`, `health` · `GET /api/raw/:id` · `GET /api/catalog`
+`GET /api/sites/:id/` + `now`, `timeline?period=today|yesterday|7d|30d`, `summary?period=`, `forecast`, `solar-expected?period=`,
+`insights`, `ev`, `tariffs`, `evidence?slot=<epoch>`, `health`, `system`,
+`trust?period=` (coverage, cross-checks, balance, revisions, corrections), `revisions?date=|period=`, `asof?date=YYYY-MM-DD&at=<epoch>` (a day rebuilt as known then; nothing written) · `GET /api/status` · `GET /api/raw/:id` · `GET /api/catalog`
 
 ## Known limits (prototype)
 
@@ -199,4 +203,5 @@ data/                  core.db and raw/ (git-ignored)
 - The Open-Meteo free tier is for non-commercial use; production needs a paid plan.
 - Gas is converted from m³ with National Gas's daily calorific value for the home's LDZ; gas days without a published value wait (check `gas_calorific_value`).
 - Panel tilt and direction are estimates until the installer's figures are entered (see "Your system's details" above).
+- "As known at" rebuilds read facts, prices, tariff agreements, meters, device details and system details as they were then. Where no version existed yet at that moment (for 10 Acresbrook: device details before 14:28 BST and system details before 13:53 BST on 16 Oct), the earliest recorded one is used and listed with the result. The `.env` tariff used before the first Octopus sync was not kept, so history before 07:49 BST on 16 Oct can't be reconstructed.
 - EV charging is measured only through Octopus smart-charge dispatches. For a car whose smart control is not available it is not measured (the EV page says so); it is still inside the house's use.

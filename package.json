@@ -15,7 +15,8 @@
     "service:install": "sh scripts/service.sh install",
     "service:uninstall": "sh scripts/service.sh uninstall",
     "service:status": "sh scripts/service.sh status",
-    "reset": "rm -f data/core.db data/core.db-wal data/core.db-shm && rm -rf data/raw/*"
+    "reset": "rm -f data/core.db data/core.db-wal data/core.db-shm && rm -rf data/raw/*",
+    "history:reconstruct": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/reconstruct-history.js"
   },
   "dependencies": {
     "express": "^5.3.0"

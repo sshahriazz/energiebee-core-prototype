@@ -4,6 +4,7 @@
 import { db, tx } from '../db/db.js';
 import { fetchJson } from '../core/http.js';
 import { landRaw, quarantine, seriesId, putIntervals, putForecasts, QUALITY } from '../core/facts.js';
+import { setDeviceAttrs, supersedeAgreements } from '../core/devices.js';
 import { isoUtc, nowSec, parseIso } from '../core/time.js';
 
 const BASE = 'https://api.octopus.energy/v1';
@@ -135,10 +136,12 @@ function upsertDevice(siteId, kind, ref, label, fresh) {
   const old = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
   const attrs = { ...JSON.parse(old?.attrs || '{}'), ...fresh };
   db.prepare(
-    `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs) VALUES (?, ?, 'octopus', ?, ?, ?)
-     ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET kind = excluded.kind, label = excluded.label, attrs = excluded.attrs`)
-    .run(siteId, kind, ref, label, JSON.stringify(attrs));
-  return db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
+    `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'octopus', ?, ?, '{}', ?)
+     ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET kind = excluded.kind, label = excluded.label, retired_at = NULL`)
+    .run(siteId, kind, ref, label, Date.now());
+  const dev = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
+  setDeviceAttrs(dev.id, attrs);
+  return { ...dev, attrs: JSON.stringify(attrs) };
 }
 
 // Agreements can overlap or be zero-width upstream; clip them into a clean, non-overlapping history.
@@ -152,17 +155,11 @@ function replaceAgreements(siteId, deviceId, agreements, direction) {
   }
   const kept = clean.filter((a) => a.to === null || a.to > a.from);
   // Unchanged history is left alone (no delete and re-insert on every sync).
-  const current = db.prepare('SELECT t.tariff_code AS code, a.valid_from AS "from", a.valid_to AS "to" FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.device_id = ? ORDER BY a.valid_from').all(deviceId);
+  const current = db.prepare('SELECT t.tariff_code AS code, a.valid_from AS "from", a.valid_to AS "to" FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.device_id = ? AND a.superseded_at IS NULL ORDER BY a.valid_from').all(deviceId);
   const key = (list) => list.map((a) => `${a.code}|${a.from}|${a.to ?? ''}`).join(',');
   if (key(current) === key(kept)) return { kept, changed: false };
-  tx(() => {
-    db.prepare('DELETE FROM tariff_agreement WHERE device_id = ?').run(deviceId);
-    for (const a of kept) {
-      const t = upsertTariff({ tariffCode: a.code, direction });
-      db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to) VALUES (?, ?, ?, ?, ?)')
-        .run(siteId, deviceId, t.id, a.from, a.to);
-    }
-  });
+  // The previous history is superseded, not deleted, so earlier moments can still be priced as they were.
+  supersedeAgreements(siteId, deviceId, kept.map((a) => ({ tariffId: upsertTariff({ tariffCode: a.code, direction }).id, from: a.from, to: a.to })));
   return { kept, changed: true };
 }
 
@@ -234,7 +231,7 @@ export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { g
         if (!u) continue;   // unit unknown: not stored rather than guessed
         if (!attrs.gasUnit && rows.length >= 96) {
           attrs.gasUnit = u;
-          db.prepare('UPDATE device SET attrs = ? WHERE id = ?').run(JSON.stringify(attrs), dev.id);
+          setDeviceAttrs(dev.id, attrs);
         }
         metric = u.unit === 'm3' ? 'gas_m3' : 'gas_kwh';
       }
@@ -304,7 +301,7 @@ export async function syncGasUnits(site, { apiKey, accountNumber }) {
         attrs.gasUnit = unit;
         attrs.ldz = gp.ldz ?? null;
         attrs.exitZone = gp.exitZone ?? null;
-        db.prepare('UPDATE device SET attrs = ? WHERE id = ?').run(JSON.stringify(attrs), dev.id);
+        setDeviceAttrs(dev.id, attrs);
       }
     }
   }
@@ -325,9 +322,10 @@ export async function syncKraken(site, { apiKey, accountNumber }) {
     for (const d of devs?.devices || []) {
       if (d.deviceType !== 'ELECTRIC_VEHICLES') continue;
       db.prepare(
-        `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs) VALUES (?, 'ev', 'octopus_kraken', ?, ?, ?)
-         ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET label = excluded.label, attrs = excluded.attrs`)
-        .run(site.id, d.id, d.name || 'Electric vehicle', JSON.stringify({ status: d.status }));
+        `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'ev', 'octopus_kraken', ?, ?, '{}', ?)
+         ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET label = excluded.label, retired_at = NULL`)
+        .run(site.id, d.id, d.name || 'Electric vehicle', Date.now());
+      setDeviceAttrs(db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'octopus_kraken' AND external_ref = ?").get(site.id, d.id).id, { status: d.status });
       out.devices++;
       const planned = await gql(token, 'query($d:String!){flexPlannedDispatches(deviceId:$d){start end type energyAddedKwh}}', { d: d.id }, site.id);
       out.planned += normalisePlanned(site.id, planned?.flexPlannedDispatches, nowSec(), planned?._rawId);

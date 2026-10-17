@@ -1,12 +1,12 @@
-// Data & trust: where every number comes from. Connections and sync runs, the
-// state and checks of every day, the full evidence behind any half-hour, and
-// a rebuild that proves the serving tables can be recreated from facts.
+// Data & trust: why every number can be relied on. How the sources come together for each
+// half-hour, how independent measurements agree, where every kWh went, how each day changed
+// (and how it looked at any earlier moment), the path of one half-hour from provider response
+// to bill, and the connections, syncs and rebuild behind it all.
 import { api, fmt, timeFmt, ago, esc } from '../api.js';
 import { init, card } from '../layout.js';
+import { headlineCard, coverageCard, drawCoverage, crossCheckCard, balanceCard, revisionsCard, asOfCard, wireAsOf, correctionsCard, detailHistoryHtml, evidenceFlow } from './trust-views.js';
 
 const QUALITY = [[1, 'measured'], [2, 'fallback source'], [4, 'interpolated'], [8, 'estimated'], [16, 'partial coverage'], [32, 'suspect'], [64, 'check failed'], [128, 'restated']];
-const CHECKS = ['completeness', 'rate_coverage', 'energy_balance', 'meter_vs_ct', 'counter_fit_solar'];
-const CHECK_NAMES = { completeness: 'Complete', rate_coverage: 'Priced', energy_balance: 'Balance', meter_vs_ct: 'Meter vs clamp', counter_fit_solar: 'Counter fit' };
 const badge = (status, text = status) => `<span class="badge ${{ pass: 'good', ok: 'good', final: 'good', warn: 'warn', partial: 'warn', provisional: 'warn', fail: 'bad', error: 'bad', missing: 'bad', interrupted: 'warn' }[status] || ''}">${esc(text)}</span>`;
 
 async function showRaw(id) {
@@ -33,6 +33,8 @@ async function evidence(state, slot) {
   const v = (x, d = 3) => (x == null ? '–' : Number(x).toFixed(d));
   const impInc = r.import_rate_ex != null ? r.import_rate_ex * (1 + (r.import_vat || 0)) : null;
   box.innerHTML = `
+    ${evidenceFlow(e)}
+    <h3>All the numbers</h3>
     <div class="grid cols-3">
       <div><h3>Energy (kWh)</h3><div class="rows">
         ${[['Solar', r.solar], ['Grid import', r.grid_import], ['Grid export', r.grid_export], ['Battery charge', r.battery_charge], ['Battery discharge', r.battery_discharge], ['Home (by balance)', r.home], ['Loss / error', r.loss], ['EV', r.ev], ['Charge level end', r.soc_end != null ? `${Math.round(r.soc_end)}%` : null]]
@@ -85,7 +87,7 @@ async function evidence(state, slot) {
 
 // The system's physical details, where each value comes from, and how to replace
 // estimates with the installer's figures from the MCS paperwork.
-function systemCard(sys) {
+function systemCard(sys, t) {
   const tag = { installer: ['good', 'from installer'], provider: ['info', 'from provider'], measured: ['info', 'measured'], estimated: ['warn', 'estimate'], unknown: ['bad', 'not known'] };
   const rows = sys.items.map((i) => `<tr><td><b>${esc(i.label)}</b></td><td class="r mono">${i.value != null ? `${i.value} ${esc(i.unit)}` : '–'}</td>
     <td><span class="badge ${tag[i.status][0]}">${tag[i.status][1]}</span></td><td class="muted" style="white-space:normal">${esc(i.source)}</td>
@@ -95,6 +97,7 @@ function systemCard(sys) {
     <div class="table-wrap"><table>
       <thead><tr><th>Detail</th><th class="r">Value</th><th>Status</th><th>Where it comes from</th><th>Setting in .env</th><th>Where to find it</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
+    ${t ? detailHistoryHtml(t) : ''}
     ${needsInstaller ? `<div class="banner warn" style="margin-top:12px"><span>i</span><div>
       <b>Replace estimates with the installer's figures</b>
       <ol style="margin:6px 0 0 18px;padding:0">
@@ -110,9 +113,8 @@ function systemCard(sys) {
 async function render(state) {
   const id = state.site.id;
   const tf = timeFmt(state.tz);
-  const [h, catalog, sys] = await Promise.all([api(`/api/sites/${id}/health`), api('/api/catalog'), api(`/api/sites/${id}/system`)]);
-  const checksBy = {};
-  for (const c of h.checks) (checksBy[c.local_date] ||= {})[c.check_code] = c;
+  const [h, catalog, sys, t] = await Promise.all([api(`/api/sites/${id}/health`), api('/api/catalog'), api(`/api/sites/${id}/system`),
+    api(`/api/sites/${id}/trust?period=${state.period}`)]);
   const q = new URLSearchParams(location.search);
   const slotParam = Number(q.get('slot')) || null;
 
@@ -122,13 +124,6 @@ async function render(state) {
   const runs = `<div class="rows">${h.runs.map((r) => `<details class="row" style="display:block"><summary>${badge(r.status)} ${new Date(r.started_at * 1000).toLocaleString('en-GB')} · ${r.finished_at ? `${r.finished_at - r.started_at}s` : 'running'}</summary>
     <div class="table-wrap"><table><tbody>${r.detail.map((s) => `<tr><td>${esc(s.step || '')}</td><td>${s.ok === false ? badge('fail', 'failed') : badge('pass', 'ok')}</td><td class="r">${s.ms ?? ''} ms</td>
       <td class="mono muted" style="white-space:normal">${esc(s.error || JSON.stringify(Object.fromEntries(Object.entries(s).filter(([k]) => !['step', 'ok', 'ms'].includes(k)))))}</td></tr>`).join('')}</tbody></table></div></details>`).join('')}</div>`;
-
-  const days = `<div class="table-wrap"><table><thead><tr><th>Day</th><th class="r">Half-hours</th><th>States</th><th class="r">Integrity</th>${CHECKS.map((c) => `<th>${CHECK_NAMES[c]}</th>`).join('')}</tr></thead><tbody>
-    ${h.days.map((d) => `<tr><td>${tf.date(d.local_date)}</td><td class="r">${d.slots}</td>
-      <td>${d.slots_final ? badge('final', `${d.slots_final} final`) : ''} ${d.slots_provisional ? badge('provisional', `${d.slots_provisional} provisional`) : ''} ${d.slots_missing ? badge('missing', `${d.slots_missing} missing`) : ''}</td>
-      <td class="r">${fmt.pct(d.integrity)}</td>
-      ${CHECKS.map((c) => { const x = checksBy[d.local_date]?.[c]; return `<td title="${esc(x?.detail || 'not run')}">${x ? badge(x.status) : '<span class="faint">–</span>'}</td>`; }).join('')}</tr>`).join('')}
-    </tbody></table></div>`;
 
   const st = h.storage;
   const storage = `<div class="rows">
@@ -149,17 +144,25 @@ async function render(state) {
     </tbody></table></div>`;
 
   document.getElementById('content').innerHTML = `
-    <div id="system">${systemCard(sys)}</div>
+    ${headlineCard(t, tf)}
+    <div class="section">${coverageCard(t)}</div>
+    <div class="section">${crossCheckCard(t, tf)}</div>
+    <div class="section">${balanceCard(t, tf)}</div>
+    <div class="section">${revisionsCard(t, tf)}</div>
+    <div class="section">${asOfCard(t, tf)}</div>
+    <div class="section" id="evidence">${card('The path of one half-hour', 'From the providers\' responses to the bill, step by step. Pick a half-hour, or click any bar on the other pages.',
+      `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"><select id="ev-day">${h.days.map((d) => `<option value="${d.local_date}">${tf.date(d.local_date)}</option>`).join('')}</select><select id="ev-slot"></select></div><div id="evidence-body"><div class="skeleton">Choose a half-hour.</div></div>`)}</div>
+    <div class="section" id="system">${systemCard(sys, t)}</div>
+    <div class="section">${correctionsCard(t, tf)}</div>
     <div class="banner section"><span>⛓</span><div><b>Pipeline:</b> provider API → adapter (applies the source contract) → raw payload kept → facts (append-only, versioned) → build engine (${esc(h.method)}) → half-hour timeline → these pages.
       Pages never call a provider; they read the timeline.</div></div>
-    <div class="grid cols-2">${card('Connections', 'One per provider for this home', conns)}${card('Recent syncs', 'Each step runs on its own; one failure never blocks the rest', runs)}</div>
-    <div class="section">${card('Days', 'State of each half-hour and the daily checks. Hover a badge for its detail.', days)}</div>
-    <div class="section" id="evidence">${card('Evidence for one half-hour', 'Pick a half-hour (or click any bar on the other pages). Every number below is traced to the facts and raw payloads it came from.',
-      `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"><select id="ev-day">${h.days.map((d) => `<option value="${d.local_date}">${tf.date(d.local_date)}</option>`).join('')}</select><select id="ev-slot"></select></div><div id="evidence-body"><div class="skeleton">Choose a half-hour.</div></div>`)}</div>
+    <div class="section grid cols-2">${card('Connections', 'One per provider for this home', conns)}${card('Recent syncs', 'Each step runs on its own; one failure never blocks the rest', runs)}</div>
     <div class="section grid cols-2">${card('Storage and rebuild', 'Serving tables are disposable: they can always be rebuilt from facts.', storage)}${card('Quarantine', '', quarantine)}</div>
     <div class="section">${card('Source contracts', 'Everything the core knows about each provider’s quirks lives here, not in the build engine.', contracts)}</div>
     <dialog id="raw-dialog"><div class="body"></div><form method="dialog" style="text-align:right;margin-top:10px"><button class="btn">Close</button></form></dialog>`;
 
+  drawCoverage(document.getElementById('coverage'), t, tf);
+  wireAsOf(state, t, tf);
   const daySel = document.getElementById('ev-day');
   const slotSel = document.getElementById('ev-slot');
   const fillSlots = async (date, pick) => {
@@ -192,4 +195,4 @@ async function render(state) {
   });
 }
 
-init({ page: 'data', title: 'Data & trust', subtitle: 'Where every number comes from, how complete each day is, and the checks it passed.', periods: false, render });
+init({ page: 'data', title: 'Data & trust', subtitle: 'Why these numbers can be trusted: where each one comes from, how independent measurements agree, and what changed.', render });

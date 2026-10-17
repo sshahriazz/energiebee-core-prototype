@@ -103,7 +103,7 @@ export function solarExpected(siteId, from, to) {
   return {
     from, to, timezone: tz,
     method: {
-      text: `For each past half-hour: Open-Meteo's horizontal sunlight for that hour × what this home's panels made per unit of that sunlight at the same hour of day on the other days of the last ${FIT_DAYS} (least squares through the origin, leaving the day itself out). An expectation, not a measurement. Half-hours without a sunlight fact have no expected value.`,
+      text: `For each past half-hour: Open-Meteo's modelled horizontal sunlight for that hour (a weather-model value, not a measurement at the home) × what this home's panels made per unit of that sunlight at the same hour of day on the other days of the last ${FIT_DAYS} (least squares through the origin, leaving the day itself out). An expectation, not a measurement. Half-hours without a sunlight fact have no expected value.`,
       sunlight: { metric: 'ghi_wm2', source: 'open_meteo', note: "Open-Meteo's model values for past hours at the home's location, not a measurement at the home" },
       fit: 'learnSunlight (src/core/forecast.js): per local hour of day, Σ(solar × sunlight) ÷ Σ(sunlight²) over half-hours with sunlight above zero',
       leaveOneDayOut: true,

@@ -1,3 +1,5 @@
+The demo also includes `/how-it-works`, a plain-language guide to the recorded-data process. Timeline intervals include sources, coverage, expanded calculations, allocations, method and evidence links.
+
 # Focused energy demo (`demo/core-energy`)
 
 This branch presents three screens: **Overview → Timeline → Evidence**. It keeps

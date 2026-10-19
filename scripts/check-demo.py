@@ -14,14 +14,32 @@ with sync_playwright() as p:
  page.on('pageerror',lambda e:errs.append(str(e)));page.on('request',lambda r:requests.append(r.url))
  for width in [1440,768,390]:
   page.set_viewport_size({'width':width,'height':1000 if width>390 else 844})
-  for path in ['/','/timeline','/evidence']:
+  for path in ['/','/timeline','/evidence','/how-it-works']:
    page.goto(base+path,wait_until='networkidle');page.wait_for_function("document.querySelector('#content').getAttribute('aria-busy')==='false'")
    if path=='/evidence':page.wait_for_function("document.querySelector('#slot-content').getAttribute('aria-busy')==='false'")
-   print('RENDER',width,path,'overflow',page.evaluate('document.documentElement.scrollWidth>innerWidth'),'chars',len(page.locator('#content').inner_text()),'date',page.locator('#date').input_value(),flush=True)
+   print('RENDER',width,path,'overflow',page.evaluate('document.documentElement.scrollWidth>innerWidth'),'chars',len(page.locator('#content').inner_text()),'date',page.locator('#date').input_value() if path != '/how-it-works' else 'guide',flush=True)
    assert not page.evaluate('document.documentElement.scrollWidth>innerWidth'), (width,path,'page overflow')
    page.screenshot(path=str(out/f'{path.strip("/") or "overview"}-{width}.png'),full_page=True)
  assert not errs,errs
  assert not any('/forecast' in r or '/compare' in r or '/insights' in r for r in requests),requests
+ # Expanded intervals retain original values and expose all flows and evidence.
+ page.goto(base+'/timeline',wait_until='networkidle')
+ day=c.request.get(base+f'/api/demo/sites/{sid}/day?date='+page.locator('#date').input_value()).json()
+ assert page.locator('.record-detail').count()==len(day['rows'])
+ for i,row in enumerate(day['rows']):
+  detail=page.locator('.record-detail').nth(i)
+  assert detail.locator('.flow-list > div').count()==10
+  assert str(row['slot_start']) in detail.locator('a.button').get_attribute('href')
+ page.locator('.record-detail summary').first.click()
+ assert page.locator('.record-explanation').first.is_visible()
+ page.screenshot(path=str(out/'timeline-expanded-390.png'),full_page=False)
+ page.get_by_role('link',name='How it works',exact=True).click();page.wait_for_load_state('networkidle')
+ assert page.locator('#nav [aria-current="page"]').inner_text()=='How it works'
+ assert 'date='+day['date'] in page.get_by_role('link',name='Open the timeline').get_attribute('href')
+ page.route('**/api/**',lambda r:r.abort())
+ page.reload(wait_until='networkidle');assert page.get_by_role('heading',name='What the software actually does').is_visible()
+ page.unroute('**/api/**')
+ print('EXPLANATIONS_AND_OFFLINE_GUIDE PASS',flush=True)
  # Main user journey and date consistency.
  page.set_viewport_size({'width':1440,'height':1000});page.goto(base,wait_until='networkidle');date=page.locator('#date').input_value()
  page.get_by_role('link',name='Explore this day').click();page.wait_for_load_state('networkidle');assert '/timeline?' in page.url

@@ -32,7 +32,7 @@ app.use('/api/demo', demoRouter);
 // This branch serves only the focused demo. The full UI remains on main.
 app.use('/img', express.static(path.join(here, '..', 'public', 'img')));
 app.use(express.static(path.join(here, '..', 'public', 'demo')));
-for (const route of ['/', '/timeline', '/evidence']) {
+for (const route of ['/', '/timeline', '/evidence', '/how-it-works']) {
   app.get(route, (req, res) => res.sendFile(path.join(here, '..', 'public', 'demo', 'index.html')));
 }
 

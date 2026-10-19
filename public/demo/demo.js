@@ -61,11 +61,13 @@ let context;
 let loadVersion = 0;
 let rawVersion = 0;
 const view =
-  location.pathname === '/timeline'
-    ? 'timeline'
-    : location.pathname === '/evidence'
-      ? 'evidence'
-      : 'overview';
+  location.pathname === '/how-it-works'
+    ? 'guide'
+    : location.pathname === '/timeline'
+      ? 'timeline'
+      : location.pathname === '/evidence'
+        ? 'evidence'
+        : 'overview';
 const titles = {
   overview: 'Your day in energy',
   timeline: 'Every half-hour',
@@ -238,21 +240,109 @@ function overview(day) {
       ''
     )}</div><section class="panel"><div class="panel-head"><div><h2>A day, half-hour by half-hour</h2><p>See how solar, battery and grid power supplied the home.</p></div><a class="button" href="${url('/timeline')}">Explore the timeline →</a></div>${chart(day.rows)}</section>`;
 }
+const flowLabels = {
+  solar_to_home: 'Solar → home',
+  solar_to_battery: 'Solar → battery',
+  solar_to_grid: 'Solar → grid',
+  battery_to_home: 'Battery → home',
+  battery_to_grid: 'Battery → grid',
+  grid_to_home: 'Grid → home',
+  grid_to_battery: 'Grid → battery',
+  solar_to_loss: 'Solar → residual',
+  battery_to_loss: 'Battery → residual',
+  grid_to_loss: 'Grid → residual',
+};
+const fitLabels = {
+  solar: 'Solar',
+  load: 'Measured home load',
+  imp: 'Inverter import',
+  exp: 'Inverter export',
+  chg: 'Battery charge',
+  dis: 'Battery discharge',
+};
+function rowSource(r, k) {
+  if (k === 'grid_import') return sourceName(r.source.import);
+  if (k === 'grid_export') return sourceName(r.source.export);
+  if (k === 'home') return 'Inverter load + balance limit';
+  return sourceName(r.source.solar);
+}
+function rowExplanation(r, day) {
+  const known = ['solar', 'grid_import', 'battery_discharge', 'grid_export', 'battery_charge'].every((k) =>
+    finite(r[k])
+  );
+  const balance = known
+    ? r.solar + r.grid_import + r.battery_discharge - r.grid_export - r.battery_charge
+    : null;
+  const flags = [
+    [2, 'A fallback source was used.'],
+    [16, 'The core flagged partial inverter coverage.'],
+    [32, 'The input energy balance was negative by more than 0.02 kWh.'],
+    [128, 'This record was revised after finalisation (energy or cost changed).'],
+  ]
+    .filter(([bit]) => r.quality & bit)
+    .map(([, label]) => label);
+  return `<details class="record-detail"><summary>Explain ${zoneTime(r.slot_start)}–${zoneTime(r.slot_start + 1800)}: calculations, coverage and evidence</summary>
+  <div class="record-explanation"><div><h3>1. What was recorded?</h3><p>This interval starts at ${zoneTime(r.slot_start)} and ends just before ${zoneTime(r.slot_start + 1800)} (${esc(day.timezone)}). UTC start: ${esc(new Date(r.slot_start * 1000).toISOString())}.</p>
+  <p>${r.state === 'missing' ? 'The core has no usable import reading, or this interval has not been built.' : r.state === 'provisional' ? 'The day is still open or an expected smart-meter import reading has not arrived.' : 'The day was closed and the core finalised this interval. This does not mean every quality check passed.'}</p>
+  <p>${r.partial ? 'Some inputs are missing or have less than 80% coverage. Available energy can represent only part of the interval.' : 'All required inputs are present with at least 80% coverage. See each measurement’s actual percentage above.'} Coverage describes input availability, not measurement accuracy. A smart-meter interval counts as 100%; inverter coverage is the time covered by samples held forward for at most five minutes.</p>
+  <p>${flags.length ? esc(flags.join(' ')) : 'No fallback, partial, suspect-balance or revision flags were stored for this row.'} Other core flags may concern costs outside this demo.</p></div>
+  <div><h3>2. How was it calculated?</h3><p>Available energy = solar + import + battery discharge − export − battery charge.</p><p class="equation">${known ? `${number(r.solar, 3)} + ${number(r.grid_import, 3)} + ${number(r.battery_discharge, 3)} − ${number(r.grid_export, 3)} − ${number(r.battery_charge, 3)} = ${number(balance, 3)} kWh` : 'Cannot calculate: one or more required inputs are unavailable.'}</p>
+  <p>Home use is the inverter’s measured load, capped at the non-negative available energy. Missing required inputs hide home use and dependent allocations.</p><p>Recorded loss / mismatch: <strong>${finite(r.loss) ? number(r.loss, 3) + ' kWh' : 'Unavailable'}</strong>. The core subtracts measured load from available energy. A positive value can include conversion loss or measurement differences; a negative value indicates disagreement, not energy being created. This is not a separately measured loss.</p>
+  <p>Daily scaling: ${
+    Object.entries(r.fit).length
+      ? Object.entries(r.fit)
+          .map(([k, v]) => `${esc(fitLabels[k] || k)} × ${number(v, 4)}`)
+          .join('; ')
+      : 'No factors recorded'
+  }. A factor of 1 means unchanged. Completed-day sample totals are scaled to inverter daily counters only when the factor is greater than 0.6 and less than 1.6. These factors do not scale the selected smart-meter readings.</p></div>
+  <div><h3>3. Where did the energy go?</h3><dl class="flow-list">${Object.entries(flowLabels)
+    .map(
+      ([k, label]) =>
+        `<div><dt>${label}</dt><dd>${finite(r[k]) ? number(r[k], 3) + ' kWh' : 'Unavailable'}</dd></div>`
+    )
+    .join(
+      ''
+    )}</dl><p>These are rule-based allocations, not separately measured wires. Solar is assigned to home first, then battery and export; battery supplies remaining home/export demand, then grid supplies remaining home/charging demand. Source residuals are non-negative leftovers and need not equal the signed loss / mismatch above.</p></div>
+  <div><h3>4. Can I verify it?</h3><p>Calculation method: <strong>${esc(r.method || 'Not recorded')}</strong><br>Built: ${fetchedAt(r.built_at)}<br>Battery level: ${finite(r.soc_end) ? number(r.soc_end, 1) + '% (last available reading in this interval)' : 'Unavailable'}.</p><p>Battery percentage is stored charge level, not energy used. Import/export or charging/discharging can both occur within one half-hour as direction changes.</p><p><a class="button" href="${url('/evidence', day.date, r.slot_start)}">Open original readings and version history →</a></p><p><a href="#checks">See this day’s checks</a>. Checks apply to the day; they do not certify each individual row.</p></div></div></details>`;
+}
 function timeline(day) {
-  return `${notices(day)}${quality(day)}<section class="panel"><div class="panel-head"><div><h2>What powered the home</h2><p>${day.rows.length} half-hours shown · ${day.expectedSlots} in this local day.</p></div></div>${chart(day.rows, true)}</section>${statesHelp()}<section class="panel"><div class="panel-head"><div><h2>The half-hour record</h2><p>Energy is in kWh. Charge level is a percentage. Select a time to follow its evidence.</p></div></div><div class="table-wrap"><table><thead><tr><th scope="col">Time</th><th scope="col">State</th>${Object.values(
+  return `${notices(day)}${quality(day)}<section class="panel"><div class="panel-head"><div><h2>What powered the home</h2><p>${day.rows.length} half-hours shown · ${day.expectedSlots} in this local day.</p></div></div>${chart(day.rows, true)}</section>${statesHelp()}
+  <section class="panel"><div class="panel-head"><div><h2>The half-hour record</h2><p>Read the quantities, their sources and their coverage together. Expand any interval for its calculation and evidence.</p></div><a href="${url('/how-it-works')}">How this works →</a></div>
+  <div class="record-key"><p><strong>kWh = an amount of electricity.</strong> For example, a 1 kW appliance running for half an hour uses 0.5 kWh. Solar is all generation, home is consumption, import/export is energy entering/leaving the property, and battery charge/discharge is energy entering/leaving storage.</p><p><strong>Unavailable is not zero.</strong> 0.000 is a known value rounded to three decimal places (values below 0.0005 can round to zero). Totals use unrounded stored values. Coverage below 100% means some time is unobserved; below 80% is flagged partial. A dependent value can be unavailable even when its own sensor has coverage.</p><p>Times use ${esc(day.timezone)} with zone labels. A normal day has 48 intervals; clock-change days can have 46 or 50. This frozen demo does not fetch new readings. Scroll the table sideways on smaller screens.</p></div>
+  <div class="table-wrap" role="region" aria-label="Detailed half-hour energy record" tabindex="0"><table class="record-table"><caption>Each quantity is for the stated half-hour, not a running daily total. Sources and input coverage appear below each value.</caption><thead><tr><th scope="col">Interval / state</th>${Object.values(
     names
   )
-    .map((n) => `<th scope="col" class="num">${n}</th>`)
-    .join('')}<th scope="col" class="num">Charge level</th></tr></thead><tbody>${day.rows
+    .map((n) => `<th scope="col">${n}<br>kWh · source · coverage</th>`)
+    .join('')}<th scope="col">Battery level<br>% · last reading</th></tr></thead><tbody>${day.rows
     .map(
       (r) =>
-        `<tr><td><a class="table-link" href="${url('/evidence', day.date, r.slot_start)}">${zoneTime(r.slot_start)}</a></td><td>${badge(r.state)}${r.partial ? '<br><small>Partial sensors</small>' : ''}</td>${Object.keys(
+        `<tr><th scope="row"><a class="table-link" href="${url('/evidence', day.date, r.slot_start)}">${zoneTime(r.slot_start)}–<br>${zoneTime(r.slot_start + 1800)}</a><br>${badge(r.state)}${r.partial ? '<br>Partial inputs' : ''}${r.quality & 128 ? '<br>Revised' : ''}</th>${Object.keys(
           names
         )
-          .map((k) => `<td class="num">${number(r[k])}</td>`)
-          .join('')}<td class="num">${finite(r.soc_end) ? number(r.soc_end, 0) + '%' : '—'}</td></tr>`
+          .map(
+            (k) =>
+              `<td><strong>${finite(r[k]) ? number(r[k], 3) : 'Unavailable'}</strong><small>${esc(rowSource(r, k))}<br>${number(r.coverage[k] * 100, 0)}% input coverage</small></td>`
+          )
+          .join(
+            ''
+          )}<td>${finite(r.soc_end) ? number(r.soc_end, 1) + '%' : 'Unavailable'}</td></tr><tr class="detail-row"><td colspan="8">${rowExplanation(r, day)}</td></tr>`
     )
-    .join('')}</tbody></table></div></section>`;
+    .join('')}</tbody><tfoot><tr><th scope="row">Known day totals</th>${Object.keys(names)
+    .map(
+      (k) =>
+        `<td><strong>${finite(day.totals[k].value) ? number(day.totals[k].value, 3) + ' kWh' : 'Unavailable'}</strong><small>${day.totals[k].knownSlots}/${day.rows.length} intervals with values${day.totals[k].complete ? '' : ' · incomplete coverage'}</small></td>`
+    )
+    .join('')}<td>Not additive</td></tr></tfoot></table></div></section>${checks(day)}`;
+}
+function guide() {
+  const query = new URLSearchParams(location.search);
+  const link = (path) => esc(url(path, query.get('date'), null, query.get('site')));
+  return `<div class="page-head"><div><h1>A notebook and a calculator for your home</h1><p>What this demo does, in everyday language.</p></div></div>
+  <section class="panel"><h2>Imagine keeping a little electricity notebook</h2><p>Your solar panels make electricity. Your home uses it. Your battery saves some for later. The grid supplies more when needed and receives electricity you send out.</p><p>The inverter and smart meter are two reporters. They tell us what happened. EnergieBee keeps their original notes, puts them into matching half-hour pages, and uses a calculator to explain the results. If a reporter corrects a number, we keep the old note too.</p><p><strong>This demo is a saved copy of that notebook.</strong> It shows recorded electricity for one home. It does not control devices or update live.</p></section>
+  <section class="panel"><h2>Three ways to read the same story</h2><div class="steps"><article><h3>1. Overview</h3><p>“What happened today?” See the day’s electricity totals and what supplied the home.</p><a href="${link('/')}">Open the overview →</a></article><article><h3>2. Timeline</h3><p>“When did it happen?” Read each half-hour, its sources, coverage and calculation.</p><a href="${link('/timeline')}">Open the timeline →</a></article><article><h3>3. Evidence</h3><p>“Where did that number come from?” Inspect original provider responses, readings, revisions and daily checks.</p><a href="${link('/evidence')}">Open the evidence →</a></article></div></section>
+  <section class="panel"><h2>What the software actually does</h2><ol class="process-list"><li><strong>Collect the reporters’ notes.</strong> The full system receives Sunsynk inverter power samples, battery levels and daily counters, plus Octopus smart-meter electricity readings. The demo uses a saved database snapshot of those records.</li><li><strong>Keep the originals.</strong> Provider responses are saved as raw JSON. Readings point back to these responses. Changed readings get new versions; previous versions remain in the history.</li><li><strong>Put readings on the same clock.</strong> Five-minute power samples become half-hour energy amounts. Power means how fast electricity flows; energy means how much flowed over time. Internally intervals use UTC; screens show the home’s local time.</li><li><strong>Choose and reconcile the inputs.</strong> Smart-meter readings take priority for grid import and export. Inverter clamp readings can fill gaps. Completed-day inverter totals can scale the sample-based values, within guarded limits. Missing inputs remain unknown.</li><li><strong>Calculate a consistent picture.</strong> Home consumption uses measured load, limited by the available energy balance. Rules allocate solar to the home first, then battery and export. Battery and grid cover remaining flows. These are calculated shares, not measurements of individual appliances.</li><li><strong>Check and explain.</strong> The core checks coverage, energy balance, meter versus inverter and daily counters. The screens show the same stored half-hours, with their state and evidence. Final means finalised by the core; it is not a promise that every check passed.</li></ol></section>
+  <section class="panel"><h2>A small example</h2><p><strong>Illustration only — not a reading from this home.</strong> Between 12:00 and 12:30, imagine solar supplies 1 kWh, the battery supplies 0.5 kWh, and the grid supplies 0.5 kWh. With no export, charging or losses, 2 kWh is available for the home.</p><p class="equation">1 solar + 0.5 battery + 0.5 grid = 2 kWh for the home</p><p>Real readings are less tidy. They can arrive late, cover only part of the interval, or disagree. The demo shows those gaps and checks instead of pretending every number is perfect.</p></section>${statesHelp()}
+  <section class="panel"><h2>What this demonstration covers</h2><p>Recorded electricity, solar, battery, grid exchange, half-hour calculations, data quality and traceable evidence for one home.</p><p>It does not demonstrate forecasts, bills or savings, appliance-level EV or heat-pump measurements, device control, thermal / HEM calculations, commercial-site workflows, French provider support or a multi-site network. Those capabilities need their own integrations and validation; this demo does not establish that they are complete.</p><a class="button primary" href="${link('/timeline')}">Walk through a recorded day →</a></section>`;
 }
 function checks(day) {
   return `<section class="panel" id="checks"><div class="panel-head"><div><h2>Energy checks for this day</h2><p>Finality and quality are separate. A final half-hour can still belong to a day with a warning.</p></div></div>${day.checks.length ? day.checks.map((c) => `<div class="check"><div><h3>${esc(checkNames[c.check_code] || c.check_code)}</h3><p>${esc(c.detail)}</p></div><span class="badge ${esc(c.status)}">${{ pass: 'Pass', warn: 'Warning', fail: 'Failed', skip: 'Not assessed' }[c.status] || esc(c.status)}</span></div>`).join('') : '<p class="muted">No completed-day energy checks are available yet.</p>'}</section>`;
@@ -360,6 +450,7 @@ function shell(sites, metadata, date) {
     ['/', 'Overview', 'overview'],
     ['/timeline', 'Timeline', 'timeline'],
     ['/evidence', 'Evidence', 'evidence'],
+    ['/how-it-works', 'How it works', 'guide'],
   ]
     .map(
       ([href, label, key]) =>
@@ -378,6 +469,19 @@ async function load() {
   $('#content').innerHTML = '<div class="loading" role="status">Loading the recorded energy…</div>';
   try {
     const query = new URLSearchParams(location.search);
+    if (view === 'guide') {
+      document.title = 'How it works · EnergieBee';
+      $('#controls').innerHTML = '';
+      $('#nav')
+        .querySelectorAll('a')
+        .forEach((a) => {
+          const path = new URL(a.href).pathname;
+          a.href = url(path, query.get('date'), null, query.get('site'));
+          if (path === '/how-it-works') a.setAttribute('aria-current', 'page');
+        });
+      $('#content').innerHTML = guide();
+      return;
+    }
     const sites = await api('/api/sites');
     if (!sites.length) {
       $('#content').innerHTML =

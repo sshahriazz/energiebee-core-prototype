@@ -844,3 +844,97 @@ dialog pre {
     }
   }
 }
+
+/* Explanation stays next to the readings it describes. */
+nav {
+  flex-wrap: wrap;
+}
+.record-key {
+  max-width: 85ch;
+  margin-bottom: 24px;
+  line-height: 1.65;
+}
+.record-table {
+  min-width: 1120px;
+}
+.record-table caption {
+  text-align: left;
+  color: var(--muted);
+  padding: 0 12px 16px;
+}
+.record-table small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.6;
+  font-weight: 400;
+}
+.record-table th {
+  white-space: normal;
+}
+.record-table tbody > tr:not(.detail-row) > th {
+  min-width: 150px;
+}
+.record-table .detail-row > td {
+  padding: 0 12px 16px;
+  border-bottom: 2px solid var(--line);
+}
+.record-detail {
+  margin: 0;
+}
+.record-detail summary {
+  padding: 12px 0;
+}
+.record-explanation {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 26px;
+  padding: 20px;
+  background: #f3f5ef;
+  white-space: normal;
+  line-height: 1.65;
+}
+.record-explanation h3 {
+  margin-top: 0;
+}
+.flow-list {
+  margin: 0;
+}
+.flow-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+  padding: 5px 0;
+}
+.flow-list dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.equation {
+  font-weight: 650;
+  padding: 16px;
+  background: #f2f4ed;
+  border-left: 3px solid #d18c00;
+}
+.process-list {
+  padding-left: 24px;
+  max-width: 85ch;
+  line-height: 1.8;
+}
+.process-list li {
+  padding: 8px 0 8px 8px;
+}
+#content > .panel {
+  margin-bottom: 24px;
+}
+
+.record-detail {
+  max-width: min(1080px, calc(100vw - 112px));
+}
+@media (max-width: 850px) {
+  .record-explanation {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+}

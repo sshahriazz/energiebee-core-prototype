@@ -1,0 +1,23 @@
+Technext / EnergieBee technical reports
+
+Inputs: docs/database.md and docs/timeline-forecast-and-data-states.md.
+The Markdown sources and original diagram files are unchanged.
+Report diagrams use Technext orange (#EB6126), sampled from the official logo,
+with charcoal (#151515), pale orange and neutral backgrounds.
+Logo source: https://technext.it/wp-content/uploads/2023/09/Technext-Logo-Black-Text.png
+Website: https://technext.it/
+Contact: +1 302 433 6002; Wilmington, DE, US 19802-4447.
+
+Rebuild from the repository root:
+  python3 -m venv /tmp/technext-pdf-venv
+  /tmp/technext-pdf-venv/bin/pip install -r scripts/report-requirements.txt
+  /tmp/technext-pdf-venv/bin/python scripts/build-reports.py
+Requires Google Chrome in /Applications (adjust the executable path for other systems).
+
+PDFs are the final deliverables. HTML files are intermediate print layouts.
+PDF postprocessing adds running headers, footers, page totals and bookmarks.
+Body pages are A4. Detailed diagram sheets use A3 and one A2 landscape sheet.
+Print using each PDF page's size, or use fit-to-page when larger paper is unavailable.
+Rendered diagrams replace the collapsible Mermaid source blocks in the PDFs;
+the source blocks remain available in the original Markdown.
+Original technical dates, caveats, measurements and source references are retained.

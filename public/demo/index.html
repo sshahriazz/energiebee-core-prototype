@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EnergieBee · Energy overview</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2.5 28 9.25v13.5L16 29.5 4 22.75V9.25z' fill='%23eda100'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/demo.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header>
+      <div class="shell header-inner">
+        <a class="brand" href="/" aria-label="EnergieBee overview"
+          ><svg viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M16 2.5 28 9.25v13.5L16 29.5 4 22.75V9.25z" fill="currentColor" />
+            <path d="M10 13h12M9.5 17h13M11 21h10" stroke="#191919" stroke-width="2" /></svg
+          ><span>EnergieBee</span></a
+        >
+        <nav aria-label="Main navigation" id="nav">
+          <a href="/">Overview</a><a href="/timeline">Timeline</a><a href="/evidence">Evidence</a>
+        </nav>
+        <span class="demo-label">Energy core demo</span>
+      </div>
+    </header>
+    <main id="main" class="shell" tabindex="-1">
+      <div id="controls"></div>
+      <div id="content" aria-live="polite">
+        <section class="empty" role="status">
+          <h1>Opening your energy record…</h1>
+          <p>Loading recorded readings for this home.</p>
+        </section>
+      </div>
+    </main>
+    <footer class="shell">
+      <div>
+        <strong>One home. Every half-hour explained.</strong>
+        <p>Recorded electricity data · No forecasts or financial estimates in this demo.</p>
+      </div>
+      <div class="credit">Built by <img src="/img/technext-logo.png" alt="Technext" /></div>
+    </footer>
+    <dialog id="raw-dialog" aria-labelledby="raw-title">
+      <div class="dialog-head">
+        <h2 id="raw-title">Provider response</h2>
+        <button type="button" id="close-dialog" aria-label="Close provider response">Close</button>
+      </div>
+      <div id="raw-body" aria-live="polite"></div>
+    </dialog>
+    <noscript><p class="shell">Enable JavaScript to explore the recorded energy data.</p></noscript>
+    <script type="module" src="/demo.js"></script>
+  </body>
+</html>

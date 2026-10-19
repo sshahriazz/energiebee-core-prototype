@@ -1,6 +1,7 @@
 // HTTP API and static pages. Every endpoint reads the serving tables (site_hh,
 // site_day) or the forecast; none of them talks to a provider directly.
 import express from 'express';
+import { demoRouter } from './demo.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +22,19 @@ import { attributeHistory, attributeAt } from './core/attributes.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(here, '..', 'public'), { extensions: ['html'] }));
+app.use('/api', (req, res, next) => {
+  if (process.env.DEMO_OFFLINE === '1' && !['GET', 'HEAD'].includes(req.method)) {
+    return res.status(405).json({ error: 'This recorded demo is read-only. Live sync and rebuild actions are disabled.' });
+  }
+  next();
+});
+app.use('/api/demo', demoRouter);
+// This branch serves only the focused demo. The full UI remains on main.
+app.use('/img', express.static(path.join(here, '..', 'public', 'img')));
+app.use(express.static(path.join(here, '..', 'public', 'demo')));
+for (const route of ['/', '/timeline', '/evidence']) {
+  app.get(route, (req, res) => res.sendFile(path.join(here, '..', 'public', 'demo', 'index.html')));
+}
 
 const IMP = 'import_rate_ex * (1 + import_vat)';
 const site = (req) => {
@@ -454,7 +467,7 @@ app.get('/api/sites/:id/evidence', (req, res) => {
       FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id JOIN source src ON src.id = se.source_id
      WHERE (se.subject_kind = 'site' AND se.subject_id = ? OR se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?)
             OR se.subject_kind = 'region' AND se.subject_id = ?)
-       AND f.start_ts < ? AND f.end_ts > ? AND f.end_ts - f.start_ts <= 7200
+       AND f.start_ts < ? AND f.end_ts > ? AND (f.end_ts - f.start_ts <= 7200 OR src.code = 'sunsynk_daily')
     ORDER BY metric, start_ts, recorded_at`).all(String(s.id), slot - pad, slot + SLOT, String(s.id), s.id, `carbon:${s.carbon_region}`, slot + SLOT, slot)
     .filter((f) => f.subject_kind !== 'device' || f.kind === 'interval');
   const rates = db.prepare(`SELECT t.tariff_code, t.direction, r.component, r.register, r.payment_method, r.valid_from, r.valid_to, r.price_ex_vat, r.recorded_at, r.superseded_at, r.raw_id
@@ -556,9 +569,9 @@ const maintenance = runMaintenance();
 if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
 const port = Number(process.env.PORT) || 4100;
 const server = app.listen(port, () => {
-  const minutes = startScheduler();
-  console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
-  for (const { id, name } of db.prepare('SELECT id, name FROM site').all()) {
+  const minutes = process.env.DEMO_OFFLINE === '1' ? null : startScheduler();
+  console.log(`EnergieBee core demo on http://localhost:${port} (${minutes == null ? 'recorded snapshot; provider sync disabled' : `sync every ${minutes} min`})`);
+  for (const { id, name } of (process.env.DEMO_OFFLINE === '1' ? [] : db.prepare('SELECT id, name FROM site').all())) {
     syncSite(id).then((r) => console.log(`synced ${name}: ${r.ok ? 'ok' : 'partial'}`)).catch((err) => console.error(`sync ${name}:`, err.message));
   }
 });

@@ -3,3 +3,6 @@ node_modules/
 data/core.db*
 data/raw/
 data/logs/
+
+# Local presentation snapshots and raw-payload links
+data/demo/

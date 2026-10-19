@@ -1,3 +1,76 @@
+# Focused energy demo (`demo/core-energy`)
+
+This branch presents three screens: **Overview → Timeline → Evidence**. It keeps
+one selected home and date throughout the journey. Forecasts, prices, savings,
+EV-specific views and operational controls are outside the visible demo.
+The original ten-screen UI remains in `public/` and on `main`; this branch serves
+only `public/demo/`.
+
+```bash
+npm run demo
+# Open http://localhost:4102
+```
+
+The first run makes a consistent snapshot of `data/core.db` in `data/demo/core.db`.
+It reuses that snapshot on later runs and links the original immutable raw-payload
+files for evidence inspection. No provider credentials or live sync are used by
+this command. Keep the source raw files available. With no source database, the
+app opens in a genuine empty state; it does not invent demo readings.
+
+For a fresh snapshot, stop the demo and choose a new directory:
+
+```bash
+DEMO_DATA_DIR=/tmp/energiebee-new-demo npm run demo
+```
+
+`DEMO_PORT` changes the preview port. `DB_FILE` chooses a different source database.
+`npm start` still uses `.env` and the normal provider scheduler, but serves the
+three-screen UI on this branch. Avoid starting it on a port already in use.
+
+The default date is the most recent closed day with all expected half-hours final,
+falling back to the most recent completed day and then the latest available day.
+A local day can contain 46, 48 or 50 slots. The date picker can select provisional
+and current days. Finality is separate from energy-check results.
+
+Demo values use the stored core calculations, with current five-minute source
+coverage checked before display. Unobserved measurements stay null; observed
+zeros remain zero. Missing required inputs withhold dependent allocations.
+Partial totals sum only available values and say so. The snapshot capture time
+is shown, and the snapshot clock is fixed so elapsed-slot coverage is repeatable. Elapsed slots missing from
+the build are explicitly represented as missing. All three screens use the same
+presentation rows. This is a focused prototype, not a certified meter or a new
+thermal/HEM implementation.
+
+The demo uses native semantic controls, tables and dialogs in the existing plain
+HTML/JS stack. Official shadcn registry/docs were consulted for those primitives;
+React components were not introduced into this no-build application. Existing
+EnergieBee palette and Technext attribution are retained. The design-taste skill
+excludes dashboards from its marketing-page workflow; rendered review covers
+this application at desktop, tablet and phone widths instead.
+
+Run `npm test` for the existing core tests and demo regressions. The regression
+suite covers missing-vs-zero readings, dependent allocations, default dates,
+partial totals, sensor coverage, and daylight-saving days.
+
+Browser regression checks (with `npm run demo` running in another terminal):
+
+```bash
+python3 -m venv /tmp/energiebee-demo-tools
+/tmp/energiebee-demo-tools/bin/pip install playwright
+/tmp/energiebee-demo-tools/bin/python scripts/check-demo.py
+```
+
+The browser check uses installed Google Chrome on macOS; override `CHROME_BIN`
+for another location and `DEMO_URL` for a different port. It expects a populated
+snapshot with a completed day and a provisional day. It checks all three screens
+at 1440, 768 and 390 pixels, date preservation, chart-to-evidence navigation,
+raw-response dialogs, per-day totals, excluded routes, read-only API behavior,
+empty states, and recovery after API errors. It writes review screenshots to
+`/tmp/energiebee-demo-review`. Browser response overrides only simulate failures
+in that test browser; they do not modify the server's recorded data.
+
+---
+
 # EnergieBee core prototype
 
 A working prototype of the EnergieBee unified energy core. It takes data from

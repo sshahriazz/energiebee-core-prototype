@@ -1,3 +1,5 @@
+For a fresh installation that fetches real Sunsynk and Octopus data, follow [the demo setup guide](docs/DEMO-SETUP.md). Use `npm start` for provider sync; `npm run demo` below is the separate frozen-snapshot option.
+
 The demo also includes `/how-it-works`, a plain-language guide to the recorded-data process. Timeline intervals include sources, coverage, expanded calculations, allocations, method and evidence links.
 
 # Focused energy demo (`demo/core-energy`)

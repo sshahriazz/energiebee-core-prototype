@@ -1,8 +1,8 @@
 // Data & trust: why every number can be relied on. How the sources come together for each
-// half-hour, how independent measurements agree, where every kWh went, how each day changed
-// (and how it looked at any earlier moment), the path of one half-hour from provider response
+// slot, how independent measurements agree, where every kWh went, how each day changed
+// (and how it looked at any earlier moment), the path of one slot from provider response
 // to bill, and the connections, syncs and rebuild behind it all.
-import { api, fmt, timeFmt, ago, esc } from '../api.js';
+import { api, fmt, timeFmt, ago, esc, minorName, slotNoun, slotNouns, SlotNoun, originBadge, originLegend } from '../api.js';
 import { init, card } from '../layout.js';
 import { headlineCard, coverageCard, drawCoverage, crossCheckCard, balanceCard, revisionsCard, asOfCard, wireAsOf, correctionsCard, detailHistoryHtml, evidenceFlow } from './trust-views.js';
 
@@ -44,8 +44,8 @@ async function evidence(state, slot) {
         ${[['Solar → home', r.solar_to_home], ['Solar → battery', r.solar_to_battery], ['Solar → grid', r.solar_to_grid], ['Battery → home', r.battery_to_home], ['Battery → grid', r.battery_to_grid], ['Grid → home', r.grid_to_home], ['Grid → battery', r.grid_to_battery]]
           .map(([k, x]) => `<div class="row"><span class="k">${k}</span><b class="mono">${v(x)}</b></div>`).join('')}
       </div></div>
-      <div><h3>Price and cost (pence)</h3><div class="rows">
-        <div class="row"><span class="k">Import price ex VAT</span><b class="mono">${v(r.import_rate_ex, 2)}</b></div>
+      <div><h3>Price and cost (${minorName()})</h3><div class="rows">
+        <div class="row"><span class="k">Import price before VAT${lin.levy ? ' (incl. per-kWh levy)' : ''}</span><b class="mono">${v(r.import_rate_ex, 2)}</b></div>
         <div class="row"><span class="k">VAT</span><b class="mono">${r.import_vat != null ? fmt.pct(r.import_vat) : '–'}</b></div>
         <div class="row"><span class="k">Export price</span><b class="mono">${v(r.export_rate, 2)}</b></div>
         <div class="row"><span class="k">Grid → home</span><b class="mono">${v(r.grid_to_home_cost, 2)}</b></div>
@@ -61,9 +61,11 @@ async function evidence(state, slot) {
     <div class="section rows">
       <div class="row"><span class="k">State</span><span>${badge(r.state)} ${flags.map((f) => badge(f === 'measured' ? 'pass' : 'warn', f)).join(' ')}</span></div>
       <div class="row"><span class="k">Import from</span><b class="mono">${esc(lin.import || '–')}</b></div>
-      <div class="row"><span class="k">Inverter coverage of this half-hour</span><b class="mono">${lin.coverage != null ? fmt.pct(lin.coverage) : '–'}</b></div>
+      <div class="row"><span class="k">Inverter coverage of this ${slotNoun()}</span><b class="mono">${lin.coverage != null ? fmt.pct(lin.coverage) : '–'}</b></div>
       <div class="row"><span class="k">Daily-total fit factors</span><b class="mono">${lin.fit ? Object.entries(lin.fit).map(([k, x]) => `${k} ${Number(x).toFixed(3)}`).join(' · ') : '–'}</b></div>
-      <div class="row"><span class="k">Tariff · register</span><b class="mono">${esc(lin.tariff || '–')} · ${esc(lin.register || '–')}</b></div>
+      <div class="row"><span class="k">Tariff · register</span><b class="mono">${esc(lin.tariff || '–')} · ${esc(lin.register || '–')}${lin.estimated ? ' · <span class="badge warn">estimated price</span>' : ''}</b></div>
+      <div class="row"><span class="k">Where the prices came from</span><span>${lin.origin ? originBadge(lin.origin) : '<span class="faint">built before origins were recorded: rebuild to label</span>'} · energy data ${originBadge(lin.data_origin || 'provider')}</span></div>
+      ${(lin.placeholder_inputs || []).length ? `<div class="row"><span class="k">Not verified</span><span class="mono" style="white-space:normal;text-align:right">${lin.placeholder_inputs.map(esc).join('<br>')}</span></div>` : ''}
       <div class="row"><span class="k">Carbon</span><b class="mono">${r.carbon_intensity != null ? `${Math.round(r.carbon_intensity)} g/kWh (${esc(lin.carbon)})` : '–'}</b></div>
       <div class="row"><span class="k">Built</span><b class="mono">${esc(r.method_version)} · ${new Date(r.built_at * 1000).toLocaleString('en-GB')}</b></div>
     </div>
@@ -76,12 +78,15 @@ async function evidence(state, slot) {
     </table></div>
     <h3 class="section">Prices in force</h3>
     <div class="table-wrap"><table>
-      <thead><tr><th>Tariff</th><th>Component</th><th>Valid</th><th class="r">Ex VAT</th><th>Raw</th></tr></thead>
-      <tbody>${e.rates.map((x) => `<tr class="${x.superseded_at ? 'superseded' : ''}"><td class="mono">${esc(x.tariff_code)}</td><td>${x.component} · ${x.register} · ${x.payment_method}</td>
+      <thead><tr><th>Tariff</th><th>Component</th><th>Valid</th><th class="r">Ex tax</th><th>Origin</th><th>Raw</th></tr></thead>
+      <tbody>${e.rates.map((x) => `<tr class="${x.superseded_at ? 'superseded' : ''}"><td class="mono">${esc(x.tariff_code)}</td><td>${x.component} · ${x.register} · ${x.payment_method}${x.estimated ? ' · <span class="badge warn">estimated</span>' : ''}</td>
         <td>${tf.dayTime(x.valid_from)} → ${x.valid_to ? tf.dayTime(x.valid_to) : 'open'}</td><td class="r mono">${Number(x.price_ex_vat).toFixed(4)}</td>
+        <td>${originBadge(x.origin, x.origin_note)}</td>
         <td>${x.raw_id ? `<button class="btn" data-raw="${x.raw_id}" style="height:24px">#${x.raw_id}</button>` : ''}</td></tr>`).join('')}
-      ${e.vat.map((x) => `<tr><td class="mono">VAT</td><td>${x.fuel} · ${x.direction}</td><td>${tf.dayTime(x.valid_from)} → ${x.valid_to ? tf.dayTime(x.valid_to) : 'open'}</td><td class="r mono">${fmt.pct(x.rate)}</td><td></td></tr>`).join('')}</tbody>
-    </table></div>`;
+      ${(e.taxRules?.length ? e.taxRules : []).map((x) => `<tr><td class="mono">${esc(x.country)} ${esc(x.code)}</td><td>${x.fuel} · ${x.direction} · on ${x.applies_to}</td><td>${tf.dayTime(x.valid_from)} → ${x.valid_to ? tf.dayTime(x.valid_to) : 'open'}</td>
+        <td class="r mono">${x.kind === 'percent' ? fmt.pct(x.value, 2) : `${Number(x.value).toFixed(3)} ${esc(x.currency || '')}${x.charge_period ? `/${esc(x.charge_period)}` : '/kWh'}`}</td><td>${originBadge(x.origin, x.origin_note)}</td><td></td></tr>`).join('')}
+      ${e.taxRules?.length ? '' : e.vat.map((x) => `<tr><td class="mono">VAT</td><td>${x.fuel} · ${x.direction}</td><td>${tf.dayTime(x.valid_from)} → ${x.valid_to ? tf.dayTime(x.valid_to) : 'open'}</td><td class="r mono">${fmt.pct(x.rate)}</td><td>${originBadge(x.origin, x.origin_note)}</td><td></td></tr>`).join('')}</tbody>
+    </table></div>${originLegend()}`;
   box.querySelectorAll('[data-raw]').forEach((b) => b.addEventListener('click', () => showRaw(b.dataset.raw)));
 }
 
@@ -131,10 +136,10 @@ async function render(state) {
     <div class="row"><span class="k">Raw payloads landed</span><b>${st.raw}</b></div>
     <div class="row"><span class="k">Readings (5-minute and live)</span><b>${st.readings.toLocaleString('en-GB')} <span class="faint">· ${st.superseded} superseded</span></b></div>
     <div class="row"><span class="k">Interval facts · forecasts · price rows</span><b>${st.intervals.toLocaleString('en-GB')} · ${st.forecasts.toLocaleString('en-GB')} · ${st.rates.toLocaleString('en-GB')}</b></div>
-    <div class="row"><span class="k">Half-hours served</span><b>${st.halfHours.toLocaleString('en-GB')} <span class="faint">· ${h.restated} restated</span></b></div>
+    <div class="row"><span class="k">${SlotNoun()}s served</span><b>${st.halfHours.toLocaleString('en-GB')} <span class="faint">· ${h.restated} restated</span></b></div>
     <div class="row"><span class="k">Build method</span><b class="mono">${esc(h.method)}</b></div>
   </div>
-  <button class="btn" id="rebuild-btn" style="margin-top:12px">Rebuild every half-hour from facts</button><div id="rebuild-out" class="faint" style="margin-top:8px;font-size:13px"></div>`;
+  <button class="btn" id="rebuild-btn" style="margin-top:12px">Rebuild every ${slotNoun()} from facts</button><div id="rebuild-out" class="faint" style="margin-top:8px;font-size:13px"></div>`;
 
   const quarantine = h.quarantined.length ? `<div class="table-wrap"><table><tbody>${h.quarantined.map((x) => `<tr><td>${esc(x.source)}</td><td class="muted">${esc(x.reason)}</td><td>${ago(x.fetched_at)}</td><td><button class="btn" data-raw="${x.id}" style="height:24px">#${x.id}</button></td></tr>`).join('')}</tbody></table></div>`
     : '<p class="muted" style="margin:0">Nothing quarantined. Payloads that fail their source contract are kept here, never loaded.</p>';
@@ -150,11 +155,11 @@ async function render(state) {
     <div class="section">${balanceCard(t, tf)}</div>
     <div class="section">${revisionsCard(t, tf)}</div>
     <div class="section">${asOfCard(t, tf)}</div>
-    <div class="section" id="evidence">${card('The path of one half-hour', 'From the providers\' responses to the bill, step by step. Pick a half-hour, or click any bar on the other pages.',
-      `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"><select id="ev-day">${h.days.map((d) => `<option value="${d.local_date}">${tf.date(d.local_date)}</option>`).join('')}</select><select id="ev-slot"></select></div><div id="evidence-body"><div class="skeleton">Choose a half-hour.</div></div>`)}</div>
+    <div class="section" id="evidence">${card(`The path of one ${slotNoun()}`, `From the providers' responses to the bill, step by step. Pick a ${slotNoun()}, or click any bar on the other pages.`,
+      `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"><select id="ev-day">${h.days.map((d) => `<option value="${d.local_date}">${tf.date(d.local_date)}</option>`).join('')}</select><select id="ev-slot"></select></div><div id="evidence-body"><div class="skeleton">Choose a ${slotNoun()}.</div></div>`)}</div>
     <div class="section" id="system">${systemCard(sys, t)}</div>
     <div class="section">${correctionsCard(t, tf)}</div>
-    <div class="banner section"><span>⛓</span><div><b>Pipeline:</b> provider API → adapter (applies the source contract) → raw payload kept → facts (append-only, versioned) → build engine (${esc(h.method)}) → half-hour timeline → these pages.
+    <div class="banner section"><span>⛓</span><div><b>Pipeline:</b> provider API → adapter (applies the source contract) → raw payload kept → facts (append-only, versioned) → build engine (${esc(h.method)}) → ${slotNoun()} timeline → these pages.
       Pages never call a provider; they read the timeline.</div></div>
     <div class="section grid cols-2">${card('Connections', 'One per provider for this home', conns)}${card('Recent syncs', 'Each step runs on its own; one failure never blocks the rest', runs)}</div>
     <div class="section grid cols-2">${card('Storage and rebuild', 'Serving tables are disposable: they can always be rebuilt from facts.', storage)}${card('Quarantine', '', quarantine)}</div>
@@ -190,7 +195,7 @@ async function render(state) {
     out.textContent = 'Rebuilding…';
     const r = await api(`/api/sites/${id}/rebuild`, { method: 'POST' });
     const same = r.before.c === r.after.c && r.before.h === r.after.h && r.before.n === r.after.n;
-    out.innerHTML = `${r.days} days, ${r.slots} half-hours rebuilt in ${r.ms} ms. Total cost ${fmt.gbp(r.before.c)} → ${fmt.gbp(r.after.c)}, home use ${fmt.kwh(r.before.h)} → ${fmt.kwh(r.after.h)}. ${same ? badge('pass', 'identical: same facts, same numbers') : badge('warn', 'changed: new facts arrived since the last build')}`;
+    out.innerHTML = `${r.days} days, ${r.slots} ${slotNouns()} rebuilt in ${r.ms} ms. Total cost ${fmt.gbp(r.before.c)} → ${fmt.gbp(r.after.c)}, home use ${fmt.kwh(r.before.h)} → ${fmt.kwh(r.after.h)}. ${same ? badge('pass', 'identical: same facts, same numbers') : badge('warn', 'changed: new facts arrived since the last build')}`;
     ev.target.disabled = false;
   });
 }

@@ -1,5 +1,5 @@
 // EV: charging sessions, what they cost, how much came from solar, and what is planned tonight.
-import { api, fmt, timeFmt, esc, COLORS } from '../api.js';
+import { api, fmt, timeFmt, esc, COLORS, slotNoun, SlotNoun } from '../api.js';
 import { init, card, kpi, evidenceLink } from '../layout.js';
 import { timeChart, tipHtml, hhTicks } from '../charts.js';
 import { loadTimeline, isFc } from '../timeline.js';
@@ -13,7 +13,7 @@ async function render(state) {
   const content = document.getElementById('content');
   if (!ev.devices.length && !ev.sessions.length) {
     content.innerHTML = card('No EV connected yet', '', `<div class="empty">
-      <p>EV charging joins the same half-hour timeline as everything else. It can come from:</p>
+      <p>EV charging joins the same ${slotNoun()} timeline as everything else. It can come from:</p>
       <p><b>Octopus Intelligent</b> smart-charge dispatches (Kraken), the <b>Sunsynk</b> charger reading, or a charger's own API later.</p>
       <p class="faint">Nothing in the core changes when one is added: a new adapter writes EV facts and the build engine prices them.</p></div>`);
     return;
@@ -53,7 +53,7 @@ async function render(state) {
 
   content.innerHTML = `
     ${kpis}
-    <div class="section">${card('Charging', `Half-hour EV energy from ${esc(ev.devices.map((d) => d.label).join(', ') || 'the car')}, priced at the home's cost of energy in that half-hour.`, '<div id="ev-chart"></div>')}</div>
+    <div class="section">${card('Charging', `${SlotNoun()} EV energy from ${esc(ev.devices.map((d) => d.label).join(', ') || 'the car')}, priced at the home's cost of energy in that ${slotNoun()}.`, '<div id="ev-chart"></div>')}</div>
     <div class="section grid cols-main">${card('Sessions', `${tf.date(ev.from)} – ${tf.date(ev.to)} · click a row for its evidence`, sessions)}${card('Planned', 'Smart-charge dispatches for the next 24 hours', planned)}</div>`;
 
   content.querySelectorAll('tr[data-slot]').forEach((tr) => tr.addEventListener('click', () => { location.href = evidenceLink(state, tr.dataset.slot); }));

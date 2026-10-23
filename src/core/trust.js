@@ -3,20 +3,30 @@
 // balance is, what was corrected, and where every system detail came from. Read-only.
 import { db } from '../db/db.js';
 import { seriesId } from './facts.js';
-import { SLOT, nowSec, dayBounds, slotsOfDay, daysBetween, localDate } from './time.js';
+import { nowSec, dayBounds, slotsOfDay, daysBetween, localDate, slotLength, slotNoun } from './time.js';
 import { ATTRS, attributeAt, attributeHistory } from './attributes.js';
 
 const HOUR = 3600; const DAY = 86400;
 
-// Each feed: where its facts are, how many per half-hour are expected, and how soon after a
-// half-hour ends its data normally arrives (later = late; not yet = waiting).
-function feedsFor(site) {
+// Each feed: where its facts are, how many per slot are expected, and how soon after a
+// slot ends its data normally arrives (later = late; not yet = waiting). Counts per slot follow
+// the home's slot length: 5-minute samples fill a slot slotS/300 times, half-hourly facts once per
+// half-hour (a 15-minute slot is covered by one half-hour fact, an hour by two).
+function feedsFor(site, slotS) {
+  const perHalfHour = Math.max(1, slotS / 1800);
   const sid = (metric, source) => seriesId('site', site.id, metric, source);
   const dev = (kind) => db.prepare("SELECT * FROM device WHERE site_id = ? AND kind = ? AND provider != 'env' AND retired_at IS NULL").get(site.id, kind);
   const out = [];
+  // Where each feed comes from, in words: a demo home's data is generated, so it never names a
+  // provider; a price names the provider of the tariffs agreed (Octopus for the live home).
+  const synthetic = (provider) => site.is_demo || provider === 'synthetic';
+  const meterSource = (d) => (synthetic(d.provider) ? 'Synthetic (demo data)' : d.provider === 'octopus' ? 'Octopus' : d.provider);
+  const priceProviders = [...new Set(db.prepare('SELECT DISTINCT t.provider FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL').all(site.id).map((r) => r.provider))];
+  const priceSource = site.is_demo || (priceProviders.length && priceProviders.every((p) => p === 'synthetic')) ? 'Synthetic tariff (demo data)'
+    : !priceProviders.length || priceProviders.every((p) => p === 'octopus') ? 'Octopus tariff' : `${priceProviders.join(', ')} tariff`;
   if (db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(site.id)) {
-    out.push({ key: 'inverter', label: 'Inverter power, every 5 minutes', source: 'Sunsynk', kind: 'reading', series: sid('solar_w', 'sunsynk_5min'), perSlot: 6, dueS: HOUR,
-      use: 'Solar, battery, house use and the grid clamp, half-hour by half-hour' });
+    out.push({ key: 'inverter', label: 'Inverter power, every 5 minutes', source: 'Sunsynk', kind: 'reading', series: sid('solar_w', 'sunsynk_5min'), perSlot: slotS / 300, dueS: HOUR,
+      use: `Solar, battery, house use and the grid clamp, ${slotNoun(slotS)} by ${slotNoun(slotS)}` });
   }
   const meters = [['meter_import', 'grid_import_kwh', 'Smart meter, import'], ['meter_export', 'grid_export_kwh', 'Smart meter, export'], ['meter_gas', null, 'Smart meter, gas']];
   for (const [kind, metric, label] of meters) {
@@ -24,7 +34,7 @@ function feedsFor(site) {
     if (!d) continue;
     const unit = JSON.parse(d.attrs || '{}').gasUnit?.unit;
     const m = metric || (unit === 'm3' ? 'gas_m3' : 'gas_kwh');
-    out.push({ key: kind, label, source: 'Octopus', kind: 'interval', series: seriesId('device', d.id, m, 'octopus_meter'), perSlot: 1, dueS: 2 * DAY,
+    out.push({ key: kind, label, source: meterSource(d), kind: 'interval', series: seriesId('device', d.id, m, 'octopus_meter'), perSlot: perHalfHour, dueS: 2 * DAY,
       use: kind === 'meter_gas' ? 'Gas use (m³), converted with the calorific value' : 'Grid import and export for the bill; replaces the clamp when it arrives' });
     if (kind === 'meter_gas' && unit === 'm3') {
       const ldz = JSON.parse(d.attrs || '{}').ldz;
@@ -32,32 +42,34 @@ function feedsFor(site) {
         use: 'Converts gas m³ to kWh for each gas day' });
     }
   }
-  out.push({ key: 'import_price', label: 'Import price', source: 'Octopus tariff', kind: 'served', column: 'import_rate_ex', use: 'Cost of every imported kWh' });
+  out.push({ key: 'import_price', label: 'Import price', source: priceSource, kind: 'served', column: 'import_rate_ex', use: 'Cost of every imported kWh' });
   if (dev('meter_export') || db.prepare("SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.direction = 'export'").get(site.id)) {
-    out.push({ key: 'export_price', label: 'Export price', source: 'Octopus tariff', kind: 'served', column: 'export_rate', use: 'Credit for every exported kWh' });
+    out.push({ key: 'export_price', label: 'Export price', source: priceSource, kind: 'served', column: 'export_rate', use: 'Credit for every exported kWh' });
   }
-  if (site.carbon_region != null) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: 'NESO', kind: 'interval', series: seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), perSlot: 1, dueS: DAY,
+  if (site.carbon_region != null) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: 'NESO', kind: 'interval', series: seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), perSlot: perHalfHour, dueS: DAY,
     use: 'Carbon of imported power and carbon avoided' });
   out.push({ key: 'weather', label: 'Sunlight and temperature', source: 'Open-Meteo', kind: 'cover', series: sid('ghi_wm2', 'open_meteo'), dueS: DAY, use: 'Solar forecast learning and the temperature fit' });
   out.push({ key: 'forecast', label: 'Solar forecast made in advance', source: 'Quartz / EnergieBee', kind: 'served', column: 'solar_forecast', startsWithFirst: true,
-    use: 'Compares each half-hour with what was forecast before it' });
+    use: `Compares each ${slotNoun(slotS)} with what was forecast before it` });
   return out;
 }
 
-// One character per half-hour: o on time · l late · h loaded with the history on first connection ·
+// One character per slot: o on time · l late · h loaded with the history on first connection ·
 // p partial · w waiting (not due yet) · m missing (overdue) · n not expected.
-function feedCells(feed, slots, now, served) {
+// Slots follow the home's grid: slotS long, from local midnight (phase = its offset from the epoch grid).
+function feedCells(feed, slots, now, served, slotS) {
   const first = new Map(); const count = new Map();
   let firstEver = null;
+  const phase = ((slots[0] % slotS) + slotS) % slotS;
   if (feed.kind === 'reading') {
-    for (const r of db.prepare(`SELECT ts - (ts % ${SLOT}) AS s, SUM(superseded_at IS NULL) AS n, MIN(recorded_at) AS t FROM reading
-        WHERE series_id = ? AND ts >= ? AND ts < ? GROUP BY s`).all(feed.series, slots[0], slots[slots.length - 1] + SLOT)) { count.set(r.s, r.n); first.set(r.s, r.t); }
+    for (const r of db.prepare(`SELECT ts - ((ts - ${phase}) % ${slotS}) AS s, SUM(superseded_at IS NULL) AS n, MIN(recorded_at) AS t FROM reading
+        WHERE series_id = ? AND ts >= ? AND ts < ? GROUP BY s`).all(feed.series, slots[0], slots[slots.length - 1] + slotS)) { count.set(r.s, r.n); first.set(r.s, r.t); }
     firstEver = db.prepare('SELECT MIN(recorded_at) AS t FROM reading WHERE series_id = ?').get(feed.series)?.t;
   } else if (feed.kind === 'interval' || feed.kind === 'cover') {
     const rows = db.prepare('SELECT start_ts, end_ts, recorded_at, superseded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?')
-      .all(feed.series, slots[0], slots[slots.length - 1] + SLOT);
+      .all(feed.series, slots[0], slots[slots.length - 1] + slotS);
     for (const f of rows) {
-      for (let s = f.start_ts - (f.start_ts % SLOT); s < f.end_ts; s += SLOT) {
+      for (let s = f.start_ts - ((((f.start_ts - phase) % slotS) + slotS) % slotS); s < f.end_ts; s += slotS) {
         if (f.superseded_at == null) count.set(s, (count.get(s) || 0) + 1);
         first.set(s, Math.min(first.get(s) ?? Infinity, f.recorded_at));
       }
@@ -68,7 +80,7 @@ function feedCells(feed, slots, now, served) {
   let cells = '';
   const delays = new Map();
   for (const s of slots) {
-    const end = s + SLOT;
+    const end = s + slotS;
     if (end > now) { cells += 'n'; continue; }
     if (feed.kind === 'served') {
       const v = served.get(s)?.[feed.column];
@@ -91,17 +103,18 @@ function feedCells(feed, slots, now, served) {
 export function trustFor(siteId, fromDate, toDate) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   const tz = site.timezone;
+  const slotS = slotLength(site);
   const now = nowSec();
   const dates = daysBetween(fromDate, toDate);
-  const slots = dates.flatMap((d) => slotsOfDay(tz, d));
+  const slots = dates.flatMap((d) => slotsOfDay(tz, d, slotS));
   const [fromTs] = dayBounds(tz, fromDate); const [, toTs] = dayBounds(tz, toDate);
   const hh = db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').all(siteId, fromTs, toTs);
   const served = new Map(hh.map((r) => [r.slot_start, r]));
   const ldz = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean) ?? null;
 
   // ── Feeds: coverage and arrival ──
-  const feeds = feedsFor(site).map((f) => {
-    const { cells, delays } = feedCells(f, slots, now, served);
+  const feeds = feedsFor(site, slotS).map((f) => {
+    const { cells, delays } = feedCells(f, slots, now, served, slotS);
     const byDay = dates.map((d) => {
       const idx = slots.map((s, i) => [s, i]).filter(([s]) => localDate(tz, s) === d);
       const cs = idx.map(([, i]) => cells[i]);

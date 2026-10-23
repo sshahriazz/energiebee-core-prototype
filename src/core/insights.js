@@ -3,12 +3,16 @@
 import { db } from '../db/db.js';
 import { forecastSite } from './forecast.js';
 import { nowSec, localDate, addDays, zonedParts } from './time.js';
+import { CURRENCIES } from './money.js';
 
-const gbp = (p) => `£${(p / 100).toFixed(2)}`;
 const kwh = (v) => `${v.toFixed(1)} kWh`;
 
 export function insightsFor(siteId) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  // Money in the home's currency: amounts are minor units (pence, cents), unit prices per kWh in the minor unit.
+  const cu = CURRENCIES[site.currency] ?? CURRENCIES.GBP;
+  const gbp = (p) => `${cu.symbol}${(p / 10 ** cu.minorExponent).toFixed(cu.minorExponent)}`;
+  const mu = { GBP: 'p', EUR: 'c' }[cu.code] ?? '';
   const tz = site.timezone;
   const today = localDate(tz, nowSec());
   const days = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? ORDER BY local_date').all(siteId, addDays(today, -30));
@@ -35,8 +39,8 @@ export function insightsFor(siteId) {
     const hh = db.prepare('SELECT AVG(import_rate_ex * (1 + import_vat)) AS imp, AVG(export_rate) AS exp FROM site_hh WHERE site_id = ? AND local_date = ? AND solar_to_grid > 0.01')
       .get(siteId, y.local_date);
     if (hh?.imp != null && hh?.exp != null && hh.imp > hh.exp) {
-      add('export', 'tip', `${kwh(y.grid_export)} exported yesterday at ${hh.exp.toFixed(1)}p`,
-        `Using it at home instead was worth ${hh.imp.toFixed(1)}p/kWh at those times.`,
+      add('export', 'tip', `${kwh(y.grid_export)} exported yesterday at ${hh.exp.toFixed(1)}${mu}`,
+        `Using it at home instead was worth ${hh.imp.toFixed(1)}${mu}/kWh at those times.`,
         ['site_hh.solar_to_grid', 'site_hh.export_rate', 'site_hh.import_rate_ex']);
     }
   }
@@ -45,7 +49,7 @@ export function insightsFor(siteId) {
     const avoided = db.prepare('SELECT SUM(battery_to_home * import_rate_ex * (1 + import_vat)) AS v FROM site_hh WHERE site_id = ? AND local_date = ?').get(siteId, today).v;
     if (avoided != null) {
       add('battery', 'good', `Battery covered ${kwh(t.battery_to_home)} today`,
-        `That energy cost ${paid.toFixed(1)}p/kWh to store (first in, first out) and replaced grid power worth ${gbp(avoided)}.`,
+        `That energy cost ${paid.toFixed(1)}${mu}/kWh to store (first in, first out) and replaced grid power worth ${gbp(avoided)}.`,
         ['site_hh.battery_to_home', 'site_hh.battery_to_home_cost', 'site_hh.import_rate_ex']);
     }
   }
@@ -57,7 +61,7 @@ export function insightsFor(siteId) {
       const gridKwh = week.reduce((a, d) => a + (d.grid_to_home || 0), 0);
       const rate = gridKwh > 0.1 ? week.reduce((a, d) => a + (d.grid_to_home_cost || 0), 0) / gridKwh : null;
       if (rate) add('baseload', 'info', `Always-on use is about ${Math.round(kw * 1000)} W`,
-        `Overnight minimum; that is ${Math.round(kw * 8760)} kWh and about ${gbp(kw * 8760 * rate)} a year at your average grid price over the last ${week.length} full days (${rate.toFixed(1)}p/kWh).`, ['site_day.base_load_kw', 'site_day.grid_to_home_cost']);
+        `Overnight minimum; that is ${Math.round(kw * 8760)} kWh and about ${gbp(kw * 8760 * rate)} a year at your average grid price over the last ${week.length} full days (${rate.toFixed(1)}${mu}/kWh).`, ['site_day.base_load_kw', 'site_day.grid_to_home_cost']);
     }
   }
   try {
@@ -66,7 +70,7 @@ export function insightsFor(siteId) {
       const s = zonedParts(tz, f.cheapestWindow.start);
       const e = zonedParts(tz, f.cheapestWindow.end);
       add('cheapest', 'tip', `Cheapest power: ${String(s.hh).padStart(2, '0')}:${String(s.mm).padStart(2, '0')}–${String(e.hh).padStart(2, '0')}:${String(e.mm).padStart(2, '0')}`,
-        `Average ${f.cheapestWindow.avg.toFixed(1)}p/kWh over two hours, from your tariff's published prices.`, ['rate_interval']);
+        `Average ${f.cheapestWindow.avg.toFixed(1)}${mu}/kWh over two hours, from your tariff's published prices.`, ['rate_interval']);
     }
     if (f.next24h.solar > 0) {
       const ySolar = y?.solar;

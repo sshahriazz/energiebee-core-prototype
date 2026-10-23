@@ -1,4 +1,5 @@
-// Next 48 hours, per half-hour. Every number comes from this home's own last 14 days
+// Next 48 hours, per slot of the home's own length (site.slot_s: 15, 30 or 60 minutes; the
+// text below says half-hour, the default). Every number comes from this home's own last 14 days
 // in site_hh or from a provider's forecast. When the data is not enough, that part is
 // left out and `model` says why; nothing falls back to a default.
 //  - solar: Quartz when the panel angles are known, otherwise this home's learned
@@ -13,8 +14,8 @@
 // stored forecasts (source core_forecast) against what the home then used.
 import { db } from '../db/db.js';
 import { seriesId, readForecastOfRecord, readReadings, readIntervals } from './facts.js';
-import { loadPricing, priceAt } from './pricing.js';
-import { SLOT, nowSec, floorTo, zonedParts, localDate, dayBounds, slotsOfDay } from './time.js';
+import { loadPricing, priceOver } from './pricing.js';
+import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, slotLength, slotPhase, slotFloor, slotsPerDay, slotOfDay, slotLabel, todMinute, eachSlotOverlap } from './time.js';
 
 // Reporting choices and decision rules from the brief, not measured quantities.
 const HISTORY_DAYS = 14;
@@ -33,8 +34,10 @@ const quantile = (xs, p) => {
 };
 const median = (xs) => quantile(xs, 0.5);
 const round = (v, d = 2) => (v == null ? null : Math.round(v * 10 ** d) / 10 ** d);
-const hhKey = (tz, ts) => { const { hh, mm } = zonedParts(tz, ts); return hh * 2 + (mm >= 30 ? 1 : 0); };
-const hhLabel = (k) => `${String((k >> 1) % 24).padStart(2, '0')}:${k % 2 ? '30' : '00'}`;
+// Slot-of-day index k comes from the local clock (time.js slotOfDay); at 30 minutes k = hh*2 + (mm >= 30).
+const hourOf = (k, slotS) => Math.floor((k * slotS) / 3600);
+// Per-slot energy thresholds are written for a half-hour and scale with the slot length.
+const perSlot = (kwhPerHalfHour, slotS) => (kwhPerHalfHour * slotS) / 1800;
 const isWeekend = (date) => [0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay());
 const lineFit = (xs, ys) => {
   const mx = mean(xs); const my = mean(ys);
@@ -43,12 +46,21 @@ const lineFit = (xs, ys) => {
   if (!(sxx > 0) || !(syy > 0)) return null;
   return { slope: sxy / sxx, intercept: my - (sxy / sxx) * mx, r2: (sxy * sxy) / (sxx * syy) };
 };
-// Hourly mean W/m2 facts to kWh/m2 per half-hour (each hour's mean holds for both halves).
-const sunByHalfHour = (facts) => {
-  const out = new Map();
-  for (const f of facts) if (f.value != null) for (let s = f.start_ts; s < f.end_ts; s += SLOT) out.set(s, (f.value * SLOT) / 3600 / 1000);
-  return out;
-};
+// Hourly mean W/m2 facts to kWh/m2 per slot (an hour's mean holds over every part of it), and
+// the mean W/m2 of each slot. A slot inside one hour takes that hour's value; a slot spanning
+// two hours (60-minute slots in a zone at a half-hour offset) adds its share of each.
+export function sunBySlot(facts, slotS = SLOT, phase = 0) {
+  const kwh = new Map(); const wm2 = new Map();
+  for (const f of facts) {
+    if (f.value == null) continue;
+    eachSlotOverlap(f, slotS, phase, (s, share, o) => {
+      const e = (f.value * o) / 3600 / 1000;
+      if (o === slotS) { kwh.set(s, e); wm2.set(s, f.value); return; }
+      kwh.set(s, (kwh.get(s) || 0) + e); wm2.set(s, (wm2.get(s) || 0) + (f.value * o) / slotS);
+    });
+  }
+  return { kwh, wm2 };
+}
 
 // House use (EV excluded) per half-hour of day. Weekends often look different,
 // so each day type uses its own days once there are enough of them.
@@ -106,13 +118,18 @@ function fitTemperature(hist, wholeDays) {
 
 // Quartz's forecast of record for past half-hours: for each, the latest issue made before
 // it started. Read from Quartz's own series, so our stored forecast never counts as Quartz.
-function quartzOfRecord(seriesKey, from, to) {
-  const rows = db.prepare('SELECT start_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
+function quartzOfRecord(seriesKey, from, to, slotS, phase) {
+  const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
     .all(seriesKey, from, to);
   const best = new Map();
   for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
+  return energyBySlot(best.values(), slotS, phase);
+}
+
+// Energy forecasts (kWh per period) to kWh per slot, split by overlap.
+function energyBySlot(facts, slotS, phase) {
   const bySlot = new Map();
-  for (const f of best.values()) { const s = floorTo(f.start_ts, SLOT); bySlot.set(s, (bySlot.get(s) || 0) + (f.value || 0)); }
+  for (const f of facts) eachSlotOverlap(f, slotS, phase, (s, share) => bySlot.set(s, (bySlot.get(s) || 0) + (f.value || 0) * share));
   return bySlot;
 }
 
@@ -150,9 +167,9 @@ function calibrateQuartz(hist, wholeDays, quartzBySlot) {
 // day, a least-squares fit through the origin of actual solar against horizontal
 // sunlight energy. Bright half-hours weigh most, so dawn and dusk need no cut-off.
 // Also used by solar-expected.js for what the panels should have made in past weather.
-export function learnSunlight(hist, sun, wholeDays) {
+export function learnSunlight(hist, sun, wholeDays, slotS = SLOT) {
   const pairs = hist.filter((r) => r.solar != null && sun.get(r.slot_start) > 0)
-    .map((r) => ({ h: r.k >> 1, a: r.solar, g: sun.get(r.slot_start), date: r.local_date }));
+    .map((r) => ({ h: hourOf(r.k, slotS), a: r.solar, g: sun.get(r.slot_start), date: r.local_date }));
   const days = new Set(pairs.map((p) => p.date)).size;
   const out = { ok: false, days, halfHours: pairs.length, ratios: new Map(), r2: null, maeKwh: null, range: null, rangeReason: null, reason: null };
   if (days < MIN_DAYS) return { ...out, reason: `${days} day(s) of solar and sunlight history; needs ${MIN_DAYS}` };
@@ -178,30 +195,33 @@ export function learnSunlight(hist, sun, wholeDays) {
 // Grid charging the home actually does: half-hours of the day when the battery took
 // more than 0.05 kWh from the grid on at least half of recent days. It reads the
 // outcome, not the inverter settings, so it works for any inverter or tariff.
-function learnGridCharging(hist, cap) {
+function learnGridCharging(hist, cap, slotS = SLOT) {
   const nDays = new Set(hist.map((r) => r.local_date)).size;
+  const n = slotsPerDay(slotS);
+  const label = (k) => slotLabel(k, slotS);
+  const threshold = perSlot(0.05, slotS);
   const slots = new Map();
-  const out = { days: nDays, thresholdKwh: 0.05, minShare: 0.5, windows: [], skipped: [], slots, reason: null };
+  const out = { days: nDays, thresholdKwh: threshold, minShare: 0.5, windows: [], skipped: [], slots, reason: null };
   const at = new Map();
   for (const r of hist) {
     const a = at.get(r.k) || at.set(r.k, { days: 0, charged: [], soc: [] }).get(r.k);
     a.days++;
-    if ((r.grid_to_battery ?? 0) > 0.05) a.charged.push(r.grid_to_battery);
+    if ((r.grid_to_battery ?? 0) > threshold) a.charged.push(r.grid_to_battery);
     if (r.soc_end != null) a.soc.push(r.soc_end);
   }
   const inWindow = (k) => { const a = at.get(k); return !!a && a.charged.length / a.days >= 0.5; };
-  for (let k = 0; k < 48; k++) {
-    // A window starts where the half-hour before it (wrapping past midnight) is not in one.
-    if (!inWindow(k) || inWindow((k + 47) % 48)) continue;
+  for (let k = 0; k < n; k++) {
+    // A window starts where the slot before it (wrapping past midnight) is not in one.
+    if (!inWindow(k) || inWindow((k + n - 1) % n)) continue;
     const run = [];
-    for (let j = k; inWindow(j) && run.length < 48; j = (j + 1) % 48) run.push(j);
-    const span = `${hhLabel(run[0])}–${hhLabel(run[run.length - 1] + 1)}`;
+    for (let j = k; inWindow(j) && run.length < n; j = (j + 1) % n) run.push(j);
+    const span = `${label(run[0])}–${label(run[run.length - 1] + 1)}`;
     const targetPct = median(at.get(run[run.length - 1]).soc);
     if (targetPct == null) { out.skipped.push(`${span}: no charge level recorded at its end`); continue; }
     for (const j of run) slots.set(j, { kwh: median(at.get(j).charged), targetKwh: (cap * targetPct) / 100 });
     out.windows.push({
-      from: hhLabel(run[0]), to: hhLabel(run[run.length - 1] + 1), targetSocPct: round(targetPct, 0),
-      halfHours: run.map((j) => ({ time: hhLabel(j), share: round(at.get(j).charged.length / at.get(j).days), kwh: round(median(at.get(j).charged)) })),
+      from: label(run[0]), to: label(run[run.length - 1] + 1), targetSocPct: round(targetPct, 0),
+      halfHours: run.map((j) => ({ time: label(j), share: round(at.get(j).charged.length / at.get(j).days), kwh: round(median(at.get(j).charged)) })),
     });
   }
   if (!out.windows.length) out.reason = out.skipped.length ? out.skipped.join('; ') : 'the battery did not charge from the grid at the same time on most days';
@@ -212,31 +232,33 @@ function learnGridCharging(hist, cap) {
 // least half of recent days, the house drew from the grid (over 0.05 kWh) while the
 // battery had charge above its lowest level and did not discharge (under 0.05 kWh).
 // Like the charge window, it reads what the inverter did, not its settings.
-function learnHold(hist, minSocPct, chargeSlots) {
+function learnHold(hist, minSocPct, chargeSlots, slotS = SLOT) {
+  const n = slotsPerDay(slotS);
+  const threshold = perSlot(0.05, slotS);
   const at = new Map();
   for (const r of hist) {
     if (r.soc_end == null) continue;
     const a = at.get(r.k) || at.set(r.k, { days: 0, held: 0 }).get(r.k);
     a.days++;
-    if ((r.grid_to_home ?? 0) > 0.05 && (r.battery_discharge ?? 0) <= 0.05 && r.soc_end > minSocPct) a.held++;
+    if ((r.grid_to_home ?? 0) > threshold && (r.battery_discharge ?? 0) <= threshold && r.soc_end > minSocPct) a.held++;
   }
   const slots = new Set();
   for (const [k, a] of at) if (!chargeSlots.has(k) && a.days && a.held / a.days >= 0.5) slots.add(k);
   const keys = [...slots].sort((x, y) => x - y);
   const windows = [];
   for (const k of keys) {
-    if (slots.has((k + 47) % 48) && keys.length < 48) continue;
+    if (slots.has((k + n - 1) % n) && keys.length < n) continue;
     let j = k; const run = [];
-    while (slots.has(j) && run.length < 48) { run.push(j); j = (j + 1) % 48; }
-    windows.push({ from: hhLabel(run[0]), to: hhLabel(run[run.length - 1] + 1), halfHours: run.length });
+    while (slots.has(j) && run.length < n) { run.push(j); j = (j + 1) % n; }
+    windows.push({ from: slotLabel(run[0], slotS), to: slotLabel(run[run.length - 1] + 1, slotS), halfHours: run.length });
   }
-  return { slots, windows, thresholdKwh: 0.05, minShare: 0.5 };
+  return { slots, windows, thresholdKwh: threshold, minShare: 0.5 };
 }
 
 // The battery as it has actually behaved: largest half-hour charge and discharge,
 // lowest and highest charge level, and round-trip efficiency measured as
 // discharge ÷ (charge − change in stored energy).
-function learnBattery(hist, cap, start) {
+function learnBattery(hist, cap, start, slotS = SLOT) {
   const out = { usable: false, reason: null, capacityKwh: cap || null, efficiency: null, efficiencyReason: null };
   if (!cap) return { ...out, reason: 'no battery capacity is configured for this home' };
   const soc = hist.filter((r) => r.soc_end != null).map((r) => r.soc_end);
@@ -249,7 +271,7 @@ function learnBattery(hist, cap, start) {
   let charge = 0; let discharge = 0; let stored = 0;
   for (let i = 1; i < hist.length; i++) {
     const a = hist[i - 1]; const b = hist[i];
-    if (b.slot_start - a.slot_start !== SLOT || a.soc_end == null || b.soc_end == null) continue;
+    if (b.slot_start - a.slot_start !== slotS || a.soc_end == null || b.soc_end == null) continue;
     charge += b.battery_charge || 0; discharge += b.battery_discharge || 0; stored += ((b.soc_end - a.soc_end) / 100) * cap;
   }
   const eff = charge - stored > 0 ? discharge / (charge - stored) : null;
@@ -290,23 +312,44 @@ function simulate(slots, wins, holds, b, homeKey, solarKey) {
   });
 }
 
-// How our own stored forecasts did: each finished half-hour of the last 7 days
-// against the latest forecast issued at least 12 hours before it.
-function scoreAccuracy(siteId, tz, now) {
+// How our own stored forecasts did: each finished slot of the last 7 days against the
+// latest forecast issued at least 12 hours before it. Forecast periods are matched to the slot
+// by overlap (a forecast stored in half-hours scores 15-minute or hourly slots by its share).
+function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
   const fcS = seriesId('site', siteId, 'load_kwh', 'core_forecast');
-  const rows = db.prepare(
-    `SELECT h.slot_start, h.local_date, h.home, f.value FROM site_hh h
-     JOIN forecast_fact f ON f.series_id = ? AND f.start_ts = h.slot_start
-       AND f.issued_at = (SELECT MAX(issued_at) FROM forecast_fact WHERE series_id = ? AND start_ts = h.slot_start AND issued_at <= h.slot_start - ?)
-     WHERE h.site_id = ? AND h.slot_start >= ? AND h.slot_start + ? <= ? AND h.state != 'missing' AND h.home IS NOT NULL AND f.value IS NOT NULL`)
-    .all(fcS, fcS, ACCURACY_LEAD, siteId, now - 7 * 86400, SLOT, now);
+  const hh = db.prepare(`SELECT slot_start, local_date, home FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start + dur_s <= ? AND dur_s = ?
+      AND state != 'missing' AND home IS NOT NULL ORDER BY slot_start`).all(siteId, now - 7 * 86400, now, slotS);
+  const facts = hh.length ? db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ? AND issued_at <= end_ts - ? ORDER BY start_ts')
+    .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ACCURACY_LEAD) : [];
+  const rows = [];
+  let lo = 0;
+  for (const h of hh) {
+    const end = h.slot_start + slotS;
+    // Our forecast periods are slots, never longer than an hour.
+    while (lo < facts.length && facts[lo].start_ts + 3600 <= h.slot_start) lo++;
+    const over = [];
+    for (let i = lo; i < facts.length && facts[i].start_ts < end; i++) {
+      const f = facts[i];
+      if (f.end_ts > h.slot_start && f.issued_at <= h.slot_start - ACCURACY_LEAD) over.push(f);
+    }
+    if (!over.length) continue;
+    const issue = Math.max(...over.map((f) => f.issued_at));
+    const used = over.filter((f) => f.issued_at === issue);
+    if (used.some((f) => f.value == null)) continue;
+    let value = 0;
+    for (const f of used) {
+      const o = Math.min(f.end_ts, end) - Math.max(f.start_ts, h.slot_start);
+      value += o === f.end_ts - f.start_ts ? f.value : (f.value * o) / (f.end_ts - f.start_ts);
+    }
+    rows.push({ ...h, value });
+  }
   const days = new Map();
   for (const r of rows) {
     const d = days.get(r.local_date) || days.set(r.local_date, { date: r.local_date, n: 0, actual: 0, forecast: 0 }).get(r.local_date);
     d.n++; d.actual += r.home; d.forecast += r.value;
   }
   // Nothing until a whole day has been scored: part days say more about luck than method.
-  const whole = [...days.values()].filter((d) => d.n === slotsOfDay(tz, d.date).length);
+  const whole = [...days.values()].filter((d) => d.n === slotsOfDay(tz, d.date, slotS).length);
   if (!whole.length) return null;
   const actual = whole.reduce((s, d) => s + d.actual, 0);
   return {
@@ -320,32 +363,36 @@ export function forecastSite(siteId, hours = 48) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   const tz = site.timezone;
   const now = nowSec();
-  const from = floorTo(now, SLOT);
+  // The home's slot grid; slots per nominal day (48 at 30 minutes) for "next 24 hours".
+  const slotS = slotLength(site);
+  const phase = slotPhase(tz, slotS, now);
+  const nDay = slotsPerDay(slotS);
+  const from = slotFloor(now, slotS, phase);
   const to = from + hours * 3600;
   const sid = (m, s) => seriesId('site', siteId, m, s);
   const cap = site.battery_kwh || 0;
   const histFrom = from - HISTORY_DAYS * 86400;
 
-  // The home's own recent half-hours: everything below is learned from these.
+  // The home's own recent slots (of its current length): everything below is learned from these.
   const hist = db.prepare(
-    `SELECT slot_start, local_date, home, ev, solar, solar_forecast, battery_charge, battery_discharge, grid_to_battery, grid_to_home, soc_end, outdoor_temp
-     FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND state != ? ORDER BY slot_start`)
-    .all(siteId, histFrom, from, 'missing')
-    .map((r) => ({ ...r, k: hhKey(tz, r.slot_start), weekend: isWeekend(r.local_date), base: Math.max(0, (r.home || 0) - (r.ev || 0)) }));
+    `SELECT slot_start, local_date, tod_min, home, ev, solar, solar_forecast, battery_charge, battery_discharge, grid_to_battery, grid_to_home, soc_end, outdoor_temp
+     FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND state != ? AND dur_s = ? ORDER BY slot_start`)
+    .all(siteId, histFrom, from, 'missing', slotS)
+    .map((r) => ({ ...r, k: Math.floor(r.tod_min / (slotS / 60)), weekend: isWeekend(r.local_date), base: Math.max(0, (r.home || 0) - (r.ev || 0)) }));
   const perDay = new Map();
   for (const r of hist) perDay.set(r.local_date, (perDay.get(r.local_date) || 0) + 1);
-  const wholeDays = new Set([...perDay].filter(([date, n]) => n === slotsOfDay(tz, date).length).map(([date]) => date));
+  const wholeDays = new Set([...perDay].filter(([date, n]) => n === slotsOfDay(tz, date, slotS).length).map(([date]) => date));
   const profile = learnProfile(hist);
   const temperature = fitTemperature(hist, wholeDays);
-  const charging = learnGridCharging(hist, cap);
+  const charging = learnGridCharging(hist, cap, slotS);
 
   // Solar: Quartz needs the panel angles; without them, the home's learned response to sunlight.
   const anglesKnown = site.pv_tilt != null && site.pv_orientation != null;
   const quartzFc = anglesKnown ? readForecastOfRecord(sid('solar_kwh', 'quartz'), from, to, now + 60) : [];
   const ghiS = sid('ghi_wm2', 'open_meteo');
   const sunFc = readForecastOfRecord(ghiS, from - 3600, to, now + 60);
-  const quartzCal = calibrateQuartz(hist, wholeDays, anglesKnown ? quartzOfRecord(sid('solar_kwh', 'quartz'), histFrom, from) : new Map());
-  const sunlight = learnSunlight(hist, sunByHalfHour(readIntervals([ghiS], histFrom - 3600, from)), wholeDays);
+  const quartzCal = calibrateQuartz(hist, wholeDays, anglesKnown ? quartzOfRecord(sid('solar_kwh', 'quartz'), histFrom, from, slotS, phase) : new Map());
+  const sunlight = learnSunlight(hist, sunBySlot(readIntervals([ghiS], histFrom - 3600, from), slotS, phase).kwh, wholeDays, slotS);
   // Quartz is used once it has been checked against this home's output (calibrated). Until then the
   // forecast learned from this home's own output and sunlight is used, because uncalibrated Quartz
   // was seen to miss this home badly (e.g. a 2.0 kW peak forecast while the panels made 3.9 kW).
@@ -358,13 +405,13 @@ export function forecastSite(siteId, hours = 48) {
   const rawBy = new Map();
   let solarIssued = null; let solarFactor = null; let solarRange = null; let solarRangeReason = null;
   if (solarPath === 'quartz') {
-    for (const f of quartzFc) { const s = floorTo(f.start_ts, SLOT); rawBy.set(s, (rawBy.get(s) || 0) + (f.value || 0)); }
+    for (const [s, v] of energyBySlot(quartzFc, slotS, phase)) rawBy.set(s, v);
     solarIssued = Math.max(...quartzFc.map((f) => f.issued_at));
     solarFactor = quartzCal.factor; solarRange = quartzCal.range; solarRangeReason = quartzCal.rangeReason;
   } else if (solarPath === 'sunlight') {
     // An hour with forecast sun but no history at that hour of day stays unknown.
-    for (const [s, g] of sunByHalfHour(sunFc)) {
-      const ratio = sunlight.ratios.get(hhKey(tz, s) >> 1);
+    for (const [s, g] of sunBySlot(sunFc, slotS, phase).kwh) {
+      const ratio = sunlight.ratios.get(Math.floor(todMinute(tz, s) / 60));
       if (g === 0) rawBy.set(s, 0);
       else if (ratio != null) rawBy.set(s, ratio * g);
     }
@@ -374,12 +421,21 @@ export function forecastSite(siteId, hours = 48) {
 
   const evFc = readForecastOfRecord(sid('ev_charge_kwh', 'octopus_kraken'), from - 3600, to, now + 60);
   const evAt = (slot) => evFc.reduce((s, f) => {
-    const o = Math.min(f.end_ts, slot + SLOT) - Math.max(f.start_ts, slot);
+    const o = Math.min(f.end_ts, slot + slotS) - Math.max(f.start_ts, slot);
     return o > 0 && f.value != null ? s + (f.value * o) / (f.end_ts - f.start_ts) : s;
   }, 0);
+  // Carbon intensity is a mean: a slot takes the time-weighted mean of the periods it overlaps
+  // (one half-hour period covers a 15 or 30-minute slot; two make an hour). Read from an hour
+  // earlier, so a period that started before the first slot still counts.
   const carbonFc = site.carbon_region != null
-    ? readForecastOfRecord(seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), from, to, now + 60) : [];
-  const carbonBy = new Map(carbonFc.map((f) => [f.start_ts, f.value]));
+    ? readForecastOfRecord(seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), from - 3600, to, now + 60) : [];
+  const carbonAt = (slot) => {
+    const over = carbonFc.filter((f) => f.value != null && f.end_ts > slot && f.start_ts < slot + slotS);
+    if (over.length === 1) return over[0].value;
+    let num = 0; let den = 0;
+    for (const f of over) { const o = Math.min(f.end_ts, slot + slotS) - Math.max(f.start_ts, slot); num += f.value * o; den += o; }
+    return den ? num / den : null;
+  };
   const pricing = loadPricing(siteId, from, to);
 
   // Each forecast day's mean temperature from Open-Meteo (today's past hours as
@@ -406,28 +462,28 @@ export function forecastSite(siteId, hours = 48) {
   // Battery starts from the latest known charge level: a reading, or the last built half-hour.
   const socRow = readReadings([sid('battery_soc_pct', 'sunsynk_live'), sid('battery_soc_pct', 'sunsynk_5min')], histFrom, now + 1).pop();
   const lastHh = [...hist].reverse().find((r) => r.soc_end != null);
-  const start = socRow && (!lastHh || socRow.ts >= lastHh.slot_start + SLOT) ? { pct: socRow.value, at: socRow.ts }
-    : lastHh ? { pct: lastHh.soc_end, at: lastHh.slot_start + SLOT } : null;
-  const battery = learnBattery(hist, cap, start);
+  const start = socRow && (!lastHh || socRow.ts >= lastHh.slot_start + slotS) ? { pct: socRow.value, at: socRow.ts }
+    : lastHh ? { pct: lastHh.soc_end, at: lastHh.slot_start + slotS } : null;
+  const battery = learnBattery(hist, cap, start, slotS);
 
-  const hold = battery.usable ? learnHold(hist, battery.minSocPct, charging.slots) : { slots: new Set(), windows: [] };
+  const hold = battery.usable ? learnHold(hist, battery.minSocPct, charging.slots, slotS) : { slots: new Set(), windows: [] };
   const slots = [];
   const wins = [];
   const holds = [];
-  for (let t = from; t < to; t += SLOT) {
-    const k = hhKey(tz, t);
+  for (let t = from; t < to; t += slotS) {
+    const k = slotOfDay(tz, t, slotS);
     const date = localDate(tz, t);
     const use = profile.at(isWeekend(date), k);
     const scale = dayOf(date).scale;
     const ev = evAt(t);
     const raw = rawBy.has(t) ? rawBy.get(t) : null;
-    const pi = priceAt(pricing, 'meter_import', t);
-    const pe = priceAt(pricing, 'meter_export', t);
+    const pi = priceOver(pricing, 'meter_import', t, slotS);
+    const pe = priceOver(pricing, 'meter_export', t, slotS);
     const imp = pi?.unitEx != null ? pi.unitEx * (1 + pi.vat) : null;
     const expRate = pe?.unitEx != null ? pe.unitEx * (1 + pe.vat) : null;
     slots.push({
       slot_start: t, local_date: date, solar: raw == null ? null : ceil(raw * solarFactor), home: use ? use.mid * scale + ev : null, ev,
-      import_rate: imp, export_rate: expRate, carbon_intensity: carbonBy.get(t) ?? null,
+      import_rate: imp, export_rate: expRate, carbon_intensity: carbonAt(t),
       solar_low: raw != null && solarRange ? ceil(raw * solarRange.low) : null, solar_high: raw != null && solarRange ? ceil(raw * solarRange.high) : null,
       home_low: use ? use.low * scale + ev : null, home_high: use ? use.high * scale + ev : null,
     });
@@ -461,22 +517,22 @@ export function forecastSite(siteId, hours = 48) {
     }
   });
 
-  // Cheapest and greenest 2-hour windows in the next 24 hours.
-  const window = (key, len = 4) => {
+  // Cheapest and greenest 2-hour windows in the next 24 hours (nDay slots).
+  const window = (key, len = 7200 / slotS) => {
     let best = null;
-    const day = slots.slice(0, 48);
+    const day = slots.slice(0, nDay);
     for (let i = 0; i + len <= day.length; i++) {
       const vals = day.slice(i, i + len).map((s) => s[key]);
       if (vals.some((v) => v == null)) continue;
       const avg = vals.reduce((a, b) => a + b, 0) / len;
-      if (!best || avg < best.avg) best = { start: day[i].slot_start, end: day[i].slot_start + len * SLOT, avg };
+      if (!best || avg < best.avg) best = { start: day[i].slot_start, end: day[i].slot_start + len * slotS, avg };
     }
     return best;
   };
   const sum = (k, n = slots.length) => slots.slice(0, n).reduce((s, r) => s + (r[k] ?? 0), 0);
   // A range total exists only where the half-hours have one; 0 would read as a real value.
-  const sumRange = (k) => (slots.slice(0, 48).some((s) => s[k] != null) ? sum(k, 48) : null);
-  const pricesPublishedUntil = slots.filter((s) => s.import_rate != null).pop()?.slot_start + SLOT || null;
+  const sumRange = (k) => (slots.slice(0, nDay).some((s) => s[k] != null) ? sum(k, nDay) : null);
+  const pricesPublishedUntil = slots.filter((s) => s.import_rate != null).pop()?.slot_start + slotS || null;
 
   // Plain-language method with the learned parameters, for the page and the method doc.
   const pct = (v) => `${Math.round(v)}%`;
@@ -503,7 +559,7 @@ export function forecastSite(siteId, hours = 48) {
       sunlight: {
         used: solarPath === 'sunlight', days: sunlight.days, halfHours: sunlight.halfHours, r2: round(sunlight.r2, 3), maeKwhPerHalfHour: round(sunlight.maeKwh, 3),
         // kWh of solar per kWh/m2 of horizontal sunlight, by local hour of day.
-        perHour: [...sunlight.ratios].sort((a, b) => a[0] - b[0]).map(([h, r]) => ({ hour: hhLabel(h * 2), ratio: round(r, 2) })),
+        perHour: [...sunlight.ratios].sort((a, b) => a[0] - b[0]).map(([h, r]) => ({ hour: slotLabel(h * (3600 / slotS), slotS), ratio: round(r, 2) })),
         reason: sunlight.reason,
       },
       range: solarRange ? { basis: solarRange.basis, days: solarRange.days, lowFactor: round(solarRange.low, 3), highFactor: round(solarRange.high, 3) } : null,
@@ -526,7 +582,7 @@ export function forecastSite(siteId, hours = 48) {
             : `; no grid charging, because ${charging.reason}.`}${hold.windows.length
             ? ` It also holds its charge ${hold.windows.map((w) => `${w.from}–${w.to}`).join(' and ')}, when on most days the house used the grid while the battery stayed idle.`
             : ''}`,
-      hold: { windows: hold.windows, thresholdKwh: hold.thresholdKwh ?? 0.05, minShare: hold.minShare ?? 0.5 },
+      hold: { windows: hold.windows, thresholdKwh: hold.thresholdKwh ?? perSlot(0.05, slotS), minShare: hold.minShare ?? 0.5 },
       capacityKwh: battery.capacityKwh, usable: battery.usable, reason: battery.reason,
       startSocPct: round(battery.startSocPct, 0), startAt: battery.startAt ?? null,
       minSocPct: battery.minSocPct ?? null, maxSocPct: battery.maxSocPct ?? null,
@@ -561,16 +617,16 @@ export function forecastSite(siteId, hours = 48) {
   return {
     from, to, solarIssuedAt: solarIssued, baselineDays: HISTORY_DAYS, pricesPublishedUntil,
     next24h: {
-      solar: sum('solar', 48), home: sum('home', 48), import: sum('grid_import', 48), export: sum('grid_export', 48),
-      // Cost and saving cover only the half-hours whose prices are already published.
-      cost: sum('cost', 48), saving: sum('saving', 48), gridOnlyCost: sum('grid_only_cost', 48),
-      pricedSlots: slots.slice(0, 48).filter((s) => s.cost != null).length,
-      gridToBattery: sum('grid_to_battery', 48),
+      solar: sum('solar', nDay), home: sum('home', nDay), import: sum('grid_import', nDay), export: sum('grid_export', nDay),
+      // Cost and saving cover only the slots whose prices are already published.
+      cost: sum('cost', nDay), saving: sum('saving', nDay), gridOnlyCost: sum('grid_only_cost', nDay),
+      pricedSlots: slots.slice(0, nDay).filter((s) => s.cost != null).length,
+      gridToBattery: sum('grid_to_battery', nDay),
       solar_low: sumRange('solar_low'), solar_high: sumRange('solar_high'), home_low: sumRange('home_low'), home_high: sumRange('home_high'),
       import_low: sumRange('grid_import_low'), import_high: sumRange('grid_import_high'), cost_low: sumRange('cost_low'), cost_high: sumRange('cost_high'),
     },
     cheapestWindow: window('import_rate'), greenestWindow: window('carbon_intensity'),
-    accuracy: scoreAccuracy(siteId, tz, now),
+    accuracy: scoreAccuracy(siteId, tz, now, slotS),
     model,
     slots,
   };

@@ -1,7 +1,7 @@
 // My energy: the consumer view. Answers three questions first (how much am I
 // spending, am I doing well, what should I do next) in pounds and plain English;
 // kWh and charts sit underneath for anyone who wants them.
-import { api, fmt, timeFmt, esc, ago, COLORS } from '../api.js';
+import { api, fmt, timeFmt, esc, ago, COLORS, slotsPerHour, minorSymbol } from '../api.js';
 import { init } from '../layout.js';
 import { timeChart, tipHtml, legend } from '../charts.js';
 
@@ -78,7 +78,8 @@ async function render(state) {
   </section>`;
 
   // ── 2. What to do next: today's cheap and dear times ──
-  const ahead = fc.slots.filter((s) => s.import_rate != null).slice(0, 48);
+  const slotS = fc.slot_s || 1800;   // the home's slot length, s (from the API)
+  const ahead = fc.slots.filter((s) => s.import_rate != null).slice(0, 86400 / slotS);
   const priceNow = now.price.import;
   const prices = ahead.map((s) => s.import_rate);
   const lo = Math.min(...prices); const hi = Math.max(...prices);
@@ -88,15 +89,15 @@ async function render(state) {
   for (const s of ahead) {
     const b = band(s.import_rate);
     const last = blocks[blocks.length - 1];
-    if (last && last.band === b && Math.abs(last.price - s.import_rate) < 0.01) { last.end = s.slot_start + 1800; last.n++; }
-    else blocks.push({ band: b, start: s.slot_start, end: s.slot_start + 1800, price: s.import_rate, n: 1 });
+    if (last && last.band === b && Math.abs(last.price - s.import_rate) < 0.01) { last.end = s.slot_start + slotS; last.n++; }
+    else blocks.push({ band: b, start: s.slot_start, end: s.slot_start + slotS, price: s.import_rate, n: 1 });
   }
   const total = ahead.length || 1;
   // The cheapest period ahead: the whole run at the lowest price (e.g. 23:30-05:30 on Intelligent Octopus Go),
-  // or the best two hours from the forecast when prices change every half-hour (Agile).
+  // or the best two hours from the forecast when prices change every slot (Agile).
   const lowest = blocks.filter((b) => b.band === 'cheap').sort((a, b) => a.price - b.price || b.n - a.n)[0];
   const cheapest = lowest && lowest.n >= 3 ? { start: lowest.start, end: lowest.end, avg: lowest.price } : fc.cheapestWindow;
-  const strip = ahead.length ? `<div class="my-strip" role="img" aria-label="Electricity price for the next ${ahead.length / 2} hours">
+  const strip = ahead.length ? `<div class="my-strip" role="img" aria-label="Electricity price for the next ${ahead.length / slotsPerHour(slotS)} hours">
       ${blocks.map((b) => `<div class="my-block ${b.band}" style="flex:${b.n}" title="${tf.time(b.start)}–${tf.time(b.end)} · ${fmt.pkwh(b.price)}">
         ${b.n / total > 0.08 ? `<b>${fmt.p(b.price)}</b><span>${tf.time(b.start)}</span>` : ''}</div>`).join('')}
     </div>
@@ -105,9 +106,9 @@ async function render(state) {
   // Only what the prices support: the difference per kWh moved. Appliances are not known to the core.
   const nudges = cheapest && priceNow != null && priceNow - cheapAvg > 1
     ? `<div class="my-nudges"><div class="my-nudge"><b>Every kWh moved to ${tf.time(cheapest.start)}</b><span>${fmt.pkwh(priceNow)} now → ${fmt.pkwh(cheapAvg)} then</span><em>${money(priceNow - cheapAvg)} less per kWh</em></div></div>`
-    : cheapest ? `<p class="muted">The price now (${fmt.pkwh(priceNow)}) is within 1p of the cheapest in the next ${ahead.length / 2} hours.</p>` : '';
+    : cheapest ? `<p class="muted">The price now (${fmt.pkwh(priceNow)}) is within 1${minorSymbol()} of the cheapest in the next ${ahead.length / slotsPerHour(slotS)} hours.</p>` : '';
   const plan = section('What to do next', cheapest ? `Cheapest time next: <span class="my-hl">${tf.time(cheapest.start)}–${tf.time(cheapest.end)}</span> at ${fmt.pkwh(cheapAvg)}` : 'Electricity prices ahead',
-    `${strip}${nudges}<p class="faint my-note">Prices from your tariff for the next ${ahead.length / 2} hours. The difference is at grid prices; when your battery is covering the house, energy is not being bought at the current price.</p>`);
+    `${strip}${nudges}<p class="faint my-note">Prices from your tariff for the next ${ahead.length / slotsPerHour(slotS)} hours. The difference is at grid prices; when your battery is covering the house, energy is not being bought at the current price.</p>`);
 
   // ── 3. Solar and battery: are they paying off ──
   const free = m.home ? ((m.solar_to_home || 0) + (m.battery_to_home || 0)) / m.home : null;
@@ -133,11 +134,14 @@ async function render(state) {
        <div class="row total"><span class="k">Your bill so far</span><b>${pounds(m.total_cost)}</b></div></div>`);
 
   // ── 5. Tariff: one sentence ──
-  const ag = cmp.ready ? cmp.scenarios.find((x) => x.key === 'agile') : null;
+  // The primary alternative: Agile Octopus in GB, the first other tariff of the market elsewhere.
+  const ag = cmp.ready ? cmp.scenarios.find((x) => x.key === (cmp.primaryKey || 'agile')) : null;
+  const altName = ag?.key === 'agile' ? 'Agile' : ag?.name;
+  const altFull = ag?.key === 'agile' ? 'Agile Octopus' : ag?.name;
   const curName = cmp.ready ? (cmp.scenarios[0].import || '').replace(/^E-1R-|-[A-P]$/g, '') : '';
-  const tariff = section('Your tariff', ag ? (ag.vsCurrent > 0 ? `You're on the right tariff` : 'You might pay less on Agile') : 'Tariff check',
+  const tariff = section('Your tariff', ag ? (ag.vsCurrent > 0 ? `You're on the right tariff` : `You might pay less on ${esc(altName)}`) : 'Tariff check',
     ag ? `<p class="my-lead">This month your tariff (<span class="mono">${esc(curName)}</span>) cost <b>${pounds(cmp.scenarios[0].net)}</b> for electricity.
-      With the same use, Agile Octopus would have cost <b>${pounds(ag.net)}</b>: ${ag.vsCurrent > 0 ? `you're <b class="good">${pounds(ag.vsCurrent)} better off</b>, about ${pounds(ag.perYear)} a year.` : `<b>${pounds(-ag.vsCurrent)} less</b>, about ${pounds(-ag.perYear)} a year.`}</p>
+      With the same use, ${esc(altFull)} would have cost <b>${pounds(ag.net)}</b>: ${ag.vsCurrent > 0 ? `you're <b class="good">${pounds(ag.vsCurrent)} better off</b>, about ${pounds(ag.perYear)} a year.` : `<b>${pounds(-ag.vsCurrent)} less</b>, about ${pounds(-ag.perYear)} a year.`}</p>
       <a class="btn" href="/tariffs?site=${id}&period=30d">See the full comparison</a>`
       : '<p class="muted">The comparison appears once tariff prices are synced.</p>');
 

@@ -1,6 +1,6 @@
 // Breakdown: who produced the energy, who used it, how it got there, when, what
 // it cost or earned, and how the bill ends up lower than grid-only.
-import { api, fmt, timeFmt, esc, COLORS } from '../api.js';
+import { api, fmt, timeFmt, esc, COLORS, slotClock, currencySymbol, priceUnit, zeroPrice, slotNoun, slotNouns } from '../api.js';
 import { init, card } from '../layout.js';
 import { timeChart, legend, tipHtml, sankey, waterfall, hbars } from '../charts.js';
 
@@ -17,10 +17,10 @@ const DST = [
 ];
 
 function flows(t) {
-  // [from, to, kWh, money in pence, what the money is]
+  // [from, to, kWh, money in minor units (pence, cents), what the money is]
   return [
     ['solar', 'home', t.solar_to_home, t.solar_home_value, 'worth at grid price'],
-    ['solar', 'battery', t.solar_to_battery, 0, 'stored at 0p'],
+    ['solar', 'battery', t.solar_to_battery, 0, `stored at ${zeroPrice()}`],
     ['solar', 'export', t.solar_to_grid, t.solar_export_credit, 'earned'],
     ['battery', 'home', t.battery_to_home, t.battery_to_home_cost, 'stored cost'],
     ['battery', 'export', t.battery_to_grid, t.battery_export_credit, 'earned'],
@@ -43,7 +43,7 @@ function matrix(fl, t) {
       ${DST.map((d) => `<td>${s.key === d.key ? '<span class="faint">–</span>' : cell(find(s.key, d.key))}</td>`).join('')}<td><b>${fmt.kwh(rowTotal(s.key))}</b></td></tr>`).join('')}
       <tr class="total"><td>Total in</td>${DST.map((d) => `<td>${fmt.kwh(colTotal(d.key))}</td>`).join('')}<td></td></tr>
     </tbody></table></div>
-    <p class="faint" style="font-size:12px;margin:10px 0 0">Battery “stored cost” is what the energy cost when it went in (first in, first out; solar = 0p).
+    <p class="faint" style="font-size:12px;margin:10px 0 0">Battery “stored cost” is what the energy cost when it went in (first in, first out; solar = ${zeroPrice()}).
     It is already counted in “Grid → Battery”, so it is shown here but not added to the bill twice.</p>`;
 }
 
@@ -69,9 +69,9 @@ async function render(state) {
     <div class="mix" style="height:12px;margin-top:12px" title="Home use by source">${homeMix.map(([l, v, c]) => `<i style="width:${(v / t.home) * 100}%;background:${c}" title="${l} ${fmt.kwh(v)}"></i>`).join('')}</div>
     ${legend(homeMix.map(([l, v, c]) => ({ label: `${l} ${pct(v)}`, color: c })))}</div>`;
 
-  // Waterfall over priced half-hours only, so it adds up exactly.
+  // Waterfall over priced slots only, so it adds up exactly.
   const steps = [
-    { label: 'Grid only', value: t.grid_only, kind: 'total', color: 'var(--text-3)', note: `Every kWh the home used, bought from the grid at the price of its half-hour, plus standing charges${t.gas ? ' and gas' : ''}.` },
+    { label: 'Grid only', value: t.grid_only, kind: 'total', color: 'var(--text-3)', note: `Every kWh the home used, bought from the grid at the price of its ${slotNoun()}, plus standing charges${t.gas ? ' and gas' : ''}.` },
     { label: 'Solar used directly', value: -(t.solar_direct || 0), kind: 'delta', color: COLORS.solar, note: 'Solar used the moment it was made, valued at the grid price it replaced.' },
     { label: 'Battery covered', value: -(t.battery_cover || 0), kind: 'delta', color: COLORS.battery, note: 'Battery energy used at home, valued at the grid price at the time it was used.' },
     { label: 'Grid charging', value: t.grid_charging || 0, kind: 'delta', color: COLORS.grid, note: 'What the grid energy put into the battery cost when it was bought.' },
@@ -107,7 +107,7 @@ async function render(state) {
     <div class="row"><span class="k">Standing charges${t.gas ? ' (electricity and gas)' : ''}</span><b>${fmt.gbp(t.standing_cost)}</b></div>
   </div>`;
 
-  // Carbon: imports carry the grid's regional intensity at that half-hour; solar and battery-from-solar carry none.
+  // Carbon: imports carry the grid's regional intensity at that slot; solar and battery-from-solar carry none.
   const kg = (g) => fmt.kg(g);
   const importIntensity = t.import_with_carbon ? t.carbon_g / t.import_with_carbon : null;
   const cleaner = importIntensity != null && t.carbon_avg ? 1 - importIntensity / t.carbon_avg : null;
@@ -127,7 +127,7 @@ async function render(state) {
       <div class="row"><span class="k">Carbon per kWh the home used</span><b>${t.home ? `${Math.round(t.carbon_g / t.home)} g/kWh` : '–'}</b></div>
     </div>
     <p class="faint" style="font-size:12px;margin:10px 0 0">Avoided = the home’s use at grid intensity minus what was imported. Export displacement is shown separately and not added, since it depends on what the grid would otherwise have run.
-    Regional history from NESO is its forecast for each half-hour (no regional actuals are published), so these half-hours are marked estimated.${t.carbon_missing ? ` ${t.carbon_missing} half-hours have no carbon value.` : ''}</p>`;
+    Regional history from NESO is its forecast for each half-hour (no regional actuals are published), so these ${slotNouns()} are marked estimated.${t.carbon_missing ? ` ${t.carbon_missing} ${slotNouns()} have no carbon value.` : ''}</p>`;
 
   const L = b.ledger;
   const sum = (k) => L.reduce((s, d) => s + (d[k] || 0), 0);
@@ -148,19 +148,19 @@ async function render(state) {
     ${story}
     <div class="section">${card('<div class="q">Who produced → who used</div>Energy flows', 'Band width is energy. Hover a band for its kWh and money.', '<div id="sankey"></div>')}</div>
     <div class="section grid cols-main">
-      ${card('<div class="q">How it got there</div>Every flow, in kWh and £', 'Rows are where energy came from, columns where it went.', matrix(fl, t))}
+      ${card('<div class="q">How it got there</div>Every flow, in kWh and ${currencySymbol()}', 'Rows are where energy came from, columns where it went.', matrix(fl, t))}
       ${card('<div class="q">At a glance</div>Production, usage, import, export', periodText, glance)}
     </div>
     <div class="section grid cols-2">
-      ${card('<div class="q">Why the bill is lower</div>From grid-only to the actual bill', `Each step is one reason; they add up exactly${Math.abs(check) > 1 ? ` (off by ${fmt.gbp(check)})` : ''}.${t.unpriced ? ` ${t.unpriced} unpriced half-hours left out.` : ''}`, '<div id="waterfall"></div>')}
+      ${card('<div class="q">Why the bill is lower</div>From grid-only to the actual bill', `Each step is one reason; they add up exactly${Math.abs(check) > 1 ? ` (off by ${fmt.gbp(check)})` : ''}.${t.unpriced ? ` ${t.unpriced} unpriced ${slotNouns()} left out.` : ''}`, '<div id="waterfall"></div>')}
       ${card('<div class="q">What each kWh cost</div>Price per kWh by source', 'Including VAT', `${hbars(priceRows, { format: (v) => fmt.pkwh(v) })}
         <h3 style="margin:18px 0 8px">Imports by price paid</h3>${hbars(bandRows, { max: bandMax, format: (v) => fmt.kwh(v) })}`)}
     </div>
-    <div class="section">${card('<div class="q">When</div>An average day', `Each half-hour averaged over ${b.days} day${b.days === 1 ? '' : 's'}. Above the line: what powered the home. Below: where spare energy went. Line: solar produced.`,
+    <div class="section">${card('<div class="q">When</div>An average day', `Each ${slotNoun()} averaged over ${b.days} day${b.days === 1 ? '' : 's'}. Above the line: what powered the home. Below: where spare energy went. Line: solar produced.`,
       `${legend([{ label: 'Solar', color: COLORS.solar }, { label: 'Battery', color: COLORS.battery }, { label: 'Grid', color: COLORS.grid }, { label: 'Into battery', color: COLORS.battery, faded: true }, { label: 'Exported', color: COLORS.export }, { label: 'Solar produced', color: COLORS.solar, type: 'line' }])}<div id="profile"></div>
        <h3 style="margin:14px 0 6px">Price at that time of day</h3>${legend([{ label: 'Import', color: COLORS.grid, type: 'line' }, { label: 'Export', color: COLORS.export, type: 'line' }])}<div id="profile-price"></div>`)}</div>
     <div class="section grid cols-main">
-      ${card('<div class="q">When the grid is cleanest</div>Grid carbon by time of day', `Regional grid carbon intensity (${esc(state.site.postcode || '')}, NESO), averaged by half-hour, with the home's average import below.`, `${legend([{ label: 'Carbon intensity (g/kWh)', color: 'var(--text)', type: 'line' }])}<div id="carbon-profile"></div><div style="margin-top:10px">${legend([{ label: 'Imported', color: COLORS.grid }])}</div><div id="carbon-import"></div>`)}
+      ${card('<div class="q">When the grid is cleanest</div>Grid carbon by time of day', `Regional grid carbon intensity (${esc(state.site.postcode || '')}, NESO), averaged by ${slotNoun()}, with the home's average import below.`, `${legend([{ label: 'Carbon intensity (g/kWh)', color: 'var(--text)', type: 'line' }])}<div id="carbon-profile"></div><div style="margin-top:10px">${legend([{ label: 'Imported', color: COLORS.grid }])}</div><div id="carbon-import"></div>`)}
       ${card('<div class="q">Carbon impact</div>CO₂ from this home’s electricity', periodText, carbonCard)}
     </div>
     <div class="section">${card('<div class="q">Day by day</div>Ledger', b.from === b.to ? 'Last 7 days' : periodText, ledger)}</div>`;
@@ -190,10 +190,11 @@ async function render(state) {
       return `${fmt.kwh(n.value)}${money != null ? ` · ${fmt.gbp(money)}` : ''}`;
     },
   });
-  waterfall(document.getElementById('waterfall'), { steps, format: (v, axis) => (axis ? `£${(v / 100).toFixed(Math.abs(v) < 1000 ? 2 : 0)}` : fmt.gbp(v)) });
+  waterfall(document.getElementById('waterfall'), { steps, format: (v, axis) => (axis ? `${currencySymbol()}${(v / 100).toFixed(Math.abs(v) < 1000 ? 2 : 0)}` : fmt.gbp(v)) });
 
-  const tick = (r) => (r.index % 6 === 0 ? `${String(r.index / 2).padStart(2, '0')}:00` : null);
-  const head = (r) => `${String(Math.floor(r.index / 2)).padStart(2, '0')}:${r.index % 2 ? '30' : '00'} on an average day`;
+  const slotS = b.slot_s || 1800;
+  const tick = (r) => (r.index % ((3 * 3600) / slotS) === 0 ? slotClock(r.index, slotS) : null);
+  const head = (r) => `${slotClock(r.index, slotS)} on an average day`;
   timeChart(document.getElementById('profile'), {
     rows: b.profile, height: 230, unit: 'kWh', tick,
     pos: [
@@ -216,7 +217,7 @@ async function render(state) {
     ]),
   });
   timeChart(document.getElementById('profile-price'), {
-    rows: b.profile, height: 140, unit: 'p/kWh', tick, yMin: 0,
+    rows: b.profile, height: 140, unit: priceUnit(), tick, yMin: 0,
     lines: [{ label: 'Import', color: COLORS.grid, get: (r) => r.import_rate, step: true }, { label: 'Export', color: COLORS.export, get: (r) => r.export_rate, step: true }],
     tip: (r) => tipHtml(head(r), [['Import', COLORS.grid, fmt.pkwh(r.import_rate)], ['Export', COLORS.export, fmt.pkwh(r.export_rate)]]),
   });

@@ -3,7 +3,11 @@
 // forecast facts with the fetch time as the issue time (the API gives none).
 import { fetchJson } from '../core/http.js';
 import { landRaw, quarantine, seriesId, putIntervals, putForecasts, QUALITY } from '../core/facts.js';
-import { isoUtc, nowSec, floorTo, SLOT, parseIso } from '../core/time.js';
+import { isoUtc, nowSec, floorTo, parseIso } from '../core/time.js';
+
+// The API's own grid: half-hours on :00 and :30 UTC, whatever slot length a home uses. Facts
+// are stored as published (30-minute periods) and the build spreads them over each home's slots.
+const API_STEP = 1800;
 
 const BASE = 'https://api.carbonintensity.org.uk';
 const minute = (ts) => isoUtc(ts).slice(0, 16) + 'Z';
@@ -31,7 +35,7 @@ export async function syncCarbon(site, fromTs, toTs) {
     })), rawId);
   }
   // Forward 48 hours as a new forecast issue.
-  const now = floorTo(nowSec(), SLOT);
+  const now = floorTo(nowSec(), API_STEP);
   const url = `${BASE}/regional/intensity/${minute(now)}/fw48h/postcode/${site.outcode}`;
   const { json } = await fetchJson(url);
   const slots = slotsOf(json) || [];

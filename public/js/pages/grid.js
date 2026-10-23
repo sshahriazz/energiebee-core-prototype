@@ -1,7 +1,7 @@
 // Grid: what was bought and sold, at what price, the tariff in force, upcoming
 // prices, and how the smart meter compares with the inverter's clamp.
-import { api, fmt, timeFmt, delta, esc, COLORS } from '../api.js';
-import { init, card, kpi, evidenceLink } from '../layout.js';
+import { api, fmt, timeFmt, delta, esc, COLORS, priceUnit, slotNoun, SlotNoun, slotsPerHour, originBadge, originLegend } from '../api.js';
+import { init, card, kpi, evidenceLink, tariffRowsHtml } from '../layout.js';
 import { timeChart, legend, tipHtml, hhTicks } from '../charts.js';
 import { loadTimeline, isFc } from '../timeline.js';
 
@@ -20,32 +20,31 @@ async function render(state) {
     ${kpi('Import cost', fmt.gbp((c.grid_to_home_cost || 0) + (c.grid_to_battery_cost || 0) + (c.loss_cost || 0)), `every imported kWh, incl. ${fmt.gbp(c.loss_cost || 0)} the inverter used · + ${fmt.gbp(c.standing_cost)} standing`)}
     ${kpi('Average price paid', fmt.pkwh(c.import_rate_paid), shift != null ? `${shift >= 0 ? `${fmt.p(shift)} below` : `${fmt.p(-shift)} above`} the average price (${fmt.pkwh(c.avg_import_rate)})` : '')}
     ${kpi('Exported', fmt.kwh(c.grid_export), `${fmt.gbp(c.export_credit)} at ${fmt.pkwh(c.export_rate_avg)}`, COLORS.export)}
-    ${kpi('Peak import', fmt.kw(c.peak_import_kw), 'highest half-hour, as average kW')}
+    ${kpi('Peak import', fmt.kw(c.peak_import_kw), `highest ${slotNoun()}, as average kW`)}
     ${kpi('Grid carbon', fmt.kg(c.carbon_g), `${fmt.kg(c.carbon_saved_g)} avoided`)}
   </div>`;
 
-  const upcoming = fc.slots.filter((s) => s.import_rate != null && s.slot_start >= Date.now() / 1000 - 1800);
+  const upcoming = fc.slots.filter((s) => s.import_rate != null && s.slot_start >= Date.now() / 1000 - (fc.slot_s || 1800));
   const sorted = [...upcoming].sort((a, b) => a.import_rate - b.import_rate);
   const cheap = new Set(sorted.slice(0, 6).map((s) => s.slot_start));
   const dear = new Set(sorted.slice(-6).map((s) => s.slot_start));
   const upTable = upcoming.length ? `<div class="table-wrap" style="max-height:340px;overflow:auto"><table>
-    <thead><tr><th>Half-hour</th><th class="r">Import</th><th class="r">Export</th><th></th></tr></thead>
+    <thead><tr><th>${SlotNoun()}</th><th class="r">Import</th><th class="r">Export</th><th></th></tr></thead>
     <tbody>${upcoming.map((s) => `<tr><td>${tf.dayTime(s.slot_start)}</td><td class="r">${fmt.pkwh(s.import_rate)}</td><td class="r">${fmt.pkwh(s.export_rate)}</td>
       <td>${cheap.has(s.slot_start) ? '<span class="badge good">cheapest</span>' : dear.has(s.slot_start) ? '<span class="badge bad">most expensive</span>' : ''}</td></tr>`).join('')}</tbody></table></div>`
     : '<div class="skeleton">No published prices ahead.</div>';
 
   const current = tariffs.filter((t) => t.current);
-  const tariffRows = current.length ? `<div class="rows">${current.map((t) => `
-    <div class="row"><span class="k">${esc(t.label || t.kind)}</span><span class="mono">${esc(t.tariff_code)}</span></div>
-    <div class="row sub"><span class="k">${esc(t.name || t.structure)} · ${t.structure}</span><b>${fmt.pkwh(t.unitNow)} now${t.direction === 'import' ? ` · ${fmt.p(t.standingPerDay)}/day` : ''}</b></div>`).join('')}</div>
-    <p class="faint" style="font-size:12px;margin:10px 0 0">Prices are stored without VAT and VAT is added by date, because Octopus restates VAT-inclusive history at today's rate.
-    Electricity VAT now: ${current[0]?.vat != null ? fmt.pct(current[0].vat) : '–'}.</p>`
+  const vatNow = current[0]?.taxes?.find((x) => x.kind === 'percent');
+  const tariffRows = current.length ? `${tariffRowsHtml(tariffs, { legendToo: false })}
+    <p class="faint" style="font-size:12px;margin:10px 0 0">Prices are stored without tax and taxes are added by date, because a supplier may restate tax-inclusive history at today's rate.
+    Electricity VAT now: ${current[0]?.vat != null ? fmt.pct(current[0].vat) : '–'}${vatNow ? ` ${originBadge(vatNow.origin, vatNow.origin_note)}` : ''}.</p>${originLegend()}`
     : '<div class="skeleton">No tariff found for this home.</div>';
 
   const mvc = health.checks.filter((x) => x.check_code === 'meter_vs_ct');
   const meterTable = mvc.length ? `<div class="table-wrap"><table><thead><tr><th>Day</th><th>Meter vs inverter clamp</th><th class="r">Difference</th><th></th></tr></thead><tbody>
     ${mvc.map((x) => `<tr><td>${tf.date(x.local_date)}</td><td class="muted">${esc(x.detail)}</td><td class="r">${fmt.pct(x.measured, 1)}</td><td><span class="badge ${x.status === 'pass' ? 'good' : 'warn'}">${x.status}</span></td></tr>`).join('')}
-    </tbody></table></div><p class="faint" style="font-size:12px;margin:10px 0 0">The smart meter is what the supplier bills, so it wins for cost. The clamp fills in until meter data arrives (about a day late); those half-hours are marked provisional.</p>`
+    </tbody></table></div><p class="faint" style="font-size:12px;margin:10px 0 0">The smart meter is what the supplier bills, so it wins for cost. The clamp fills in until meter data arrives (about a day late); those ${slotNoun()}s are marked provisional.</p>`
     : '<div class="skeleton">Appears once smart meter data overlaps inverter data.</div>';
 
   const multiDay = tl.step === 'hh' && new Set(tl.rows.map((r) => r.local_date)).size > 2;
@@ -56,7 +55,7 @@ async function render(state) {
     ${tl.step === 'hh' ? `<div class="section">${card('Price per kWh', 'Including VAT. After “now”: published prices.', `${legend([{ label: 'Import', color: COLORS.grid, type: 'line' }, { label: 'Export', color: COLORS.export, type: 'line' }])}<div id="price-chart"></div>`)}</div>` : ''}
     <div class="section grid cols-2">
       ${card('Tariffs', 'In force now, from the supplier account', tariffRows)}
-      ${card('Upcoming prices', `${upcoming.length / 2} hours published`, upTable)}
+      ${card('Upcoming prices', `${upcoming.length / slotsPerHour()} hours published`, upTable)}
     </div>
     <div class="section">${card('Smart meter and inverter', 'Daily check of the two import measurements', meterTable)}</div>`;
 
@@ -77,7 +76,7 @@ async function render(state) {
   });
   if (tl.step === 'hh') {
     timeChart(document.getElementById('price-chart'), {
-      rows: tl.rows, height: 170, unit: 'p/kWh', tick: ticks, isForecast: isFc, nowIndex: tl.nowIndex, yMin: Math.min(0, ...tl.rows.map((r) => r.import_rate ?? 0)),
+      rows: tl.rows, height: 170, unit: priceUnit(), tick: ticks, isForecast: isFc, nowIndex: tl.nowIndex, yMin: Math.min(0, ...tl.rows.map((r) => r.import_rate ?? 0)),
       lines: [{ label: 'Import', color: COLORS.grid, get: (r) => r.import_rate, step: true }, { label: 'Export', color: COLORS.export, get: (r) => r.export_rate, step: true }],
       tip: (r) => tipHtml(head(r), [['Import', COLORS.grid, fmt.pkwh(r.import_rate)], ['Export', COLORS.export, fmt.pkwh(r.export_rate)]]),
     });

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS site (
   pv_tilt         REAL,
   pv_orientation  REAL,                 -- compass bearing, 180 = south
   battery_kwh     REAL,
+  slot_s          INTEGER NOT NULL DEFAULT 1800 CHECK (slot_s IN (900, 1800, 3600)),   -- slot length, s; slots start at local midnight
   is_demo         INTEGER NOT NULL DEFAULT 0,
   env_key         TEXT UNIQUE,          -- set for the home configured in .env
   created_at      INTEGER NOT NULL
@@ -93,26 +94,39 @@ CREATE TABLE IF NOT EXISTS tariff (
   name          TEXT
 );
 
+-- Prices in MINOR units of the tariff's currency (tariff.currency), excluding taxes (tax_rule).
+--   unit      per kWh, for one register: single, day, night, or a tariff's own register names
+--             (hp, hc, blue_hc ...: rows expanded from its windows by src/core/tariff-expand.js)
+--   standing  per local day (the GB standing charge; charge_period NULL or 'day')
+--   fixed     per charge_period (a subscription per month, a fee per year), spread over slots
+--             by real seconds (tariff-expand.js fixedChargePerSlot)
+--   capacity  per kW per charge_period (stored; not priced yet)
+-- Databases from before Oct 2026 had CHECKs allowing only unit/standing and single/day/night;
+-- db.js rebuilds that table once, copying every row.
 CREATE TABLE IF NOT EXISTS rate_interval (
   id              INTEGER PRIMARY KEY,
   tariff_id       INTEGER NOT NULL REFERENCES tariff(id),
   site_id         INTEGER REFERENCES site(id),   -- set only for home-specific rows
-  component       TEXT NOT NULL CHECK (component IN ('unit', 'standing')),
-  register        TEXT NOT NULL DEFAULT 'single' CHECK (register IN ('single', 'day', 'night')),
+  component       TEXT NOT NULL CHECK (component IN ('unit', 'standing', 'fixed', 'capacity')),
+  register        TEXT NOT NULL DEFAULT 'single' CHECK (length(register) > 0),
+  charge_period   TEXT CHECK (charge_period IN ('day', 'month', 'year')),
   payment_method  TEXT NOT NULL DEFAULT 'ANY',
   valid_from      INTEGER NOT NULL,
   valid_to        INTEGER,                        -- NULL = open-ended
-  price_ex_vat    REAL NOT NULL,                  -- pence per kWh or per day, excluding VAT
+  price_ex_vat    REAL NOT NULL,                  -- minor units per kWh (unit) or per period, excluding taxes
   recorded_at     INTEGER NOT NULL,
   superseded_at   INTEGER,
   raw_id          INTEGER REFERENCES raw_payload(id),
-  CHECK (valid_to IS NULL OR valid_to > valid_from)
+  CHECK (valid_to IS NULL OR valid_to > valid_from),
+  CHECK (CASE component WHEN 'unit' THEN charge_period IS NULL
+                        WHEN 'standing' THEN charge_period IS NULL OR charge_period = 'day'
+                        ELSE charge_period IS NOT NULL END)
 );
 CREATE INDEX IF NOT EXISTS rate_current
   ON rate_interval (tariff_id, component, register, valid_from) WHERE superseded_at IS NULL;
 
 -- Stand-in for a PostgreSQL exclusion constraint: current rows for the same
--- tariff, home, component, register and payment method may never overlap.
+-- tariff, home, component, register, charge period and payment method may never overlap.
 CREATE TRIGGER IF NOT EXISTS rate_no_overlap
 BEFORE INSERT ON rate_interval
 WHEN NEW.superseded_at IS NULL
@@ -124,6 +138,7 @@ BEGIN
       AND r.tariff_id = NEW.tariff_id
       AND r.component = NEW.component
       AND r.register = NEW.register
+      AND IFNULL(r.charge_period, '') = IFNULL(NEW.charge_period, '')
       AND r.payment_method = NEW.payment_method
       AND IFNULL(r.site_id, 0) = IFNULL(NEW.site_id, 0)
       AND r.valid_from < IFNULL(NEW.valid_to, 9000000000)
@@ -219,10 +234,14 @@ CREATE TABLE IF NOT EXISTS forecast_fact (
 
 -- ───────────── Serving (rebuilt from facts) ─────────────
 
+-- One row per slot of the home's slot length (site.slot_s). Every real zone's offset is a
+-- multiple of 15 minutes, so a slot always starts on the 900 s grid.
 CREATE TABLE IF NOT EXISTS site_hh (
   site_id               INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
-  slot_start            INTEGER NOT NULL CHECK (slot_start % 1800 = 0),
+  slot_start            INTEGER NOT NULL CHECK (slot_start % 900 = 0),
   local_date            TEXT NOT NULL,
+  dur_s                 INTEGER NOT NULL,        -- slot length, s (the home's slot_s when built)
+  tod_min               INTEGER NOT NULL,        -- local wall-clock minute of the day the slot starts
   state                 TEXT NOT NULL CHECK (state IN ('provisional', 'final', 'missing')),
   quality               INTEGER NOT NULL,
   solar                 REAL, grid_import REAL, grid_export REAL,
@@ -251,6 +270,7 @@ CREATE TABLE IF NOT EXISTS site_day (
   site_id             INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
   local_date          TEXT NOT NULL,
   slots               INTEGER, slots_final INTEGER, slots_provisional INTEGER, slots_missing INTEGER,
+  slot_s              INTEGER,      -- slot length the day was built with, s (NULL = built before it was recorded: 1800)
   solar REAL, grid_import REAL, grid_export REAL, battery_charge REAL, battery_discharge REAL,
   home REAL, loss REAL, gas REAL, ev REAL,
   solar_to_home REAL, solar_to_battery REAL, solar_to_grid REAL,

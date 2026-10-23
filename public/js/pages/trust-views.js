@@ -1,13 +1,13 @@
 // Trust views for the Data & trust page: why each number can be relied on, shown from the
 // facts themselves. Everything here reads /api/sites/:id/trust, /asof and /evidence.
-import { api, fmt, esc } from '../api.js';
+import { api, fmt, esc, slotNoun, slotNouns, SlotNoun, originBadge } from '../api.js';
 import { card } from '../layout.js';
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 const ICON = { pass: '✓', warn: '!', fail: '✕', skip: '–' };
 const CHECK_LABEL = {
-  completeness: 'Every half-hour present', rate_coverage: 'Every half-hour priced', energy_balance: 'Energy balance',
+  completeness: 'Every slot present', rate_coverage: 'Every slot priced', price_estimated: 'Prices estimated (day type not known yet)', capacity_charge: 'Capacity charge priced', energy_balance: 'Energy balance',
   meter_vs_ct: 'Meter vs clamp, import', meter_vs_ct_export: 'Meter vs clamp, export', gas_calorific_value: 'Gas converted',
   counter_fit_solar: 'Solar counter', counter_fit_load: 'House counter', counter_fit_import: 'Import counter', counter_fit_export: 'Export counter',
   counter_fit_charge: 'Battery-in counter', counter_fit_discharge: 'Battery-out counter', battery_efficiency: 'Battery efficiency', battery_stock: 'Stored-energy cost',
@@ -23,12 +23,12 @@ export function headlineCard(t, tf) {
   const run = h.checks.pass + h.checks.warn + h.checks.fail;
   const stat = (big, label, note) => `<div class="proof-stat"><div class="big">${big}</div><div class="label">${label}</div>${note ? `<div class="note">${note}</div>` : ''}</div>`;
   return card(`Can these numbers be trusted? <span class="faint" style="font-weight:500">${tf.date(h.from)} – ${tf.date(h.to)}</span>`,
-    'Four things decide it: every half-hour built from the final source, independent measurements agreeing, every number traced to what a provider sent, and every change recorded.', `
+    `Four things decide it: every ${slotNoun()} built from the final source, independent measurements agreeing, every number traced to what a provider sent, and every change recorded.`, `
     <div class="proof-stats">
-      ${stat(`${pct(h.final, built)}% final`, `${h.final} of ${built} half-hours`, `${h.provisional} provisional (waiting for smart-meter readings) · ${h.missing} missing`)}
+      ${stat(`${pct(h.final, built)}% final`, `${h.final} of ${built} ${slotNouns()}`, `${h.provisional} provisional (waiting for smart-meter readings) · ${h.missing} missing`)}
       ${stat(`${h.checks.pass} of ${run} pass`, 'cross-checks between independent measurements', `${h.checks.warn} warning${h.checks.warn === 1 ? '' : 's'} · ${h.checks.fail} failed · ${h.checks.skip} not judged yet`)}
       ${stat(h.facts ? `${pct(h.factsLinked, h.facts)}% traced` : '–', `${h.facts.toLocaleString('en-GB')} facts from ${h.payloads} provider responses`, 'Every reading links to the raw response it came from, kept unchanged.')}
-      ${stat(`${h.restated}`, 'half-hours changed after first shown as final', `${h.revisedDays} day${h.revisedDays === 1 ? '' : 's'} revised in this period · ${t.corrections.length} correction${t.corrections.length === 1 ? '' : 's'} by EnergieBee`)}
+      ${stat(`${h.restated}`, `${slotNouns()} changed after first shown as final`, `${h.revisedDays} day${h.revisedDays === 1 ? '' : 's'} revised in this period · ${t.corrections.length} correction${t.corrections.length === 1 ? '' : 's'} by EnergieBee`)}
     </div>
     <div class="proof-bar" role="img" aria-label="${h.final} final, ${h.provisional} provisional, ${h.missing} missing">${seg(h.final, '--good', 'Final')}${seg(h.provisional, '--warn', 'Provisional')}${seg(h.missing, '--bad', 'Missing')}</div>
     <div class="legend" style="margin-top:8px"><span><i class="swatch" style="background:var(--good)"></i>Final: smart-meter readings in, every check run</span>
@@ -56,7 +56,7 @@ export function coverageCard(t) {
       <td class="r">${delayText(delays.length ? delays[delays.length - 1] : null)}</td></tr>`;
   }).join('');
   return card('How the timeline comes together',
-    'Each row is one source; each column is one half-hour. The bottom row is the result: a half-hour becomes final only when every source it needs has arrived. Hover for detail.', `
+    `Each row is one source; each column is one ${slotNoun()}. The bottom row is the result: a ${slotNoun()} becomes final only when every source it needs has arrived. Hover for detail.`, `
     <div id="coverage"></div>
     <div class="legend" style="margin-top:10px">${Object.values(CELL).map(([c, l]) => `<span><i class="swatch" style="background:var(${c})${c === '--surface-2' ? ';outline:1px solid var(--border)' : ''}"></i>${l}</span>`).join('')}</div>
     <details style="margin-top:12px"><summary class="muted">As a table</summary><div class="table-wrap"><table>
@@ -66,11 +66,11 @@ export function coverageCard(t) {
 
 export function drawCoverage(host, t, tf) {
   const rows = [...t.feeds.map((f) => ({ label: f.label, sub: f.source, cells: f.cells, map: CELL })),
-    { label: 'Result: half-hour state', sub: 'Build engine', cells: t.states, map: STATE, result: true }];
+    { label: `Result: ${slotNoun()} state`, sub: 'Build engine', cells: t.states, map: STATE, result: true }];
   const ROW = 30; const HEAD = 22; const BAND = 16;
   host.innerHTML = `<div class="cov">
     <div class="cov-labels" style="padding-top:${HEAD}px">${rows.map((r) => `<div class="cov-label${r.result ? ' result' : ''}" style="height:${ROW}px"><b>${esc(r.label)}</b><span>${esc(r.sub)}</span></div>`).join('')}</div>
-    <div class="cov-plot"><canvas role="img" aria-label="Arrival of each source for every half-hour; the table below gives the same information"></canvas><div class="tip cov-tip" hidden></div></div></div>`;
+    <div class="cov-plot"><canvas role="img" aria-label="Arrival of each source for every ${slotNoun()}; the table below gives the same information"></canvas><div class="tip cov-tip" hidden></div></div></div>`;
   const plot = host.querySelector('.cov-plot'); const canvas = host.querySelector('canvas'); const tip = host.querySelector('.cov-tip');
   const n = t.slotTimes.length;
   const draw = () => {
@@ -101,7 +101,7 @@ export function drawCoverage(host, t, tf) {
       if (i) { g.fillStyle = css('--surface'); g.fillRect(x - 1, HEAD - 4, 2, rows.length * ROW + 4); }
       if (x - lastLabel > 72 && x < w - 40) { g.fillStyle = css('--text-2'); g.fillText(d, x + 3, 13); lastLabel = x; }
     });
-    const ni = t.slotTimes.findIndex((s) => s + 1800 > t.now);
+    const ni = t.slotTimes.findIndex((s) => s + (t.slot_s || 1800) > t.now);
     if (ni > 0) {
       const x = Math.floor(ni * cw) + 0.5;
       g.strokeStyle = css('--text'); g.setLineDash([3, 3]); g.beginPath(); g.moveTo(x, HEAD - 2); g.lineTo(x, h); g.stroke(); g.setLineDash([]);
@@ -113,7 +113,7 @@ export function drawCoverage(host, t, tf) {
     const i = Math.floor((x / rect.width) * n); const ri = Math.floor((y - HEAD) / ROW);
     if (i < 0 || i >= n || ri < 0 || ri >= rows.length) { tip.hidden = true; return; }
     const r = rows[ri];
-    tip.innerHTML = `<b>${esc(r.label)}</b><br>${tf.dayTime(t.slotTimes[i])}–${tf.time(t.slotTimes[i] + 1800)}<br>${esc((r.map[r.cells[i]] || CELL.n)[1])}`;
+    tip.innerHTML = `<b>${esc(r.label)}</b><br>${tf.dayTime(t.slotTimes[i])}–${tf.time(t.slotTimes[i] + (t.slot_s || 1800))}<br>${esc((r.map[r.cells[i]] || CELL.n)[1])}`;
     tip.hidden = false;
     tip.style.left = `${Math.max(0, Math.min(x + 12, rect.width - 230))}px`; tip.style.top = `${y + 14}px`;
   };
@@ -132,7 +132,7 @@ const GROUPS = [
     [['meter_vs_ct', 'Import'], ['meter_vs_ct_export', 'Export']]],
   ['Energy balance', "Energy in minus energy out (house, exports, charging) is what the inverter used; it must be close to this home's own typical day.",
     [['energy_balance', 'Inverter use']]],
-  ['Coverage', 'Every half-hour has a grid reading and a price; gas is converted with the published calorific value.',
+  ['Coverage', 'Every slot has a grid reading and a price; gas is converted with the published calorific value.',
     [['completeness', 'Present'], ['rate_coverage', 'Priced'], ['gas_calorific_value', 'Gas converted']]],
   ['Battery', 'Round trip measured from the inverter counters; cost of stored energy known.',
     [['battery_efficiency', 'Efficiency'], ['battery_stock', 'Stored cost']]],
@@ -201,7 +201,7 @@ export function balanceCard(t, tf) {
 
 // ───────────── 5 Revisions and "as known at" ─────────────
 
-const FIELD = { slots_final: 'final half-hours', slots_provisional: 'provisional', slots_missing: 'missing', solar: 'solar kWh', home: 'house kWh', grid_import: 'import kWh', grid_export: 'export kWh', gas: 'gas kWh', total_cost: 'bill', saving: 'saving', method_version: 'build method' };
+const FIELD = { slots_final: 'final slots', slots_provisional: 'provisional', slots_missing: 'missing', solar: 'solar kWh', home: 'house kWh', grid_import: 'import kWh', grid_export: 'export kWh', gas: 'gas kWh', total_cost: 'bill', saving: 'saving', method_version: 'build method' };
 const showVal = (f, v) => (v == null ? '–' : ['total_cost', 'saving'].includes(f) ? fmt.gbp(v) : typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(2) : String(v));
 
 export function revisionsCard(t, tf) {
@@ -244,7 +244,7 @@ export function wireAsOf(state, t, tf) {
   const fill = () => {
     const d = daySel.value;
     const end = t.slotTimes.filter((s) => tf.day(s) === tf.date(d)).pop();
-    const ends = (end ?? Date.parse(`${d}T23:30:00Z`) / 1000) + 1800;
+    const ends = end != null ? end + (t.slot_s || 1800) : Date.parse(`${d}T00:00:00Z`) / 1000 + 86400;
     const opts = [];
     for (const r of t.revisions.filter((x) => x.local_date === d)) opts.push([r.revised_at, `${tf.dayTime(r.revised_at)} (recorded change)`]);
     for (const [off, l] of [[3600, 'an hour after the day ended'], [12 * 3600, 'noon the next day'], [36 * 3600, 'two days later']]) if (ends + off < t.now) opts.push([ends + off, `${tf.dayTime(ends + off)} (${l})`]);
@@ -284,14 +284,14 @@ function asOfResult(r, tf) {
   const inputs = r.then.inputs;
   return `
     <div class="grid cols-2">
-      <div><h3>Known at ${tf.dayTime(r.at)}</h3>${strip(r.then.hh)}<p class="faint" style="margin:6px 0 0">${inputs ? `${inputs.meterSlots} half-hours from the smart meter, ${inputs.clampSlots} from the inverter clamp · battery ${inputs.batteryKwh} kWh (${esc(inputs.batterySource || '–')})` : ''}</p></div>
+      <div><h3>Known at ${tf.dayTime(r.at)}</h3>${strip(r.then.hh)}<p class="faint" style="margin:6px 0 0">${inputs ? `${inputs.meterSlots} ${slotNouns()} from the smart meter, ${inputs.clampSlots} from the inverter clamp · battery ${inputs.batteryKwh} kWh (${esc(inputs.batterySource || '–')})` : ''}</p></div>
       <div><h3>Now</h3>${strip(r.now.hh)}<p class="faint" style="margin:6px 0 0">Rebuilt in ${r.ms} ms with ${esc(r.method)}.</p></div>
     </div>
     ${r.then.approximations?.length ? `<div class="banner" style="margin-top:10px"><span>i</span><div>Read as first recorded, because no earlier version was kept: ${r.then.approximations.map(esc).join('; ')}.</div></div>` : ''}
     <div class="legend" style="margin:8px 0"><span><i class="swatch" style="background:var(--good)"></i>Final</span><span><i class="swatch" style="background:var(--warn)"></i>Provisional</span><span><i class="swatch" style="background:var(--bad)"></i>Missing</span><span><i class="swatch hatch"></i>Grid from the inverter clamp (plain: smart meter)</span></div>
     <div class="grid cols-2">
       <div class="table-wrap"><table><thead><tr><th></th><th class="r">Then</th><th class="r">Now</th><th></th></tr></thead><tbody>
-        ${line('Final half-hours', 'slots_final')}${line('Provisional', 'slots_provisional')}${line('Missing', 'slots_missing')}
+        ${line(`Final ${slotNouns()}`, 'slots_final')}${line('Provisional', 'slots_provisional')}${line('Missing', 'slots_missing')}
         ${line('Solar kWh', 'solar')}${line('House kWh', 'home')}${line('Import kWh', 'grid_import')}${line('Export kWh', 'grid_export')}${line('Gas kWh', 'gas')}
         ${line('Bill', 'total_cost', true)}${line('Saving', 'saving', true)}</tbody></table></div>
       <div class="table-wrap"><table><thead><tr><th>Check</th><th>Then</th><th>Now</th></tr></thead><tbody>
@@ -319,7 +319,7 @@ export function detailHistoryHtml(t) {
     </tbody></table></div></details>`;
 }
 
-// ───────────── 7 The path of one half-hour ─────────────
+// ───────────── 7 The path of one slot ─────────────
 
 export function evidenceFlow(e) {
   const r = e.row; const lin = r.lineage || {};
@@ -335,10 +335,10 @@ export function evidenceFlow(e) {
   return `<div class="path">
     ${step('1', 'Provider responses', `${Object.keys(raws).length ? Object.entries(raws).map(([src, list]) => `<div class="path-src"><b>${esc(src)}</b> <span class="faint">${list.length > 1 ? `${list.length} responses` : new Date(list[0].fetched_at * 1000).toLocaleString('en-GB')}</span><br>${list.map((x) => `<button class="chip-btn" data-raw="${x.id}" title="Fetched ${new Date(x.fetched_at * 1000).toLocaleString('en-GB')}">#${x.id}</button>`).join(' ')}</div>`).join('') : '<span class="faint">none</span>'}<p class="faint">Kept unchanged, as received. Click one to read it.</p>`)}
     ${step('2', 'Facts', `${Object.entries(bySource).map(([s, v]) => `<div><b>${esc(s)}</b>: ${v.current} in use${v.old ? `, <span class="faint">${v.old} older version${v.old === 1 ? '' : 's'}</span>` : ''}</div>`).join('')}<p class="faint">Each value with its time, unit and source; a later version supersedes, never overwrites.</p>`)}
-    ${step('3', 'Align', `5-minute power → half-hour kWh, then each day matched to the inverter's daily totals:<br><span class="mono">${lin.fit ? Object.entries(lin.fit).map(([n, x]) => `${n} ×${Number(x).toFixed(3)}`).join(' · ') : '–'}</span><br><span class="faint">inverter coverage ${lin.coverage != null ? fmt.pct(lin.coverage) : '–'}</span>`)}
+    ${step('3', 'Align', `5-minute power → ${slotNoun()} kWh, then each day matched to the inverter's daily totals:<br><span class="mono">${lin.fit ? Object.entries(lin.fit).map(([n, x]) => `${n} ×${Number(x).toFixed(3)}`).join(' · ') : '–'}</span><br><span class="faint">inverter coverage ${lin.coverage != null ? fmt.pct(lin.coverage) : '–'}</span>`)}
     ${step('4', 'Reconcile', `Grid import <b>${k(r.grid_import)} kWh</b> from the ${meterUsed ? 'smart meter' : 'inverter clamp'}${meterUsed && lin.ct ? `<br><span class="faint">the clamp read ${k(lin.ct.imp)} kWh; the meter wins</span>` : !meterUsed ? '<br><span class="faint">meter readings not arrived yet</span>' : ''}<br>House <b>${k(r.home)} kWh</b> (inverter load)<br>Inverter used <b>${k((r.solar_to_loss || 0) + (r.battery_to_loss || 0) + (r.grid_to_loss || 0))} kWh</b>`)}
     ${step('5', 'Allocate', `<span class="mono">solar → house ${k(r.solar_to_home)}<br>battery → house ${k(r.battery_to_home)}<br>grid → house ${k(r.grid_to_home)}<br>solar → battery ${k(r.solar_to_battery)}<br>grid → battery ${k(r.grid_to_battery)}<br>exported ${k((r.solar_to_grid || 0) + (r.battery_to_grid || 0))}</span>`)}
-    ${step('6', 'Price', `${esc(lin.tariff || '–')}<br>${esc(lin.register || '')} rate <b>${impInc != null ? fmt.pkwh(impInc) : 'not priced'}</b>${r.import_vat != null ? ` incl. VAT ${fmt.pct(r.import_vat)}` : ''}<br>bill <b>${fmt.gbp(r.total_cost)}</b> · grid only ${fmt.gbp(r.grid_only_cost)}`)}
+    ${step('6', 'Price', `${esc(lin.tariff || '–')}${lin.origin ? ` ${originBadge(lin.origin)}` : ''}${lin.estimated ? ' <span class="badge warn">estimated</span>' : ''}<br>${esc(lin.register || '')} rate <b>${impInc != null ? fmt.pkwh(impInc) : 'not priced'}</b>${r.import_vat != null ? ` incl. VAT ${fmt.pct(r.import_vat)}` : ''}<br>bill <b>${fmt.gbp(r.total_cost)}</b> · grid only ${fmt.gbp(r.grid_only_cost)}`)}
     ${step('7', 'Check', `<span class="badge ${r.state === 'final' ? 'good' : r.state === 'provisional' ? 'warn' : 'bad'}">${esc(r.state)}</span><div style="margin-top:6px">${checks || '<span class="faint">day checks not run yet</span>'}</div>${e.revisions?.n ? `<br><span class="faint">${e.revisions.n} recorded version${e.revisions.n === 1 ? '' : 's'} of this day</span>` : ''}`)}
   </div>`;
 }

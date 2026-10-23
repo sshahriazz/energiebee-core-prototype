@@ -1,6 +1,6 @@
 // Battery: charge level, what went in and out, what stored energy cost (first in,
-// first out) and what it saved, with one half-hour worked through in full.
-import { api, fmt, timeFmt, delta, COLORS } from '../api.js';
+// first out) and what it saved, with one slot (the home's own length) worked through in full.
+import { api, fmt, timeFmt, delta, COLORS, zeroPrice, slotNoun, SlotNoun } from '../api.js';
 import { init, card, kpi, evidenceLink } from '../layout.js';
 import { timeChart, legend, tipHtml, hhTicks } from '../charts.js';
 import { loadTimeline, isFc } from '../timeline.js';
@@ -12,9 +12,9 @@ function workedExample(r, tf) {
   const homeCost = (r.grid_to_home_cost || 0) + (r.battery_to_home_cost || 0);
   const gridOnly = r.home * rate;
   return `<div class="rows">
-    <div class="row"><span class="k">Half-hour</span><b>${tf.dayTime(r.slot_start)}</b></div>
+    <div class="row"><span class="k">${SlotNoun()}</span><b>${tf.dayTime(r.slot_start)}</b></div>
     <div class="row"><span class="k">Home used</span><b>${fmt.kwh(r.home, 2)}</b></div>
-    <div class="row sub"><span class="k"><i class="swatch" style="background:${COLORS.solar}"></i>from solar at 0p</span><b>${fmt.kwh(r.solar_to_home, 2)}</b></div>
+    <div class="row sub"><span class="k"><i class="swatch" style="background:${COLORS.solar}"></i>from solar at ${zeroPrice()}</span><b>${fmt.kwh(r.solar_to_home, 2)}</b></div>
     <div class="row sub"><span class="k"><i class="swatch" style="background:${COLORS.battery}"></i>from battery, stored at ${fmt.pkwh(stored)}</span><b>${fmt.kwh(r.battery_to_home, 2)} · ${fmt.p(r.battery_to_home_cost)}</b></div>
     <div class="row sub"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>from grid at ${fmt.pkwh(rate)}</span><b>${fmt.kwh(r.grid_to_home, 2)} · ${fmt.p(r.grid_to_home_cost)}</b></div>
     <div class="row total"><span class="k">Paid for that energy</span><b>${fmt.p(homeCost)}</b></div>
@@ -22,7 +22,7 @@ function workedExample(r, tf) {
     <div class="row total"><span class="k" style="color:var(--good)">Saved</span><b style="color:var(--good)">${fmt.p(gridOnly - homeCost)}</b></div>
     <div class="row"><span class="k">Blended price of energy used</span><b>${fmt.pkwh(r.home ? homeCost / r.home : null)}</b></div>
   </div>
-  <p class="faint" style="font-size:12px;margin:10px 0 0">Standing charge and export are left out here to match the energy only. <a href="/data?site=${r._site}&slot=${r.slot_start}#evidence">See every fact behind this half-hour →</a></p>`;
+  <p class="faint" style="font-size:12px;margin:10px 0 0">Standing charge and export are left out here to match the energy only. <a href="/data?site=${r._site}&slot=${r.slot_start}#evidence">See every fact behind this ${slotNoun()} →</a></p>`;
 }
 
 async function render(state) {
@@ -47,7 +47,7 @@ async function render(state) {
     ${kpi('Cycles', fmt.num(c.battery_cycles, 2), `charge range ${fmt.num(c.soc_min, 0)}–${fmt.num(c.soc_max, 0)}%${summary.days >= 7 && c.battery_losses > 0 ? ` · ${fmt.kwh(c.battery_losses)} lost` : ''}`)}
   </div>`;
 
-  // The busiest battery half-hour; if today has hardly any yet, use yesterday's.
+  // The busiest battery slot; if today has hardly any yet, use yesterday's.
   const busiest = (rows) => rows.filter((r) => !isFc(r) && r.battery_to_home > 0).reduce((a, b) => (!a || b.battery_to_home > a.battery_to_home ? b : a), null);
   let best = tl.step === 'hh' ? busiest(tl.rows) : null;
   if (!best || best.battery_to_home < 0.3) best = busiest((await api(`/api/sites/${id}/timeline?period=yesterday&step=hh`)).rows) || best;
@@ -56,11 +56,11 @@ async function render(state) {
   const multiDay = tl.step === 'hh' && new Set(tl.rows.map((r) => r.local_date)).size > 2;
   document.getElementById('content').innerHTML = `
     ${kpis}
-    ${tl.step === 'hh' ? `<div class="section">${card('Charge level', `State of charge at the end of each half-hour. ${tl.nowIndex != null ? 'After “now”: expected, from the forecast.' : ''}`, '<div id="soc-chart"></div>')}</div>` : ''}
+    ${tl.step === 'hh' ? `<div class="section">${card('Charge level', `State of charge at the end of each ${slotNoun()}. ${tl.nowIndex != null ? 'After “now”: expected, from the forecast.' : ''}`, '<div id="soc-chart"></div>')}</div>` : ''}
     <div class="section">${card('In and out', 'Above the line: energy the battery supplied. Below: energy it stored, by source.',
       `${legend([{ label: 'To home', color: COLORS.battery }, { label: 'Exported', color: COLORS.export }, { label: 'From solar', color: COLORS.solar }, { label: 'From grid', color: COLORS.grid }])}<div id="flow-chart"></div>`)}</div>
     <div class="section grid cols-2">
-      ${card('One half-hour, costed', 'The busiest battery half-hour in this period. Stored energy keeps the price it was bought at (first in, first out).', workedExample(best, tf))}
+      ${card(`One ${slotNoun()}, costed`, `The busiest battery ${slotNoun()} in this period. Stored energy keeps the price it was bought at (first in, first out).`, workedExample(best, tf))}
       ${card('How the battery is valued', '', `<div class="rows">
         <div class="row"><span class="k">Grid power it replaced</span><b>${fmt.gbp(c.battery_avoided)}</b></div>
         <div class="row"><span class="k">Export credit from battery</span><b>${fmt.gbp(c.battery_export_value)}</b></div>

@@ -131,7 +131,8 @@ test('Quartz is calibrated when it is close to what the panels make', { skip }, 
 });
 
 test('Quartz is not used when it is far from what the panels make', { skip }, (t) => {
-  if (quartzAt(5) < 2) return t.skip('not enough solar in the last two days');
+  // 3× off is outside 0.5–2×; the stand-in forecast (made ÷ 3) must itself reach the 2 kWh needed to compare.
+  if (quartzAt(3) < 6) return t.skip('not enough solar in the last two days');
   const q = forecastSite(SITE, 48).model.solar;
   assert.equal(q.quartz.calibration.applied, false);
   assert.match(q.quartz.calibration.reason, /outside 0\.5–2/);

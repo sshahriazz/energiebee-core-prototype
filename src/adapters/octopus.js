@@ -48,13 +48,27 @@ export function parseTariffCode(code) {
   return { fuel, registers, region, product, structure };
 }
 
+// What a tariff structure is in the words of the adapter contract (tariff.kind, delta 004) and its
+// own price grain (tariff.native_period_s, delta 003): Agile prices every half-hour, a tracker once
+// a day; flat, day/night, Go-style windows and Intelligent Octopus are static (NULL).
+const KIND_OF = { flat: 'flat', export: 'flat', tou: 'tou', e7: 'tou', agile: 'dynamic', agile_export: 'dynamic', tracker: 'dynamic', iog: 'dispatch' };
+const PERIOD_OF = { agile: 1800, agile_export: 1800, tracker: 86400 };
+export const tariffKindOf = (structure) => KIND_OF[structure] ?? null;
+export const nativePeriodOf = (structure) => PERIOD_OF[structure] ?? null;
+
+// Every Octopus tariff is a GB tariff in pounds, fetched from the provider (origin 'provider').
+// A row stored before these columns were written gets them filled in, never overwritten.
 export function upsertTariff({ provider = 'octopus', tariffCode, direction, name }) {
   const p = parseTariffCode(tariffCode);
   db.prepare(
-    `INSERT INTO tariff (provider, product_code, tariff_code, fuel, direction, structure, region, name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(tariff_code) DO UPDATE SET name = COALESCE(excluded.name, tariff.name)`)
-    .run(provider, p.product, tariffCode, p.fuel, direction, p.structure, p.region, name ?? null);
+    `INSERT INTO tariff (provider, product_code, tariff_code, fuel, direction, structure, region, name, currency, country, kind, native_period_s, origin, origin_note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'GBP', 'GB', ?, ?, 'provider', ?)
+     ON CONFLICT(tariff_code) DO UPDATE SET name = COALESCE(excluded.name, tariff.name), currency = COALESCE(tariff.currency, excluded.currency),
+       country = COALESCE(tariff.country, excluded.country), kind = COALESCE(tariff.kind, excluded.kind),
+       native_period_s = COALESCE(tariff.native_period_s, excluded.native_period_s), origin = COALESCE(tariff.origin, excluded.origin),
+       origin_note = COALESCE(tariff.origin_note, excluded.origin_note)`)
+    .run(provider, p.product, tariffCode, p.fuel, direction, p.structure, p.region, name ?? null, tariffKindOf(p.structure), nativePeriodOf(p.structure),
+      `Octopus public API: products/${p.product}/${p.fuel === 'gas' ? 'gas' : 'electricity'}-tariffs/${tariffCode}`);
   return db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariffCode);
 }
 
@@ -69,9 +83,10 @@ const overlapping = db.prepare(
   `SELECT id, valid_from, valid_to, price_ex_vat, raw_id FROM rate_interval
    WHERE superseded_at IS NULL AND tariff_id = ? AND component = ? AND register = ? AND payment_method = ?
      AND IFNULL(site_id, 0) = ? AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?`);
+// Rate rows from Octopus are provider data (origin 'provider'); raw_id links each to its payload.
 const insRate = db.prepare(
-  `INSERT INTO rate_interval (tariff_id, site_id, component, register, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  `INSERT INTO rate_interval (tariff_id, site_id, component, register, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provider')`);
 
 // Store price rows. Identical rows are skipped; a changed row supersedes the
 // old version, so the overlap trigger only ever sees one current row per period.

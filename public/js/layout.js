@@ -1,5 +1,5 @@
 // Page shell: top bar, navigation, home and period pickers, sync button, footer.
-import { api, ago, esc } from './api.js';
+import { api, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns, originBadge, originLegend, minorSymbol } from './api.js';
 
 const PAGES = [
   ['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
@@ -41,6 +41,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   const main = document.querySelector('main');
   main.insertAdjacentHTML('afterbegin', `
     <div id="banner-slot"></div>
+    <div id="provenance-slot"></div>
     <div class="page-head">
       <div><h1>${esc(title)}</h1>${subtitle ? `<p>${subtitle}</p>` : ''}</div>
       ${periods ? `<div class="segmented" role="group" aria-label="Period">${PERIODS.map(([k, l]) => `<button data-period="${k}" aria-pressed="${k === state.period}">${l}</button>`).join('')}</div>` : ''}
@@ -49,7 +50,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   document.body.insertAdjacentHTML('beforeend', `
     <footer class="foot">
       <img src="/img/technext-logo.png" alt="Technext">
-      <span>Prototype built by Technext for EnergieBee · every number on these pages comes from the half-hour core and can be traced on the Data &amp; trust page.</span>
+      <span>Prototype built by Technext for EnergieBee · every number on these pages comes from the core's slot timeline and can be traced on the Data &amp; trust page.</span>
     </footer>`);
 
   const select = document.getElementById('site-select');
@@ -75,21 +76,41 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     if (errors.length) {
       html += `<div class="banner bad"><span>!</span><div>${errors.map((c) => `<b>${esc(c.provider)}</b>: ${esc(c.last_error)}`).join('<br>')}</div></div>`;
     }
-    if (s.syncing || (!s.days?.n && !s.lastSync?.finished_at)) {
-      html += `<div class="banner warn"><span class="spin">↻</span><div>Loading data from the providers and building the half-hour timeline… this takes a few seconds on first run.</div></div>`;
+    if (!s.is_demo && (s.syncing || (!s.days?.n && !s.lastSync?.finished_at))) {
+      html += `<div class="banner warn"><span class="spin">↻</span><div>Loading data from the providers and building the ${slotNoun()} timeline… this takes a few seconds on first run.</div></div>`;
     }
     slot.innerHTML = html;
   };
+
+  // Provenance banner, on every page: a demo home's values are synthetic, and a period priced with
+  // any placeholder or synthetic input says which ones (from the period's provenance block).
+  function provenanceBanner(p) {
+    const slot = document.getElementById('provenance-slot');
+    const s = state.site;
+    if (!s) { slot.innerHTML = ''; return; }
+    const lines = [];
+    if (s.is_demo || p?.demo) lines.push(`<b>Demo data: values below are synthetic.</b> This home's readings, tariffs and prices were generated for testing; none of it is real market data. ${originBadge('synthetic')}`);
+    const unverified = (p?.placeholders || []).filter((x) => /\[placeholder\]$/.test(x));
+    if (unverified.length || p?.worst === 'placeholder') lines.push(`<b>Contains placeholder values that are not verified.</b> ${originBadge('placeholder')} They were written from memory or assumed, not checked against an official source.`);
+    if (p?.estimated_slots) lines.push(`<b>${p.estimated_slots} ${p.estimated_slots === 1 ? slotNoun() : slotNouns()} priced with an estimate:</b> the day type (e.g. a Tempo colour) was not published yet.`);
+    if (!lines.length) { slot.innerHTML = ''; return; }
+    const list = (p?.placeholders || []).length ? `<details><summary>Inputs that are not verified (${p.placeholders.length})</summary><ul>${p.placeholders.map((x) => `<li class="mono">${esc(x)}</li>`).join('')}</ul></details>` : '';
+    slot.innerHTML = `<div class="banner ${s.is_demo || p?.worst === 'synthetic' ? 'bad' : 'warn'} provenance" role="status"><span aria-hidden="true">⚠</span><div>${lines.join('<br>')}${list}${originLegend()}</div></div>`;
+  }
 
   async function loadSites() {
     state.sites = await api('/api/sites');
     if (!state.sites.find((s) => s.id === state.siteId)) state.siteId = state.sites[0]?.id || null;
     state.site = state.sites.find((s) => s.id === state.siteId) || null;
     state.tz = state.site?.timezone || 'Europe/London';
-    select.innerHTML = state.sites.map((s) => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
-    syncBtn.disabled = !!state.site?.syncing;
+    setCurrency(state.site?.currency);
+    setSlot(state.site?.slot_s);
+    provenanceBanner(state.provenance);
+    select.innerHTML = state.sites.map((s) => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}${s.is_demo ? ' (demo, synthetic)' : ''}</option>`).join('');
+    syncBtn.disabled = !!state.site?.syncing || !!state.site?.is_demo;
     syncBtn.innerHTML = state.site?.syncing ? '<span class="spin">↻</span> Syncing' : '↻ Sync';
-    syncBtn.title = state.site?.lastSync ? `Last sync ${ago(state.site.lastSync.finished_at || state.site.lastSync.started_at)} (${state.site.lastSync.status})` : 'Never synced';
+    syncBtn.title = state.site?.is_demo ? 'Demo home: its data is synthetic, there is nothing to sync'
+      : state.site?.lastSync ? `Last sync ${ago(state.site.lastSync.finished_at || state.site.lastSync.started_at)} (${state.site.lastSync.status})` : 'Never synced';
     banner();
     keepUrl();
   }
@@ -98,14 +119,18 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   // final, provisional or missing, and how the checks went, with a link to the proof.
   async function basis() {
     const slot = document.getElementById('basis-slot');
-    if (!periods || page === 'data' || !state.site) { slot.innerHTML = ''; return; }
+    if (!state.site) { slot.innerHTML = ''; return; }
     try {
-      const b = (await api(`/api/sites/${state.site.id}/summary?period=${state.period}`)).basis;
-      if (!b?.halfHours) { slot.innerHTML = ''; return; }
+      // The summary also carries the period's provenance, shown in the banner on every page.
+      const sum = await api(`/api/sites/${state.site.id}/summary?period=${state.period}`);
+      state.provenance = sum.provenance || null;
+      provenanceBanner(state.provenance);
+      const b = sum.basis;
+      if (!periods || page === 'data' || !b?.halfHours) { slot.innerHTML = ''; return; }
       const c = b.checks || {}; const run = (c.pass || 0) + (c.warn || 0) + (c.fail || 0);
       const w = (n) => `${(n / b.halfHours) * 100}%`;
       slot.innerHTML = `<div class="basis"><span class="basis-bar" aria-hidden="true"><i style="width:${w(b.final)};background:var(--good)"></i><i style="width:${w(b.provisional)};background:var(--warn)"></i><i style="width:${w(b.missing)};background:var(--bad)"></i></span>
-        <span>Based on ${b.halfHours} half-hours: <b>${Math.round((b.final / b.halfHours) * 100)}% final</b>${b.provisional ? `, ${b.provisional} provisional (waiting for smart-meter readings)` : ''}${b.missing ? `, ${b.missing} missing` : ''}${run ? ` · ${c.pass} of ${run} cross-checks agree` : ''}</span>
+        <span>Based on ${b.halfHours} ${b.halfHours === 1 ? slotNoun() : slotNouns()}: <b>${Math.round((b.final / b.halfHours) * 100)}% final</b>${b.provisional ? `, ${b.provisional} provisional (waiting for smart-meter readings)` : ''}${b.missing ? `, ${b.missing} missing` : ''}${run ? ` · ${c.pass} of ${run} cross-checks agree` : ''}</span>
         <a href="/data?site=${state.siteId}&period=${state.period}#proof">See the proof →</a></div>`;
     } catch { slot.innerHTML = ''; }
   }
@@ -128,13 +153,14 @@ export async function init({ page, title, subtitle, periods = true, render }) {
 
   select.addEventListener('change', async () => {
     state.siteId = Number(select.value);
+    state.provenance = null;
     store.set('eb.site', String(state.siteId));
     await loadSites();
     await rerender();
     if (state.site?.syncing) waitForSync();
   });
   syncBtn.addEventListener('click', async () => {
-    if (!state.site) return;
+    if (!state.site || state.site.is_demo) return;
     await api(`/api/sites/${state.site.id}/sync`, { method: 'POST' });
     await loadSites();
     waitForSync();
@@ -161,7 +187,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     return state;
   }
   await rerender();
-  if (state.site.syncing || !state.site.days?.n) waitForSync();
+  if (!state.site.is_demo && (state.site.syncing || !state.site.days?.n)) waitForSync();
   // Keep "now" fresh without a manual reload.
   setInterval(async () => { await loadSites(); rerender(); }, 120000);
   return state;
@@ -178,4 +204,18 @@ export function kpi(label, value, sub = '', swatch = '') {
 
 export function evidenceLink(state, slot) {
   return `/data?site=${state.siteId}&period=${state.period}&slot=${slot}#evidence`;
+}
+
+// The tariffs in force (the API's /tariffs rows), each figure with its origin badge: the tariff,
+// its rates now, the fixed charge per day and every tax rule (VAT, levies) applied on top.
+export function tariffRowsHtml(tariffs, { legendToo = true } = {}) {
+  const current = tariffs.filter((t) => t.current);
+  if (!current.length) return '<div class="skeleton">No tariff found for this home.</div>';
+  const tax = (x) => `${esc(x.code)} ${x.kind === 'percent' ? fmt.pct(x.value, x.value * 100 % 1 ? 2 : 0) : x.kind === 'per_kwh' ? `${fmt.num(x.value, 3)}${minorSymbol()}/kWh` : `${fmt.num(x.value, 2)} per ${esc(x.charge_period || 'period')}`} ${originBadge(x.origin, x.origin_note)}`;
+  return `<div class="rows">${current.map((t) => `
+    <div class="row"><span class="k">${esc(t.label || t.kind)}</span><span><span class="mono">${esc(t.tariff_code)}</span> ${originBadge(t.origin, t.origin_note)}</span></div>
+    <div class="row sub"><span class="k">${esc(t.name || t.structure)} · ${esc(t.structure)}${t.estimated ? ' · <span class="badge warn">estimated price</span>' : ''}</span>
+      <b>${fmt.pkwh(t.unitNow)} now${t.rate_origin ? ` ${originBadge(t.rate_origin)}` : ''}${t.direction === 'import' && t.standingPerDay != null ? ` · ${fmt.p(t.standingPerDay)}/day` : ''}</b></div>
+    ${t.taxes?.length ? `<div class="row sub"><span class="k">Taxes on it</span><span>${t.taxes.map(tax).join(' · ')}</span></div>` : ''}`).join('')}</div>
+    ${legendToo ? originLegend() : ''}`;
 }

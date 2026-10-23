@@ -1,0 +1,230 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Planning design compatibility | EnergieBee | Technext</title><style>
+@page { size:A4; margin:21mm 17mm 20mm; }
+@page wide { size:A3 landscape; margin:23mm 18mm; }
+@page tall { size:A3 portrait; margin:23mm 18mm; }
+@page atlas { size:594mm 420mm; margin:23mm 18mm; }
+* {box-sizing:border-box} body{font-family:Arial,sans-serif;color:#151515;font-size:10pt;line-height:1.48;margin:0}
+a{color:#be4815;text-decoration:none;overflow-wrap:anywhere} p{margin:0 0 10px;orphans:3;widows:3}
+h1,h2,h3,h4{color:#151515;line-height:1.2;break-after:avoid}
+h2{font-size:23pt;letter-spacing:-.6px;border-top:4px solid #eb6126;padding-top:17px;margin:0 0 22px;break-before:page}
+h3{font-size:14pt;margin:23px 0 12px}h4{font-size:11pt;margin:19px 0 8px}
+ul,ol{padding-left:22px;margin:8px 0 13px}li{margin:4px 0;orphans:2;widows:2}li p{margin:3px 0}
+strong{color:#151515}hr{border:0;border-top:1px solid #e0e3e6;margin:20px 0}
+code{font-family:Menlo,monospace;font-size:.85em;overflow-wrap:anywhere;color:#344452}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;border-left:3px solid #eb6126;padding:12px;font-size:8pt;line-height:1.45;break-inside:avoid}
+table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:8.3pt;line-height:1.42;margin:14px 0 20px}
+thead{display:table-header-group}tr{break-inside:avoid}th{background:#151515;color:white;font-weight:600;text-align:left}th strong{color:white}th,td{padding:8px 9px;border-bottom:1px solid #d9dfe4;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#f4f6f8}
+table.catalogue td:first-child{width:24%;font-weight:bold;color:#293947}table.catalogue td:last-child{width:76%}table.catalogue thead{display:none}
+blockquote{margin:18px 0;padding:12px 15px;border-left:4px solid #eb6126;background:#fff7f2}blockquote table{font-size:8pt}blockquote p:last-child{margin-bottom:0}
+.cover{height:246mm;position:relative;break-after:page}.cover img{width:180px;margin-top:8mm}.eyebrow{color:#eb6126;font-size:10pt;font-weight:bold;letter-spacing:2px;text-transform:uppercase}.cover .eyebrow{margin-top:44mm}.cover h1{font-size:44pt;line-height:1.05;letter-spacing:-1.8px;margin:18px 0}.cover .subtitle{font-size:21pt;line-height:1.3;max-width:560px;color:#536371}.cover .rule{width:64px;height:6px;background:#eb6126;margin:27px 0}.cover .meta{font-size:10pt;color:#566570}.contact{position:absolute;bottom:3mm;border-top:1px solid #d8dfe4;width:100%;padding-top:18px;line-height:1.7;font-size:10pt}.contact b{font-size:13pt}
+.contents{break-after:page}.contents h2{break-before:auto}.toc-row{display:flex;align-items:baseline;gap:12px;padding:10px 0;border-bottom:1px solid #e1e5e8;font-size:11pt}.toc-row a{color:#151515;flex:1}.toc-number{min-width:30px;text-align:right;color:#be4815}.note{font-size:9pt;color:#63727e;margin-top:25px}
+.intro-title{font-size:10pt;letter-spacing:2px;text-transform:uppercase;color:#eb6126;margin-bottom:20px}
+figure{margin:16px 0 22px;break-inside:avoid}figure.plate{break-before:page;break-after:page;page:tall;margin:0}figure.wide{page:wide}figure.atlas{page:atlas}figure img{display:block;object-fit:contain;width:100%;max-height:225mm}figure.plate img{height:337mm;max-height:337mm}figure.wide img{height:221mm;max-height:221mm}figure.atlas img{height:345mm;max-height:345mm}figcaption{font-size:10pt;border-top:2px solid #eb6126;padding-top:10px;margin-top:10px;color:#536371}figcaption b{color:#151515}figure h2{break-before:auto;font-size:21pt;margin-bottom:12px}figure h3{margin:10px 0}figure p{font-size:10pt}.plate-label{font-size:11pt;font-weight:bold;letter-spacing:1px;color:#eb6126;margin-bottom:10px}
+.flow h2{break-before:auto;margin-top:34px}.flow table{table-layout:auto;break-inside:avoid}.flow th,.flow td,.flow table code{overflow-wrap:break-word}.flow th code{color:#fff}.flow ul,.flow ol{break-inside:avoid}.flow p:has(+ table,+ ul,+ ol),.flow ul:has(+ p),.flow ol:has(+ p){break-after:avoid}
+</style></head><body class="flow"><section class="cover"><img src="data:image/png;base64,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"><div class="eyebrow">TECHNICAL REPORT 04</div><h1>EnergieBee core<br>Planning design compatibility</h1><div class="subtitle">What the core already covers and what is left to build</div><div class="rule"></div><div class="meta">Prepared by Technext for EnergieBee<br>23 October 2026</div><div class="contact"><b>Technext</b><br><a href="https://technext.it/">technext.it</a> · +1 302 433 6002 · Wilmington, DE, US 19802-4447</div></section><section class="contents"><h2>Contents</h2><div class="toc-row"><a href="#verdict">Verdict</a><span class="toc-number" data-heading="verdict">3</span></div><div class="toc-row"><a href="#example-1-replacing-the-designs-input-tables">Example 1: replacing the design's input tables</a><span class="toc-number" data-heading="example-1-replacing-the-designs-input-tables">4</span></div><div class="toc-row"><a href="#example-2-a-slot-side-by-side">Example 2: a slot, side by side</a><span class="toc-number" data-heading="example-2-a-slot-side-by-side">4</span></div><div class="toc-row"><a href="#example-3-a-command">Example 3: a command</a><span class="toc-number" data-heading="example-3-a-command">5</span></div><div class="toc-row"><a href="#what-the-core-adds-that-the-design-lacks">What the core adds that the design lacks</a><span class="toc-number" data-heading="what-the-core-adds-that-the-design-lacks">5</span></div><div class="toc-row"><a href="#what-the-design-adds-that-the-core-lacks">What the design adds that the core lacks</a><span class="toc-number" data-heading="what-the-design-adds-that-the-core-lacks">5</span></div><div class="toc-row"><a href="#suggested-order-to-close-the-gaps">Suggested order to close the gaps</a><span class="toc-number" data-heading="suggested-order-to-close-the-gaps">6</span></div><p class="note">Content is reproduced from the source document <code>docs/planning-design-compatibility.md</code>, which remains the editable original.</p></section><div class="intro-title">Report overview</div><p>How the core fits the "Predbat in Node.js + SQL" planning design and the comparison document that framed the two systems as a ledger of the past and a controller of the future. The core is the ledger. The planner and executor are not built.</p>
+<h2 id="verdict">Verdict</h2>
+<table>
+<thead>
+<tr>
+<th>Part of the planning design</th>
+<th>In the core</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Time grid: 5-minute steps, slots keyed by UTC start</td>
+<td>Same, with a per-site <code>slot_s</code></td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Input tables replaced by the ledger (rates, PV forecast, load history, telemetry)</td>
+<td>Covered by <code>rate_interval</code>, <code>forecast_fact</code>, <code>site_hh</code>, <code>reading</code></td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Versioned facts with provenance</td>
+<td>Append-only facts with a source, a learned-at time and a raw payload</td>
+<td>Compatible (better than the design)</td>
+</tr>
+<tr>
+<td>Data quality gate</td>
+<td>Slot states and quality flags</td>
+<td>Partial: no gate yet</td>
+</tr>
+<tr>
+<td><code>site</code> with timezone and plan interval</td>
+<td><code>site</code> with timezone, market, currency and <code>slot_s</code></td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Device registry (inverter, battery, meters)</td>
+<td><code>device</code> plus ranked <code>site_attribute</code></td>
+<td>Partial</td>
+</tr>
+<tr>
+<td><code>site_setting</code> tunables (keep level, solar weight)</td>
+<td>Not present</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td><code>tenant</code>, <code>credential</code></td>
+<td>Not present</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td><code>plan_run</code>, <code>plan_slot</code>, <code>current_plan</code></td>
+<td>Not present</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td><code>inverter_command</code> and executor with read-back</td>
+<td>Not present</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td><code>event_log</code></td>
+<td><code>sync_run</code> and the revision log (not the same)</td>
+<td>Partial</td>
+</tr>
+<tr>
+<td>Scheduler with SKIP LOCKED and worker pool</td>
+<td>Single serial sync</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Edge agent, MQTT topics, hybrid mode</td>
+<td>Not present</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Planner as a pure function</td>
+<td>Not built</td>
+<td>Missing</td>
+</tr>
+</tbody>
+</table>
+<h2 id="example-1-replacing-the-designs-input-tables">Example 1: replacing the design's input tables</h2>
+<p>The design's <code>tariff_rate</code> copies a price per site per slot. The core stores each price once and joins it.</p>
+<table>
+<thead>
+<tr>
+<th>Design table</th>
+<th>Replaced by</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tariff_rate</code> (site, direction, slot, p/kWh)</td>
+<td><code>rate_interval</code> + <code>tariff_agreement</code></td>
+<td>Prices are shared by every home on a tariff</td>
+</tr>
+<tr>
+<td><code>pv_forecast</code> (one row per slot)</td>
+<td><code>forecast_fact</code></td>
+<td>Every forecast issue is kept and scored</td>
+</tr>
+<tr>
+<td><code>load_history</code> (5-minute buckets)</td>
+<td><code>reading</code> and <code>site_hh</code></td>
+<td>Already stored and checked</td>
+</tr>
+<tr>
+<td><code>telemetry</code> (wide row per inverter)</td>
+<td><code>reading</code> (narrow, one metric per row)</td>
+<td>A new metric needs no migration</td>
+</tr>
+</tbody>
+</table>
+<h2 id="example-2-a-slot-side-by-side">Example 2: a slot, side by side</h2>
+<p>The planner's <code>plan_slot</code> and the core's ledger row share one key. A plan for the slot starting 2026-10-24T00:00:00Z would line up like this (illustrative values):</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th><code>plan_slot</code> (planned)</th>
+<th><code>site_hh</code> (what happened)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>slot_start</code></td>
+<td>1792800000</td>
+<td>1792800000</td>
+</tr>
+<tr>
+<td>Action</td>
+<td>charge, limit 100%</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td>Import</td>
+<td>1.20 kWh predicted</td>
+<td>measured from the meter</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>predicted</td>
+<td>priced from the tariff in force</td>
+</tr>
+</tbody>
+</table>
+<p>The design proposes storing each plan's predictions as a forecast source so the existing accuracy scoring grades the planner. The core's forecast scoring already does this for its own forecasts.</p>
+<h2 id="example-3-a-command">Example 3: a command</h2>
+<p>The design's <code>inverter_command</code> carries a desired state, a status and a read-back link. In the core's terms it would be one more kind of fact:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Device</td>
+<td>the home's inverter</td>
+</tr>
+<tr>
+<td>Desired</td>
+<td>charge window 23:30 to 05:30, target 100%</td>
+</tr>
+<tr>
+<td>Valid until</td>
+<td>05:30 (a late command is dropped, never applied stale)</td>
+</tr>
+<tr>
+<td>Status</td>
+<td>pending, sent, acked or failed</td>
+</tr>
+<tr>
+<td>Read-back</td>
+<td>the schedule read from the inverter, kept as a raw payload</td>
+</tr>
+</tbody>
+</table>
+<p>Nothing here exists yet. The core already has the raw-payload store and the idea of a checked read.</p>
+<h2 id="what-the-core-adds-that-the-design-lacks">What the core adds that the design lacks</h2>
+<ul>
+<li>Provenance on every figure, and labels for sourced, provider, user, placeholder and synthetic data.</li>
+<li>Prices shared per tariff, not copied per home.</li>
+<li>Bitemporal "as known at" rebuilds, so a plan can be reproduced from the facts it used.</li>
+<li>Country, currency and region handling, and tariff shapes the design never covered (French off-peak, Tempo, fixed charges).</li>
+</ul>
+<h2 id="what-the-design-adds-that-the-core-lacks">What the design adds that the core lacks</h2>
+<ul>
+<li>A control path to the device.</li>
+<li>Multi-tenancy, a scheduler and a worker pool.</li>
+<li>An edge agent, MQTT topics and store-and-forward.</li>
+<li>Tunable settings per site.</li>
+</ul>
+<h2 id="suggested-order-to-close-the-gaps">Suggested order to close the gaps</h2>
+<ol>
+<li><code>plan_run</code> and <code>plan_slot</code>, written only on change.</li>
+<li>The planner as a pure function, run in shadow mode and scored.</li>
+<li><code>site_setting</code> for the planner's tunables.</li>
+<li>The command path with expiry and read-back.</li>
+<li>Tenant scoping and the scheduler when more than one home needs it.</li>
+<li>The edge agent last.</li>
+</ol>
+<p>See <code>docs/capabilities-and-roadmap.md</code> for effort and <code>docs/predbat-slot-compatibility.md</code> for the slot detail.</p></body></html>

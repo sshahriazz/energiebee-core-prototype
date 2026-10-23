@@ -1,0 +1,8 @@
+== elixirh server pid=6283, N=15000 ==
+baseline serverRSS=74MB
+ramp: connected=15000 failed=0 in 15.2s
+idle:    serverRSS=253MB  => 17.3 KB per connection (incl. runtime baseline 74MB: 12.2 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.19ms p95=   3.76ms p99=   7.95ms max=   16.58ms errs=0 serverRSS=   239MB serverCPUsec=  7.04
+burst    offered=   15000/s achieved=   15002/s p50=   0.21ms p95=   3.25ms p99=   6.26ms max=   11.14ms errs=0 serverRSS=   257MB serverCPUsec= 19.49
+heavy    offered=   37500/s achieved=   37381/s p50=   5.12ms p95=  12.08ms p99=  16.12ms max=   40.30ms errs=0 serverRSS=   267MB serverCPUsec= 30.22
+ALLDONE

@@ -1,0 +1,266 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Predbat slot compatibility | EnergieBee | Technext</title><style>
+@page { size:A4; margin:21mm 17mm 20mm; }
+@page wide { size:A3 landscape; margin:23mm 18mm; }
+@page tall { size:A3 portrait; margin:23mm 18mm; }
+@page atlas { size:594mm 420mm; margin:23mm 18mm; }
+* {box-sizing:border-box} body{font-family:Arial,sans-serif;color:#151515;font-size:10pt;line-height:1.48;margin:0}
+a{color:#be4815;text-decoration:none;overflow-wrap:anywhere} p{margin:0 0 10px;orphans:3;widows:3}
+h1,h2,h3,h4{color:#151515;line-height:1.2;break-after:avoid}
+h2{font-size:23pt;letter-spacing:-.6px;border-top:4px solid #eb6126;padding-top:17px;margin:0 0 22px;break-before:page}
+h3{font-size:14pt;margin:23px 0 12px}h4{font-size:11pt;margin:19px 0 8px}
+ul,ol{padding-left:22px;margin:8px 0 13px}li{margin:4px 0;orphans:2;widows:2}li p{margin:3px 0}
+strong{color:#151515}hr{border:0;border-top:1px solid #e0e3e6;margin:20px 0}
+code{font-family:Menlo,monospace;font-size:.85em;overflow-wrap:anywhere;color:#344452}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;border-left:3px solid #eb6126;padding:12px;font-size:8pt;line-height:1.45;break-inside:avoid}
+table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:8.3pt;line-height:1.42;margin:14px 0 20px}
+thead{display:table-header-group}tr{break-inside:avoid}th{background:#151515;color:white;font-weight:600;text-align:left}th strong{color:white}th,td{padding:8px 9px;border-bottom:1px solid #d9dfe4;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#f4f6f8}
+table.catalogue td:first-child{width:24%;font-weight:bold;color:#293947}table.catalogue td:last-child{width:76%}table.catalogue thead{display:none}
+blockquote{margin:18px 0;padding:12px 15px;border-left:4px solid #eb6126;background:#fff7f2}blockquote table{font-size:8pt}blockquote p:last-child{margin-bottom:0}
+.cover{height:246mm;position:relative;break-after:page}.cover img{width:180px;margin-top:8mm}.eyebrow{color:#eb6126;font-size:10pt;font-weight:bold;letter-spacing:2px;text-transform:uppercase}.cover .eyebrow{margin-top:44mm}.cover h1{font-size:44pt;line-height:1.05;letter-spacing:-1.8px;margin:18px 0}.cover .subtitle{font-size:21pt;line-height:1.3;max-width:560px;color:#536371}.cover .rule{width:64px;height:6px;background:#eb6126;margin:27px 0}.cover .meta{font-size:10pt;color:#566570}.contact{position:absolute;bottom:3mm;border-top:1px solid #d8dfe4;width:100%;padding-top:18px;line-height:1.7;font-size:10pt}.contact b{font-size:13pt}
+.contents{break-after:page}.contents h2{break-before:auto}.toc-row{display:flex;align-items:baseline;gap:12px;padding:10px 0;border-bottom:1px solid #e1e5e8;font-size:11pt}.toc-row a{color:#151515;flex:1}.toc-number{min-width:30px;text-align:right;color:#be4815}.note{font-size:9pt;color:#63727e;margin-top:25px}
+.intro-title{font-size:10pt;letter-spacing:2px;text-transform:uppercase;color:#eb6126;margin-bottom:20px}
+figure{margin:16px 0 22px;break-inside:avoid}figure.plate{break-before:page;break-after:page;page:tall;margin:0}figure.wide{page:wide}figure.atlas{page:atlas}figure img{display:block;object-fit:contain;width:100%;max-height:225mm}figure.plate img{height:337mm;max-height:337mm}figure.wide img{height:221mm;max-height:221mm}figure.atlas img{height:345mm;max-height:345mm}figcaption{font-size:10pt;border-top:2px solid #eb6126;padding-top:10px;margin-top:10px;color:#536371}figcaption b{color:#151515}figure h2{break-before:auto;font-size:21pt;margin-bottom:12px}figure h3{margin:10px 0}figure p{font-size:10pt}.plate-label{font-size:11pt;font-weight:bold;letter-spacing:1px;color:#eb6126;margin-bottom:10px}
+.flow h2{break-before:auto;margin-top:34px}.flow table{table-layout:auto;break-inside:avoid}.flow th,.flow td,.flow table code{overflow-wrap:break-word}.flow th code{color:#fff}.flow ul,.flow ol{break-inside:avoid}.flow p:has(+ table,+ ul,+ ol),.flow ul:has(+ p),.flow ol:has(+ p){break-after:avoid}
+</style></head><body class="flow"><section class="cover"><img src="data:image/png;base64,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"><div class="eyebrow">TECHNICAL REPORT 05</div><h1>EnergieBee core<br>Predbat slot compatibility</h1><div class="subtitle">How the core's time grid lines up with Predbat</div><div class="rule"></div><div class="meta">Prepared by Technext for EnergieBee<br>23 October 2026</div><div class="contact"><b>Technext</b><br><a href="https://technext.it/">technext.it</a> · +1 302 433 6002 · Wilmington, DE, US 19802-4447</div></section><section class="contents"><h2>Contents</h2><div class="toc-row"><a href="#verdict">Verdict</a><span class="toc-number" data-heading="verdict">3</span></div><div class="toc-row"><a href="#example-1-the-grid">Example 1: the grid</a><span class="toc-number" data-heading="example-1-the-grid">4</span></div><div class="toc-row"><a href="#example-2-an-off-peak-window">Example 2: an off-peak window</a><span class="toc-number" data-heading="example-2-an-off-peak-window">4</span></div><div class="toc-row"><a href="#example-3-a-price-over-a-slot">Example 3: a price over a slot</a><span class="toc-number" data-heading="example-3-a-price-over-a-slot">5</span></div><div class="toc-row"><a href="#where-predbats-tables-would-attach">Where Predbat's tables would attach</a><span class="toc-number" data-heading="where-predbats-tables-would-attach">5</span></div><div class="toc-row"><a href="#what-would-need-building">What would need building</a><span class="toc-number" data-heading="what-would-need-building">5</span></div><p class="note">Content is reproduced from the source document <code>docs/predbat-slot-compatibility.md</code>, which remains the editable original.</p></section><div class="intro-title">Report overview</div><p>How the core's time model lines up with Predbat's step, slot, window and horizon. Source for the Predbat side: the "Predbat and the Slot Model" document. Predbat itself is not built in the core: only the time grid, prices and facts it needs are.</p>
+<h2 id="verdict">Verdict</h2>
+<table>
+<thead>
+<tr>
+<th>Predbat idea</th>
+<th>In the core</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5-minute <strong>step</strong></td>
+<td>5-minute inverter readings; the build integrates them into slots</td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td><strong>Slot</strong> (default 30 min, configurable)</td>
+<td><code>site.slot_s</code> = 900, 1800 or 3600; each ledger row stores <code>slot_start</code>, <code>dur_s</code>, <code>tod_min</code></td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Slots keyed by UTC epoch start</td>
+<td>Same: <code>slot_start</code> is epoch seconds, aligned to the slot length</td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>46 / 50 slots on clock-change days</td>
+<td>Tested for London, Paris and Amsterdam at 15, 30 and 60 min</td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Local tariff windows resolved to UTC per date</td>
+<td><code>localToUtc</code> and the window expander, clock-change safe</td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Price array per slot</td>
+<td><code>rate_interval</code> rows with <code>priceOver</code> (time-weighted when a slot spans prices)</td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>Dispatch slots (Intelligent Octopus)</td>
+<td>Counted against the daily allowance; slots starting at :15 or :45 are covered</td>
+<td>Compatible</td>
+</tr>
+<tr>
+<td>48-hour <strong>horizon</strong></td>
+<td>Forecast for 48 hours exists; no plan over it</td>
+<td>Partial</td>
+</tr>
+<tr>
+<td><strong>Windows</strong> (merged slots)</td>
+<td>Tariff windows only; plan windows not built</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Five <strong>actions</strong> per slot</td>
+<td>No plan table</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Export start offset (0 to 25 min)</td>
+<td>Not built. Rule for other slot lengths: offset is a multiple of 5 min and less than the slot</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Write only on change, read back</td>
+<td>No device control</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Stale inputs give a demand-only plan</td>
+<td>Data states exist (final, provisional, missing); no planner gate</td>
+<td>Missing</td>
+</tr>
+<tr>
+<td>Two inverters planned as one battery</td>
+<td>Not handled</td>
+<td>Missing</td>
+</tr>
+</tbody>
+</table>
+<h2 id="example-1-the-grid">Example 1: the grid</h2>
+<p>A home in London at 14:37:20 local time on 23 October 2026 (13:37:20 UTC, clocks still on summer time).</p>
+<table>
+<thead>
+<tr>
+<th>Predbat quantity</th>
+<th>At 30-min slots</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>now</code></td>
+<td>2026-10-23T13:37:20Z</td>
+</tr>
+<tr>
+<td><code>plan_start</code> (rounded down to the slot)</td>
+<td>2026-10-23T13:30:00Z</td>
+</tr>
+<tr>
+<td><code>minute_offset</code> into slot 0</td>
+<td>7 minutes</td>
+</tr>
+<tr>
+<td>First simulation step</td>
+<td>step 1 (the step that starts at :35)</td>
+</tr>
+</tbody>
+</table>
+<p>Slots per day in London, from the core's own time code:</p>
+<table>
+<thead>
+<tr>
+<th>Slot length</th>
+<th>Normal day</th>
+<th>25 October 2026 (clocks go back)</th>
+<th>28 March 2027 (clocks go forward)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>15 min</td>
+<td>96</td>
+<td>100</td>
+<td>92</td>
+</tr>
+<tr>
+<td>30 min</td>
+<td>48</td>
+<td>50</td>
+<td>46</td>
+</tr>
+<tr>
+<td>60 min</td>
+<td>24</td>
+<td>25</td>
+<td>23</td>
+</tr>
+</tbody>
+</table>
+<p>Steps per slot are <code>slot_s / 300</code>: 3 at 15 minutes, 6 at 30, 12 at 60. Predbat's formulas stay the same, with that one number changed.</p>
+<h2 id="example-2-an-off-peak-window">Example 2: an off-peak window</h2>
+<p>Predbat's "off-peak 23:30 to 05:30" starting the evening of 23 October 2026, London.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Start, local</td>
+<td>23:30</td>
+</tr>
+<tr>
+<td>End, local</td>
+<td>05:30 on 24 October</td>
+</tr>
+<tr>
+<td>In UTC</td>
+<td>2026-10-23T22:30:00Z to 2026-10-24T04:30:00Z</td>
+</tr>
+<tr>
+<td>Slots at 30 min</td>
+<td>12</td>
+</tr>
+<tr>
+<td>Slots at 15 min</td>
+<td>24</td>
+</tr>
+</tbody>
+</table>
+<p>The core resolves the window per date with the home's time zone, as the Predbat document requires. On the night of 24 to 25 October the same window is 7 real hours long, not 6, because the clocks go back.</p>
+<h2 id="example-3-a-price-over-a-slot">Example 3: a price over a slot</h2>
+<p>A 30-minute slot with two 15-minute prices (illustrative numbers, not real tariffs):</p>
+<table>
+<thead>
+<tr>
+<th>Quarter</th>
+<th>Price</th>
+<th>Import</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10:00 to 10:15</td>
+<td>10 c/kWh</td>
+<td>0.1 kWh</td>
+</tr>
+<tr>
+<td>10:15 to 10:30</td>
+<td>30 c/kWh</td>
+<td>0.5 kWh</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>At 15-minute slots the cost is exact: 0.1×10 + 0.5×30 = 16 c.</li>
+<li>At a 30-minute slot the core uses the time-weighted price, 20 c/kWh, so 0.6 kWh costs 12 c.</li>
+<li>The 4 c difference is the price of a longer slot than the price interval. The default slot is therefore the finest price interval of the tariff.</li>
+</ul>
+<h2 id="where-predbats-tables-would-attach">Where Predbat's tables would attach</h2>
+<table>
+<thead>
+<tr>
+<th>Predbat input</th>
+<th>In the core today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rates per slot</td>
+<td><code>rate_interval</code> joined to <code>tariff_agreement</code></td>
+</tr>
+<tr>
+<td>PV forecast (central and pessimistic)</td>
+<td><code>forecast_fact</code> issues (central only today)</td>
+</tr>
+<tr>
+<td>Load history</td>
+<td><code>site_hh</code> and 5-minute <code>reading</code> rows</td>
+</tr>
+<tr>
+<td>Live telemetry</td>
+<td><code>reading</code></td>
+</tr>
+<tr>
+<td>Plan, plan slots</td>
+<td>Not built (<code>plan_run</code>, <code>plan_slot</code> are designed in the roadmap)</td>
+</tr>
+</tbody>
+</table>
+<p>A plan slot would join to what actually happened on the same key: <code>plan_slot.slot_start = site_hh.slot_start</code>.</p>
+<h2 id="what-would-need-building">What would need building</h2>
+<ol>
+<li><code>plan_run</code> and a device-generic <code>plan_slot</code> (device, slot, action, parameters), stored only when the plan changes.</li>
+<li>The simulator, optimiser and window merge as a pure function of the facts known at a given moment.</li>
+<li>The command path with expiry and read-back.</li>
+</ol>
+<p>See <code>docs/capabilities-and-roadmap.md</code> for the full list.</p></body></html>

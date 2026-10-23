@@ -1,7 +1,18 @@
 Technext / EnergieBee technical reports
 
-Inputs: docs/database.md and docs/timeline-forecast-and-data-states.md.
+Inputs and outputs (each PDF has an intermediate HTML file of the same name):
+  01  docs/database.md                           -> docs/reports/database.pdf
+  02  docs/timeline-forecast-and-data-states.md  -> docs/reports/timeline-forecast-and-data-states.pdf
+  03  docs/multi-country-handling.md             -> docs/reports/multi-country-handling.pdf
+  04  docs/planning-design-compatibility.md      -> docs/reports/planning-design-compatibility.pdf
+  05  docs/predbat-slot-compatibility.md         -> docs/reports/predbat-slot-compatibility.pdf
+  06  docs/prototype-scorecard.md                -> docs/reports/prototype-scorecard.pdf
 The Markdown sources and original diagram files are unchanged.
+Titles, subtitles, labels and cover dates are set in the CONFIG list of scripts/build-reports.py.
+Covers 01 and 02 keep their 16 October 2026 source / 19 October 2026 edition lines;
+covers 03 to 06 read "Prepared by Technext for EnergieBee" and 23 October 2026.
+Cover contact block and PDF footer: technext.it · +1 302 433 6002 · Wilmington, DE, US 19802-4447
+(a city and ZIP code only; no street address is held).
 Report diagrams use Technext orange (#EB6126), sampled from the official logo,
 with charcoal (#151515), pale orange and neutral backgrounds.
 Logo source: https://technext.it/wp-content/uploads/2023/09/Technext-Logo-Black-Text.png
@@ -17,6 +28,9 @@ Requires Google Chrome in /Applications (adjust the executable path for other sy
 PDFs are the final deliverables. HTML files are intermediate print layouts.
 PDF postprocessing adds running headers, footers, page totals and bookmarks.
 Body pages are A4. Detailed diagram sheets use A3 and one A2 landscape sheet.
+Reports 03 to 06 have no diagrams and are A4 throughout. They use the 'flow' layout:
+sections follow on without forced page breaks, table columns are sized from their
+content, and headings, lead-in lines and short tables or lists are kept together.
 Print using each PDF page's size, or use fit-to-page when larger paper is unavailable.
 Rendered diagrams replace the collapsible Mermaid source blocks in the PDFs;
 the source blocks remain available in the original Markdown.

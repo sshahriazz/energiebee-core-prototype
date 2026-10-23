@@ -33,10 +33,22 @@ blockquote{margin:18px 0;padding:12px 15px;border-left:4px solid #eb6126;backgro
 .contents{break-after:page}.contents h2{break-before:auto}.toc-row{display:flex;align-items:baseline;gap:12px;padding:10px 0;border-bottom:1px solid #e1e5e8;font-size:11pt}.toc-row a{color:#151515;flex:1}.toc-number{min-width:30px;text-align:right;color:#be4815}.note{font-size:9pt;color:#63727e;margin-top:25px}
 .intro-title{font-size:10pt;letter-spacing:2px;text-transform:uppercase;color:#eb6126;margin-bottom:20px}
 figure{margin:16px 0 22px;break-inside:avoid}figure.plate{break-before:page;break-after:page;page:tall;margin:0}figure.wide{page:wide}figure.atlas{page:atlas}figure img{display:block;object-fit:contain;width:100%;max-height:225mm}figure.plate img{height:337mm;max-height:337mm}figure.wide img{height:221mm;max-height:221mm}figure.atlas img{height:345mm;max-height:345mm}figcaption{font-size:10pt;border-top:2px solid #eb6126;padding-top:10px;margin-top:10px;color:#536371}figcaption b{color:#151515}figure h2{break-before:auto;font-size:21pt;margin-bottom:12px}figure h3{margin:10px 0}figure p{font-size:10pt}.plate-label{font-size:11pt;font-weight:bold;letter-spacing:1px;color:#eb6126;margin-bottom:10px}
+.flow h2{break-before:auto;margin-top:34px}.flow table{table-layout:auto;break-inside:avoid}.flow th,.flow td,.flow table code{overflow-wrap:break-word}.flow th code{color:#fff}.flow ul,.flow ol{break-inside:avoid}.flow p:has(+ table,+ ul,+ ol),.flow ul:has(+ p),.flow ol:has(+ p){break-after:avoid}
 '''
-CONFIG = [('database','Database architecture','Storage, relationships & scaling','TECHNICAL REPORT 01'),('timeline-forecast-and-data-states','Timeline & forecast','Data states, methods & provenance','TECHNICAL REPORT 02')]
+# Short, table-heavy documents use the 'flow' layout: sections follow each other
+# instead of starting a new page, and table columns are sized from their content.
+CONTACT = 'technext.it · +1 302 433 6002 · Wilmington, DE, US 19802-4447'
+EDITION_1 = dict(meta='Prepared by Technext<br>Source document · 16 October 2026<br>Report edition · 19 October 2026',
+                 note='Original technical content and measurement dates are preserved. Diagrams appear on dedicated sheets sized for their detail. The editable Mermaid definitions remain in the source Markdown.')
+EDITION_2 = dict(meta='Prepared by Technext for EnergieBee<br>23 October 2026', layout='flow',
+                 note='Content is reproduced from the source document <code>docs/{slug}.md</code>, which remains the editable original.')
+CONFIG = [('database','Database architecture','Storage, relationships & scaling','TECHNICAL REPORT 01',EDITION_1),('timeline-forecast-and-data-states','Timeline & forecast','Data states, methods & provenance','TECHNICAL REPORT 02',EDITION_1),
+          ('multi-country-handling','Multi-country handling','Markets, currencies, regions and tariffs','TECHNICAL REPORT 03',EDITION_2),
+          ('planning-design-compatibility','Planning design compatibility','What the core already covers and what is left to build','TECHNICAL REPORT 04',EDITION_2),
+          ('predbat-slot-compatibility','Predbat slot compatibility',"How the core's time grid lines up with Predbat",'TECHNICAL REPORT 05',EDITION_2),
+          ('prototype-scorecard','Prototype scorecard','Where the core stands and the path to 10/10','TECHNICAL REPORT 06',EDITION_2)]
 
-def build(browser, slug, title, subtitle, label):
+def build(browser, slug, title, subtitle, label, edition):
     src=(ROOT/f'docs/{slug}.md').read_text()
     src=re.sub(r'<details>.*?</details>', '', src, flags=re.S)
     src=re.sub(r'^# .*\n','',src,count=1)
@@ -72,12 +84,17 @@ def build(browser, slug, title, subtitle, label):
         data=base64.b64encode(svg.encode()).decode()
         return f'<figure class="{classes}"><div class="plate-label">ENERGIEBEE CORE / FIGURE {number:02}</div><img src="data:image/svg+xml;base64,{data}" alt="{html.escape(alt)}"><figcaption><b>Figure {number:02}.</b> {html.escape(alt)}</figcaption></figure>'
     body=re.sub(r'<p><img alt="([^"]*)" src="([^"]*)"\s*/></p>',figure,body)
-    body=body.replace('timeline-forecast-and-data-states.md','timeline-forecast-and-data-states.pdf').replace('database.md','database.pdf')
+    # Links between the reports point at the PDFs; file names in code spans stay as written.
+    body=re.sub(r'href="(timeline-forecast-and-data-states|database)\.md',r'href="\1.pdf',body)
     headings=re.findall(r'<h2 id="([^"]+)">(.*?)</h2>',body)
     toc=''.join(f'<div class="toc-row"><a href="#{ident}">{name}</a><span class="toc-number" data-heading="{ident}"></span></div>' for ident,name in headings)
     logo='data:image/png;base64,'+base64.b64encode(LOGO.read_bytes()).decode()
-    cover=f'''<section class="cover"><img src="{logo}"><div class="eyebrow">{label}</div><h1>EnergieBee core<br>{title}</h1><div class="subtitle">{subtitle}</div><div class="rule"></div><div class="meta">Prepared by Technext<br>Source document · 16 October 2026<br>Report edition · 19 October 2026</div><div class="contact"><b>Technext</b><br><a href="https://technext.it/">technext.it</a> &nbsp; · &nbsp; +1 302 433 6002<br>Wilmington, DE, US 19802-4447</div></section>'''
-    content=f'<!doctype html><html><head><meta charset="utf-8"><title>{title} | EnergieBee | Technext</title><style>{CSS}</style></head><body>{cover}<section class="contents"><h2>Contents</h2>{toc}<p class="note">Original technical content and measurement dates are preserved. Diagrams appear on dedicated sheets sized for their detail. The editable Mermaid definitions remain in the source Markdown.</p></section><div class="intro-title">Report overview</div>{body}</body></html>'
+    meta=edition['meta']
+    contact=CONTACT.replace('technext.it','<a href="https://technext.it/">technext.it</a>',1)
+    cover=f'''<section class="cover"><img src="{logo}"><div class="eyebrow">{label}</div><h1>EnergieBee core<br>{title}</h1><div class="subtitle">{subtitle}</div><div class="rule"></div><div class="meta">{meta}</div><div class="contact"><b>Technext</b><br>{contact}</div></section>'''
+    note=edition['note'].format(slug=slug)
+    body_tag='<body class="%s">'%edition['layout'] if edition.get('layout') else '<body>'
+    content=f'<!doctype html><html><head><meta charset="utf-8"><title>{title} | EnergieBee | Technext</title><style>{CSS}</style></head>{body_tag}{cover}<section class="contents"><h2>Contents</h2>{toc}<p class="note">{note}</p></section><div class="intro-title">Report overview</div>{body}</body></html>'
     page=browser.new_page()
     page.set_content(content,wait_until='load')
     page.evaluate('document.fonts.ready')
@@ -128,7 +145,7 @@ def build(browser, slug, title, subtitle, label):
             p.insert_text((48,30),'TECHNEXT  /  ENERGIEBEE CORE',fontsize=8,color=(.35,.40,.45))
             p.draw_line((48,39),(w-48,39),color=(.85,.88,.90),width=.5)
         p.draw_line((48,h-40),(w-48,h-40),color=(.85,.88,.90),width=.5)
-        p.insert_text((48,h-26),'technext.it  |  '+title,fontsize=8,color=(.35,.40,.45))
+        p.insert_text((48,h-26),CONTACT+'  |  '+title,fontsize=8,color=(.35,.40,.45))
         p.insert_textbox(fitz.Rect(w-130,h-34,w-48,h-18),f'{i+1} / {len(doc)}',fontsize=8,align=2,color=(.35,.40,.45))
     final=pdf.with_suffix('.final.pdf');doc.save(final,garbage=4,deflate=True);doc.close();final.replace(pdf)
     print(f'{pdf.name}: {len(fitz.open(pdf))} pages; {len(figures)} diagrams',flush=True)

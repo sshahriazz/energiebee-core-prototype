@@ -1,0 +1,10 @@
+flowchart LR
+  P0["Phase 0<br/>Prove the risky parts<br/>(4 to 6 weeks)"] --> G0{"Checks pass?"}
+  G0 -- yes --> P1["Phase 1<br/>One-home product<br/>working end to end"]
+  G0 -- no --> FIX["Change the decision<br/>that failed"]
+  FIX --> P0
+  P1 --> G1{"10 pilot homes<br/>running safely"}
+  G1 -- yes --> P2["Phase 2<br/>100-home pilot,<br/>automatic control opt-in"]
+  P2 --> G2{"Savings proven,<br/>cost per home within budget,<br/>security test passed"}
+  G2 -- yes --> P3["Phase 3<br/>Public launch"]
+  P3 --> P4["Phase 4<br/>Scale: groups of homes,<br/>businesses and portfolios"]

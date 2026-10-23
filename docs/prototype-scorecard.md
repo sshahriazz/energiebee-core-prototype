@@ -114,11 +114,11 @@ These are rough projections to help plan, not promises.
 
 ## 9. Planned and upcoming
 
-### Built, not yet merged
+### Done and merged into `main`
 - **Tariffscanner adapter** (`src/adapters/tariffscanner.js`): the core calls the UK tariff catalogue itself, with its own credential, as a second GB `tariff_catalogue` provider beside Octopus's. At most one sweep per 24 hours, at least 3 s between requests, the cooldown kept in `provider_state` across restarts, at most 60 requests per run (then it stops at a saved cursor), and an HTTP 429 aborts the run. `forceTariffscannerSweep()` sweeps by hand; `/api/catalog?tariffs=tariffscanner` lists what is held. Tested against a fake API and clock, mapping the saved live samples in `test/fixtures/tariffscanner/`. Two items are unverified: the prices are assumed to exclude VAT (the API does not say; some sample values look like a VAT-inclusive price divided by 1.05), and the size of the first full sweep is unknown.
 
 ### In progress now
-- **Clean-up and merge of the provider registry:** removing stray references, checking the Providers panel against real data, then merging.
+- Nothing. The provider registry and the Tariffscanner adapter are merged into `main`; the next item is verification (below).
 
 ### Next (the must-do list in section 5)
 1. Verify the French and Dutch tax rules and the GB 0% VAT claim against official sources.

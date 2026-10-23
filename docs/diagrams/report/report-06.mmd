@@ -1,0 +1,6 @@
+flowchart TB
+  U["Customer signs in<br/>(strong login, passkeys)"] --> G["Door 1: every request is checked<br/>'may this person see this home?'"]
+  G --> DBR["Door 2: the database applies<br/>the same rule again"]
+  DBR --> DATA["Only that household's data"]
+  H["Hub in the home"] --> CERT["Own certificate;<br/>can only talk about its own home"]
+  CERT --> DATA

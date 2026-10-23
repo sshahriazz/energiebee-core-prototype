@@ -1,0 +1,5 @@
+flowchart LR
+  S0["Step 0<br/>One database, one broker,<br/>one application"] -->|"reads get slow"| S1["Step 1<br/>Add a read copy<br/>of the database"]
+  S1 -->|"storage or write load grows"| S2["Step 2<br/>Compress old data<br/>behind a safe door"]
+  S2 -->|"one database is too busy"| S3["Step 3<br/>Split homes into groups<br/>(cells)"]
+  S3 -->|"need many consumers,<br/>complex workflows"| S4["Step 4<br/>Add heavier tools<br/>(streaming, workflow engine)"]

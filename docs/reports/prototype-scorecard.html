@@ -1,0 +1,291 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Prototype scorecard | EnergieBee | Technext</title><style>
+@page { size:A4; margin:21mm 17mm 20mm; }
+@page wide { size:A3 landscape; margin:23mm 18mm; }
+@page tall { size:A3 portrait; margin:23mm 18mm; }
+@page atlas { size:594mm 420mm; margin:23mm 18mm; }
+* {box-sizing:border-box} body{font-family:Arial,sans-serif;color:#151515;font-size:10pt;line-height:1.48;margin:0}
+a{color:#be4815;text-decoration:none;overflow-wrap:anywhere} p{margin:0 0 10px;orphans:3;widows:3}
+h1,h2,h3,h4{color:#151515;line-height:1.2;break-after:avoid}
+h2{font-size:23pt;letter-spacing:-.6px;border-top:4px solid #eb6126;padding-top:17px;margin:0 0 22px;break-before:page}
+h3{font-size:14pt;margin:23px 0 12px}h4{font-size:11pt;margin:19px 0 8px}
+ul,ol{padding-left:22px;margin:8px 0 13px}li{margin:4px 0;orphans:2;widows:2}li p{margin:3px 0}
+strong{color:#151515}hr{border:0;border-top:1px solid #e0e3e6;margin:20px 0}
+code{font-family:Menlo,monospace;font-size:.85em;overflow-wrap:anywhere;color:#344452}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;border-left:3px solid #eb6126;padding:12px;font-size:8pt;line-height:1.45;break-inside:avoid}
+table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:8.3pt;line-height:1.42;margin:14px 0 20px}
+thead{display:table-header-group}tr{break-inside:avoid}th{background:#151515;color:white;font-weight:600;text-align:left}th strong{color:white}th,td{padding:8px 9px;border-bottom:1px solid #d9dfe4;vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:#f4f6f8}
+table.catalogue td:first-child{width:24%;font-weight:bold;color:#293947}table.catalogue td:last-child{width:76%}table.catalogue thead{display:none}
+blockquote{margin:18px 0;padding:12px 15px;border-left:4px solid #eb6126;background:#fff7f2}blockquote table{font-size:8pt}blockquote p:last-child{margin-bottom:0}
+.cover{height:246mm;position:relative;break-after:page}.cover img{width:180px;margin-top:8mm}.eyebrow{color:#eb6126;font-size:10pt;font-weight:bold;letter-spacing:2px;text-transform:uppercase}.cover .eyebrow{margin-top:44mm}.cover h1{font-size:44pt;line-height:1.05;letter-spacing:-1.8px;margin:18px 0}.cover .subtitle{font-size:21pt;line-height:1.3;max-width:560px;color:#536371}.cover .rule{width:64px;height:6px;background:#eb6126;margin:27px 0}.cover .meta{font-size:10pt;color:#566570}.contact{position:absolute;bottom:3mm;border-top:1px solid #d8dfe4;width:100%;padding-top:18px;line-height:1.7;font-size:10pt}.contact b{font-size:13pt}
+.contents{break-after:page}.contents h2{break-before:auto}.toc-row{display:flex;align-items:baseline;gap:12px;padding:10px 0;border-bottom:1px solid #e1e5e8;font-size:11pt}.toc-row a{color:#151515;flex:1}.toc-number{min-width:30px;text-align:right;color:#be4815}.note{font-size:9pt;color:#63727e;margin-top:25px}
+.intro-title{font-size:10pt;letter-spacing:2px;text-transform:uppercase;color:#eb6126;margin-bottom:20px}
+figure{margin:16px 0 22px;break-inside:avoid}figure.plate{break-before:page;break-after:page;page:tall;margin:0}figure.wide{page:wide}figure.atlas{page:atlas}figure img{display:block;object-fit:contain;width:100%;max-height:225mm}figure.plate img{height:337mm;max-height:337mm}figure.wide img{height:221mm;max-height:221mm}figure.atlas img{height:345mm;max-height:345mm}figcaption{font-size:10pt;border-top:2px solid #eb6126;padding-top:10px;margin-top:10px;color:#536371}figcaption b{color:#151515}figure h2{break-before:auto;font-size:21pt;margin-bottom:12px}figure h3{margin:10px 0}figure p{font-size:10pt}.plate-label{font-size:11pt;font-weight:bold;letter-spacing:1px;color:#eb6126;margin-bottom:10px}
+.flow h2{break-before:auto;margin-top:34px}.flow table{table-layout:auto;break-inside:avoid}.flow th,.flow td,.flow table code{overflow-wrap:break-word}.flow th code{color:#fff}.flow ul,.flow ol{break-inside:avoid}.flow p:has(+ table,+ ul,+ ol),.flow ul:has(+ p),.flow ol:has(+ p){break-after:avoid}
+</style></head><body class="flow"><section class="cover"><img src="data:image/png;base64,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"><div class="eyebrow">TECHNICAL REPORT 06</div><h1>EnergieBee core<br>Prototype scorecard</h1><div class="subtitle">Where the core stands and the path to 10/10</div><div class="rule"></div><div class="meta">Prepared by Technext for EnergieBee<br>23 October 2026</div><div class="contact"><b>Technext</b><br><a href="https://technext.it/">technext.it</a> · +1 302 433 6002 · Wilmington, DE, US 19802-4447</div></section><section class="contents"><h2>Contents</h2><div class="toc-row"><a href="#what-the-core-does-in-steps">What the core does, in steps</a><span class="toc-number" data-heading="what-the-core-does-in-steps">3</span></div><div class="toc-row"><a href="#1-overall">1. Overall</a><span class="toc-number" data-heading="1-overall">3</span></div><div class="toc-row"><a href="#2-score-by-area">2. Score by area</a><span class="toc-number" data-heading="2-score-by-area">4</span></div><div class="toc-row"><a href="#3-strengths-and-risks">3. Strengths and risks</a><span class="toc-number" data-heading="3-strengths-and-risks">4</span></div><div class="toc-row"><a href="#4-what-1010-looks-like">4. What 10/10 looks like</a><span class="toc-number" data-heading="4-what-1010-looks-like">5</span></div><div class="toc-row"><a href="#5-work-to-reach-1010">5. Work to reach 10/10</a><span class="toc-number" data-heading="5-work-to-reach-1010">5</span></div><div class="toc-row"><a href="#6-order-and-timeline">6. Order and timeline</a><span class="toc-number" data-heading="6-order-and-timeline">6</span></div><div class="toc-row"><a href="#7-expected-score-after-each-step">7. Expected score after each step</a><span class="toc-number" data-heading="7-expected-score-after-each-step">6</span></div><div class="toc-row"><a href="#8-related-documents">8. Related documents</a><span class="toc-number" data-heading="8-related-documents">6</span></div><div class="toc-row"><a href="#9-planned-and-upcoming">9. Planned and upcoming</a><span class="toc-number" data-heading="9-planned-and-upcoming">7</span></div><p class="note">Content is reproduced from the source document <code>docs/prototype-scorecard.md</code>, which remains the editable original.</p></section><div class="intro-title">Report overview</div><p>This is an honest rating of the core as a <strong>prototype</strong>. A 10/10 prototype is not a finished product. It proves every claim made about the system with real data and no unverified stand-ins.</p>
+<p>Scores are the author's judgement from the code, the tests and the demos at the time of writing. They are not measurements. The scores should be re-done after each batch of work below.</p>
+<h2 id="what-the-core-does-in-steps">What the core does, in steps</h2>
+<p>The core turns raw readings and prices from a home into a trusted record of what happened and what it cost.</p>
+<ol>
+<li><strong>Connect.</strong> Each home has a market (country) and a set of providers: an inverter, a meter or supplier account, and shared feeds such as weather and carbon. The provider registry says which providers apply in that market.</li>
+<li><strong>Fetch.</strong> A sync runs every 10 minutes. It asks each provider for new data. Shared data such as prices and carbon is fetched once for all homes. A provider that fails or has no credentials is skipped with a reason, and the others carry on.</li>
+<li><strong>Save the original.</strong> Every response is stored as received, so any number can be traced back to it.</li>
+<li><strong>Record facts.</strong> The data becomes facts: readings at an instant, and amounts or prices over a period. Each fact keeps its source and when it was learned. A correction is a new version, never an overwrite.</li>
+<li><strong>Build the timeline.</strong> For each slot (15, 30 or 60 minutes, chosen per home) the core lines up solar, grid, battery and home use. It works out who supplied whom, using the meter first and the inverter as a fallback.</li>
+<li><strong>Price it.</strong> Each slot is priced from the home's tariff: rates, tax, standing and fixed charges, and off-peak windows. The result is the cost, the saving against buying everything from the grid, and the carbon.</li>
+<li><strong>Check it.</strong> Built-in checks compare the meter with the inverter, test the energy balance, and look for missing prices. Each slot is marked final, provisional or missing.</li>
+<li><strong>Label it.</strong> Every figure carries where it came from: sourced, provider, user, placeholder or synthetic.</li>
+<li><strong>Show it.</strong> Web pages and a JSON API show the timeline, tariffs, solar, battery, EV, breakdown and data quality. Any day can be rebuilt as the core knew it at an earlier moment.</li>
+</ol>
+<p>What it does not do yet: plan or control anything, or serve many homes at once.</p>
+<h2 id="1-overall">1. Overall</h2>
+<table>
+<thead>
+<tr>
+<th>View</th>
+<th>Score</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>As a prototype foundation</td>
+<td><strong>6.5 / 10</strong></td>
+</tr>
+<tr>
+<td>As a product</td>
+<td><strong>3 / 10</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="2-score-by-area">2. Score by area</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Score</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Data model</td>
+<td>8.5</td>
+<td>Versioned facts with provenance, disposable serving tables, and a database ready for any slot length, country, currency, region and common tariff shape. The strongest part.</td>
+</tr>
+<tr>
+<td>Correctness for the UK home</td>
+<td>8</td>
+<td>Deterministic build, balance and meter checks, a golden regression test and a large test suite. Proven on one home only.</td>
+</tr>
+<tr>
+<td>Honesty and traceability</td>
+<td>8.5</td>
+<td>Provenance labels on every figure, a revision log, "as known at" rebuilds, and a trace to the raw provider payload.</td>
+</tr>
+<tr>
+<td>Multi-country</td>
+<td>5</td>
+<td>The schema is ready, but France and the Netherlands run on synthetic data and unverified placeholder taxes. No real source or meter reader.</td>
+</tr>
+<tr>
+<td>Provider flexibility</td>
+<td>5.5</td>
+<td>The provider registry makes adding a provider a contained job. Only Sunsynk, Octopus, the Tariffscanner UK catalogue and public UK feeds have adapters.</td>
+</tr>
+<tr>
+<td>Auth and security</td>
+<td>2</td>
+<td>No user identity, no secret store, no OAuth or OIDC, no consent record. Credentials live in <code>.env</code> for one home.</td>
+</tr>
+<tr>
+<td>Scale</td>
+<td>2.5</td>
+<td>One home at a time, SQLite, a serial sync. The scale design exists on paper only.</td>
+</tr>
+<tr>
+<td>Planning and control</td>
+<td>0.5</td>
+<td>Not built. The system is read-only.</td>
+</tr>
+<tr>
+<td>Operations</td>
+<td>4</td>
+<td>A supervisor, retries and gap-fill exist. There is no monitoring, backup or multi-environment setup.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-strengths-and-risks">3. Strengths and risks</h2>
+<p><strong>Strengths</strong></p>
+<ul>
+<li>The data foundation and the discipline around testing it.</li>
+<li>Honest labelling: sourced, provider, user, placeholder, synthetic and derived.</li>
+<li>A provider registry, so unsupported things are visible rather than silently missing.</li>
+</ul>
+<p><strong>Biggest risks</strong></p>
+<ul>
+<li><strong>Single-home proof.</strong> Most of the generality is verified on synthetic data. A second real home, especially outside the UK, will find defects.</li>
+<li><strong>No identity layer.</strong> Everything involving users, tokens and consent depends on it.</li>
+<li><strong>Unverified claims.</strong> French and Dutch tax values, the GB 0% electricity VAT from 1 October 2026, the VAT basis of the Tariffscanner prices (assumed to exclude VAT; the API does not say), and the PredHeat description all need checking against sources. The size of the first full Tariffscanner sweep has not been measured.</li>
+<li><strong>Speed of change.</strong> A lot of code arrived quickly. The tests are good, but a human review would catch design drift, especially in pricing, the build engine and the registry.</li>
+</ul>
+<h2 id="4-what-1010-looks-like">4. What 10/10 looks like</h2>
+<p>A GB home and a French or Dutch home, both real, each connected by its own user. Both are priced from verified rules and checked by the same engine. The planner is scored against reality, and every number on the page says where it came from.</p>
+<h2 id="5-work-to-reach-1010">5. Work to reach 10/10</h2>
+<h3 id="must-do">Must do</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Work</th>
+<th>Done when</th>
+<th>Effort</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>A real non-UK home end to end:</strong> a French or Dutch home with a real meter reader (Linky or P1) and a real price source</td>
+<td>The same pages show real data labelled <code>provider</code>, with the checks passing</td>
+<td>2–4 weeks, gated by a licence or token</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Verified tax rules</strong> for the prototype countries, plus the GB 0% VAT check</td>
+<td>Each rule cites an official source, and no <code>unverified</code> flag remains for FR or NL</td>
+<td>Days</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Identity and credentials:</strong> sign-in for the app's users, an encrypted secret store, a consent log, and a connect and disconnect flow for API-key and password providers</td>
+<td>A second user connects their own Sunsynk or Octopus account, and a disconnect deletes the stored secrets</td>
+<td>2–3 weeks</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>One OAuth or OIDC provider</strong> end to end, with token refresh and a "needs re-authorisation" state</td>
+<td>A connected home survives a token expiry</td>
+<td>1–2 weeks, depends on the provider</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Manual tariff entry</strong> page and API, since it is the only price source for FR and NL today</td>
+<td>A tariff typed in by a user prices a real home, labelled <code>user</code></td>
+<td>3–5 days</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Planner in shadow mode</strong> on the real GB home, with plan scoring</td>
+<td>Two weeks of plans beat a do-nothing baseline by a number that can be shown</td>
+<td>3 weeks to build, plus 2 weeks of data</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Human code review</strong> of the pricing, build and registry paths</td>
+<td>A written list of defects, all fixed</td>
+<td>2–3 days</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>A second GB home</strong> with a different inverter or supplier, to prove the generality</td>
+<td>It builds with the checks passing and no code changes outside an adapter</td>
+<td>1–2 weeks</td>
+</tr>
+</tbody>
+</table>
+<h3 id="should-do">Should do</h3>
+<ul>
+<li><strong>Operations:</strong> a health check, alerts on failed syncs, a backup and restore test, and a one-command setup.</li>
+<li><strong>Known quality gaps:</strong> fetch carbon once per region, add origin to raw readings, version the contracted capacity, add per-kW charge periods, and rename remaining "half-hour" API keys.</li>
+<li><strong>A rebuild benchmark</strong> for a year of data at 15 minutes, so "a slot change is cheap" is measured.</li>
+<li><strong>A decision log</strong> recording the choices made: no 45-minute slots, no stored 15-minute grain for UK sites, and the provider registry.</li>
+</ul>
+<h3 id="out-of-scope-for-a-prototype">Out of scope for a prototype</h3>
+<p>Multi-home scale, a PostgreSQL port, live device control, heating and EV optimisation. Document them as designed and not built. Claiming them would lower the score.</p>
+<h2 id="6-order-and-timeline">6. Order and timeline</h2>
+<ol>
+<li>Items 2, 5 and 7 first. They are cheap and remove the biggest unverified claims.</li>
+<li>Item 3, then item 4, because everything user-facing depends on identity.</li>
+<li>Item 1 in parallel with item 3, since its blockers are licences and tokens, not code.</li>
+<li>Item 6 once item 1 is underway, so the two-week data clock starts early.</li>
+<li>Item 8 last, as the proof of generality.</li>
+</ol>
+<p>Realistic timeline: about <strong>8–10 weeks</strong> with one developer plus AI help. The coding is closer to 5–6 weeks. The rest is waiting for licences, tokens and planner data. These are estimates, not measurements.</p>
+<h2 id="7-expected-score-after-each-step">7. Expected score after each step</h2>
+<p>These are rough projections to help plan, not promises.</p>
+<table>
+<thead>
+<tr>
+<th>After</th>
+<th>Projected prototype score</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Items 2, 5, 7</td>
+<td>7.0</td>
+</tr>
+<tr>
+<td>+ item 3 (and item 4 once a provider is chosen)</td>
+<td>7.8</td>
+</tr>
+<tr>
+<td>+ item 1</td>
+<td>8.8</td>
+</tr>
+<tr>
+<td>+ item 6</td>
+<td>9.3</td>
+</tr>
+<tr>
+<td>+ item 8 and the "should do" list</td>
+<td>10</td>
+</tr>
+</tbody>
+</table>
+<h2 id="8-related-documents">8. Related documents</h2>
+<ul>
+<li><code>docs/what-it-does.md</code>: what the system does and how providers are chosen.</li>
+<li><code>docs/capabilities-and-roadmap.md</code>: what is supported, what is not, and the Predbat and PredHeat work.</li>
+<li><code>docs/database.md</code>: the schema.</li>
+</ul>
+<h2 id="9-planned-and-upcoming">9. Planned and upcoming</h2>
+<h3 id="done-and-merged-into-main">Done and merged into <code>main</code></h3>
+<ul>
+<li><strong>Tariffscanner adapter</strong> (<code>src/adapters/tariffscanner.js</code>): the core calls the UK tariff catalogue itself, with its own credential, as a second GB <code>tariff_catalogue</code> provider beside Octopus's. At most one sweep per 24 hours, at least 3 s between requests, the cooldown kept in <code>provider_state</code> across restarts, at most 60 requests per run (then it stops at a saved cursor), and an HTTP 429 aborts the run. <code>forceTariffscannerSweep()</code> sweeps by hand; <code>/api/catalog?tariffs=tariffscanner</code> lists what is held. Tested against a fake API and clock, mapping the saved live samples in <code>test/fixtures/tariffscanner/</code>. Two items are unverified: the prices are assumed to exclude VAT (the API does not say; some sample values look like a VAT-inclusive price divided by 1.05), and the size of the first full sweep is unknown.</li>
+</ul>
+<h3 id="in-progress-now">In progress now</h3>
+<ul>
+<li>Nothing. The provider registry and the Tariffscanner adapter are merged into <code>main</code>; the next item is verification (below).</li>
+</ul>
+<h3 id="next-the-must-do-list-in-section-5">Next (the must-do list in section 5)</h3>
+<ol>
+<li>Verify the French and Dutch tax rules and the GB 0% VAT claim against official sources.</li>
+<li>Manual tariff entry (page and API), the only price source for France and the Netherlands today.</li>
+<li>Human code review of the pricing, build and registry paths.</li>
+<li>Identity, an encrypted secret store and a consent log, with a connect and disconnect flow for API-key and password providers.</li>
+<li>One OAuth or OIDC provider end to end, with token refresh and a "needs re-authorisation" state.</li>
+<li>A real non-UK home: a Linky or P1 meter reader and a licensed price source (tounify once its storage licence is confirmed, or ENTSO-E with a token).</li>
+</ol>
+<h3 id="then-planning">Then (planning)</h3>
+<ul>
+<li><strong>Planner in shadow mode</strong> on the real GB home. Predbat-style: a fixed 5-minute step, a decision per slot, windows merged for the device, and plans stored only when they change. It is scored against what actually happened. At least two weeks of data are needed before judging it.</li>
+<li><strong>Load prediction and a pessimistic solar case</strong> feeding the planner.</li>
+<li><strong>Vendor capability flags,</strong> so the planner never plans an action a device cannot deliver.</li>
+</ul>
+<h3 id="later">Later</h3>
+<ul>
+<li><strong>Control path:</strong> a desired state per device, a diff against the reported state, writes only on change, read-back, and an expiry on every command so a stale plan never runs.</li>
+<li><strong>Heating (PredHeat-style):</strong> heat demand prediction and a thermal state, only through manufacturer-sanctioned interfaces and after real heat-pump data exists. The PredHeat description needs checking against its source first.</li>
+<li><strong>EV charging</strong> with smart-charge slots treated as unconfirmed until the car is charging.</li>
+<li><strong>More inverters and suppliers,</strong> one adapter each, driven by real customers.</li>
+<li><strong>More countries:</strong> a market row, verified taxes, a region scheme and a price source each.</li>
+<li><strong>Multi-home scale:</strong> per-site scoping, a PostgreSQL port, parallel sync and retention rules.</li>
+<li><strong>Operations:</strong> monitoring, alerts, backup and restore, and one-command setup.</li>
+</ul>
+<h3 id="decisions-needed">Decisions needed</h3>
+<ul>
+<li><strong>tounify licence:</strong> get the storage and reuse terms in writing before building daily capture.</li>
+<li><strong>ENTSO-E token:</strong> register for one.</li>
+<li><strong>Dutch trial timing:</strong> model annual net metering for 2026, or start on 2027 rules.</li>
+<li><strong>First OAuth or OIDC provider:</strong> which one decides the flow details.</li>
+<li><strong>Tariffscanner:</strong> confirm with its team whether its prices include VAT, and whether an EU product exists.</li>
+</ul></body></html>

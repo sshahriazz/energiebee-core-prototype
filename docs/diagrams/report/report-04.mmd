@@ -1,0 +1,18 @@
+flowchart TB
+  subgraph Ours["Ours (the product)"]
+    APP["One main application<br/>energy logic, safety, rules, planning,<br/>suggestions, customer API"]
+  end
+  subgraph Standard["Standard parts (swappable)"]
+    DB["Database<br/>(PostgreSQL)"]
+    MSG["Message service<br/>(MQTT)"]
+    ID["Login service<br/>(OIDC)"]
+    FILE["File storage<br/>(S3 style)"]
+    RUN["Where it runs<br/>(containers on any cloud)"]
+  end
+  HUB["Hub in the home<br/>(small program on standard Linux)"]
+  APP --- DB
+  APP --- MSG
+  APP --- ID
+  APP --- FILE
+  APP --- RUN
+  HUB --- MSG

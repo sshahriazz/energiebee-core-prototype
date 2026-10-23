@@ -1,0 +1,12 @@
+flowchart LR
+  subgraph Home
+    D["Devices<br/>solar inverter, battery,<br/>heating valves, plugs, meters"]
+    H["Hub<br/>small box in the home"]
+    D --- H
+  end
+  H <-- "internet" --> C
+  subgraph C["Our cloud"]
+    BR["Brain: collects data,<br/>works out costs,<br/>plans, suggests, controls"]
+  end
+  C --- APP["Customer app"]
+  C <--> P["Outside services<br/>energy supplier tariffs,<br/>weather, solar forecast"]

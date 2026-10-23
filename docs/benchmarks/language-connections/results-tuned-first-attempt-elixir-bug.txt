@@ -1,0 +1,15 @@
+== elixirh server pid=4112, N=15000 ==
+baseline serverRSS=75MB
+ramp: connected=15000 failed=0 in 15.2s
+idle:    serverRSS=253MB  => 17.3 KB per connection (incl. runtime baseline 75MB: 12.2 KB net)
+steady   offered=    1500/s achieved=       0/s p50=   0.00ms p95=   0.00ms p99=   0.00ms max=    0.00ms errs=13488 serverRSS=   210MB serverCPUsec=  0.02
+burst    offered=   15000/s achieved=       0/s p50=   0.00ms p95=   0.00ms p99=   0.00ms max=    0.00ms errs=0 serverRSS=   210MB serverCPUsec=  0.00
+heavy    offered=   37500/s achieved=       0/s p50=   0.00ms p95=   0.00ms p99=   0.00ms max=    0.00ms errs=0 serverRSS=   210MB serverCPUsec=  0.00
+== go512 server pid=4991, N=15000 ==
+baseline serverRSS=5MB
+ramp: connected=15000 failed=0 in 15.2s
+idle:    serverRSS=95MB  => 6.5 KB per connection (incl. runtime baseline 5MB: 6.1 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.20ms p95=   4.52ms p99=   8.84ms max=   19.27ms errs=0 serverRSS=   199MB serverCPUsec=  4.46
+burst    offered=   15000/s achieved=   15002/s p50=   0.21ms p95=   4.52ms p99=   8.94ms max=   20.01ms errs=0 serverRSS=   200MB serverCPUsec=  9.10
+heavy    offered=   37500/s achieved=   37433/s p50=   4.22ms p95=  16.20ms p99=  24.70ms max=   81.23ms errs=0 serverRSS=   204MB serverCPUsec= 17.94
+ALLDONE

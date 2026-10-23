@@ -1,0 +1,71 @@
+##### PASS 1 (go rust elixir node)
+== go server pid=96218, N=15000 ==
+baseline serverRSS=5MB
+ramp: connected=15000 failed=0 in 15.2s
+idle:    serverRSS=144MB  => 9.8 KB per connection (incl. runtime baseline 5MB: 9.5 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.24ms p95=   5.52ms p99=   8.96ms max=   17.02ms errs=0 serverRSS=   274MB serverCPUsec=  4.44
+burst    offered=   15000/s achieved=   15002/s p50=   0.25ms p95=   5.54ms p99=  11.58ms max=   24.84ms errs=0 serverRSS=   303MB serverCPUsec=  8.68
+heavy    offered=   37500/s achieved=   37475/s p50=   4.68ms p95=  13.36ms p99=  15.81ms max=   21.76ms errs=0 serverRSS=   311MB serverCPUsec= 18.10
+== rust server pid=97072, N=15000 ==
+baseline serverRSS=2MB
+ramp: connected=15000 failed=0 in 33.1s
+idle:    serverRSS=73MB  => 5.0 KB per connection (incl. runtime baseline 2MB: 4.8 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.24ms p95=   4.89ms p99=   8.86ms max=   18.32ms errs=0 serverRSS=    77MB serverCPUsec=  2.74
+burst    offered=   15000/s achieved=   15000/s p50=   0.24ms p95=   5.40ms p99=   9.80ms max=   22.35ms errs=0 serverRSS=    85MB serverCPUsec=  4.87
+heavy    offered=   37500/s achieved=   37429/s p50=   5.17ms p95=  10.76ms p99=  13.55ms max=   18.57ms errs=0 serverRSS=    85MB serverCPUsec= 10.12
+== elixir server pid=98015, N=15000 ==
+baseline serverRSS=74MB
+ramp: connected=15000 failed=0 in 31.2s
+idle:    serverRSS=254MB  => 17.3 KB per connection (incl. runtime baseline 74MB: 12.3 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.27ms p95=   4.98ms p99=   9.02ms max=   17.52ms errs=0 serverRSS=   608MB serverCPUsec=  7.67
+burst    offered=   15000/s achieved=   15002/s p50=   0.22ms p95=   4.36ms p99=   8.55ms max=   17.94ms errs=0 serverRSS=   737MB serverCPUsec= 22.36
+heavy    offered=   37500/s achieved=   37386/s p50=   5.34ms p95=  10.78ms p99=  13.36ms max=   18.15ms errs=0 serverRSS=   703MB serverCPUsec= 29.52
+
+11:29:26.692 [notice] SIGTERM received - shutting down
+
+
+11:29:26.696 [notice] SIGTERM received - shutting down
+
+== node server pid=98980, N=15000 ==
+baseline serverRSS=42MB
+ramp: connected=15000 failed=0 in 31.0s
+idle:    serverRSS=77MB  => 5.2 KB per connection (incl. runtime baseline 42MB: 2.4 KB net)
+steady   offered=    1500/s achieved=    1502/s p50=   0.23ms p95=   3.99ms p99=   8.00ms max=   15.98ms errs=0 serverRSS=    82MB serverCPUsec=  3.30
+burst    offered=   15000/s achieved=   15000/s p50=   0.21ms p95=   5.54ms p99=  10.07ms max=   18.28ms errs=0 serverRSS=    83MB serverCPUsec=  5.02
+heavy    offered=   37500/s achieved=   37410/s p50=   4.61ms p95=  15.22ms p99=  19.77ms max=   44.97ms errs=0 serverRSS=    83MB serverCPUsec=  5.95
+##### PASS 2 (node elixir rust go)
+== node server pid=99956, N=15000 ==
+baseline serverRSS=42MB
+ramp: connected=15000 failed=0 in 31.2s
+idle:    serverRSS=76MB  => 5.2 KB per connection (incl. runtime baseline 42MB: 2.4 KB net)
+steady   offered=    1500/s achieved=    1502/s p50=   0.33ms p95=   5.48ms p99=   9.23ms max=   17.74ms errs=0 serverRSS=    85MB serverCPUsec=  4.18
+burst    offered=   15000/s achieved=   14991/s p50=   0.26ms p95=   6.32ms p99=  10.56ms max=   19.70ms errs=0 serverRSS=    85MB serverCPUsec=  4.95
+heavy    offered=   37500/s achieved=   37471/s p50=   3.92ms p95=  12.88ms p99=  16.61ms max=   22.39ms errs=0 serverRSS=    85MB serverCPUsec=  6.14
+== elixir server pid=1084, N=15000 ==
+baseline serverRSS=74MB
+ramp: connected=15000 failed=0 in 31.5s
+idle:    serverRSS=254MB  => 17.3 KB per connection (incl. runtime baseline 74MB: 12.3 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.34ms p95=   5.21ms p99=   9.20ms max=   18.26ms errs=0 serverRSS=   610MB serverCPUsec= 11.01
+burst    offered=   15000/s achieved=   14987/s p50=   0.25ms p95=   4.75ms p99=   9.83ms max=   18.13ms errs=0 serverRSS=   721MB serverCPUsec= 22.46
+heavy    offered=   37500/s achieved=   37457/s p50=   5.96ms p95=  11.60ms p99=  14.09ms max=   19.43ms errs=0 serverRSS=   719MB serverCPUsec= 29.21
+
+11:36:36.875 [notice] SIGTERM received - shutting down
+
+
+11:36:36.880 [notice] SIGTERM received - shutting down
+
+== rust server pid=2017, N=15000 ==
+baseline serverRSS=2MB
+ramp: connected=15000 failed=0 in 29.2s
+idle:    serverRSS=73MB  => 5.0 KB per connection (incl. runtime baseline 2MB: 4.8 KB net)
+steady   offered=    1500/s achieved=    1500/s p50=   0.28ms p95=   5.38ms p99=   9.34ms max=   20.46ms errs=0 serverRSS=    77MB serverCPUsec=  3.02
+burst    offered=   15000/s achieved=   15000/s p50=   0.95ms p95=   8.61ms p99=  13.72ms max=   22.61ms errs=0 serverRSS=    85MB serverCPUsec=  5.80
+heavy    offered=   37500/s achieved=   37395/s p50=   5.29ms p95=  12.50ms p99=  15.23ms max=   22.79ms errs=0 serverRSS=    85MB serverCPUsec= 10.95
+== go server pid=2903, N=15000 ==
+baseline serverRSS=5MB
+ramp: connected=15000 failed=0 in 31.6s
+idle:    serverRSS=142MB  => 9.7 KB per connection (incl. runtime baseline 5MB: 9.4 KB net)
+steady   offered=    1500/s achieved=    1501/s p50=   0.19ms p95=   4.25ms p99=   8.27ms max=   17.75ms errs=0 serverRSS=   272MB serverCPUsec=  4.32
+burst    offered=   15000/s achieved=   14997/s p50=   0.22ms p95=   4.33ms p99=   7.82ms max=   18.59ms errs=0 serverRSS=   302MB serverCPUsec=  9.98
+heavy    offered=   37500/s achieved=   37405/s p50=   4.78ms p95=  10.92ms p99=  14.24ms max=   20.28ms errs=0 serverRSS=   313MB serverCPUsec= 16.16
+ALLDONE

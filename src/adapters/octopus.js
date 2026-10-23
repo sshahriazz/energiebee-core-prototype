@@ -75,7 +75,7 @@ export function upsertTariff({ provider = 'octopus', tariffCode, direction, name
 // ───────────── Rates (bitemporal) ─────────────
 
 const curRate = db.prepare(
-  `SELECT id, valid_to, price_ex_vat FROM rate_interval
+  `SELECT id, valid_to, price_ex_vat, raw_id FROM rate_interval
    WHERE tariff_id = ? AND component = ? AND register = ? AND payment_method = ? AND IFNULL(site_id, 0) = ?
      AND valid_from = ? AND superseded_at IS NULL`);
 const supRate = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
@@ -99,7 +99,11 @@ export function putRates(tariffId, component, register, rows, siteId = null) {
       const pm = r.paymentMethod || 'ANY';
       const cur = curRate.get(tariffId, component, register, pm, siteId ?? 0, r.validFrom);
       if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.priceExVat) < 1e-9) continue;
-      if (cur) supRate.run(now, cur.id);
+      if (cur) {
+        supRate.run(now, cur.id);
+        // Same start, earlier end: the rest of the old period keeps its old price.
+        if (r.validTo != null && (cur.valid_to == null || cur.valid_to > r.validTo)) insRate.run(tariffId, siteId, component, register, pm, r.validTo, cur.valid_to, cur.price_ex_vat, now, cur.raw_id);
+      }
       // A row that now overlaps the new one was replaced upstream. Keep the
       // parts of it outside the new period, so no time is left without a price.
       for (const o of overlapping.all(tariffId, component, register, pm, siteId ?? 0, r.validTo ?? 9000000000, r.validFrom)) {

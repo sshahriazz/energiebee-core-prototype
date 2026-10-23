@@ -61,7 +61,7 @@ export const SOURCES = [
   {
     code: 'carbon_regional', name: 'Carbon Intensity (regional)',
     contract: {
-      timeZone: 'UTC minute precision (Z)', timeRole: 'interval: 30-minute slot; forward slots are forecasts',
+      timeZone: 'UTC minute precision (Z)', timeRole: "interval: the API's 30-minute periods (a home's slot takes the time-weighted mean of the periods it overlaps); forward periods are forecasts",
       signs: '-', units: 'gCO2/kWh', missing: 'null',
       revisions: 'Forecast revised in place upstream; every fetch stored as its own issue', upstreamHistory: 'Regional from May 2018',
     },
@@ -86,9 +86,9 @@ export const SOURCES = [
   {
     code: 'core_forecast', name: 'EnergieBee forecast (our own)',
     contract: {
-      timeZone: 'UTC epoch seconds', timeRole: 'forecast: 30-minute slots for the next 48 hours',
-      signs: '-', units: 'kWh per half-hour; house use includes planned EV charging, grid import includes battery charging',
-      missing: 'No row for a half-hour without history to forecast house use from',
+      timeZone: 'UTC epoch seconds', timeRole: "forecast: slots of the home's slot length (site.slot_s: 15, 30 or 60 minutes; 30 by default) for the next 48 hours",
+      signs: '-', units: 'kWh per slot; house use includes planned EV charging, grid import includes battery charging',
+      missing: 'No row for a slot without history to forecast house use from',
       revisions: 'Each sync stores a new issue, at most one an hour; issue time = time of the run', upstreamHistory: 'Ours: kept like any other fact',
     },
   },
@@ -138,6 +138,9 @@ export const METRICS = [
 
 // Dated VAT. Octopus has published domestic electricity at 0% VAT since
 // 30 Sep 2026 23:00 UTC (observed live 16 Oct 2026); gas is still 5%, export 0%.
+// Provenance (origin 'sourced'): the 5 % is HMRC's reduced rate for domestic fuel and power; the
+// 0 % from 1 Oct 2026 was read off Octopus's published inc-VAT prices, not from an HMRC notice.
+export const GB_VAT_NOTE = 'src/db/registry.js VAT_RATES: GB domestic VAT 5 % (HMRC reduced rate for domestic fuel); electricity 0 % from 1 Oct 2026 as observed in Octopus published prices on 16 Oct 2026';
 const T_2026_10_01 = Date.UTC(2026, 8, 30, 23, 0) / 1000;
 export const VAT_RATES = [
   { fuel: 'electricity', direction: 'import', rate: 0.05, validFrom: 0, validTo: T_2026_10_01 },

@@ -47,11 +47,23 @@ export async function estimatePanelAngles(siteId, { fetchJson }) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (site?.lat == null) return { reason: 'no coordinates' };
   const now = nowSec();
-  const rows = db.prepare('SELECT slot_start, solar FROM site_hh WHERE site_id = ? AND slot_start >= ? AND state != ? AND solar IS NOT NULL')
+  const rows = db.prepare('SELECT slot_start, dur_s, solar FROM site_hh WHERE site_id = ? AND slot_start >= ? AND state != ? AND solar IS NOT NULL')
     .all(siteId, now - 14 * 86400, 'missing');
-  // Hourly actual solar, keyed by the end of the hour (Open-Meteo's irradiance at t covers [t − 1h, t)).
+  // Hourly actual solar, keyed by the end of the hour (Open-Meteo's irradiance at t covers [t − 1h, t),
+  // asked in GMT, so its hours are UTC hours). Each slot is the home's own length from local midnight:
+  // its energy goes to the UTC hours it overlaps, by overlap. In a whole-hour zone every 15, 30 or
+  // 60-minute slot sits inside one UTC hour (as before); in a half-hour zone (UTC+9:30) an hour slot
+  // spans two, and is split rather than all booked to the hour it starts in.
   const actual = new Map();
-  for (const r of rows) { const end = r.slot_start - (r.slot_start % 3600) + 3600; actual.set(end, (actual.get(end) || 0) + r.solar); }
+  for (const r of rows) {
+    const len = r.dur_s || 1800;
+    for (let t = r.slot_start; t < r.slot_start + len;) {
+      const end = t - (t % 3600) + 3600;
+      const upto = Math.min(end, r.slot_start + len);
+      actual.set(end, (actual.get(end) || 0) + (upto - t === len ? r.solar : (r.solar * (upto - t)) / len));
+      t = upto;
+    }
+  }
   const cache = new Map();
   const fit = async (tilt, bearing) => {
     const key = `${tilt}|${bearing}`;

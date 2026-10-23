@@ -5,7 +5,7 @@ import { db } from '../db/db.js';
 import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
 import { forecastSite } from '../core/forecast.js';
-import { SLOT, nowSec, localDate, addDays, dayBounds, daysBetween } from '../core/time.js';
+import { nowSec, localDate, addDays, dayBounds, daysBetween, slotLength } from '../core/time.js';
 import { resolveSiteGeo } from '../adapters/geo.js';
 import { syncCarbon } from '../adapters/carbon.js';
 import { syncWeather } from '../adapters/openmeteo.js';
@@ -19,6 +19,7 @@ import { measureBatteryCapacity } from '../core/derive.js';
 import { setAttribute, withdrawAttribute } from '../core/attributes.js';
 import { seedSiteAttributes } from '../core/maintenance.js';
 import { retireDevice, supersedeAgreements } from '../core/devices.js';
+import { createSite } from '../core/sites.js';
 
 const env = process.env;
 const INITIAL_DAYS = Math.min(Number(env.INITIAL_DAYS) || 14, 60);
@@ -43,8 +44,8 @@ export function ensureEnvSite() {
   const num = (v) => (v === undefined || v === '' ? null : Number(v));
   let site = db.prepare("SELECT * FROM site WHERE env_key = 'env'").get();
   if (!site) {
-    db.prepare("INSERT INTO site (name, postcode, env_key, created_at) VALUES (?, ?, 'env', ?)").run(env.SITE_NAME || 'My home', env.SITE_POSTCODE || null, nowSec());
-    site = db.prepare("SELECT * FROM site WHERE env_key = 'env'").get();
+    // Market GB: country GB, pounds, Europe/London, half-hour slots (createSite's defaults).
+    site = createSite({ name: env.SITE_NAME || 'My home', postcode: env.SITE_POSTCODE || null, envKey: 'env' });
   } else {
     db.prepare('UPDATE site SET name = ?, postcode = COALESCE(?, postcode) WHERE id = ?').run(env.SITE_NAME || site.name, env.SITE_POSTCODE || null, site.id);
   }
@@ -101,7 +102,9 @@ function recordForecast(siteId) {
   const last = db.prepare('SELECT MAX(issued_at) AS t FROM forecast_fact WHERE series_id = ?').get(homeS)?.t;
   if (last != null && now - last < 3600) return { skipped: 'issued within the last hour' };
   const fc = forecastSite(siteId, 48);
-  const rows = (k) => fc.slots.filter((s) => s[k] != null).map((s) => ({ start: s.slot_start, end: s.slot_start + SLOT, value: s[k] }));
+  // Stored in the home's own slot length; scoring and the build match them to slots by overlap.
+  const slotS = slotLength(db.prepare('SELECT slot_s FROM site WHERE id = ?').get(siteId));
+  const rows = (k) => fc.slots.filter((s) => s[k] != null).map((s) => ({ start: s.slot_start, end: s.slot_start + slotS, value: s[k] }));
   const forecasts = putForecasts(homeS, now, rows('home'))
     + putForecasts(seriesId('site', siteId, 'grid_import_kwh', 'core_forecast'), now, rows('grid_import'))
     // Solar too, so the build can show what was forecast for each half-hour before it happened.
@@ -282,7 +285,8 @@ export function closeInterruptedRuns() {
 export function startScheduler() {
   const minutes = Math.max(Number(env.SYNC_EVERY_MINUTES) || 10, 2);
   const tick = async () => {
-    for (const { id } of db.prepare('SELECT id FROM site').all()) {
+    // Demo homes (is_demo) hold generated data and have no providers: they are never synced.
+    for (const { id } of db.prepare('SELECT id FROM site WHERE is_demo = 0').all()) {
       try { await syncSite(id); } catch (err) { console.error(`sync site ${id}:`, err.message); }
     }
   };

@@ -26,7 +26,7 @@ export async function loadTimeline(state, { forecastHours = 24 } = {}) {
     const last = rows.length ? rows[rows.length - 1].slot_start : 0;
     const now = Date.now() / 1000;
     const extra = forecast.slots.filter((s) => s.slot_start > last && s.slot_start < now + forecastHours * 3600).map(fromForecast);
-    nowIndex = rows.length + Math.min(1, Math.max(0, (now - (extra[0]?.slot_start ?? now)) / 1800));
+    nowIndex = rows.length + Math.min(1, Math.max(0, (now - (extra[0]?.slot_start ?? now)) / (t.slot_s || forecast.slot_s || 1800)));
     rows = rows.concat(extra);
   }
   return { ...t, rows, nowIndex, forecast };

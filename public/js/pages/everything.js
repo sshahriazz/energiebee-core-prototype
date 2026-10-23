@@ -1,7 +1,7 @@
 // Timeline: everything in one chart. One shared time axis, one row per part of
 // the system (each with its source), forecast after now, events along the bottom.
-// Hover anywhere for every value at that half-hour; click for its evidence.
-import { api, fmt, timeFmt, esc, ago, COLORS } from '../api.js';
+// Hover anywhere for every value at that slot; click for its evidence.
+import { api, fmt, timeFmt, esc, ago, COLORS, currencySymbol, priceUnit, minorSymbol, minorName, zeroPrice, slotNoun, slotNouns, SlotNoun, originBadge } from '../api.js';
 import { init, evidenceLink } from '../layout.js';
 import { svgEl, niceScale, tipHtml } from '../charts.js';
 
@@ -16,15 +16,18 @@ function lanesFor(d) {
   const all = [...d.rows, ...d.forecast];
   const ev = d.devices.find((x) => x.kind === 'ev');
   const has = (k) => all.some((r) => (r[k] || 0) > 0.001);
-  const conn = d.connections;
-  const fresh = (...ps) => { const c = ps.map((p) => conn[p]).find(Boolean); return c ? { at: c.last_success_at, status: c.status, error: c.last_error } : null; };
-  const meterSource = conn.demo ? 'Demo meter (Octopus-shaped)' : 'Octopus smart meter; inverter clamp until it arrives';
+  const conn = { ...d.connections };
+  // A demo home (site.is_demo) has generated data: its lanes say so instead of naming a provider.
+  const synthetic = !!d.site.is_demo;
+  if (synthetic) conn.demo = conn.demo || { status: 'ok' };
+  const fresh = (...ps) => { const c = ps.map((p) => conn[p]).find(Boolean); return c?.last_success_at != null ? { at: c.last_success_at, status: c.status, error: c.last_error } : null; };
+  const meterSource = synthetic ? 'Synthetic meter (demo data)' : conn.demo ? 'Demo meter (Octopus-shaped)' : 'Octopus smart meter; inverter clamp until it arrives';
   return [
-    { key: 'solar', label: 'Solar', part: `Panels ${d.site.pv_kwp ? `${d.site.pv_kwp} kWp ` : ''}→ inverter`, source: 'Sunsynk 5-min · forecast', h: 58, unit: 'kWh', color: COLORS.solar, fresh: fresh('sunsynk', 'demo'),
+    { key: 'solar', label: 'Solar', part: `Panels ${d.site.pv_kwp ? `${d.site.pv_kwp} kWp ` : ''}→ inverter`, source: synthetic ? 'Synthetic inverter (demo data)' : 'Sunsynk 5-min · forecast', h: 58, unit: 'kWh', color: COLORS.solar, fresh: fresh('sunsynk', 'demo'),
       pos: [{ get: (r) => r.solar, color: COLORS.solar }], line: { get: (r) => (r.state === 'forecast' ? null : r.solar_forecast), color: 'var(--text-2)', dash: true } },
-    { key: 'battery', label: 'Battery', part: `Battery ${d.site.battery_kwh ? `${d.site.battery_kwh} kWh` : ''}`, source: conn.demo ? 'Demo inverter' : 'Sunsynk 5-min', h: 58, unit: 'kWh', color: COLORS.battery, fresh: fresh('sunsynk', 'demo'),
+    { key: 'battery', label: 'Battery', part: `Battery ${d.site.battery_kwh ? `${d.site.battery_kwh} kWh` : ''}`, source: synthetic ? 'Synthetic inverter (demo data)' : conn.demo ? 'Demo inverter' : 'Sunsynk 5-min', h: 58, unit: 'kWh', color: COLORS.battery, fresh: fresh('sunsynk', 'demo'),
       pos: [{ get: (r) => r.battery_discharge, color: COLORS.battery }], neg: [{ get: (r) => r.battery_charge, color: faded(COLORS.battery, 55) }] },
-    { key: 'soc', label: 'Charge level', part: 'Battery state of charge', source: conn.demo ? 'Demo inverter' : 'Sunsynk 5-min', h: 40, unit: '%', color: COLORS.battery, fresh: fresh('sunsynk', 'demo'),
+    { key: 'soc', label: 'Charge level', part: 'Battery state of charge', source: synthetic ? 'Synthetic inverter (demo data)' : conn.demo ? 'Demo inverter' : 'Sunsynk 5-min', h: 40, unit: '%', color: COLORS.battery, fresh: fresh('sunsynk', 'demo'),
       line: { get: (r) => r.soc_end, color: COLORS.battery, area: true }, fixed: [0, 100] },
     { key: 'grid', label: 'Grid', part: `Grid connection${d.site.region ? ` · region ${d.site.region}` : ''}`, source: meterSource, h: 58, unit: 'kWh', color: COLORS.grid, fresh: fresh('octopus', 'demo', 'sunsynk'),
       pos: [{ get: (r) => r.grid_import, color: COLORS.grid }], neg: [{ get: (r) => r.grid_export, color: COLORS.export }] },
@@ -34,9 +37,9 @@ function lanesFor(d) {
       pos: [{ get: (r) => r.ev, color: COLORS.ev }], bands: 'dispatch' },
     has('gas') && { key: 'gas', label: 'Gas', part: 'Gas meter', source: 'Octopus smart meter', h: 40, unit: 'kWh', color: GAS, fresh: fresh('octopus'),
       pos: [{ get: (r) => r.gas, color: GAS }] },
-    { key: 'price', label: 'Price', part: 'Import and export price', source: conn.demo ? 'Octopus Agile rates (public)' : 'Octopus tariff rates', h: 50, unit: 'p/kWh', color: COLORS.grid, fresh: fresh('octopus', 'tariff', 'demo'),
+    { key: 'price', label: 'Price', part: 'Import and export price', source: synthetic ? `Synthetic tariff (demo data)${d.provenance?.placeholders?.some((x) => /\[placeholder\]$/.test(x)) ? '; placeholder taxes' : ''}` : conn.demo ? 'Octopus Agile rates (public)' : 'Octopus tariff rates', h: 50, unit: priceUnit(), color: COLORS.grid, fresh: fresh('octopus', 'tariff', 'demo'),
       lines: [{ get: (r) => r.import_rate, color: COLORS.grid, step: true }, { get: (r) => r.export_rate, color: COLORS.export, step: true }] },
-    { key: 'cost', label: 'Cost', part: 'Bill per half-hour (dashed: grid only)', source: 'Core: priced build', h: 50, unit: '£', color: 'var(--text-2)', money: true,
+    { key: 'cost', label: 'Cost', part: `Bill per ${slotNoun()} (dashed: grid only)`, source: 'Core: priced build', h: 50, unit: currencySymbol(), color: 'var(--text-2)', money: true,
       pos: [{ get: (r) => Math.max(0, r.total_cost ?? 0), color: 'var(--text-2)' }], neg: [{ get: (r) => Math.max(0, -(r.total_cost ?? 0)), color: COLORS.export }],
       line: { get: (r) => r.grid_only_cost, color: 'var(--text-3)', dash: true } },
     { key: 'carbon', label: 'Grid carbon', part: 'Regional intensity', source: 'NESO', h: 18, kind: 'heat', color: 'var(--text)', fresh: fresh('carbon'), get: (r) => r.carbon_intensity },
@@ -60,7 +63,7 @@ const EVENT_STYLE = {
 function draw(host, d, lanes, tf, state) {
   host.innerHTML = '';
   const rows = [...d.rows, ...d.forecast];
-  if (!rows.length) { host.innerHTML = '<div class="skeleton">No half-hours in this period yet.</div>'; return; }
+  if (!rows.length) { host.innerHTML = `<div class="skeleton">No ${slotNouns()} in this period yet.</div>`; return; }
   const W = Math.max(320, host.clientWidth);
   const narrow = W < 700;
   const gut = narrow ? 96 : 190; const right = 10; const top = 26; const gap = 6;
@@ -70,9 +73,10 @@ function draw(host, d, lanes, tf, state) {
   for (const l of lanes) { l.y = y; y += l.h + gap; }
   const H = y + 18;
   const x = (i) => gut + i * band;
-  // Bars are placed by row; clock times (events, now) map onto the same rows, which start at the first half-hour with data.
-  const t0 = rows[0].slot_start; const tN = rows[rows.length - 1].slot_start + 1800;
-  const xt = (ts) => gut + ((ts - t0) / 1800) * band;
+  // Bars are placed by row; clock times (events, now) map onto the same rows, which start at the first slot with data.
+  const SL = d.slot_s || 1800;   // the home's slot length, s (from the API)
+  const t0 = rows[0].slot_start; const tN = rows[rows.length - 1].slot_start + SL;
+  const xt = (ts) => gut + ((ts - t0) / SL) * band;
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': 'Everything on one timeline' }, host);
   svg.style.display = 'block'; svg.style.width = '100%';
 
@@ -110,7 +114,7 @@ function draw(host, d, lanes, tf, state) {
     if (n <= 110 && h % (narrow ? 6 : 3) === 0) {
       const t = svgEl('text', { x: x(i), y: H - 4, 'text-anchor': 'middle', style: 'fill:var(--text-3);font-size:10.5px' }, svg);
       t.textContent = `${String(h).padStart(2, '0')}:00`;
-    } else if (n > 110 && h === 12 && band * 48 > 40) {
+    } else if (n > 110 && h === 12 && band * (86400 / SL) > 40) {
       const t = svgEl('text', { x: x(i), y: H - 4, 'text-anchor': 'middle', style: 'fill:var(--text-3);font-size:10.5px' }, svg);
       t.textContent = tf.day(r.slot_start).split(' ').slice(1, 3).join(' ');
     }
@@ -150,7 +154,7 @@ function draw(host, d, lanes, tf, state) {
         if (ex < gut - 1 || ex > W - right + 1) continue;
         const ey = rowsY[st.row];
         if (e.kind === 'sync') svgEl('line', { x1: ex, x2: ex, y1: ey - 4, y2: ey + 4, stroke: e.status === 'ok' ? 'var(--text-3)' : 'var(--warn)', 'stroke-width': 1.2 }, g);
-        else if (e.kind === 'dispatch') svgEl('rect', { x: ex, y: ey - 3, width: Math.max(2, ((e.end - e.ts) / 1800) * band), height: 6, rx: 2, fill: st.color }, g);
+        else if (e.kind === 'dispatch') svgEl('rect', { x: ex, y: ey - 3, width: Math.max(2, ((e.end - e.ts) / SL) * band), height: 6, rx: 2, fill: st.color }, g);
         else if (e.kind === 'data') svgEl('path', { d: `M${ex},${ey - 5} L${ex + 5},${ey} L${ex},${ey + 5} L${ex - 5},${ey} Z`, fill: st.color }, g);
         else if (e.kind === 'tariff') svgEl('path', { d: `M${ex},${ey + 5} V${ey - 6} L${ex + 7},${ey - 3} L${ex},${ey}`, fill: st.color, stroke: st.color }, g);
         else if (e.kind === 'forecast') svgEl('circle', { cx: ex, cy: ey, r: 2.6, fill: st.color }, g);
@@ -217,7 +221,7 @@ function draw(host, d, lanes, tf, state) {
     if (l.bands === 'dispatch') {
       for (const e of d.events.filter((x2) => x2.kind === 'dispatch')) {
         const ex = xt(e.ts);
-        svgEl('rect', { x: ex, y: l.y, width: Math.max(1, ((e.end - e.ts) / 1800) * band), height: l.h, style: `fill:${COLORS.ev}`, 'fill-opacity': 0.12 }, g);
+        svgEl('rect', { x: ex, y: l.y, width: Math.max(1, ((e.end - e.ts) / SL) * band), height: l.h, style: `fill:${COLORS.ev}`, 'fill-opacity': 0.12 }, g);
       }
     }
   }
@@ -230,7 +234,7 @@ function draw(host, d, lanes, tf, state) {
     t.textContent = 'Now';
   }
 
-  // One crosshair through every lane, one tooltip with everything at that half-hour.
+  // One crosshair through every lane, one tooltip with everything at that slot.
   const cross = svgEl('rect', { x: 0, y: top - 4, width: Math.max(1, band), height: H - top - 10, fill: 'var(--text)', 'fill-opacity': 0.08, visibility: 'hidden' }, svg);
   const overlay = svgEl('rect', { x: gut, y: 0, width: iw, height: H, fill: 'transparent', style: 'cursor:crosshair' }, svg);
   const tip = document.createElement('div');
@@ -284,16 +288,16 @@ function tipFor(r, lanes, d, tf) {
   if (on.has('cost')) out.push(line('Cost', null, fmt.gbp(r.total_cost), r.grid_only_cost != null ? `grid only ${fmt.gbp(r.grid_only_cost)}` : ''));
   if (on.has('carbon') && r.carbon_intensity != null) out.push(line('Grid carbon', null, `${Math.round(r.carbon_intensity)} g/kWh`));
   if (on.has('weather') && r.outdoor_temp != null) out.push(line('Outside', null, `${r.outdoor_temp.toFixed(1)} °C`));
-  const evs = d.events.filter((e) => (e.end ? e.ts < r.slot_start + 1800 && e.end > r.slot_start : e.ts >= r.slot_start && e.ts < r.slot_start + 1800) && e.kind !== 'sync');
+  const evs = d.events.filter((e) => (e.end ? e.ts < r.slot_start + (d.slot_s || 1800) && e.end > r.slot_start : e.ts >= r.slot_start && e.ts < r.slot_start + (d.slot_s || 1800)) && e.kind !== 'sync');
   if (evs.length) out.push(`<div class="t-foot">${evs.slice(0, 4).map((e) => esc(e.label)).join(' · ')}</div>`);
-  if (!fc) out.push('<div class="t-foot">Click for the evidence behind this half-hour</div>');
+  if (!fc) out.push(`<div class="t-foot">Click for the evidence behind this ${slotNoun()}</div>`);
   return out.join('');
 }
 
 // ───── What the house used, by source, and what it cost ─────
-// Past half-hours use the core's priced build: grid energy at the import price, battery
-// energy at what it cost to store (first in, first out; solar-charged = 0p). Forecast
-// half-hours have no stored-energy cost yet, so only what comes from the grid is paid.
+// Past slots use the core's priced build: grid energy at the import price, battery energy at
+// what it cost to store (first in, first out; solar-charged energy costs nothing). Forecast
+// slots have no stored-energy cost yet, so only what comes from the grid is paid.
 function priced(r) {
   const p = r.import_rate;
   if (p == null) return { worth: null, paid: null, saved: null };
@@ -304,7 +308,7 @@ function priced(r) {
   return { worth, paid, saved: paid == null || worth == null ? null : worth - paid };
 }
 
-// Period totals from past half-hours only. Grid energy is paid at the price it is worth,
+// Period totals from past slots only. Grid energy is paid at the price it is worth,
 // so the whole saving splits into solar (free) and the battery (worth minus stored cost).
 function pricedTotals(rows) {
   const t = { home: 0, solar: 0, battery: 0, grid: 0, worth: 0, paid: 0, fromSolar: 0, fromBattery: 0, unpriced: 0 };
@@ -321,15 +325,15 @@ function pricedTotals(rows) {
   return t;
 }
 
-// Consecutive half-hours at one import price become one block (an off-peak window, a day
-// rate). Agile changes every half-hour, so its blocks are often a single half-hour wide.
-function priceBlocks(rows) {
+// Consecutive slots at one import price become one block (an off-peak window, a day rate).
+// A dynamic tariff (Agile) changes every slot, so its blocks are often a single slot wide.
+function priceBlocks(rows, slotS = 1800) {
   const out = [];
   rows.forEach((r, i) => {
     const p = r.import_rate; const fc = r.state === 'forecast';
     if (p == null) return;
     const b = out[out.length - 1];
-    if (b && b.end === i && b.fc === fc && Math.abs(b.price - p) < 1e-6 && rows[i - 1].slot_start === r.slot_start - 1800) b.end = i + 1;
+    if (b && b.end === i && b.fc === fc && Math.abs(b.price - p) < 1e-6 && rows[i - 1].slot_start === r.slot_start - slotS) b.end = i + 1;
     else out.push({ start: i, end: i + 1, price: p, fc });
   });
   return out;
@@ -344,10 +348,10 @@ const priceRange = (rows) => {
 function drawPriced(host, d, tf, state) {
   host.innerHTML = '';
   const rows = [...d.rows, ...d.forecast];
-  if (!rows.length) { host.innerHTML = '<div class="skeleton">No half-hours in this period yet.</div>'; return { negDrawn: false }; }
+  if (!rows.length) { host.innerHTML = `<div class="skeleton">No ${slotNouns()} in this period yet.</div>`; return { negDrawn: false }; }
   const W = Math.max(320, host.clientWidth);
   const narrow = W < 700;
-  // Same gutter as the timeline above, so a half-hour sits at the same x in both cards.
+  // Same gutter as the timeline above, so a slot sits at the same x in both cards.
   const gut = narrow ? 96 : 190; const right = 10; const top = 30; const gap = 10; const pad = 3;
   const iw = W - gut - right;
   const n = rows.length; const band = iw / n;
@@ -356,9 +360,9 @@ function drawPriced(host, d, tf, state) {
   const money = rows.map(priced);
   const pr = priceRange(rows);
   const lanes = [
-    { key: 'price', label: narrow ? 'Price' : 'Import price', sub: 'p/kWh', h: narrow ? 26 : 34, color: 'var(--price-hi)' },
+    { key: 'price', label: narrow ? 'Price' : 'Import price', sub: priceUnit(), h: narrow ? 26 : 34, color: 'var(--price-hi)' },
     { key: 'use', label: narrow ? 'Used' : 'House used', sub: narrow ? 'kWh' : 'kWh, by source', h: narrow ? 86 : 104, color: 'var(--text-2)' },
-    { key: 'cost', label: narrow ? 'Cost' : 'Paid and saved', sub: narrow ? 'pence' : 'pence; top = grid price', h: narrow ? 86 : 104, color: 'var(--good)' },
+    { key: 'cost', label: narrow ? 'Cost' : 'Paid and saved', sub: narrow ? minorName() : `${minorName()}; top = grid price`, h: narrow ? 86 : 104, color: 'var(--good)' },
   ];
   let y = top;
   for (const l of lanes) { l.y = y; y += l.h + gap; }
@@ -393,21 +397,21 @@ function drawPriced(host, d, tf, state) {
     if (n <= 110 && h % (narrow ? 6 : 3) === 0) {
       const t = svgEl('text', { x: x(i), y: H - 4, 'text-anchor': 'middle', style: 'fill:var(--text-3);font-size:10.5px' }, svg);
       t.textContent = `${String(h).padStart(2, '0')}:00`;
-    } else if (n > 110 && h === 12 && band * 48 > 40) {
+    } else if (n > 110 && h === 12 && band * (86400 / (d.slot_s || 1800)) > 40) {
       const t = svgEl('text', { x: x(i), y: H - 4, 'text-anchor': 'middle', style: 'fill:var(--text-3);font-size:10.5px' }, svg);
       t.textContent = tf.day(r.slot_start).split(' ').slice(1, 3).join(' ');
     }
   });
 
-  // 1. Price blocks, labelled when the price fits inside (whole pence as a fallback from 10p up,
+  // 1. Price blocks, labelled when the price fits inside (whole minor units as a fallback from 10 up,
   // where rounding moves the number by under 5%).
   const pl = lanes[0];
   const gp = svgEl('g', {}, svg);
-  for (const b of priceBlocks(rows)) {
+  for (const b of priceBlocks(rows, d.slot_s || 1800)) {
     const w = (b.end - b.start) * band; const inset = w > 4 ? 0.5 : 0;
     const t = pr.t(b.price);
     svgEl('rect', { x: x(b.start) + inset, y: pl.y, width: Math.max(0.5, w - 2 * inset), height: pl.h, rx: w > 8 ? 2 : 0, style: `fill:${priceFill(t)}`, 'fill-opacity': b.fc ? 0.55 : 1 }, gp);
-    const label = [fmt.p(b.price), Math.abs(b.price) >= 10 && `${Math.round(b.price)}p`].find((s) => s && s.length * 6.2 + 6 <= w);
+    const label = [fmt.p(b.price), Math.abs(b.price) >= 10 && `${Math.round(b.price)}${minorSymbol()}`].find((s) => s && s.length * 6.2 + 6 <= w);
     if (!label) continue;
     // Dark ink on the cheap end, surface ink on the dear end (faded forecast blocks count as cheaper-looking).
     const ink = (b.fc ? t * 0.55 : t) > 0.6 ? 'var(--surface)' : 'var(--text)';
@@ -467,11 +471,11 @@ function drawPriced(host, d, tf, state) {
   stack(lanes[2], [
     { get: (r, i) => money[i].paid, color: 'var(--text-2)' },
     { get: (r, i) => money[i].saved, color: 'var(--good)', negColor: 'var(--bad)' },
-  ], (v) => `${Math.round(v)}p`);
+  ], (v) => `${Math.round(v)}${minorSymbol()}`);
 
-  // Now, inside the half-hour that contains it, on the same index axis as the bars.
-  const nowI = rows.findIndex((r) => d.now >= r.slot_start && d.now < r.slot_start + 1800);
-  const nx = nowI >= 0 ? x(nowI) + ((d.now - rows[nowI].slot_start) / 1800) * band : firstFc >= 0 ? x(firstFc) : null;
+  // Now, inside the slot that contains it, on the same index axis as the bars.
+  const nowI = rows.findIndex((r) => d.now >= r.slot_start && d.now < r.slot_start + (d.slot_s || 1800));
+  const nx = nowI >= 0 ? x(nowI) + ((d.now - rows[nowI].slot_start) / (d.slot_s || 1800)) * band : firstFc >= 0 ? x(firstFc) : null;
   if (nx != null) {
     svgEl('line', { x1: nx, x2: nx, y1: 14, y2: bottom + 4, stroke: 'var(--text)', 'stroke-dasharray': '3 3' }, svg);
     const t = svgEl('text', { x: nx, y: 11, 'text-anchor': 'middle', style: 'fill:var(--text);font-size:11px;font-weight:600' }, svg);
@@ -487,7 +491,7 @@ function drawPriced(host, d, tf, state) {
     t.textContent = text;
   }
 
-  // One crosshair through all three rows, one tooltip for the half-hour.
+  // One crosshair through all three rows, one tooltip for the slot.
   const cross = svgEl('rect', { x: 0, y: top - 4, width: Math.max(1.5, band), height: bottom - top + 8, fill: 'var(--text)', 'fill-opacity': 0.08, visibility: 'hidden' }, svg);
   const overlay = svgEl('rect', { x: gut, y: 0, width: iw, height: H, fill: 'transparent', style: 'cursor:crosshair' }, svg);
   const tip = document.createElement('div');
@@ -531,15 +535,16 @@ function pricedTip(r, mo, pr, tf) {
     ['At grid price', null, fmt.p(mo.worth)],
     ['Paid', 'var(--text-2)', `${fmt.p(mo.paid)}${!fc && r.battery_to_home_cost ? note(`grid ${fmt.p(r.grid_to_home_cost)} · battery ${fmt.p(r.battery_to_home_cost)}`) : ''}`],
     ['Saved', mo.saved < 0 ? 'var(--bad)' : 'var(--good)', `${fmt.p(mo.saved)}${split}`],
-  ], fc ? 'Forecast: grid imports paid at the import price' : 'Click for the evidence behind this half-hour');
+  ], fc ? 'Forecast: grid imports paid at the import price' : `Click for the evidence behind this ${slotNoun()}`);
 }
 
-const STATE_NOTES = [
+// A function, so the slot words follow the home loaded (setSlot runs after this module loads).
+const stateNotes = () => [
   ['final', faded('var(--good)', 70), 'Smart-meter readings received and every check run. Will not change unless the provider revises its data.'],
   ['provisional', faded('var(--warn)', 70), 'Built from the inverter’s grid clamp because smart-meter data hasn’t arrived yet (Octopus delivers about a day late), or the day isn’t over. Rebuilt automatically when the meter data arrives.'],
-  ['missing', faded('var(--bad)', 70), 'No grid reading from any source for that half-hour.'],
+  ['missing', faded('var(--bad)', 70), `No grid reading from any source for that ${slotNoun()}.`],
   ['forecast', 'var(--surface-2);box-shadow:inset 0 0 0 1px var(--border)', 'After now, from the forecast.'],
-  ['revised', 'var(--text);border-radius:50%;width:6px;height:6px;margin:0 2px', 'The numbers changed after the half-hour was first shown as final.'],
+  ['revised', 'var(--text);border-radius:50%;width:6px;height:6px;margin:0 2px', `The numbers changed after the ${slotNoun()} was first shown as final.`],
 ];
 
 async function render(state) {
@@ -558,7 +563,7 @@ async function render(state) {
   const evKinds = [...new Set(d.events.map((e) => e.kind))];
   const pt = pricedTotals(d.rows);
   const pr = priceRange([...d.rows, ...d.forecast]);
-  const excluded = [d.forecast.length && `the ${d.forecast.length} forecast half-hours are excluded`, pt.unpriced && `${pt.unpriced} half-hours without a price are left out of the money`].filter(Boolean);
+  const excluded = [d.forecast.length && `the ${d.forecast.length} forecast ${slotNouns()} are excluded`, pt.unpriced && `${pt.unpriced} ${slotNouns()} without a price are left out of the money`].filter(Boolean);
   document.getElementById('content').innerHTML = `
     <div class="card">
       <div class="card-head"><div><h2>The system</h2><p>Every part of ${esc(d.site.name)} and the source that reports it. Click a part to show or hide its row.</p></div></div>
@@ -566,7 +571,7 @@ async function render(state) {
     </div>
     <div class="section card">
       <div class="card-head"><div><h2>Everything, one timeline</h2>
-        <p>${d.rows.length} half-hours (${counts.final || 0} final, ${counts.provisional || 0} provisional, ${counts.missing || 0} missing)${d.forecast.length ? ` + ${d.forecast.length} forecast` : ''} · ${d.events.length} events.
+        <p>${d.rows.length} ${slotNouns()} (${counts.final || 0} final, ${counts.provisional || 0} provisional, ${counts.missing || 0} missing)${d.forecast.length ? ` + ${d.forecast.length} forecast` : ''} · ${d.events.length} events.
         Each row has its own scale (top right of the row). Hover for everything at that moment; click for its evidence.</p></div></div>
       <div id="everything" class="chart"></div>
       <div class="legend" style="margin-top:10px">
@@ -577,18 +582,18 @@ async function render(state) {
       </div>
       <div class="state-notes">
         <h3>What the states mean</h3>
-        <dl>${STATE_NOTES.map(([k2, bg, text]) => `<dt><i class="swatch" style="background:${bg}"></i>${k2}</dt><dd>${text}</dd>`).join('')}</dl>
+        <dl>${stateNotes().map(([k2, bg, text]) => `<dt><i class="swatch" style="background:${bg}"></i>${k2}</dt><dd>${text}</dd>`).join('')}</dl>
       </div>
     </div>
     <div class="section card">
       <div class="card-head"><div><h2>What the house used, by source, and what it cost</h2>
-        <p>Each half-hour: the import price (half-hours at the same price merged into one block), where the house's energy came from, and what it cost.
+        <p>Each ${slotNoun()}: the import price (${slotNouns()} at the same price merged into one block), where the house's energy came from, and what it cost.
         A full cost bar is that use at the grid price; the grey part was paid and the green part saved. Battery energy is priced at what it cost to store
-        (first in, first out; solar-charged = 0p). Hover for the numbers; click for the evidence.</p></div></div>
+        (first in, first out; solar-charged = ${zeroPrice()}). Hover for the numbers; click for the evidence.</p></div></div>
       <p class="priced-totals">Used <b>${fmt.kwh(pt.home)}</b> (solar ${fmt.num(pt.solar)} · battery ${fmt.num(pt.battery)} · grid ${fmt.num(pt.grid)} kWh).
         At grid prices that would have cost <b>${fmt.gbp(pt.worth)}</b>; paid <b>${fmt.gbp(pt.paid)}</b>;
         saved <b style="color:var(--good)">${fmt.gbp(pt.saved)}</b> (${fmt.gbp(pt.fromSolar)} from solar, ${fmt.gbp(pt.fromBattery)} from the battery).
-        <span class="faint">Past half-hours only${excluded.length ? `; ${excluded.join('; ')}` : ''}. Energy only: no standing charge, export or inverter losses.</span></p>
+        <span class="faint">Past ${slotNouns()} only${excluded.length ? `; ${excluded.join('; ')}` : ''}. Energy only: no standing charge, export or inverter losses.</span></p>
       <div id="priced" class="chart"></div>
       <div class="legend" style="margin-top:10px">
         ${pr.n ? `<span><i class="price-ramp"></i>import price ${fmt.p(pr.lo)} → ${fmt.p(pr.hi)}/kWh</span>` : ''}

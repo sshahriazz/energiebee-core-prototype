@@ -1,6 +1,6 @@
 // Home: the blend of everything. Live flows now, the period's cost and saving,
 // the timeline of where energy came from (with the forecast after now), prices and insights.
-import { api, fmt, timeFmt, ago, delta, esc, COLORS } from '../api.js';
+import { api, fmt, timeFmt, ago, delta, esc, COLORS, priceUnit, zeroPrice, slotNoun, slotNouns, slotsPerHour, originBadge } from '../api.js';
 import { init, card, kpi, evidenceLink } from '../layout.js';
 import { timeChart, legend, tipHtml, hhTicks } from '../charts.js';
 import { loadTimeline, isFc } from '../timeline.js';
@@ -66,7 +66,7 @@ async function render(state) {
   const range = (lo, hi, f) => (lo != null && hi != null ? ` <span class="faint">(${f(lo)}–${f(hi)})</span>` : '');
   const kwhRange = (k) => range(n24[`${k}_low`], n24[`${k}_high`], (v) => v.toFixed(1));
   const solarSrc = { quartz: 'Quartz', sunlight: 'Open-Meteo sunlight × this home’s learned response' }[fc.model?.solar?.path];
-  const priceCard = card('Price and outlook', now.price.tariff ? `<span class="mono">${esc(now.price.tariff)}</span>` : 'No tariff found', `
+  const priceCard = card('Price and outlook', now.price.tariff ? `<span class="mono">${esc(now.price.tariff)}</span> ${originBadge(now.price.origin)}${now.price.estimated ? ' <span class="badge warn">estimated</span>' : ''}` : 'No tariff found', `
     <div class="price-now">
       <div><div class="faint">Import now</div><div class="big">${fmt.pkwh(now.price.import)}</div></div>
       <div><div class="faint">Export now</div><div class="big">${fmt.pkwh(now.price.export)}</div></div>
@@ -79,7 +79,7 @@ async function render(state) {
       <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.solar}"></i>Solar expected</span><b>${fmt.kwh(n24.solar)}${kwhRange('solar')}</b></div>
       <div class="row"><span class="k">Home use expected</span><b>${fmt.kwh(n24.home)}${kwhRange('home')}</b></div>
       <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.grid}"></i>Import expected</span><b>${fmt.kwh(n24.import)}${kwhRange('import')}</b></div>
-      <div class="row"><span class="k">Cost while prices are known <span class="faint">(${n24.pricedSlots / 2} h)</span></span><b>${fmt.gbp(n24.cost)}${range(n24.cost_low, n24.cost_high, fmt.gbp)}</b></div>
+      <div class="row"><span class="k">Cost while prices are known <span class="faint">(${n24.pricedSlots / slotsPerHour()} h)</span></span><b>${fmt.gbp(n24.cost)}${range(n24.cost_low, n24.cost_high, fmt.gbp)}</b></div>
       <div class="row"><span class="k">Expected saving</span><b>${fmt.gbp(n24.saving)}</b></div>
       ${fc.cheapestWindow ? `<div class="row"><span class="k">Cheapest 2 hours</span><b>${tf.time(fc.cheapestWindow.start)}–${tf.time(fc.cheapestWindow.end)} · ${fmt.pkwh(fc.cheapestWindow.avg)}</b></div>` : ''}
     </div>
@@ -109,8 +109,8 @@ async function render(state) {
     <div class="row"><span class="k">Same home on grid power only</span><b>${fmt.gbp(c.grid_only_cost)}</b></div>
     <div class="row total"><span class="k" style="color:var(--good)">Saved by solar and battery</span><b style="color:var(--good)">${fmt.gbp(c.saving)}</b></div>
   </div>
-  <p class="faint" style="font-size:12px;margin:10px 0 0">Battery energy is valued first in, first out: it carries the price it was charged at (solar = 0p), so nothing is counted twice.
-  ${c.unpriced ? `<br><b style="color:var(--warn)">${c.unpriced} half-hours have no price and are left out of the cost.</b>` : ''}</p>`;
+  <p class="faint" style="font-size:12px;margin:10px 0 0">Battery energy is valued first in, first out: it carries the price it was charged at (solar = ${zeroPrice()}), so nothing is counted twice.
+  ${c.unpriced ? `<br><b style="color:var(--warn)">${c.unpriced} ${slotNouns()} have no price and are left out of the cost.</b>` : ''}</p>`;
 
   const insightHtml = insights.length ? `<div class="insights">${insights.map((i) => `<div class="insight"><span class="dot ${i.tone}">${{ good: '✓', tip: '★', info: 'i', warn: '!' }[i.tone] || 'i'}</span><div><b>${esc(i.title)}</b><p>${esc(i.detail)}</p></div></div>`).join('')}</div>` : '<div class="skeleton">Insights appear once a day of data is built.</div>';
 
@@ -122,7 +122,7 @@ async function render(state) {
       `${legend([{ label: 'Solar', color: COLORS.solar }, { label: 'Battery', color: COLORS.battery }, { label: 'Grid', color: COLORS.grid }, { label: 'Into battery', color: COLORS.battery, faded: true }, { label: 'Exported', color: COLORS.export }])}<div id="energy-chart"></div>`)}</div>
     ${tl.step === 'day' ? '' : `<div class="section">${card('Electricity price', 'Import and export price per kWh, including VAT. After “now”: published prices.',
       `${legend([{ label: 'Import', color: COLORS.grid, type: 'line' }, { label: 'Export', color: COLORS.export, type: 'line' }])}<div id="price-chart"></div>`)}</div>`}
-    <div class="section grid cols-2">${card(`Cost ${periodName}`, `${tl.from === tl.to ? tf.date(tl.from) : `${tf.date(tl.from)} – ${tf.date(tl.to)}`}`, costRows)}${card('Insights', 'Rules over the half-hour data', insightHtml)}</div>`;
+    <div class="section grid cols-2">${card(`Cost ${periodName}`, `${tl.from === tl.to ? tf.date(tl.from) : `${tf.date(tl.from)} – ${tf.date(tl.to)}`}`, costRows)}${card('Insights', `Rules over the ${slotNoun()} data`, insightHtml)}</div>`;
 
   const ticks = tl.step === 'day' ? (r, i) => (i % Math.ceil(tl.rows.length / 10) === 0 ? tf.date(r.local_date).split(' ').slice(1).join(' ') : null) : hhTicks(tf, multiDay);
   const head = (r) => (tl.step === 'day' ? tf.date(r.local_date) : `${tf.dayTime(r.slot_start)}${isFc(r) ? ' · forecast' : r.state !== 'final' ? ` · ${r.state}` : ''}`);
@@ -152,7 +152,7 @@ async function render(state) {
   const priceRows = tl.rows;
   if (tl.step !== 'day') {
     timeChart(document.getElementById('price-chart'), {
-      rows: priceRows, height: 170, unit: 'p/kWh', tick: ticks, isForecast: isFc, nowIndex: tl.nowIndex, yMin: Math.min(0, ...priceRows.map((r) => r.import_rate ?? 0)),
+      rows: priceRows, height: 170, unit: priceUnit(), tick: ticks, isForecast: isFc, nowIndex: tl.nowIndex, yMin: Math.min(0, ...priceRows.map((r) => r.import_rate ?? 0)),
       lines: [
         { label: 'Import', color: COLORS.grid, get: (r) => r.import_rate, step: true },
         { label: 'Export', color: COLORS.export, get: (r) => r.export_rate, step: true },
@@ -162,4 +162,4 @@ async function render(state) {
   }
 }
 
-init({ page: 'index', title: 'Home energy', subtitle: 'One half-hour timeline for the whole home: solar, battery, grid and EV, with cost and saving on every slot.', render });
+init({ page: 'index', title: 'Home energy', subtitle: 'One slot timeline for the whole home: solar, battery, grid and EV, with cost and saving on every slot.', render });

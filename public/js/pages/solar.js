@@ -1,7 +1,7 @@
 // Solar: what the panels made, where it went, what it was worth, and the forecast. Actual
-// output is set against two yardsticks on one axis: the forecast made before each half-hour,
+// output is set against two yardsticks on one axis: the forecast made before each slot,
 // and what the weather that actually happened should have given (an expectation, labelled so).
-import { api, fmt, timeFmt, delta, COLORS } from '../api.js';
+import { api, fmt, timeFmt, delta, COLORS, zeroPrice, slotNoun, slotNouns } from '../api.js';
 import { init, card, kpi, evidenceLink } from '../layout.js';
 import { timeChart, legend, tipHtml } from '../charts.js';
 import { isFc } from '../timeline.js';
@@ -11,7 +11,7 @@ const ADVANCE = 'var(--text-2)';     // forecast made in advance: dashed
 const EXPECTED = 'var(--text)';      // expected for the weather: solid
 const RANGE = 'var(--text-2)';       // forecast's 10th–90th percentile band
 
-// The latest forecast after the last built half-hour, so every view that includes today runs
+// The latest forecast after the last built slot, so every view that includes today runs
 // past, now and ahead on one axis (loadTimeline adds it to "Today" only). Split as timeline.js does.
 function withForecast(t, fc) {
   if (!fc) return { rows: t.rows, nowIndex: null };
@@ -21,7 +21,7 @@ function withForecast(t, fc) {
     slot_start: s.slot_start, local_date: s.local_date, _fc: true, solar: s.solar, solar_low: s.solar_low, solar_high: s.solar_high,
     solar_to_home: s.solar != null && s.home != null ? Math.min(s.solar, s.home) : null, solar_to_battery: s.solar_to_battery ?? null, solar_to_grid: s.grid_export,
   }));
-  return { rows: t.rows.concat(ahead), nowIndex: t.rows.length + Math.min(1, Math.max(0, (now - (ahead[0]?.slot_start ?? now)) / 1800)) };
+  return { rows: t.rows.concat(ahead), nowIndex: t.rows.length + Math.min(1, Math.max(0, (now - (ahead[0]?.slot_start ?? now)) / (fc.slot_s || t.slot_s || 1800))) };
 }
 
 const BARS = [
@@ -43,7 +43,7 @@ async function render(state) {
   const optional = (p) => p.catch(() => null);
   const [summary, t, month, sys, ex, exMonth, fc] = await Promise.all([
     api(`/api/sites/${id}/summary?period=${state.period}`),
-    // Half-hours in every view (30 days too), so all four series share one axis.
+    // Slots in every view (30 days too), so all four series share one axis.
     api(`/api/sites/${id}/timeline?period=${state.period}&step=hh`),
     api(`/api/sites/${id}/timeline?period=30d&step=day`),
     optional(api(`/api/sites/${id}/system`)),
@@ -70,18 +70,18 @@ async function render(state) {
     ${kpi('Exported', fmt.kwh(c.solar_to_grid), `${fmt.gbp(c.solar_export_value)} at ${fmt.pkwh(c.export_rate_avg)}`, COLORS.export)}
     ${kpi('Value of solar', fmt.gbp(c.solar_value), 'grid power it replaced + export credit')}
     ${kpi('Made vs modelled sunlight', fmt.pct(et?.performance), et?.performance != null
-      ? `${fmt.kwh(et.actual)} made in the ${et.compared} half-hours with sunlight data, against ${fmt.kwh(et.expected)} expected from Open-Meteo's modelled sunlight${usual ? `. Whole days usually range ${fmt.pct(usual.low)}–${fmt.pct(usual.high)}, so this is ${within ? 'within normal variation' : 'outside the usual range'}` : ''}`
-      : ex ? 'no half-hours with both sunlight data and output yet' : 'expected values not available from the server')}
+      ? `${fmt.kwh(et.actual)} made in the ${et.compared} ${slotNouns()} with sunlight data, against ${fmt.kwh(et.expected)} expected from Open-Meteo's modelled sunlight${usual ? `. Whole days usually range ${fmt.pct(usual.low)}–${fmt.pct(usual.high)}, so this is ${within ? 'within normal variation' : 'outside the usual range'}` : ''}`
+      : ex ? `no ${slotNouns()} with both sunlight data and output yet` : 'expected values not available from the server')}
     ${kpi('Made vs forecast in advance', fmt.pct(c.forecast_accuracy), c.solar_forecast != null
-      ? `${fmt.kwh(c.solar_with_forecast)} made vs ${fmt.kwh(c.solar_forecast)} forecast before each half-hour (100% = exact)${forecastOff ? `. This far from 100%, the forecast is wrong rather than the panels${anglesEstimated ? ': it uses estimated panel angles' : ''}` : ''}`
+      ? `${fmt.kwh(c.solar_with_forecast)} made vs ${fmt.kwh(c.solar_forecast)} forecast before each ${slotNoun()} (100% = exact)${forecastOff ? `. This far from 100%, the forecast is wrong rather than the panels${anglesEstimated ? ': it uses estimated panel angles' : ''}` : ''}`
       : 'forecasts are kept from 16 Oct 2026; none for this period')}
   </div>`;
 
   const valueRows = `<div class="rows">
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.solar}"></i>Used straight away</span><b>${fmt.kwh(c.solar_to_home)} · ${fmt.gbp(c.solar_home_value)}</b></div>
-    <div class="row sub"><span class="k">valued at the import price it replaced, half-hour by half-hour</span><span></span></div>
+    <div class="row sub"><span class="k">valued at the import price it replaced, ${slotNoun()} by ${slotNoun()}</span><span></span></div>
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.battery}"></i>Stored for later</span><b>${fmt.kwh(c.solar_to_battery)}</b></div>
-    <div class="row sub"><span class="k">enters the battery at 0p; its value shows on the battery page when it is used</span><span></span></div>
+    <div class="row sub"><span class="k">enters the battery at ${zeroPrice()}; its value shows on the battery page when it is used</span><span></span></div>
     <div class="row"><span class="k"><i class="swatch" style="background:${COLORS.export}"></i>Exported</span><b>${fmt.kwh(c.solar_to_grid)} · ${fmt.gbp(c.solar_export_value)}</b></div>
     <div class="row total"><span class="k">Value so far</span><b>${fmt.gbp(c.solar_value)}</b></div>
   </div>`;
@@ -90,8 +90,8 @@ async function render(state) {
   const fitDays = ex?.method?.window?.days ?? 30;
   // How each series is made, one line each, so an expectation is never read as a measurement.
   const key = [
-    [BARS.map((b) => `<i class="swatch" style="background:${b.color}"></i>`).join(''), 'Actual', 'Measured by the inverter (Sunsynk) each half-hour, split by where it went. Click a bar for its evidence.'],
-    [`<i class="dash" style="color:${ADVANCE}"></i>`, 'Forecast made in advance', 'The latest solar forecast issued before each half-hour started (Quartz\'s where one was held, otherwise this core\'s own). Kept from 16 Oct 2026, so there is no line before then.'],
+    [BARS.map((b) => `<i class="swatch" style="background:${b.color}"></i>`).join(''), 'Actual', `Measured by the inverter (Sunsynk) each ${slotNoun()}, split by where it went. Click a bar for its evidence.`],
+    [`<i class="dash" style="color:${ADVANCE}"></i>`, 'Forecast made in advance', `The latest solar forecast issued before each ${slotNoun()} started (Quartz's where one was held, otherwise this core's own). Kept from 16 Oct 2026, so there is no line before then.`],
     [`<i class="line" style="color:${EXPECTED}"></i>`, 'Expected for the weather', `An expectation, not a measurement: Open-Meteo's modelled sunlight for that hour (a weather-model estimate, not a measurement) × what these panels made per unit of sunlight at the same hour on the other days of the last ${fitDays} (the day itself left out). No sunlight data, no line.`],
     ...(nowIndex != null ? [[`<i class="swatch" style="background:${COLORS.solar};opacity:.45"></i><i class="swatch" style="background:${RANGE};opacity:.35"></i>`, 'After “now”', 'The latest forecast, split as it expects the solar to be used; the grey band is its 10th–90th percentile range.']] : []),
   ];
@@ -100,19 +100,19 @@ async function render(state) {
     ${unconfirmed.length ? `<div class="banner warn"><span>i</span><div>${unconfirmed.map((i) => `${i.label}: <b>${i.value ?? '–'} ${i.unit}</b> (${i.status === 'estimated' ? 'estimated from this home\'s output' : i.status === 'provider' ? 'from Sunsynk' : 'not known'})`).join(' · ')}.
       These shape the solar forecast. <a href="/data?site=${id}#system">How to replace them with the installer's figures (MCS paperwork) →</a></div></div>` : ''}
     ${kpis}
-    <div class="section">${card('Solar output against forecast and weather', `Each half-hour on one axis: what the panels made, what was forecast before it, and what Open-Meteo's modelled sunlight for those hours suggests they should have made.${nowIndex != null ? ' After “now”: the latest forecast with its range.' : ''}`,
+    <div class="section">${card('Solar output against forecast and weather', `Each ${slotNoun()} on one axis: what the panels made, what was forecast before it, and what Open-Meteo's modelled sunlight for those hours suggests they should have made.${nowIndex != null ? ' After “now”: the latest forecast with its range.' : ''}`,
       `${legend([...LEGEND, ...(nowIndex != null ? [{ label: 'Forecast range (10th–90th percentile)', color: RANGE, faded: true }] : [])])}<div id="solar-chart"></div>
       <div class="state-notes"><h3>How each series is made</h3><dl>${key.map(([sw, k, text]) => `<dt>${sw}${k}</dt><dd>${text}</dd>`).join('')}</dl></div>`)}</div>
     <div class="section grid cols-main">
-      ${card('Last 30 days', 'Daily totals of the same series. A day\'s forecast point is drawn only when every half-hour of it had a forecast made in advance.',
+      ${card('Last 30 days', `Daily totals of the same series. A day's forecast point is drawn only when every ${slotNoun()} of it had a forecast made in advance.`,
         `${legend(LEGEND)}<div id="month-chart"></div>
         <h3 style="margin:14px 0 2px">Made vs what the weather allowed</h3>
-        <p class="faint" style="margin:0 0 6px;font-size:12.5px">Each day's output ÷ its expected output for the weather, over the half-hours that have both, as % above or below expected.</p>
+        <p class="faint" style="margin:0 0 6px;font-size:12.5px">Each day's output ÷ its expected output for the weather, over the ${slotNouns()} that have both, as % above or below expected.</p>
         <div id="perf-chart"></div>`)}
       ${card('What the solar was worth', state.period === 'today' ? 'Today so far' : `${tf.date(summary.from)} – ${tf.date(summary.to)}`, valueRows)}
     </div>`;
 
-  // Half-hour chart: the day at midnight; on short views, every three hours as well.
+  // Slot chart: the day at midnight; on short views, every three hours as well.
   const days = new Set(rows.map((r) => r.local_date)).size;
   const everyDays = days > 10 ? 3 : 1;
   const dayNo = new Map([...new Set(rows.map((r) => r.local_date))].map((d, i) => [d, i]));
@@ -176,7 +176,7 @@ async function render(state) {
         ['Expected for the weather', null, fmt.kwh(d?.expected)],
         ['Made vs expected', null, fmt.pct(d?.performance)],
         ['Slots final', null, `${r.slots_final}/${r.slots}`],
-      ], partialFc ? `Forecasts were kept for ${d.forecastHalfHours} of this day's half-hours, in which the panels made ${fmt.kwh(d.forecastActual)}.` : '');
+      ], partialFc ? `Forecasts were kept for ${d.forecastHalfHours} of this day's ${slotNouns()}, in which the panels made ${fmt.kwh(d.forecastActual)}.` : '');
     },
   });
   // Above or below 100% as bars around zero, so a shortfall reads as a shortfall.
@@ -192,7 +192,7 @@ async function render(state) {
         ['Made vs expected', null, fmt.pct(d?.performance)],
         ['Made', COLORS.solar, fmt.kwh(d?.actual)],
         ['Expected for the weather', null, fmt.kwh(d?.expected)],
-      ], d?.performance == null ? 'No half-hours with both sunlight data and output.' : `Over ${d.compared} half-hours with both${d.whole ? '' : '; the day is not over'}.`);
+      ], d?.performance == null ? `No ${slotNouns()} with both sunlight data and output.` : `Over ${d.compared} ${slotNouns()} with both${d.whole ? '' : '; the day is not over'}.`);
     },
   });
 }

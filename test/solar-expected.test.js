@@ -101,7 +101,10 @@ test('night gives 0 expected; days and totals add up from the half-hours', { ski
   assert.equal(r.days.reduce((s, d) => s + d.compared, 0), r.totals.compared);
   assert.ok(near(r.days.reduce((s, d) => s + (d.expected ?? 0), 0), r.totals.expected, 0.01));
   assert.ok(near(r.totals.performance, r.totals.actual / r.totals.expected, 1e-3));
-  for (const d of r.days) if (d.performance != null) assert.ok(near(d.performance, d.actual / d.expected, 1e-3), d.date);
+  // actual and expected are shown to 3 decimals and performance is worked out before rounding, so
+  // their ratio may differ by the rounding (large on a small part-day such as this morning's).
+  const roundingSlack = (d) => 1e-3 + 0.0005 * (1 + d.actual / d.expected) / (d.expected - 0.0005);
+  for (const d of r.days) if (d.performance != null) assert.ok(near(d.performance, d.actual / d.expected, roundingSlack(d)), d.date);
   assert.ok(r.check.halfHours > 0 && r.check.r2 <= 1, 'out-of-sample check reported');
   // A day gets the same expected value in every view, because the fit window always ends today.
   const month = m.solarExpected(SITE, m.addDays(today(), 1 - m.FIT_DAYS), today());

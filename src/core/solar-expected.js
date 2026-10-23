@@ -11,8 +11,8 @@
 // sun, has no expected value (null), never 0. Zero sunlight gives 0.
 import { db } from '../db/db.js';
 import { seriesId, readIntervals } from './facts.js';
-import { learnSunlight } from './forecast.js';
-import { SLOT, nowSec, zonedParts, localDate, addDays, dayBounds, daysBetween, slotsOfDay } from './time.js';
+import { learnSunlight, sunBySlot } from './forecast.js';
+import { nowSec, localDate, addDays, dayBounds, daysBetween, slotsOfDay, slotLength } from './time.js';
 
 // Reporting choice: the Solar page's longest view. The window always ends today, so a day
 // gets the same expected value whichever period it is viewed in.
@@ -21,15 +21,8 @@ export const FIT_DAYS = 30;
 const round = (v, d = 3) => (v == null ? null : Math.round(v * 10 ** d) / 10 ** d);
 const total = (xs, get) => xs.reduce((s, x) => s + get(x), 0);
 
-// Hourly mean W/m² to kWh/m² per half-hour, as the forecast does (an hour's mean holds for both halves).
-function sunByHalfHour(facts) {
-  const kwh = new Map(); const wm2 = new Map();
-  for (const f of facts) {
-    if (f.value == null) continue;
-    for (let s = f.start_ts; s < f.end_ts; s += SLOT) { kwh.set(s, (f.value * SLOT) / 3600 / 1000); wm2.set(s, f.value); }
-  }
-  return { kwh, wm2 };
-}
+// Hourly mean W/m² to kWh/m² per slot of the home's length: sunBySlot in forecast.js, so both
+// read sunlight the same way (an hour's mean holds over every part of it).
 
 // Actual against expected over the half-hours that have both, so a missing hour of sunlight
 // or of inverter data never counts as zero on one side only.
@@ -41,25 +34,28 @@ function compare(list) {
 }
 
 export function solarExpected(siteId, from, to) {
-  const tz = db.prepare('SELECT timezone FROM site WHERE id = ?').get(siteId).timezone;
+  const site = db.prepare('SELECT timezone, slot_s FROM site WHERE id = ?').get(siteId);
+  const tz = site.timezone;
+  const slotS = slotLength(site);
   const today = localDate(tz, nowSec());
   const winFrom = addDays(today, 1 - FIT_DAYS);
   const [start] = dayBounds(tz, from < winFrom ? from : winFrom);
   const [, end] = dayBounds(tz, to > today ? to : today);
-  const rows = db.prepare('SELECT slot_start, local_date, state, solar, solar_forecast FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start')
-    .all(siteId, start, end)
-    .map((r) => { const p = zonedParts(tz, r.slot_start); return { ...r, k: p.hh * 2 + (p.mm >= 30 ? 1 : 0) }; });
+  // Slots of the home's current length only (k = slot of the day from the local clock).
+  const rows = db.prepare('SELECT slot_start, local_date, tod_min, state, solar, solar_forecast FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND dur_s = ? ORDER BY slot_start')
+    .all(siteId, start, end, slotS)
+    .map(({ tod_min: tod, ...r }) => ({ ...r, k: Math.floor(tod / (slotS / 60)) }));
   const ghiS = seriesId('site', siteId, 'ghi_wm2', 'open_meteo');
-  const sun = sunByHalfHour(readIntervals([ghiS], start, end));
+  const sun = sunBySlot(readIntervals([ghiS], start, end), slotS, ((start % slotS) + slotS) % slotS);
 
   // The window's built half-hours, filtered as the forecast filters its history.
   const hist = rows.filter((r) => r.local_date >= winFrom && r.local_date <= today && r.state !== 'missing');
   const perDay = new Map();
   for (const r of hist) perDay.set(r.local_date, (perDay.get(r.local_date) || 0) + 1);
-  const wholeDays = new Set([...perDay].filter(([d, n]) => n === slotsOfDay(tz, d).length).map(([d]) => d));
+  const wholeDays = new Set([...perDay].filter(([d, n]) => n === slotsOfDay(tz, d, slotS).length).map(([d]) => d));
   const fits = new Map();
   const fitFor = (date) => {
-    if (!fits.has(date)) fits.set(date, learnSunlight(hist.filter((r) => r.local_date !== date), sun.kwh, new Set([...wholeDays].filter((d) => d !== date))));
+    if (!fits.has(date)) fits.set(date, learnSunlight(hist.filter((r) => r.local_date !== date), sun.kwh, new Set([...wholeDays].filter((d) => d !== date)), slotS));
     return fits.get(date);
   };
   const expectedAt = (r) => {
@@ -67,7 +63,7 @@ export function solarExpected(siteId, from, to) {
     const fit = fitFor(r.local_date);
     if (g == null || !fit.ok) return { r, expected: null, ratio: null };
     if (g === 0) return { r, expected: 0, ratio: null };
-    const ratio = fit.ratios.get(r.k >> 1);
+    const ratio = fit.ratios.get(Math.floor((r.k * slotS) / 3600));
     return { r, expected: ratio == null ? null : ratio * g, ratio: ratio ?? null };
   };
 
@@ -85,7 +81,7 @@ export function solarExpected(siteId, from, to) {
     // Forecast of record (site_hh.solar_forecast) against actual over the half-hours that had one.
     const fc = list.filter((x) => x.r.solar_forecast != null && x.r.solar != null && x.r.state !== 'missing');
     return {
-      date, halfHours: list.length, whole: list.length === slotsOfDay(tz, date).length && date < today,
+      date, halfHours: list.length, whole: list.length === slotsOfDay(tz, date, slotS).length && date < today,
       compared: c.halfHours, actual: round(c.actual), expected: round(c.expected), performance: round(c.performance, 4),
       expectedComplete: list.length > 0 && c.halfHours === list.length,
       fit: { ok: fit.ok, days: fit.days, halfHours: fit.halfHours, reason: fit.reason },

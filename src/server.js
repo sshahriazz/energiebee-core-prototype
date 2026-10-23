@@ -5,21 +5,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, dataDir, dbFile } from './db/db.js';
-import { buildSite, METHOD_VERSION } from './core/build.js';
+import { buildSite, processQueue, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
 import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
-import { nowSec, localDate, addDays, dayBounds, SLOT, floorTo, zonedParts } from './core/time.js';
+import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
 import { seriesId, readReadings } from './core/facts.js';
-import { loadPricing, priceAt } from './core/pricing.js';
+import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
+import { createSite, setSlotLength, regionsOf } from './core/sites.js';
 import { ensureEnvSite, syncSite, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
 import { runMaintenance } from './core/maintenance.js';
 import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
+import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
+// Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
+// the program being run (npm start, the supervisor), never when imported.
+export const app = express();
 app.use(express.json());
 app.use(express.static(path.join(here, '..', 'public'), { extensions: ['html'] }));
 
@@ -29,6 +33,15 @@ const site = (req) => {
   if (!s) { const e = new Error('No such home'); e.status = 404; throw e; }
   return s;
 };
+// The home's slot length (s) and the start of the slot holding an instant, on its own grid.
+const slotOf = (s, ts) => { const len = slotLength(s); return slotFloor(ts, len, slotPhase(s.timezone, len, ts)); };
+// Added to every response that carries money or slots: amounts are minor units of `currency`
+// (pence for GBP, cents for EUR), and each slot is `slot_s` seconds long. Existing keys unchanged.
+const ledgerOf = (s) => ({ currency: s.currency ?? 'GBP', slot_s: slotLength(s) });
+const badRequest = (msg) => { const e = new Error(msg); e.status = 400; return e; };
+// Added to every response about a period: where its numbers came from (src/core/provenance.js):
+// the weakest origin used, every placeholder or synthetic input named, and whether the home is a demo.
+const provenanceOf = (s, from, to) => periodProvenance(db, s, from, to, [dayBounds(s.timezone, from)[0], dayBounds(s.timezone, to)[1]]);
 
 function periodRange(s, period, from, to) {
   const today = localDate(s.timezone, nowSec());
@@ -53,17 +66,50 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/sites', (req, res) => {
   const sites = db.prepare('SELECT * FROM site ORDER BY is_demo, id').all();
-  res.json(sites.map((s) => ({
-    ...s,
-    syncing: isSyncing(s.id),
-    connections: db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? ORDER BY provider').all(s.id),
-    lastSync: db.prepare('SELECT * FROM sync_run WHERE site_id = ? ORDER BY id DESC LIMIT 1').get(s.id) || null,
-    days: db.prepare('SELECT MIN(local_date) AS first, MAX(local_date) AS last, COUNT(*) AS n FROM site_day WHERE site_id = ?').get(s.id),
-  })));
+  res.json(sites.map((s) => {
+    const connections = db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? ORDER BY provider').all(s.id);
+    return {
+      ...s,
+      syncing: isSyncing(s.id),
+      connections,
+      lastSync: db.prepare('SELECT * FROM sync_run WHERE site_id = ? ORDER BY id DESC LIMIT 1').get(s.id) || null,
+      days: db.prepare('SELECT MIN(local_date) AS first, MAX(local_date) AS last, COUNT(*) AS n FROM site_day WHERE site_id = ?').get(s.id),
+      regions: regionsOf(s.id),
+      // Provenance of the home itself: synthetic (demo), provider-fed, or typed in.
+      ...siteOrigin(s, connections.map((c) => c.provider)),
+      market_origin: db.prepare('SELECT origin FROM market WHERE code = ?').get(s.market_code ?? 'GB')?.origin ?? null,
+    };
+  }));
+});
+
+// A new home in any market: { name, country?, market?, currency?, timezone?, slot_s?, postcode? }.
+// Defaults are the .env home's (market GB: GBP, Europe/London, 1800 s); another market brings its
+// own currency, clock and slot length. A currency other than the market's is refused (no FX).
+app.post('/api/sites', (req, res) => {
+  const b = req.body || {};
+  let s;
+  try {
+    s = createSite({ name: b.name, postcode: b.postcode ?? null, country: b.country ?? null, market: b.market ?? null, currency: b.currency ?? null,
+      timezone: b.timezone ?? null, slotS: b.slot_s ?? null });
+  } catch (err) { throw badRequest(err.message); }
+  res.status(201).json(s);
+});
+
+// Change the home's slot length: { slot_s: 900 | 1800 | 3600, rebuild?: true }. Every built day
+// is queued for a rebuild in the new length; unless rebuild is false the queue is processed now.
+app.post('/api/sites/:id/slot', (req, res) => {
+  const s = site(req);
+  const slotS = Number(req.body?.slot_s);
+  let r;
+  try { r = setSlotLength(s.id, slotS); } catch (err) { throw badRequest(err.message); }
+  const rebuilt = r.queued && req.body?.rebuild !== false ? processQueue().filter((x) => x.siteId === s.id) : [];
+  res.json({ ...r, rebuilt });
 });
 
 app.post('/api/sites/:id/sync', (req, res) => {
   const s = site(req);
+  // A demo home's data is generated: there is no provider to fetch from.
+  if (s.is_demo) return res.json({ started: false, reason: 'demo home: its data is synthetic, there is nothing to sync' });
   syncSite(s.id).catch((err) => console.error('sync:', err.message));
   res.json({ started: true });
 });
@@ -96,18 +142,23 @@ app.get('/api/sites/:id/now', (req, res) => {
       break;
     }
   }
-  const slot = floorTo(now, SLOT);
-  const pricing = loadPricing(s.id, slot - SLOT, slot + 8 * SLOT);
+  const SLOT = slotLength(s);
+  const slot = slotOf(s, now);
+  const pricing = loadPricing(s.id, slot - SLOT, slot + 4 * 3600);
   const priceRow = (t) => {
-    const i = priceAt(pricing, 'meter_import', t); const e = priceAt(pricing, 'meter_export', t);
-    return { slot: t, import: i?.unitEx != null ? i.unitEx * (1 + i.vat) : null, export: e?.unitEx != null ? e.unitEx * (1 + e.vat) : null, tariff: i?.tariffCode ?? null };
+    const i = priceOver(pricing, 'meter_import', t, SLOT); const e = priceOver(pricing, 'meter_export', t, SLOT);
+    const pv = inputsProvenance([...(i?.inputs ?? []), ...(e?.inputs ?? [])]);
+    return { slot: t, import: i?.unitEx != null ? i.unitEx * (1 + i.vat) : null, export: e?.unitEx != null ? e.unitEx * (1 + e.vat) : null, tariff: i?.tariffCode ?? null,
+      origin: pv?.origin ?? null, placeholder_inputs: pv?.placeholder_inputs ?? [], ...(i?.estimated ? { estimated: true } : {}) };
   };
+  // The latest forecast for the period that holds the start of the current slot (by overlap,
+  // so a 15-minute slot at :15 reads the half-hour that began at :00).
   const carbon = s.carbon_region != null ? db.prepare(
     `SELECT f.value, f.issued_at FROM forecast_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
-     WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.start_ts = ?
-     ORDER BY f.issued_at DESC LIMIT 1`).get(`carbon:${s.carbon_region}`, slot) : null;
+     WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.start_ts <= ? AND f.end_ts > ?
+     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(`carbon:${s.carbon_region}`, slot, slot) : null;
   const today = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date = ?').get(s.id, localDate(s.timezone, now));
-  res.json({ at: now, live, price: priceRow(slot), next: [1, 2, 3, 4, 5, 6].map((k) => priceRow(slot + k * SLOT)), carbon: carbon?.value ?? null, today: today || null });
+  res.json({ at: now, live, price: priceRow(slot), next: Array.from({ length: 10800 / SLOT }, (_, i) => priceRow(slot + (i + 1) * SLOT)), carbon: carbon?.value ?? null, today: today || null, ...ledgerOf(s) });
 });
 
 // ───────────── Timeline and summary ─────────────
@@ -126,7 +177,7 @@ app.get('/api/sites/:id/timeline', (req, res) => {
     : db.prepare(`SELECT ${HH_COLS} FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY slot_start`).all(s.id, from, to);
   const [a] = dayBounds(s.timezone, from);
   const [, b] = dayBounds(s.timezone, to);
-  res.json({ from, to, step, start: a, end: b, timezone: s.timezone, rows });
+  res.json({ from, to, step, start: a, end: b, timezone: s.timezone, rows, ...ledgerOf(s), provenance: provenanceOf(s, from, to) });
 });
 
 function summarise(s, from, to, before = 9000000000) {
@@ -148,7 +199,7 @@ function summarise(s, from, to, before = 9000000000) {
       SUM(grid_import * ${IMP}) AS import_paid, AVG(${IMP}) AS avg_import_rate, AVG(export_rate) AS avg_export_rate,
       SUM(CASE WHEN home > 0 THEN ev * (grid_to_home_cost + battery_to_home_cost) / home ELSE 0 END) AS ev_cost,
       SUM(CASE WHEN home > 0 THEN ev * solar_to_home / home ELSE 0 END) AS ev_from_solar,
-      MAX(grid_import) * 2 AS peak_import_kw, MIN(soc_end) AS soc_min, MAX(soc_end) AS soc_max,
+      MAX(grid_import * (3600.0 / dur_s)) AS peak_import_kw, MIN(soc_end) AS soc_min, MAX(soc_end) AS soc_max,
       SUM(solar_forecast) AS solar_forecast, SUM(CASE WHEN solar_forecast IS NOT NULL THEN solar END) AS solar_with_forecast
     FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND slot_start < ?`).get(s.id, from, to, before);
   const d = (a, b) => (a != null && b ? a / b : null);
@@ -177,7 +228,7 @@ function summarise(s, from, to, before = 9000000000) {
 app.get('/api/sites/:id/trust', (req, res) => {
   const s = site(req);
   const { from, to } = periodRange(s, req.query.period || '7d', req.query.from, req.query.to);
-  res.json(trustFor(s.id, from, to));
+  res.json({ ...trustFor(s.id, from, to), ...ledgerOf(s) });
 });
 
 // Every recorded version of a day (or of all days in a period), oldest first.
@@ -219,7 +270,7 @@ app.get('/api/sites/:id/summary', (req, res) => {
   const { from, to } = periodRange(s, req.query.period, req.query.from, req.query.to);
   const days = (Date.parse(to) - Date.parse(from)) / 86400000 + 1;
   res.json({
-    from, to, days, battery_kwh: s.battery_kwh, pv_kwp: s.pv_kwp,
+    from, to, days, battery_kwh: s.battery_kwh, pv_kwp: s.pv_kwp, ...ledgerOf(s),
     current: summarise(s, from, to),
     // "Today so far" is compared with yesterday up to the same time of day.
     previous: summarise(s, addDays(from, -days), addDays(to, -days), req.query.period === 'today' || (!req.query.period && !req.query.from) ? nowSec() - 86400 : undefined),
@@ -230,21 +281,36 @@ app.get('/api/sites/:id/summary', (req, res) => {
         FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to),
       checks: Object.fromEntries(db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? GROUP BY status').all(s.id, from, to).map((r) => [r.status, r.n])),
     },
+    provenance: provenanceOf(s, from, to),
   });
 });
 
 // Tariffs in force for each meter, with the latest standing charge and (for flat tariffs) unit price.
+// Provenance (added): the tariff's origin and note, the origin of the rate rows and of each tax rule
+// behind unitNow, and a provenance block (weakest origin, placeholder or synthetic inputs named).
 app.get('/api/sites/:id/tariffs', (req, res) => {
   const s = site(req);
   const now = nowSec();
-  const rows = db.prepare(`SELECT d.kind, d.label, t.tariff_code, t.name, t.structure, t.direction, a.valid_from, a.valid_to
+  const rows = db.prepare(`SELECT d.kind, d.label, t.tariff_code, t.name, t.structure, t.direction, a.valid_from, a.valid_to, t.currency, t.kind AS tariff_kind,
+      t.origin, t.origin_note
     FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
     WHERE a.site_id = ? AND a.superseded_at IS NULL ORDER BY d.kind, a.valid_from DESC`).all(s.id);
+  const SLOT = slotLength(s);
   const pricing = loadPricing(s.id, now - SLOT, now + SLOT);
   res.json(rows.map((r) => {
     const live = r.valid_from <= now && (r.valid_to == null || r.valid_to > now);
-    const p = live ? priceAt(pricing, r.kind, floorTo(now, SLOT)) : null;
-    return { ...r, current: live, unitNow: p?.unitEx != null ? p.unitEx * (1 + p.vat) : null, standingPerDay: p ? p.standingEx * (1 + p.vat) : null, vat: p?.vat ?? null };
+    const p = live ? priceOver(pricing, r.kind, slotOf(s, now), SLOT) : null;
+    const rateInputs = (p?.inputs ?? []).filter((i) => i.what.startsWith('rate '));
+    const taxes = p ? (p.tax.rules.length ? p.tax.rules.map((t) => ({ code: t.code, kind: t.kind, value: t.value, currency: t.currency, charge_period: t.charge_period,
+      origin: t.origin, origin_note: t.origin_note, unverified: t.unverified === 1 || t.unverified === true }))
+      : (p.tax.inputs ?? []).map((i) => ({ code: i.what, kind: 'percent', value: p.vat, origin: i.origin, origin_note: i.origin === 'sourced' ? 'src/db/registry.js VAT_RATES' : null, unverified: isUnverified(i.origin) }))) : [];
+    const pv = p ? inputsProvenance(p.inputs ?? []) : inputsProvenance([{ what: `tariff ${r.tariff_code}`, origin: r.origin }]);
+    return {
+      ...r, currency: r.currency ?? s.currency ?? 'GBP', current: live, unitNow: p?.unitEx != null ? p.unitEx * (1 + p.vat) : null, standingPerDay: p ? fixedPerDay(p, now, s.timezone) : null, vat: p?.vat ?? null,
+      rate_origin: rateInputs.length ? weakest(rateInputs.map((i) => i.origin)) : null, tax_origin: taxes.length ? weakest(taxes.map((t) => t.origin)) : null, taxes,
+      ...(p?.estimated ? { estimated: true } : {}),
+      provenance: { worst: pv?.origin ?? null, placeholders: pv?.placeholder_inputs ?? [] },
+    };
   }));
 });
 
@@ -271,16 +337,16 @@ app.get('/api/sites/:id/breakdown', (req, res) => {
       SUM(carbon_intensity IS NULL) AS carbon_missing
     FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to);
 
-  const rows = db.prepare(`SELECT slot_start, solar, home, grid_import, grid_export, solar_to_home, solar_to_battery, solar_to_grid,
+  const slotS = slotLength(s);
+  const rows = db.prepare(`SELECT slot_start, tod_min, solar, home, grid_import, grid_export, solar_to_home, solar_to_battery, solar_to_grid,
       battery_to_home, battery_to_grid, grid_to_home, grid_to_battery, ${IMP} AS import_rate, export_rate, carbon_intensity
-    FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND state != 'missing'`).all(s.id, from, to);
+    FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND state != 'missing' AND dur_s = ?`).all(s.id, from, to, slotS);
 
-  // Average day by local half-hour of day.
+  // Average day by local slot of the day (48 half-hours at the default length), from the local clock.
   const keys = ['solar', 'home', 'grid_import', 'grid_export', 'solar_to_home', 'solar_to_battery', 'solar_to_grid', 'battery_to_home', 'battery_to_grid', 'grid_to_home', 'grid_to_battery', 'import_rate', 'export_rate'];
-  const prof = Array.from({ length: 48 }, (_, i) => ({ index: i, n: 0, nRate: 0, nCarbon: 0, carbon: 0, ...Object.fromEntries(keys.map((k) => [k, 0])) }));
+  const prof = Array.from({ length: slotsPerDay(slotS) }, (_, i) => ({ index: i, n: 0, nRate: 0, nCarbon: 0, carbon: 0, ...Object.fromEntries(keys.map((k) => [k, 0])) }));
   for (const r of rows) {
-    const { hh, mm } = zonedParts(s.timezone, r.slot_start);
-    const p = prof[hh * 2 + (mm >= 30 ? 1 : 0)];
+    const p = prof[Math.floor(r.tod_min / (slotS / 60))];
     p.n++;
     for (const k of keys) if (k !== 'import_rate' && k !== 'export_rate') p[k] += r[k] || 0;
     if (r.import_rate != null) { p.nRate++; p.import_rate += r.import_rate; p.export_rate += r.export_rate || 0; }
@@ -306,7 +372,8 @@ app.get('/api/sites/:id/breakdown', (req, res) => {
   const ledgerFrom = from === to ? addDays(to, -6) : from;
   const ledger = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date DESC').all(s.id, ledgerFrom, to);
 
-  res.json({ from, to, days: (Date.parse(to) - Date.parse(from)) / 86400000 + 1, totals: { ...t, ...x }, profile, bands: bands.filter((b) => b.kwh > 0 || b.lo >= 0), ledger, ledgerFrom });
+  res.json({ from, to, days: (Date.parse(to) - Date.parse(from)) / 86400000 + 1, totals: { ...t, ...x }, profile, bands: bands.filter((b) => b.kwh > 0 || b.lo >= 0), ledger, ledgerFrom, ...ledgerOf(s),
+    provenance: provenanceOf(s, from, to) });
 });
 
 app.get('/api/sites/:id/compare', (req, res) => {
@@ -347,7 +414,7 @@ app.get('/api/sites/:id/everything', (req, res) => {
       carbon_intensity: x.carbon_intensity, solar_forecast: x.solar,
     }));
   }
-  const tEnd = forecast.length ? forecast[forecast.length - 1].slot_start + SLOT : end;
+  const tEnd = forecast.length ? forecast[forecast.length - 1].slot_start + slotLength(s) : end;
 
   const events = [];
   for (const r of db.prepare('SELECT * FROM sync_run WHERE site_id = ? AND started_at >= ? AND started_at < ? ORDER BY started_at').all(s.id, start, tEnd)) {
@@ -398,14 +465,14 @@ app.get('/api/sites/:id/everything', (req, res) => {
   const devices = db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id);
   const mask = (ref) => (ref && ref.length > 6 ? `…${ref.slice(-4)}` : ref);
   res.json({
-    from, to, start, end: tEnd, now, timezone: s.timezone, rows, forecast, events,
+    from, to, start, end: tEnd, now, timezone: s.timezone, rows, forecast, events, ...ledgerOf(s), provenance: provenanceOf(s, from, to),
     site: { name: s.name, postcode: s.postcode, pv_kwp: s.pv_kwp, battery_kwh: s.battery_kwh, region: s.gsp_region, is_demo: s.is_demo },
     connections: conns,
     devices: devices.map((d) => ({ kind: d.kind, provider: d.provider, label: d.label, ref: mask(d.external_ref), state: JSON.parse(d.attrs || '{}').status?.currentState || null })),
   });
 });
 
-app.get('/api/sites/:id/forecast', (req, res) => res.json(forecastSite(site(req).id, Math.min(Number(req.query.hours) || 48, 48))));
+app.get('/api/sites/:id/forecast', (req, res) => { const s = site(req); res.json({ ...forecastSite(s.id, Math.min(Number(req.query.hours) || 48, 48)), ...ledgerOf(s) }); });
 // Solar expected for the weather that happened (stored Open-Meteo sunlight × this home's own
 // response, fitted leaving each day out), per past half-hour and day, against actual output.
 app.get('/api/sites/:id/solar-expected', (req, res) => {
@@ -420,20 +487,21 @@ app.get('/api/sites/:id/ev', (req, res) => {
   const s = site(req);
   const devices = db.prepare("SELECT id, label, provider, attrs FROM device WHERE site_id = ? AND kind = 'ev'").all(s.id);
   const { from, to } = periodRange(s, req.query.period || '30d');
-  const rows = db.prepare(`SELECT slot_start, ev, home, solar_to_home, grid_to_home_cost, battery_to_home_cost, ${IMP} AS import_rate
+  const rows = db.prepare(`SELECT slot_start, dur_s, ev, home, solar_to_home, grid_to_home_cost, battery_to_home_cost, ${IMP} AS import_rate
     FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND ev > 0.001 ORDER BY slot_start`).all(s.id, from, to);
   const sessions = [];
   for (const r of rows) {
     const cost = r.home > 0 ? (r.ev * ((r.grid_to_home_cost || 0) + (r.battery_to_home_cost || 0))) / r.home : 0;
     const solar = r.home > 0 ? (r.ev * r.solar_to_home) / r.home : 0;
     const last = sessions[sessions.length - 1];
-    if (last && r.slot_start - last.end <= SLOT) {
-      last.end = r.slot_start + SLOT; last.kwh += r.ev; last.cost += cost; last.solar += solar; last.peakRate = Math.max(last.peakRate, r.import_rate ?? 0); last.slots.push(r.slot_start);
-    } else sessions.push({ start: r.slot_start, end: r.slot_start + SLOT, kwh: r.ev, cost, solar, peakRate: r.import_rate ?? 0, slots: [r.slot_start] });
+    // A session continues across a gap of at most one slot.
+    if (last && r.slot_start - last.end <= r.dur_s) {
+      last.end = r.slot_start + r.dur_s; last.kwh += r.ev; last.cost += cost; last.solar += solar; last.peakRate = Math.max(last.peakRate, r.import_rate ?? 0); last.slots.push(r.slot_start);
+    } else sessions.push({ start: r.slot_start, end: r.slot_start + r.dur_s, kwh: r.ev, cost, solar, peakRate: r.import_rate ?? 0, slots: [r.slot_start] });
   }
   const avgRate = db.prepare(`SELECT AVG(${IMP}) AS r FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to).r;
   const fc = forecastSite(s.id, 24).slots.filter((x) => x.ev > 0).map((x) => ({ slot: x.slot_start, kwh: x.ev, rate: x.import_rate }));
-  res.json({ from, to, devices, sessions: sessions.reverse(), averageImportRate: avgRate, planned: fc });
+  res.json({ from, to, devices, sessions: sessions.reverse(), averageImportRate: avgRate, planned: fc, ...ledgerOf(s) });
 });
 
 // ───────────── Trust: evidence, health, catalog ─────────────
@@ -455,18 +523,22 @@ app.get('/api/sites/:id/evidence', (req, res) => {
      WHERE (se.subject_kind = 'site' AND se.subject_id = ? OR se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?)
             OR se.subject_kind = 'region' AND se.subject_id = ?)
        AND f.start_ts < ? AND f.end_ts > ? AND f.end_ts - f.start_ts <= 7200
-    ORDER BY metric, start_ts, recorded_at`).all(String(s.id), slot - pad, slot + SLOT, String(s.id), s.id, `carbon:${s.carbon_region}`, slot + SLOT, slot)
+    ORDER BY metric, start_ts, recorded_at`).all(String(s.id), slot - pad, slot + row.dur_s, String(s.id), s.id, `carbon:${s.carbon_region}`, slot + row.dur_s, slot)
     .filter((f) => f.subject_kind !== 'device' || f.kind === 'interval');
-  const rates = db.prepare(`SELECT t.tariff_code, t.direction, r.component, r.register, r.payment_method, r.valid_from, r.valid_to, r.price_ex_vat, r.recorded_at, r.superseded_at, r.raw_id
+  const rates = db.prepare(`SELECT t.tariff_code, t.direction, r.component, r.register, r.charge_period, r.payment_method, r.valid_from, r.valid_to, r.price_ex_vat, r.recorded_at, r.superseded_at, r.raw_id,
+      r.origin, r.origin_note, r.estimated, t.origin AS tariff_origin
     FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id JOIN tariff_agreement a ON a.tariff_id = t.id AND a.site_id = ? AND a.superseded_at IS NULL
     WHERE r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ? AND a.valid_from <= ? AND IFNULL(a.valid_to, 9000000000) > ?
     ORDER BY t.direction, r.component, r.superseded_at IS NOT NULL, r.recorded_at DESC`).all(s.id, slot, slot, slot, slot);
-  const vat = db.prepare('SELECT * FROM vat_rate WHERE valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').all(slot, slot);
+  const vat = db.prepare('SELECT * FROM vat_rate WHERE valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').all(slot, slot)
+    .map((v) => ({ ...v, origin: 'sourced', origin_note: 'src/db/registry.js VAT_RATES' }));
+  const taxRules = db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY fuel, direction, seq')
+    .all(s.country ?? 'GB', slot, slot).map((r) => ({ ...r, unverified: r.unverified === 1 }));
   const rawIds = [...new Set([...facts, ...rates].map((f) => f.raw_id).filter(Boolean))];
   const raws = rawIds.length ? db.prepare(`SELECT p.id, src.code AS source, p.request, p.fetched_at, p.status, p.file FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.id IN (${rawIds.map(() => '?').join(',')})`).all(...rawIds) : [];
   const checks = db.prepare('SELECT check_code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date = ? ORDER BY check_code').all(s.id, row.local_date);
   const revisions = db.prepare('SELECT COUNT(*) AS n, MAX(revised_at) AS last FROM site_day_revision WHERE site_id = ? AND local_date = ?').get(s.id, row.local_date);
-  res.json({ row: { ...row, lineage: JSON.parse(row.lineage || '{}') }, facts, rates, vat, raws, checks, revisions, timezone: s.timezone });
+  res.json({ row: { ...row, lineage: JSON.parse(row.lineage || '{}') }, facts, rates, vat, taxRules, raws, checks, revisions, timezone: s.timezone, ...ledgerOf(s) });
 });
 
 app.get('/api/raw/:rawId', (req, res) => {
@@ -541,6 +613,9 @@ app.get('/api/catalog', (req, res) => {
     sources: db.prepare('SELECT code, name, contract FROM source ORDER BY id').all().map((s) => ({ ...s, contract: JSON.parse(s.contract) })),
     metrics: db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric ORDER BY domain, code').all(),
     vat: db.prepare('SELECT * FROM vat_rate ORDER BY fuel, direction, valid_from').all(),
+    taxRules: db.prepare('SELECT * FROM tax_rule WHERE superseded_at IS NULL ORDER BY country, fuel, direction, seq, valid_from').all().map((r) => ({ ...r, unverified: r.unverified === 1 })),
+    markets: db.prepare('SELECT * FROM market ORDER BY code').all(),
+    currencies: db.prepare('SELECT * FROM currency ORDER BY code').all(),
   });
 });
 
@@ -550,25 +625,31 @@ app.use((err, req, res, next) => {
 
 // ───────────── Start ─────────────
 
-closeInterruptedRuns();
-const envSite = ensureEnvSite();
-const maintenance = runMaintenance();
-if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
-const port = Number(process.env.PORT) || 4100;
-const server = app.listen(port, () => {
-  const minutes = startScheduler();
-  console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
-  for (const { id, name } of db.prepare('SELECT id, name FROM site').all()) {
-    syncSite(id).then((r) => console.log(`synced ${name}: ${r.ok ? 'ok' : 'partial'}`)).catch((err) => console.error(`sync ${name}:`, err.message));
-  }
-});
-
-// Stop cleanly when asked (Ctrl+C, the supervisor, launchd): stop taking requests and close
-// the database. SQLite's write-ahead log keeps it consistent even if a write was cut short.
-for (const sig of ['SIGTERM', 'SIGINT']) {
-  process.on(sig, () => {
-    server.close();
-    try { db.close(); } catch { /* already closed */ }
-    process.exit(0);
+export function start() {
+  closeInterruptedRuns();
+  const envSite = ensureEnvSite();
+  const maintenance = runMaintenance();
+  if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
+  const port = Number(process.env.PORT) || 4100;
+  const server = app.listen(port, () => {
+    const minutes = startScheduler();
+    console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
+    // Demo homes have no providers to sync: their data is generated.
+    for (const { id, name } of db.prepare('SELECT id, name FROM site WHERE is_demo = 0').all()) {
+      syncSite(id).then((r) => console.log(`synced ${name}: ${r.ok ? 'ok' : 'partial'}`)).catch((err) => console.error(`sync ${name}:`, err.message));
+    }
   });
+
+  // Stop cleanly when asked (Ctrl+C, the supervisor, launchd): stop taking requests and close
+  // the database. SQLite's write-ahead log keeps it consistent even if a write was cut short.
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.on(sig, () => {
+      server.close();
+      try { db.close(); } catch { /* already closed */ }
+      process.exit(0);
+    });
+  }
+  return server;
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) start();

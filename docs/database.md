@@ -616,7 +616,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 
 | | |
 |---|---|
-| Purpose | One home: name, postcode and outcode, coordinates, time zone, Octopus price region (`gsp_region`), NESO carbon region (`carbon_region`), panel size, tilt and direction, battery size, `is_demo`, `env_key`, `created_at`. |
+| Purpose | One home: name, postcode and outcode, coordinates, time zone, Octopus price region (`gsp_region`), NESO carbon region (`carbon_region`), panel size, tilt and direction, battery size, `is_demo` (1 = a demo home whose readings, tariffs and prices are generated: its energy data is `synthetic`, it is never synced, and every page shows a "Demo data" banner), `env_key`, `created_at`. Since 23 Oct 2026 also the contracted capacity (delta 007, below). |
 | Keys and constraints | `id` PRIMARY KEY; `env_key` UNIQUE (the home configured in `.env` has `env_key = 'env'`) |
 | Written by | `sync.js` `ensureEnvSite` (insert, and update from `.env`); `sunsynk.js` `syncSunsynk` (time zone, coordinates, kWp, battery from the Ah × V reading when unset); `geo.js` `resolveSiteGeo` (postcode, coordinates, outcode, regions); `octopus.js` `syncOctopusAccount` (postcode); `derive.js` `measureBatteryCapacity` (battery size, only when `BATTERY_KWH` is not configured) |
 | Read by | `build.js`, `pricing.js`, `forecast.js`, `compare.js`, `insights.js`, `derive.js`, `sync.js`, every `server.js` endpoint |
@@ -743,7 +743,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 
 | | |
 |---|---|
-| Purpose | Unit and standing prices per tariff, excluding VAT, with validity periods; versioned like facts. |
+| Purpose | Unit and standing prices per tariff, excluding VAT, with validity periods; versioned like facts. (Since 23 Oct 2026 also fixed and capacity charges with a charge period, and any register name: see *Markets, money and tax* below.) |
 | Keys and constraints | `id` PRIMARY KEY; partial index **`rate_current`** (`tariff_id`, `component`, `register`, `valid_from`) WHERE `superseded_at IS NULL`; CHECK `valid_to IS NULL OR valid_to > valid_from`; CHECK on `component` and `register`; trigger **`rate_no_overlap`**: before inserting a current row, abort if a current row for the same tariff, home, component, register and payment method overlaps it (the schema calls it a stand-in for a PostgreSQL exclusion constraint); `tariff_id` → `tariff`, `site_id` → `site`, `raw_id` → `raw_payload` |
 | Written by | `octopus.js` `putRates` via `syncTariffRates`, from `sync.js` (tariffs in force), `syncEnvTariffs` and `compare.js` `syncComparison`. A changed price supersedes the old row. A current row that now overlaps the new one is superseded too, and its parts outside the new period are re-inserted, so no time is left without a price. |
 | Read by | `pricing.js` `loadPricing` and `learnIogWindow`; `compare.js`; `server.js` (`/evidence`, `/health`) |
@@ -793,8 +793,8 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 |---|---|
 | Purpose | Ranges of a home that need rebuilding. |
 | Keys and constraints | `id` PRIMARY KEY; `site_id` → `site` ON DELETE CASCADE; no other index |
-| Written by | `facts.js` `markDirty` (called once per sync by `syncSite`); `build.js` `processQueue` sets `done_at` |
-| Read by | `build.js` `processQueue` only: rows with `done_at IS NULL`, `MIN(from_ts)` per home |
+| Written by | `facts.js` `markDirty` (called once per sync by `syncSite`, to now; by `sites.js` `setSlotLength` and `setContractedCapacity`, to the end of the home's last built or data day); `build.js` `processQueue` sets `done_at` |
+| Read by | `build.js` `processQueue` only: rows with `done_at IS NULL`, `MIN(from_ts)` and `MAX(to_ts)` per home. The rebuild runs from the earliest day asked (never before the home's first energy data) to the latest day asked (never after today), so a slot-length change of a home with three days of data rebuilds those three days, not every day up to today (`test/slot-rebuild-range.test.js`). |
 | Rows now | 44, all done |
 | Growth | 1 row per sync; never deleted. |
 
@@ -855,6 +855,152 @@ Three tables keep history that the serving tables do not. The Data & trust page 
 | Read by | `/trust` |
 
 **As known at.** `facts.js` `withKnownAt(ms, fn)` makes every fact read (readings, intervals, prices, dispatches, the learned IOG window, battery counters) return the version in force at that moment: `recorded_at ≤ T AND (superseded_at IS NULL OR superseded_at > T)`. `buildSite(..., { asOf, dryRun })` uses it to rebuild without writing. Agreements are read with `inForce('a')`, meters with `devicesAt(…, T)` (in use at T, details as known at T), system details with `attributeAt(…, T)`. Where no version existed at T, the earliest recorded one is used and returned in `approximations`.
+
+---
+
+### Markets, money and tax (added 23 Oct 2026)
+
+These tables make the database ready for more than one country, currency, region scheme, tariff shape and slot length. They come from delta files in `src/db/deltas/` that `db.js` applies on every open, after `schema.sql` and after `vat_rate` is seeded: `002-money-tax.sql`, `003-market-region.sql`, `004-tariff-ledger.sql`, and (same day) `005-provenance.sql`, `006-register-window.sql`, `007-capacity.sql`, described in *Provenance, register windows and capacity* below. The rules are stated at the top of each delta: statements end with `;` at the end of a line, a trigger ends with `END;`, an `ADD COLUMN` whose column exists is skipped (SQLite has no `ADD COLUMN IF NOT EXISTS`), and everything else can run again. Backfills are guarded by `schema_delta`, so homes and tariffs that exist the first time a delta runs become country GB, currency GBP, market GB once; later rows are written with their own values. After the deltas, `db.js` upserts the reference rows (markets, one bidding-zone region per market, the 14 GB distribution regions and their aliases).
+
+Row counts below are from a copy of the live database opened by the new code on 23 October (one home, 14 tariffs, 3,786 rate rows).
+
+#### `schema_delta`
+
+| | |
+|---|---|
+| Purpose | Which deltas have been applied, and when. Guards the first-time backfills. |
+| Keys and constraints | `name` PRIMARY KEY, `WITHOUT ROWID`; `applied_at` in ms |
+| Written by | The last statement of each delta (`INSERT OR IGNORE`) |
+| Read by | The deltas' backfill statements |
+| Rows now | 6 |
+| Growth | One row per delta file. |
+
+#### `currency`
+
+| | |
+|---|---|
+| Purpose | ISO 4217 code, number of minor-unit digits, symbol. Every amount in the database is in minor units (pence, cents) of one of these. There is no FX: amounts in two currencies are never added, compared or converted. |
+| Keys and constraints | `code` PRIMARY KEY, `WITHOUT ROWID`; CHECK three upper-case letters; CHECK `minor_exponent` 0–3 |
+| Written by | Delta 002 (`INSERT OR IGNORE` GBP, EUR); must match `CURRENCIES` in `src/core/money.js` (test `deltas.test.js`) |
+| Read by | Foreign keys from `site`, `tariff`, `tax_rule`, `market`, `site_day`; `/api/catalog` |
+| Rows now | 2 |
+| Growth | One row per currency added. |
+
+#### `tax_rule`
+
+| | |
+|---|---|
+| Purpose | Taxes and levies as dated, ordered rules per country, fuel, direction and customer class. `kind`: `percent` (a fraction, no currency), `per_kwh` (minor units per kWh, on the unit charge), `per_period` (minor units per `charge_period` day, month or year, on the fixed charge; may be negative, such as the Dutch yearly credit). Applied in `seq` order by `src/core/tax.js` `applyTaxes`: a percentage applies to the price plus every tax with a lower `seq`, so VAT is charged on an energy tax. `unverified = 1` marks a placeholder value. Versioned like facts (`recorded_at`, `superseded_at` in ms), so an "as known at" rebuild reads the rules of that moment. Takes over from `vat_rate`. |
+| Keys and constraints | `id` PRIMARY KEY; index **`tax_rule_lookup`** (`country`, `fuel`, `direction`, `valid_from`) WHERE current; CHECKs: currency only and always for amounts, `charge_period` only and always for `per_period`, a percent between 0 and 1, `per_kwh` on unit only, `per_period` on fixed only, `valid_to > valid_from`; trigger **`tax_rule_no_overlap`**: the same tax may not apply twice to the same charge at the same moment (`all` overlaps `unit` and `fixed`) |
+| Written by | Delta 002: GB VAT copied from `vat_rate`, row for row (same rates and dates, `seq` 100, `applies_to = 'all'`, `recorded_at` 0), only while there is no GB VAT rule. `db.js` `syncGbVat()` on every open: if `VAT_RATES` in `registry.js` has changed since, the current GB VAT rules are superseded (kept) and the new set recorded, labelled `origin = 'sourced'`. The FR and NL placeholder rules in `tax.js` are **not** written by the deltas; the demo and tests write them into their throwaway databases with `origin = 'placeholder'` and their `source` text as `origin_note`. Since delta 005 every rule has `origin` / `origin_note` (below). |
+| Read by | `pricing.js` `loadPricing` (the home's country, as known at the moment built) and `taxesAt`; `server.js` (`/evidence`, `/api/catalog`) |
+| Rows now | 4 (GB VAT: electricity import 5 % to 1 Oct 2026 then 0 %, export 0 %, gas 5 %) |
+| Growth | One row per rate change per country. |
+
+How pricing uses it: every unit tax is linear in the price, so the price paid per kWh is always `(supplier price + per-kWh levies) × (1 + percentage)`. `site_hh.import_rate_ex` stores the bracket and `import_vat` the percentage, so `import_rate_ex × (1 + import_vat)` stays the price paid. With one percentage rule (every GB tariff) this is exactly the old arithmetic; a GB home with no rule falls back to `vat_rate`. Fixed charges with a per-period tax go through `applyTaxes` with the real length of the local day, month or year.
+
+#### `market`
+
+| | |
+|---|---|
+| Purpose | One row per market: country, its own clock (IANA zone), currency, price interval, usual meter interval, default slot length for a new home, ENTSO-E bidding zone. |
+| Keys and constraints | `code` PRIMARY KEY, `WITHOUT ROWID`; `currency` → `currency`; CHECK intervals divide an hour and are multiples of 5 minutes; CHECK `default_slot_s IN (900, 1800, 3600)` |
+| Written by | Delta 003 inserts GB (needed by the backfill); `db.js` upserts all of `src/db/seed/markets.js` on every open, with `origin`: GB `sourced` (half-hourly settlement, Elexon BSC), FR, NL, DE, BE and ES `placeholder` (written from memory; DE, BE and ES also marked unverified in the seed). |
+| Read by | `sites.js` `createSite` (defaults for a new home), trigger `site_currency_matches_market_*`, `/api/catalog` |
+| Rows now | 6 (GB, FR, NL, DE, BE, ES) |
+| Growth | One row per market. |
+
+#### `region`
+
+| | |
+|---|---|
+| Purpose | Every way a country is divided, as (`scheme`, `code`): `gb_dno` (the 14 GB distribution regions, code = MPAN distributor id 10–23), `bzn` (one bidding zone per market: the whole-country region of FR, NL, GB), and later others (`gb_carbon`, …). Each scheme is its own partition of the map. |
+| Keys and constraints | `id` PRIMARY KEY; UNIQUE (`scheme`, `code`); CHECK `country`; trigger **`region_scheme_not_an_alias`** |
+| Written by | `db.js` on open: `seedRegionsGb` (`src/db/seed/regions-gb.js`; `origin = 'sourced'`, the note names the eb-auth / Octopus / MPAN files) and `seedBiddingZones` (`seed/markets.js`; each zone carries its market row's origin, the note says it is derived from it) |
+| Read by | `region_alias` and `site_region` (foreign keys), `sites.js` `assignRegion`, `regionsOf`, `/api/sites` |
+| Rows now | 20 (14 `gb_dno`, 6 `bzn`) |
+| Growth | Rows per scheme added. |
+
+#### `region_alias`
+
+| | |
+|---|---|
+| Purpose | Other numberings of the same region: for `gb_dno` `16` the Octopus letter (`octopus_gsp` `G`), the Tariffscanner id (`tariffscan_id` `7`) and name (`tariffscan_name` `Norweb`). An alias resolves to exactly one region. Partitions are never aliased to each other (NESO carbon regions and DNO regions divide GB differently). |
+| Keys and constraints | PRIMARY KEY (`alias_scheme`, `alias_code`), `WITHOUT ROWID`; (`scheme`, `code`) → `region` ON DELETE CASCADE; CHECK `alias_scheme <> scheme`; triggers **`region_alias_not_a_partition`** (insert and update) |
+| Written by | `db.js` on open (`seedRegionsGb`) |
+| Read by | `src/core/regions.js` keeps the same index in memory (`resolveRegion`, `aliasesOf`); SQL joins as in `deltas.test.js` |
+| Rows now | 42 (3 per GB region) |
+| Growth | Rows per numbering added. The Tariffscanner id order is taken from probe fixtures and is not documented upstream. |
+
+#### `site_region`
+
+| | |
+|---|---|
+| Purpose | The region a home is in, one current row per scheme, versioned like facts: a correction supersedes the old row (kept). |
+| Keys and constraints | PRIMARY KEY (`site_id`, `scheme`, `recorded_at`), `WITHOUT ROWID`; partial UNIQUE index **`site_region_current`** (`site_id`, `scheme`) WHERE current; (`scheme`, `code`) → `region`; CHECK `superseded_at >= recorded_at` |
+| Written by | `sites.js` `assignRegion` (by code or by any alias); `db.js` on open: a home with an Octopus GSP letter on `site.gsp_region` and no current `gb_dno` row gets one (`source = 'postcode_lookup'`; an existing row is never overwritten) |
+| Read by | `sites.js` `regionsOf`, `/api/sites` (`regions`) |
+| Rows now | 1 (the live home: `gb_dno` 16, North West England, from letter G) |
+| Growth | One row per home per scheme, plus one per correction. |
+
+#### Columns and constraints added to existing tables
+
+| Table | Added | Notes |
+|---|---|---|
+| `site` | `currency` → `currency`, `country`, `market_code` → `market` | Deltas 002/003; backfilled GB / GBP / GB once. New homes are written by `sites.js` `createSite`, which defaults to market GB, GBP, Europe/London and 1800 s (the `.env` home) and takes the market's own defaults otherwise (NL: EUR, Europe/Amsterdam, 900 s). Triggers: **`site_currency_matches_agreements`** (delta 002) and **`site_currency_matches_market_insert` / `_update`** (delta 004): a home is billed in its market's currency. `slot_s` (900/1800/3600) is changed by `sites.js` `setSlotLength` or `POST /api/sites/:id/slot`, which queues a rebuild of the built days (first built day to last built or data day, not to today). Delta 007 adds `contracted_kva`, `contracted_kva_origin`, `contracted_kva_note` (below). |
+| `tariff` | `currency`, `country`, `native_period_s`, `kind` | Deltas 002/003/004. `kind` is the adapter contract's (`flat`, `tou`, `calendar_tou`, `dynamic`, `spot_indexed`, `dispatch`, `market`), backfilled from the Octopus `structure` once. `structure` stays the pricing method; the new value `windows` means the unit rows were expanded from register windows (`tariff-expand.js` `expandWindows`, written by `tariffs.js` `storeWindows`), so the row covering an instant gives its register. Trigger **`tariff_currency_matches_agreements`**. `octopus.js` `upsertTariff` sets `currency = 'GBP'`, `country = 'GB'`, `kind` from the structure (flat/export → `flat`, tou/e7 → `tou`, agile/agile_export/tracker → `dynamic`, iog → `dispatch`), `native_period_s` (Agile 1800, tracker 86400, others NULL) and `origin = 'provider'`, and fills them in on a row stored before they existed without overwriting set values. Delta 005 adds `origin` / `origin_note`, delta 006 `default_register` (below). |
+| `tariff_agreement` | (triggers only) | **`agreement_same_currency_insert` / `_update`** (delta 002): a tariff in another currency than the home's cannot be agreed. `pricing.js` `loadPricing` checks again and refuses to price a mixed pair. |
+| `rate_interval` | `component` now `unit`, `standing`, `fixed`, `capacity`; `charge_period` (`day`, `month`, `year`); `register` any non-empty text | The old CHECKs (unit/standing; single/day/night) cannot be altered, so `db.js` `upgradeRates()` rebuilds the table once: in one transaction with foreign-key checks off, renamed, recreated from `schema.sql`, every row copied with its id, the old table dropped; then `schema.sql` puts back **`rate_current`** and **`rate_no_overlap`** (now also keyed on `charge_period`). CHECK: `unit` has no period, `standing` is per day, `fixed` and `capacity` need one. `standing` stays the GB per-day charge; `fixed` rows (per day, month or year) are spread by real seconds (`tariff-expand.js` `fixedChargePerSlot`); `capacity` rows are priced per kW (kVA) of the home's `site.contracted_kva` per period, the same way (delta 007, below). Prices are minor units of the tariff's currency, ex tax. Delta 005 adds `origin` / `origin_note`, delta 006 `estimated`. |
+| `site_day` | `currency` → `currency` | Delta 004; backfilled from the home once, then written by `build.js`. The currency of the day's money and of its `site_hh` rows (both in minor units). The API adds `currency` and `slot_s` to every response with money or slots, without changing existing keys. |
+| `site_hh` | (no new column) | Money is in the day's `site_day.currency`. `standing_cost` is now every fixed charge of the slot including tax (a credit makes it negative). `export_rate` is the price received after any tax (GB export has no VAT, so unchanged). `lineage` adds `tax` (`tax_rule`, `vat_rate` or `none`), `taxUnverified` and `levy`; and since delta 005 `origin`, `placeholder_inputs`, `data_origin`, `estimated` and `capacity_unknown` (below). A slot priced from an estimated rate row also gets quality bit 8 (estimated). |
+
+The GB numbers do not move: `test/golden-gb.test.js` rebuilds the live home as known at a fixed moment and matches its stored fingerprint row for row after all of the above. `vat_rate` is left in place as the fallback and for `/evidence`.
+
+### Provenance, register windows and capacity (added 23 Oct 2026)
+
+Three more deltas, applied by `db.js` after 004 with the same rules.
+
+**Delta 005, provenance.** Every reference and price row says where its value came from, in one vocabulary (`src/core/provenance.js` `ORIGINS`, strongest first): `sourced` (a named, checkable source; `origin_note` names it), `provider` (live data fetched from a provider for a real home), `user` (typed in by the user or installer), `derived` (computed by the core; a computed figure carries its weakest input's label instead), `placeholder` (a stand-in from memory or an assumption, not verified against an official source), `synthetic` (generated test or demo data). A NULL origin means "not recorded" and is read as a placeholder.
+
+| Table | Added | Notes |
+|---|---|---|
+| `tax_rule`, `tariff`, `rate_interval`, `market`, `region` | `origin` TEXT CHECK in the vocabulary (or NULL), `origin_note` TEXT | Backfill: GB VAT `sourced` (note: `registry.js VAT_RATES`, HMRC's 5 % domestic rate, and the 0 % electricity rate from 1 Oct 2026 as observed in Octopus published prices), any rule with `unverified = 1` `placeholder` (note = its `source`); on the first application only, tariffs held then `provider` (Octopus) except generated `SYN-`/`TEST-` codes (`synthetic`), and rate rows take their tariff's origin; GB market `sourced`, GB distribution regions `sourced`. The seeds label every row they write (FR/NL/DE/BE/ES markets `placeholder`). Writers must label new rows: `tariffs.js` `createTariff` refuses a tariff without a valid origin, `putRateRows` defaults to the tariff's, `octopus.js` writes `provider`, `syncGbVat` `sourced`. |
+| `site` | (none) | `is_demo` stays the flag of a generated home. `/api/sites` adds `origin` (`synthetic` for a demo home, `provider` for one fed by providers, else `user`), `origin_note` and `market_origin`. |
+| `site_hh` | (no column; `lineage` keys) | `origin`: the weakest origin of the tariff, rate rows, tax rules and contracted capacity that priced the slot (import, export and gas); `placeholder_inputs`: every placeholder or synthetic input, named (`"tax_rule FR/accise [placeholder]"`, `"tariff SYN-GB-FLAT [synthetic]"`); `data_origin`: `synthetic` for a demo home, else `provider`; `estimated` and `capacity_unknown` when they apply. Lineage only: no number changes (the golden test does not hash lineage). |
+
+The API adds, without changing existing keys: `origin` on `/api/sites`, the tariff's `origin` / `origin_note`, `rate_origin`, `tax_origin`, `taxes[]` (each with its origin) and a `provenance` block on `/api/sites/:id/tariffs`; a `provenance` block (`worst`, `placeholders`, `demo`, `data_origin`, `estimated_slots`, `unlabelled_slots`, `verified`) on `/summary`, `/timeline`, `/breakdown` and `/everything`; on `/compare` an `origin` and `placeholder_inputs` per scenario and a `provenance` block (`worst`, `placeholders`); `origin` on `/now` prices and on `/evidence` rate, tax and VAT rows. Slots built before lineage carried an origin are labelled from the tariffs, rates and tax rules in force over the period (`unlabelled_slots` says how many).
+
+**Delta 006, register windows.** A windows tariff's "when each register applies" is stored as data, and its unit rows are expanded from the stored rows (`tariffs.js` `storeWindows`, `expandStored`; `tariff-expand.js` `expandWindows`).
+
+#### `register_window`
+
+| | |
+|---|---|
+| Purpose | When each register of a tariff applies: wall-clock `start_min` 0–1439 and `end_min` 1–1440 (end ≤ start wraps past midnight), `weekdays` bit mask (bit 0 = Monday, read on the day the window starts), optional `calendar` + `day_type` (a Tempo colour), `clock` `local` or `utc`, optional validity, the hours as the bill prints them (`source_text`), `origin`. A window with `device_id` is that meter's own and replaces the tariff's for that meter (French HP/HC hours per Linky meter). Versioned (`recorded_at`, `superseded_at` in ms). |
+| Keys and constraints | `id` PRIMARY KEY; `tariff_id` → `tariff`, `device_id` → `device` ON DELETE CASCADE, `calendar` → `calendar`; CHECKs on the minutes, weekdays 1–127, clock, validity order, `day_type` only with a calendar; index **`register_window_tariff`** (`tariff_id`, `device_id`) WHERE current |
+| Written by | `tariffs.js` `putWindows` (via `storeWindows`): a window equal to a current row is not stored twice |
+| Read by | `tariffs.js` `expandStored` |
+| Growth | A few rows per windows tariff, plus one set per meter with its own hours. |
+
+#### `calendar` and `calendar_day`
+
+| | |
+|---|---|
+| Purpose | A calendar (`fr_tempo`, bank holidays) with the local minute its day starts (`day_start_min`: Tempo 06:00), and the type of each day (`calendar_day`: a Tempo colour), versioned like facts. A day with no current row is unknown. |
+| Keys and constraints | `calendar.code` PRIMARY KEY; `calendar_day` PRIMARY KEY (`calendar`, `local_date`, `recorded_at`), partial UNIQUE index **`calendar_day_current`** (`calendar`, `local_date`) WHERE current; CHECK date format; `origin` CHECK on both |
+| Written by | `tariffs.js` `putCalendar` (via `storeWindows`): a changed day type supersedes the old row (kept) |
+| Read by | `tariffs.js` `expandStored` |
+
+| Table | Added | Notes |
+|---|---|---|
+| `tariff` | `default_register` | The register for time no window covers (HP outside the HC hours). |
+| `rate_interval` | `estimated` INTEGER 0/1 | A unit row priced with the caller's cautious default because its day type was not known yet (a Tempo colour beyond tomorrow). The build flags slots priced from it (quality bit 8, `lineage.estimated`, check `price_estimated` warn); the provenance block counts them. Storing the range again replaces rows that differ (superseded, kept), so the real colour replaces the estimate. |
+
+**Delta 007, contracted capacity.**
+
+| Table | Added | Notes |
+|---|---|---|
+| `site` | `contracted_kva` REAL CHECK > 0, `contracted_kva_origin` (vocabulary), `contracted_kva_note` | Written by `sites.js` `setContractedCapacity` (origin required; queues a rebuild of the built days). `pricing.js` prices each current `capacity` rate row as `price × contracted_kva` per its `charge_period` (`day`: per local day over the day's real slots; `month`/`year`: by real seconds, `fixedChargePerSlot`), taxed with the other fixed charges. Without a contracted capacity the charge is left out, every slot says `capacity_unknown` and the day gets a `capacity_charge` warn: never guessed. Not versioned: an "as known at" rebuild uses today's value. |
 
 ## 5. How the tables relate in practice
 

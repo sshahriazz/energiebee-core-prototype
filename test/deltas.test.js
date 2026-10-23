@@ -1,5 +1,6 @@
 // Deltas 002 (money, tax), 003 (market, region), 004 (tariff kind, ledger currency), 005 (provenance),
-// 006 (register windows, estimated rates) and 007 (contracted capacity) applied on top of the
+// 006 (register windows, estimated rates), 007 (contracted capacity), 008 (market provider registry), 009 (provider
+// state: rate-limit cooldown, sweep progress) and 010 (provider owner core / external) applied on top of the
 // CURRENT schema.sql in an in-memory database: they apply cleanly, again without change, backfill
 // existing homes and tariffs as GB/GBP (and provider / sourced) once, and their CHECKs and
 // triggers refuse what they should.
@@ -16,8 +17,8 @@ import { GB_REGIONS, GB_REGION_ALIASES, seedRegionsGb } from '../src/db/seed/reg
 
 const dbDir = path.resolve(import.meta.dirname, '..', 'src', 'db');
 const SCHEMA = fs.readFileSync(path.join(dbDir, 'schema.sql'), 'utf8');
-const DELTA_FILES = ['002-money-tax.sql', '003-market-region.sql', '004-tariff-ledger.sql', '005-provenance.sql', '006-register-window.sql', '007-capacity.sql'];
-const DELTAS = DELTA_FILES.map((f) => fs.readFileSync(path.join(dbDir, 'deltas', f), 'utf8'));
+const DELTA_FILES = ['002-money-tax.sql', '003-market-region.sql', '004-tariff-ledger.sql', '005-provenance.sql', '006-register-window.sql', '007-capacity.sql', '008-market-provider.sql', '009-provider-state.sql', '010-provider-owner.sql'];
+const DELTAS =DELTA_FILES.map((f) => fs.readFileSync(path.join(dbDir, 'deltas', f), 'utf8'));
 
 // The applying rules stated at the top of each delta: statements end with ';' at the end of a
 // line, a trigger ends with 'END;', and an ADD COLUMN whose column exists is skipped.
@@ -302,4 +303,82 @@ test('delta 007: a contracted capacity is positive and labelled', () => {
   db.exec("UPDATE site SET contracted_kva = 6, contracted_kva_origin = 'user', contracted_kva_note = 'bill: puissance souscrite 6 kVA' WHERE id = 1");
   assert.throws(() => db.exec('UPDATE site SET contracted_kva = 0 WHERE id = 1'), /CHECK/);
   assert.throws(() => db.exec("UPDATE site SET contracted_kva_origin = 'bill' WHERE id = 1"), /CHECK/);
+});
+
+test('delta 008: the market provider registry takes its seed and refuses what it should', async () => {
+  const { PROVIDERS, seedProviders } = await import('../src/db/seed/providers.js');
+  const db = existingDb();
+  applyAll(db);
+  seedProviders(db);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM market_provider').get().n, PROVIDERS.length);
+  const before = snapshot(db);
+  seedProviders(db);
+  applyAll(db);
+  assert.deepEqual(snapshot(db), before, 'seed and delta again change nothing');
+  const ins = (vals) => db.exec(`INSERT INTO market_provider (market_code, role, adapter, scope, origin, enabled) VALUES (${vals})`);
+  assert.throws(() => ins("'GB', 'weather', 'x1', 'everyone', 'provider', 1"), /CHECK/);
+  assert.throws(() => ins("'GB', 'weather', 'x2', 'shared', 'guess', 1"), /CHECK/);
+  assert.throws(() => ins("'gb', 'weather', 'x3', 'shared', 'provider', 1"), /CHECK/);
+  assert.throws(() => ins("'GB', 'weather', 'x4', 'shared', 'provider', 2"), /CHECK/);
+  assert.throws(() => ins("'GB', 'weather', 'open_meteo', 'shared', 'provider', 1"), /UNIQUE|PRIMARY/);
+  ins("'*', 'inverter', 'x5', 'home', 'placeholder', 0");
+});
+
+test('delta 009: one provider_state row per provider, its state JSON only', () => {
+  const db = existingDb();
+  applyAll(db);
+  const before = snapshot(db);
+  applyAll(db);
+  assert.deepEqual(snapshot(db), before, 'applying again changes nothing');
+  db.exec("INSERT INTO provider_state (provider, next_allowed_at, state, updated_at) VALUES ('tariffscanner', 1, '{\"last_run_at\":1}', 1)");
+  assert.throws(() => db.exec("INSERT INTO provider_state (provider, updated_at) VALUES ('tariffscanner', 2)"), /UNIQUE|PRIMARY/);
+  assert.throws(() => db.exec("INSERT INTO provider_state (provider, state, updated_at) VALUES ('other', 'not json', 2)"), /CHECK/);
+});
+
+test('delta 010: a market_provider made with an older owner CHECK is rebuilt, its other owner becoming external', async () => {
+  const { PROVIDERS, seedProviders } = await import('../src/db/seed/providers.js');
+  const db = existingDb();
+  // A database from before 010: deltas up to 007, then 008's table with another second owner value.
+  for (const d of DELTAS.slice(0, DELTA_FILES.indexOf('008-market-provider.sql'))) applyDelta(db, d);
+  const d008 = DELTAS[DELTA_FILES.indexOf('008-market-provider.sql')];
+  assert.match(d008, /CHECK \(owner IN \('core', 'external'\)\)/);
+  applyDelta(db, d008.replace("CHECK (owner IN ('core', 'external'))", "CHECK (owner IN ('core', 'old_owner'))"));
+  seedProviders(db);
+  db.exec("UPDATE market_provider SET enabled = 0, note = 'set by an operator' WHERE market_code = 'GB' AND role = 'carbon'");
+  db.exec("INSERT INTO market_provider (market_code, role, adapter, priority, owner, scope, origin, note) VALUES ('GB', 'tariff_catalogue', 'remote', 5, 'old_owner', 'shared', 'provider', 'synced elsewhere')");
+  assert.throws(() => db.exec("UPDATE market_provider SET owner = 'external' WHERE adapter = 'remote'"), /CHECK/);
+  const rows = (x) => x.prepare('SELECT * FROM market_provider ORDER BY market_code, role, adapter').all().map((r) => ({ ...r }));
+  const before = rows(db);
+  applyAll(db);
+  // Every row kept as it was, the other owner now 'external'.
+  assert.deepEqual(rows(db), before.map((r) => ({ ...r, owner: r.owner === 'core' ? 'core' : 'external' })));
+  assert.equal(db.prepare("SELECT owner FROM market_provider WHERE adapter = 'remote'").get().owner, 'external');
+  assert.deepEqual({ ...db.prepare("SELECT enabled, note FROM market_provider WHERE market_code = 'GB' AND role = 'carbon'").get() }, { enabled: 0, note: 'set by an operator' });
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM market_provider').get().n, PROVIDERS.length + 1);
+  // The same table as a fresh 008 + 010 gives: CHECKs, primary key, WITHOUT ROWID, the index.
+  const fresh = existingDb();
+  applyAll(fresh);
+  const def = (x) => x.prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'market_provider' ORDER BY type, name").all().map((r) => ({ ...r }));
+  assert.deepEqual(def(db), def(fresh));
+  assert.deepEqual(def(db).map((o) => [o.type, o.name]), [['index', 'market_provider_role'], ['table', 'market_provider']]);
+  assert.deepEqual(db.prepare("SELECT name FROM pragma_table_info('market_provider') WHERE pk > 0 ORDER BY pk").all().map((c) => c.name), ['market_code', 'role', 'adapter']);
+  assert.match(def(db).find((o) => o.type === 'table').sql, /CHECK \(owner IN \('core', 'external'\)\)[\s\S]*PRIMARY KEY \(market_code, role, adapter\)\s*\) WITHOUT ROWID$/);
+  assert.throws(() => db.exec("UPDATE market_provider SET owner = 'old_owner' WHERE adapter = 'remote'"), /CHECK/);
+  assert.throws(() => db.exec("INSERT INTO market_provider (market_code, role, adapter, scope, origin) VALUES ('GB', 'carbon', 'neso', 'shared', 'provider')"), /UNIQUE|PRIMARY/);
+  assert.throws(() => db.exec("INSERT INTO market_provider (market_code, role, adapter, scope, origin) VALUES ('GB', 'weather', 'x', 'everyone', 'provider')"), /CHECK/);
+  db.exec("INSERT INTO market_provider (market_code, role, adapter, scope, origin) VALUES ('GB', 'weather', 'x', 'shared', 'provider')");
+  assert.deepEqual({ ...db.prepare("SELECT priority, enabled, owner, needs_credentials, licence_confirmed FROM market_provider WHERE adapter = 'x'").get() },
+    { priority: 100, enabled: 1, owner: 'core', needs_credentials: 0, licence_confirmed: 1 }, 'defaults kept');
+  assert.equal(db.prepare("SELECT 1 FROM sqlite_temp_master WHERE name LIKE 'market_provider%'").get(), undefined, 'no temporary copy left');
+  // Applying again changes nothing, and the seed still upserts into the rebuilt table.
+  db.exec("DELETE FROM market_provider WHERE adapter = 'x'");
+  seedProviders(db);   // refreshes the descriptive columns (the note), keeps enabled
+  assert.equal(db.prepare("SELECT enabled FROM market_provider WHERE market_code = 'GB' AND role = 'carbon'").get().enabled, 0);
+  const snap = snapshot(db);
+  const keep = rows(db);
+  applyAll(db);
+  seedProviders(db);
+  assert.deepEqual(snapshot(db), snap);
+  assert.deepEqual(rows(db), keep);
+  assert.ok(db.prepare("SELECT 1 FROM schema_delta WHERE name = '010-provider-owner'").get());
 });

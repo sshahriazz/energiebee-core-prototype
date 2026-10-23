@@ -9,11 +9,14 @@
 //   agreeTariff      a meter on a tariff from a moment; refused when the currencies differ
 // Every tariff, rate row, window and calendar day carries an origin from the provenance
 // vocabulary (src/core/provenance.js): the caller states it, rate rows default to their tariff's.
+// The recorded_at of rate rows, windows and calendar days defaults to time.js recordedNow(): never
+// the same millisecond twice in a process, so a write that corrects another made just before it is
+// always recorded after it.
 import { db, tx } from '../db/db.js';
 import { expandWindows } from './tariff-expand.js';
 import { currency as currencyOf } from './money.js';
 import { checkOrigin } from './provenance.js';
-import { dayBounds, addDays } from './time.js';
+import { dayBounds, addDays, recordedNow } from './time.js';
 
 const KINDS = ['flat', 'tou', 'calendar_tou', 'dynamic', 'spot_indexed', 'dispatch', 'market'];
 
@@ -46,7 +49,7 @@ function tariffOrigin(tariffId) {
  * origin defaults to the tariff's own. New rows only: an overlapping current row is refused by the
  * rate_no_overlap trigger.
  */
-export function putRateRows(tariffId, rows, { siteId = null, recordedAt = Date.now(), origin = null, originNote = null } = {}) {
+export function putRateRows(tariffId, rows, { siteId = null, recordedAt = recordedNow(), origin = null, originNote = null } = {}) {
   const t = origin ? { origin, origin_note: originNote } : tariffOrigin(tariffId);
   checkOrigin(t.origin, `rate rows of tariff ${tariffId}`);
   const ins = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, origin, origin_note, estimated)
@@ -74,7 +77,7 @@ const windowRow = (w, deviceId) => ({
 
 // Store windows as rows (a window equal to a current row is not stored twice). A window given
 // with device_id is that meter's own; the others belong to the tariff.
-export function putWindows(tariffId, windows, { origin, originNote = null, recordedAt = Date.now() }) {
+export function putWindows(tariffId, windows, { origin, originNote = null, recordedAt = recordedNow() }) {
   checkOrigin(origin, `register windows of tariff ${tariffId}`);
   const cur = db.prepare('SELECT * FROM register_window WHERE tariff_id = ? AND superseded_at IS NULL').all(tariffId);
   const same = (a, b) => WINDOW_KEYS.every((k) => (a[k] ?? null) === (b[k] ?? null));
@@ -93,20 +96,25 @@ export function putWindows(tariffId, windows, { origin, originNote = null, recor
 }
 
 // A calendar and its known days ({ code, dayStartMin, days: { 'YYYY-MM-DD': type } }). A day whose
-// type changes supersedes the old row (kept); an equal one is left alone.
-export function putCalendar({ code, dayStartMin = 0, name = null, days = {} }, { origin, originNote = null, recordedAt = Date.now() }) {
+// type changes supersedes the old row (kept); an equal one is left alone. The new row is always
+// recorded after the row it supersedes: a recordedAt that is not later (a caller's fixed stamp
+// used twice, a clock stepped back) is moved to 1 ms after the current row's, and the old row is
+// superseded at that same moment, so the key (calendar, local_date, recorded_at) never clashes
+// and the history stays in order.
+export function putCalendar({ code, dayStartMin = 0, name = null, days = {} }, { origin, originNote = null, recordedAt = recordedNow() }) {
   checkOrigin(origin, `calendar ${code}`);
   tx(() => {
     db.prepare(`INSERT INTO calendar (code, day_start_min, name, origin, origin_note) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT (code) DO UPDATE SET day_start_min = excluded.day_start_min, name = COALESCE(excluded.name, calendar.name)`).run(code, dayStartMin, name, origin, originNote);
-    const cur = db.prepare('SELECT day_type FROM calendar_day WHERE calendar = ? AND local_date = ? AND superseded_at IS NULL');
+    const cur = db.prepare('SELECT day_type, recorded_at FROM calendar_day WHERE calendar = ? AND local_date = ? AND superseded_at IS NULL');
     const sup = db.prepare('UPDATE calendar_day SET superseded_at = ? WHERE calendar = ? AND local_date = ? AND superseded_at IS NULL');
     const ins = db.prepare('INSERT INTO calendar_day (calendar, local_date, day_type, origin, origin_note, recorded_at) VALUES (?, ?, ?, ?, ?, ?)');
     for (const [d, type] of Object.entries(days instanceof Map ? Object.fromEntries(days) : days)) {
       const c = cur.get(code, d);
       if (c?.day_type === type) continue;
-      if (c) sup.run(recordedAt, code, d);
-      ins.run(code, d, type, origin, originNote, recordedAt);
+      const at = c && c.recorded_at >= recordedAt ? c.recorded_at + 1 : recordedAt;
+      if (c) sup.run(at, code, d);
+      ins.run(code, d, type, origin, originNote, at);
     }
   });
 }
@@ -155,7 +163,7 @@ export function expandStored(tariffId, { registerPrices, tz, fromDate, toDate, d
  */
 export function storeWindows(tariffId, {
   windows = [], registerPrices, tz, fromDate, toDate, calendar = null, defaultRegister = null, deviceId = null, siteId = null,
-  estimate = null, recordedAt = Date.now(), origin = null, originNote = null,
+  estimate = null, recordedAt = recordedNow(), origin = null, originNote = null,
 }) {
   const t = db.prepare('SELECT structure, origin, origin_note FROM tariff WHERE id = ?').get(tariffId);
   if (t?.structure !== 'windows') throw new Error(`tariff ${tariffId}: register windows are stored only for structure 'windows'`);

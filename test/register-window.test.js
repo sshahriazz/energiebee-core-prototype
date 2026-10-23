@@ -10,11 +10,11 @@ import { useDb } from './helpers.js';
 useDb();
 const { db } = await import('../src/db/db.js');
 const { createSite } = await import('../src/core/sites.js');
-const { createTariff, putRateRows, agreeTariff, addDevice, storeWindows, expandStored } = await import('../src/core/tariffs.js');
+const { createTariff, putRateRows, agreeTariff, addDevice, storeWindows, expandStored, putCalendar } = await import('../src/core/tariffs.js');
 const { expandWindows, parseRanges } = await import('../src/core/tariff-expand.js');
 const { buildSite } = await import('../src/core/build.js');
 const { seriesId, putIntervals, QUALITY } = await import('../src/core/facts.js');
-const { dayBounds } = await import('../src/core/time.js');
+const { dayBounds, recordedNow } = await import('../src/core/time.js');
 const { periodProvenance } = await import('../src/core/provenance.js');
 
 const TZ = 'Europe/Paris';
@@ -129,4 +129,22 @@ test('a colour corrected later replaces the old one: calendar row and rate rows 
   assert.ok(db.prepare("SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ? AND register = 'white_hp' AND superseded_at IS NOT NULL AND valid_from >= ?").get(tempo.id, dayBounds(TZ, '2026-01-14')[0]).n > 0);
   // A row written by hand over a stored one is still refused (rate_no_overlap).
   assert.throws(() => putRateRows(tempo.id, [{ component: 'unit', register: 'red_hp', validFrom: at, validTo: at + 3600, price: 1 }]), /overlapping/);
+});
+
+test('two corrections of one day in the same millisecond: no key clash, recorded in order', () => {
+  // recordedNow() never repeats, even called back to back.
+  const stamps = Array.from({ length: 50 }, () => recordedNow());
+  assert.ok(stamps.every((s, i) => i === 0 || s > stamps[i - 1]));
+  // A fixed stamp given twice (the clash the default stamp used to hit): the second row is moved to
+  // 1 ms after the first and supersedes it at that moment.
+  const fixed = recordedNow();
+  const label = { origin: 'synthetic', recordedAt: fixed };
+  putCalendar({ code: 'fr_tempo', dayStartMin: 360, days: { '2026-01-20': 'blue' } }, label);
+  putCalendar({ code: 'fr_tempo', dayStartMin: 360, days: { '2026-01-20': 'red' } }, label);
+  putCalendar({ code: 'fr_tempo', dayStartMin: 360, days: { '2026-01-20': 'white' } }, label);
+  assert.deepEqual(db.prepare("SELECT day_type, recorded_at, superseded_at FROM calendar_day WHERE calendar = 'fr_tempo' AND local_date = '2026-01-20' ORDER BY recorded_at").all().map((r) => ({ ...r })), [
+    { day_type: 'blue', recorded_at: fixed, superseded_at: fixed + 1 },
+    { day_type: 'red', recorded_at: fixed + 1, superseded_at: fixed + 2 },
+    { day_type: 'white', recorded_at: fixed + 2, superseded_at: null },
+  ]);
 });

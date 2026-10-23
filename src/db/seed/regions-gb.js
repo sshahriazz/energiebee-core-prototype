@@ -1,17 +1,19 @@
 // The 14 GB electricity distribution regions (GSP groups), with every numbering the core meets.
 //
-// Canonical: scheme 'gb_dno', code = MPAN distributor id 10-23 (the industry numbering, and the
-// region id eb-auth stores). Aliases, each its own alias_scheme:
+// Canonical: scheme 'gb_dno', code = MPAN distributor id 10-23 (the industry numbering: the first
+// two digits of an MPAN core). Aliases, each its own alias_scheme:
 //   octopus_gsp       Octopus GSP group letter A-P (I and O are never issued). The Octopus API
 //                     returns it with a leading underscore ('_C'); regions.js strips it.
 //   tariffscan_name   Tariffscanner dno_region: the legacy DNO brand names (Norweb, Seeboard, ...)
-//   tariffscan_id     Tariffscanner dno_region_id 1-14. Undocumented upstream: taken from the
-//                     probe fixtures, where all 14 id/name pairs are observed (alphabetical by
-//                     name). Match by name first, as eb-auth does.
-// Sources (read only): eb-auth src/lib/grid-supply-point.ts (letter -> id),
-// src/modules/tariffs/tariffs.schema.ts REGION_NAMES (names),
-// src/modules/tariffscan/tariffscan.regions.ts (Tariffscanner name -> id) and
-// src/modules/tariffscan/data/probe-v1-*.json (Tariffscanner id <-> name).
+//   tariffscan_id     Tariffscanner dno_region_id 1-14, NOT the MPAN numbering. Undocumented
+//                     upstream; the ids run in alphabetical order of the names (ignoring case and
+//                     spaces). The saved live samples in test/fixtures/tariffscanner/*.json show 10
+//                     of the 14 id/name pairs (ids 1, 4, 5, 6, 7, 9, 11, 12, 13, 14), each checked
+//                     by test/regions-gb.test.js; 2 East Midlands, 3 London, 8 Scottish Hydro and
+//                     10 Seeboard are not in a saved sample. The adapter matches by name first and
+//                     skips a record whose name and id disagree, so a wrong id is refused, not used.
+// Sources: the Octopus GSP letters, the MPAN distributor ids, and the Tariffscanner region ids and
+// names as captured in test/fixtures/tariffscanner/ (origin 'sourced').
 //
 // NESO carbon regions (Carbon Intensity API ids 1-17, scheme 'gb_carbon') divide the country
 // differently: postcodes BB12 and L1 are both GSP 'G' but carbon regions 3 and 6. They are a
@@ -35,8 +37,8 @@ const GB_DNO = [
   ['23', 'M', 14, 'Yorkshire', 'Yorkshire'],
 ];
 
-// Provenance: 'sourced', from the files named above (delta 005 uses the same note).
-export const GB_REGION_NOTE = 'MPAN distributor ids 10-23 with Octopus GSP letters (eb-auth src/lib/grid-supply-point.ts) and Tariffscanner names and ids (eb-auth tariffscan.regions.ts, probe-v1 fixtures)';
+// Provenance: 'sourced', from the sources named above (delta 005 uses the same note).
+export const GB_REGION_NOTE = 'MPAN distributor ids 10-23 with the Octopus GSP letters A-P, and the Tariffscanner dno_region_id 1-14 and dno_region names as captured in test/fixtures/tariffscanner/ (saved live samples; 10 of the 14 id/name pairs observed there)';
 export const GB_REGIONS = Object.freeze(GB_DNO.map(([code, , , , name]) => Object.freeze({ scheme: 'gb_dno', code, country: 'GB', name, origin: 'sourced', origin_note: GB_REGION_NOTE })));
 
 export const GB_REGION_ALIASES = Object.freeze(GB_DNO.flatMap(([code, letter, tsId, tsName]) => [

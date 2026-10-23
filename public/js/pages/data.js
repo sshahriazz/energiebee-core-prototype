@@ -115,6 +115,78 @@ function systemCard(sys, t) {
     </div></div>` : ''}`);
 }
 
+// Providers for this home (the API's site.providers, one entry per role): which adapter the market's
+// registry gives each kind of data, how its last sync went, where its data comes from (origin badge)
+// and whether it is shared across homes or per home. The status is always a word on a badge, never
+// a colour only. Entry: { role, adapter, status, origin, note, scope } (+ label, reason, alternatives
+// when the backend sends them).
+const ROLE_LABEL = {
+  inverter: 'Inverter', meter: 'Meter', location: 'Location', weather: 'Weather', carbon: 'Grid carbon intensity',
+  gas_cv: 'Gas energy content', tariff_prices: 'Tariff prices', tariff_catalogue: 'Tariffs on sale',
+  compare: 'Tariffs to compare with', solar_forecast: 'Solar forecast',
+};
+const PROVIDER_STATUS = {
+  ok: ['good', 'OK', 'the last sync from this provider worked'],
+  error: ['bad', 'Error', 'the last sync failed; the other providers still ran'],
+  skipped: ['warn', 'Skipped', 'not run on the last sync (nothing to fetch yet, no credentials, or a demo home); not a failure'],
+  disabled: ['', 'Disabled', 'listed for this market but switched off; the note says why'],
+  none: ['', 'None', 'no provider is listed for this kind of data in this market'],
+};
+const SCOPE_WORD = { shared: ['Shared across homes', 'fetched once per region, tariff or location and used by every home that needs it'],
+  home: ['Per home', "uses this home's own connection (an account or an inverter)"] };
+const ORIGIN_ORDER = ['sourced', 'provider', 'user', 'derived', 'placeholder', 'synthetic'];
+const NO_PROVIDER_RE = /^no provider for this market\.?$/i;
+
+const statusBadge = (status) => {
+  const [cls, word] = PROVIDER_STATUS[status] || ['', status || 'unknown'];
+  return `<span class="badge ${cls}">${esc(word)}</span>`;
+};
+
+function providerNote(x) {
+  const lines = [];
+  if (x.status === 'none') lines.push('No provider for this market.');
+  const note = x.note && !NO_PROVIDER_RE.test(String(x.note).trim()) ? String(x.note).trim() : '';
+  // As a sentence: capital first letter and a full stop, so the next sentence does not run on.
+  if (note) lines.push(esc(`${note.charAt(0).toUpperCase()}${note.slice(1)}${/[.!?)]$/.test(note) ? '' : '.'}`));
+  if (x.role === 'tariff_prices' && (x.status === 'none' || x.status === 'disabled')) lines.push('Tariffs can be entered by hand.');
+  const reason = x.reason && !NO_PROVIDER_RE.test(String(x.reason).trim()) && !(note && String(x.reason).includes(note)) ? String(x.reason) : '';
+  const extra = [];
+  if (reason) extra.push(`${x.status === 'disabled' ? 'Why' : 'Last sync'}: ${esc(reason)}`);
+  if ((x.alternatives || []).length) {
+    extra.push(`Also listed: ${x.alternatives.map((a) => `<span class="mono">${esc(a.adapter)}</span> (${esc((PROVIDER_STATUS[a.status]?.[1] || a.status || 'unknown').toLowerCase())})`).join(', ')}`);
+  }
+  return `${lines.join(' ') || '<span class="faint">–</span>'}${extra.map((e) => `<small>${e}</small>`).join('')}`;
+}
+
+function providersCard(site) {
+  const title = 'Providers for this home';
+  const list = Array.isArray(site?.providers) ? site.providers : null;
+  if (!list || !list.length) return card(title, '', '<p class="muted" style="margin:0">Provider information not available.</p>');
+  const none = '<span class="faint" role="img" aria-label="none">–</span>';
+  const rows = list.map((x) => {
+    const has = x.status !== 'none' && x.adapter;
+    const scope = SCOPE_WORD[x.scope]?.[0];
+    return `<tr role="row">
+      <th role="rowheader" scope="row">${esc(ROLE_LABEL[x.role] || x.label || String(x.role || '').replace(/_/g, ' '))}<span class="mono">${esc(x.role)}</span></th>
+      <td role="cell" data-label="Provider">${has ? `<span class="mono">${esc(x.adapter)}</span>` : none}</td>
+      <td role="cell" data-label="Status">${statusBadge(x.status)}</td>
+      <td role="cell" data-label="Origin">${has ? originBadge(x.origin) : none}</td>
+      <td role="cell" data-label="Shared or per home">${has && scope ? esc(scope) : none}</td>
+      <td role="cell" data-label="Note" class="prov-note">${providerNote(x)}</td></tr>`;
+  }).join('');
+  const present = new Set(list.filter((x) => x.status !== 'none' && x.adapter).map((x) => (ORIGIN_ORDER.includes(x.origin) ? x.origin : 'placeholder')));
+  const key = `<div class="state-notes prov-key"><h3>What the words mean</h3><dl>
+      ${Object.keys(PROVIDER_STATUS).map((s) => `<dt>${statusBadge(s)}</dt><dd>${esc(PROVIDER_STATUS[s][2])}</dd>`).join('')}
+      ${Object.values(SCOPE_WORD).map(([w, d]) => `<dt>${esc(w)}</dt><dd>${esc(d)}</dd>`).join('')}
+    </dl>${present.size ? originLegend(ORIGIN_ORDER.filter((o) => present.has(o))) : ''}
+    <p class="faint">A tariff and its prices can always be typed in by hand (labelled ${originBadge('user')}), in any market. Keys and passwords are never stored by the core: they are read from <span class="mono">.env</span>, for the .env home only.</p></div>`;
+  return card(title, `Which provider fills each kind of data${site.market_code ? ` in market ${esc(site.market_code)}` : ''}, and how its last sync went.`, `
+    <div class="table-wrap"><table class="providers" role="table" aria-label="${title}, one row per kind of data">
+      <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">What it provides</th><th role="columnheader" scope="col">Provider</th><th role="columnheader" scope="col">Status</th>
+        <th role="columnheader" scope="col">Origin</th><th role="columnheader" scope="col">Shared or per home</th><th role="columnheader" scope="col">Note</th></tr></thead>
+      <tbody role="rowgroup">${rows}</tbody></table></div>${key}`, 'id="providers"');
+}
+
 async function render(state) {
   const id = state.site.id;
   const tf = timeFmt(state.tz);
@@ -161,6 +233,7 @@ async function render(state) {
     <div class="section">${correctionsCard(t, tf)}</div>
     <div class="banner section"><span>⛓</span><div><b>Pipeline:</b> provider API → adapter (applies the source contract) → raw payload kept → facts (append-only, versioned) → build engine (${esc(h.method)}) → ${slotNoun()} timeline → these pages.
       Pages never call a provider; they read the timeline.</div></div>
+    <div class="section">${providersCard(state.site)}</div>
     <div class="section grid cols-2">${card('Connections', 'One per provider for this home', conns)}${card('Recent syncs', 'Each step runs on its own; one failure never blocks the rest', runs)}</div>
     <div class="section grid cols-2">${card('Storage and rebuild', 'Serving tables are disposable: they can always be rebuilt from facts.', storage)}${card('Quarantine', '', quarantine)}</div>
     <div class="section">${card('Source contracts', 'Everything the core knows about each provider’s quirks lives here, not in the build engine.', contracts)}</div>

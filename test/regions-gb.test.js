@@ -3,11 +3,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { resolveRegion, aliasesOf, buildRegionIndex, normaliseCode } from '../src/core/regions.js';
 import { GB_REGIONS, GB_REGION_ALIASES } from '../src/db/seed/regions-gb.js';
 
-// Independent restatement of the three numberings (eb-auth grid-supply-point.ts,
-// tariffscan.regions.ts, and the Tariffscanner probe fixture).
+// Independent restatement of the three numberings: MPAN distributor id, Octopus GSP letter, and
+// Tariffscanner dno_region_id / dno_region (checked below against our saved live samples in
+// test/fixtures/tariffscanner/), with the region's name.
 const TABLE = [
   ['10', 'A', '1', 'Eastern', 'Eastern England'],
   ['11', 'B', '2', 'East Midlands', 'East Midlands'],
@@ -50,7 +52,7 @@ for (const [mpan, letter, tsId, tsName, name] of TABLE) {
 }
 
 test('BB12 is Octopus G: North West England, MPAN 16, Tariffscanner Norweb (7)', () => {
-  // eb-auth carbon.regions.ts: "postcode BB12 -> carbon region 3 ... Octopus assigns GSP letter G".
+  // Postcode BB12 is NESO carbon region 3 and Octopus GSP letter G (the test homes elsewhere use it).
   const g = resolveRegion('octopus_gsp', 'G');
   assert.equal(g.code, '16');
   assert.equal(g.name, 'North West England');
@@ -109,20 +111,39 @@ test('an alias that points at two regions, or at none, is refused', () => {
   }), /unknown region/);
 });
 
-// The Tariffscanner id/name pairs, checked against eb-auth's fixtures when that checkout is
-// present (read only). Skipped elsewhere.
-const FIXTURE_DIR = '/Users/macbookpro/Desktop/projects/eb-auth/src/modules/tariffscan/data';
-const fixtures = ['probe-v1-domestic.json', 'probe-v1-single-product.json'].map((f) => `${FIXTURE_DIR}/${f}`).filter((f) => fs.existsSync(f));
-test('Tariffscanner dno_region_id and dno_region agree with the eb-auth fixtures', { skip: fixtures.length ? false : 'eb-auth fixtures not present' }, () => {
+// The Tariffscanner id/name pairs, checked against our own saved live samples (the records the
+// API answered, kept in test/fixtures/tariffscanner/ and used by test/tariffscanner.test.js).
+// Part of the repository: never skipped; a missing or empty fixture fails.
+const FIXTURE_DIR = path.join(import.meta.dirname, 'fixtures', 'tariffscanner');
+test('Tariffscanner dno_region_id and dno_region in the saved samples agree with the aliases and the table', () => {
+  const files = fs.readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.json')).sort();
+  assert.deepEqual(files, ['page-1.json', 'page-2.json', 'page-day-night.json']);
+  const pairs = new Map();
   let seen = 0;
-  for (const f of fixtures) {
-    for (const row of JSON.parse(fs.readFileSync(f, 'utf8')).data ?? []) {
-      if (row.dno_region_id == null) continue;
+  for (const f of files) {
+    const data = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, f), 'utf8')).data;
+    assert.ok(Array.isArray(data) && data.length > 0, `${f} has records`);
+    for (const row of data) {
+      assert.ok(Number.isInteger(row.dno_region_id) && typeof row.dno_region === 'string', `${f}: product ${row.product_id} has a region id and name`);
       const byId = resolveRegion('tariffscan_id', row.dno_region_id);
-      assert.ok(byId, `id ${row.dno_region_id}`);
-      assert.equal(resolveRegion('tariffscan_name', row.dno_region), byId, `${row.dno_region_id} ${row.dno_region}`);
+      assert.ok(byId, `${f}: id ${row.dno_region_id} resolves`);
+      assert.equal(resolveRegion('tariffscan_name', row.dno_region), byId, `${f}: ${row.dno_region_id} ${row.dno_region}`);
+      const t = TABLE.find((x) => x[2] === String(row.dno_region_id));
+      assert.equal(t[3], row.dno_region, `table pair for id ${row.dno_region_id}`);
+      assert.equal(byId.code, t[0], `MPAN id for ${row.dno_region}`);
+      if (pairs.has(row.dno_region_id)) assert.equal(pairs.get(row.dno_region_id), row.dno_region, `id ${row.dno_region_id} always has one name`);
+      pairs.set(row.dno_region_id, row.dno_region);
       seen++;
     }
   }
-  assert.ok(seen > 0);
+  assert.equal(seen, 15);
+  // The pairs the samples show (10 of 14; seed/regions-gb.js names the four they do not).
+  assert.deepEqual([...pairs.keys()].sort((a, b) => a - b), [1, 4, 5, 6, 7, 9, 11, 12, 13, 14]);
+});
+
+test('Tariffscanner ids run in alphabetical order of the names (ignoring case and spaces)', () => {
+  const key = (s) => s.toLowerCase().replace(/\s+/g, '');
+  const names = TABLE.map((r) => r[3]);
+  assert.deepEqual([...names].sort((a, b) => key(a).localeCompare(key(b))), names);
+  assert.deepEqual(TABLE.map((r) => Number(r[2])), Array.from({ length: 14 }, (_, i) => i + 1));
 });

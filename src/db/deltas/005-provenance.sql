@@ -49,7 +49,7 @@ UPDATE rate_interval SET origin = (SELECT t.origin FROM tariff t WHERE t.id = ra
 -- row they write, with these same notes).
 UPDATE market SET origin = 'sourced', origin_note = 'GB half-hourly settlement period, Europe/London clock and GBP (Elexon BSC); the same 30-minute grid as the Octopus rate and meter intervals'
   WHERE origin IS NULL AND code = 'GB';
-UPDATE region SET origin = 'sourced', origin_note = 'MPAN distributor ids 10-23 with Octopus GSP letters (eb-auth src/lib/grid-supply-point.ts) and Tariffscanner names and ids (eb-auth tariffscan.regions.ts, probe-v1 fixtures)'
+UPDATE region SET origin = 'sourced', origin_note = 'MPAN distributor ids 10-23 with the Octopus GSP letters A-P, and the Tariffscanner dno_region_id 1-14 and dno_region names as captured in test/fixtures/tariffscanner/ (saved live samples; 10 of the 14 id/name pairs observed there)'
   WHERE origin IS NULL AND scheme = 'gb_dno';
 
 INSERT OR IGNORE INTO schema_delta (name, applied_at) VALUES ('005-provenance', CAST(strftime('%s', 'now') AS INTEGER) * 1000);

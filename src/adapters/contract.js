@@ -1,5 +1,5 @@
-// Price-provider adapter contract. Every source of tariffs or prices (Octopus, Tariffscanner
-// through eb-auth, tounify, ENTSO-E, …) is wrapped in one object of this shape, so the core can
+// Price-provider adapter contract. Every source of tariffs or prices (Octopus, Tariffscanner,
+// tounify, ENTSO-E, …) is wrapped in one object of this shape, so the core can
 // list catalogues, follow versions and capture price days without knowing the provider.
 // Pure: no database, no network. The checks below look at the shape of an adapter and of the
 // rows it returns; they never call the adapter's functions.
@@ -13,14 +13,16 @@
 // - Negative prices are kept as they are (spot hours with surplus solar).
 // - External ids are opaque and case-sensitive: stored and sent back byte for byte, never
 //   trimmed, upper-cased or checked against a pattern.
-// - owner names the ONE process allowed to call the provider. Tariffscanner is owned by eb-auth
-//   (one 20 requests/minute budget for the whole company), so the core reads eb-auth's copy and
-//   never calls it; assertOwner() stops a second caller.
+// - owner names the ONE process allowed to call the provider: 'core' (this process) or
+//   'external' (another process owns the provider's rate budget; the core must not call it).
+//   assertOwner() stops a second caller. Tariffscanner is the core's own
+//   (src/adapters/tariffscanner.js): its 20 requests a minute are per credential, so its client
+//   throttles, budgets and backs off on a 429.
 // - etag is the opaque validator from the previous call of the same listing; an unchanged
 //   listing answers { status: 'not_modified' } and costs nothing to store.
 
 export const ROLES = ['catalogue', 'prices', 'both', 'market'];
-export const OWNERS = ['core', 'eb-auth'];
+export const OWNERS = ['core', 'external'];
 export const PRICE_COMPONENTS = ['energy', 'grid', 'fees', 'tax'];
 export const RESOLUTIONS = [900, 1800, 3600];
 
@@ -70,10 +72,10 @@ export const RESOLUTIONS = [900, 1800, 3600];
  * @property {string} [skipped]
  *
  * @typedef {object} PriceAdapter
- * @property {string} code                    'octopus' | 'tariffscan' | 'tounify' | 'entsoe' | …
+ * @property {string} code                    'octopus' | 'tariffscanner' | 'tounify' | 'entsoe' | …
  * @property {string[]} countries             ISO 3166-1 alpha-2
  * @property {ProviderRole} role
- * @property {'core'|'eb-auth'} owner
+ * @property {'core'|'external'} owner  'external': another process owns the provider's rate budget
  * @property {(country: string, etag?: string|null) => Promise<ListResult>} [listTariffs]       catalogue, both
  * @property {(ref: TariffRef, etag?: string|null) => Promise<VersionsResult>} [versions]       catalogue, both
  * @property {(ref: TariffRef, variant: string, dates: string[], resolutionS: number) => Promise<PriceDaysResult>} [priceDays]
@@ -113,10 +115,13 @@ export function assertAdapter(a) {
   return a;
 }
 
-// Only the owning process may call a provider; anyone else reads the owner's copy.
+// Only the owning process may call a provider (one rate budget, one caller). caller is 'core' for
+// this process; a provider owned by 'external' is never called by it.
 export function assertOwner(a, caller = 'core') {
   if (a.owner !== caller) {
-    throw new Error(`${a.code} is owned by ${a.owner}: ${caller} must read ${a.owner}'s copy, not call the provider (one rate budget, one caller)`);
+    const owner = a.owner === 'external' ? 'another process' : a.owner;
+    const who = caller === 'core' ? 'the core' : caller;
+    throw new Error(`${a.code} is owned by ${owner}: ${who} must not call it (one rate budget, one caller)`);
   }
   return a;
 }

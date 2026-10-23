@@ -4,7 +4,8 @@
 //   node --disable-warning=ExperimentalWarning scripts/demo-multi-market.js
 //
 // Never touches data/core.db or .env and calls no provider: the database is a new file in the
-// system temp folder (DB_FILE, as the tests do) and is deleted when the script ends.
+// system temp folder (DB_FILE, as the tests do) and is deleted when the script ends
+// (unless DEMO_DB is set).
 // Exit code 1 if any check fails.
 //
 // Provenance: every figure printed is tagged with where it came from, in the vocabulary of
@@ -15,9 +16,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-demo-'));
-process.env.DB_FILE = path.join(dir, 'core.db');
-process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+// DEMO_DB=/some/path/core.db keeps the demo database there (to browse it in the web pages).
+const keep = process.env.DEMO_DB;
+const dir = keep ? path.dirname(path.resolve(keep)) : fs.mkdtempSync(path.join(os.tmpdir(), 'eb-demo-'));
+if (keep) fs.mkdirSync(dir, { recursive: true });
+process.env.DB_FILE = keep ? path.resolve(keep) : path.join(dir, 'core.db');
+if (!keep) process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
 const m = await import('./lib/multi-market.js');
 const { db } = await import('../src/db/db.js');

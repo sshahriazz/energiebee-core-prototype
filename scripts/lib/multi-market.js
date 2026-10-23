@@ -114,7 +114,7 @@ export function nlSpot(ts) {
   const q = mm / 15;
   const base = hh < 6 ? 8 : hh < 9 ? 14 : hh < 12 ? 9 : hh < 15 ? 4 : hh < 17 ? 10 : hh < 21 ? 22 : 12;
   let p = base + [0.6, -0.4, 1.1, -0.9][q];
-  if (localDate(NL.tz, ts) === '2025-10-26' && hh >= 12 && hh < 15) p = [[-1, -6, -11, -15], [-18, -9, -4, -2], [1, 2, 3, 3.5]][hh - 12][q];
+  if (localDate(NL.tz, ts) === NL.change && hh >= 12 && hh < 15) p = [[-1, -6, -11, -15], [-18, -9, -4, -2], [1, 2, 3, 3.5]][hh - 12][q];
   return Math.round(p * 100) / 100;
 }
 
@@ -158,7 +158,7 @@ function gbHome() {
   return { site, tariffs: { flat, e7, out }, devices: { imp, exp } };
 }
 
-function frHome() {
+export function frHome() {
   placeholderRules('FR');
   const site = createSite({ name: 'Synthetic FR home', market: 'FR', postcode: '69001', pvKwp: 6, batteryKwh: 10, isDemo: true });
   assignRegion(site.id, { scheme: 'bzn', code: 'FR', source: 'market' });
@@ -186,7 +186,7 @@ function frHome() {
   return { site, tariffs: { hphc, tempo }, devices: { imp } };
 }
 
-function nlHome() {
+export function nlHome() {
   placeholderRules('NL');
   const site = createSite({ name: 'Synthetic NL home', market: 'NL', postcode: '3511', pvKwp: 5, batteryKwh: 10, isDemo: true });
   assignRegion(site.id, { scheme: 'bzn', code: 'NL', source: 'market' });

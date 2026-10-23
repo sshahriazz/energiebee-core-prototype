@@ -10,6 +10,15 @@
 export const SLOT = 1800;                        // the default slot length, s (GB settlement half-hour)
 export const SLOT_LENGTHS = [900, 1800, 3600];   // allowed values of site.slot_s
 export const nowSec = () => Math.floor(Date.now() / 1000);
+// A recorded_at stamp (ms) that never repeats and never goes back within this process: two
+// versioned writes in the same millisecond get different stamps, so a correction made right after
+// a row is always recorded later than it, and a key that includes recorded_at (calendar_day:
+// calendar, local_date, recorded_at) cannot clash. At most a millisecond ahead per call in a burst.
+let lastStampMs = 0;
+export function recordedNow() {
+  lastStampMs = Math.max(Date.now(), lastStampMs + 1);
+  return lastStampMs;
+}
 export const floorTo = (ts, step) => ts - (((ts % step) + step) % step);
 // A home's slot length; anything missing or not allowed reads as the default.
 export const slotLength = (site) => (SLOT_LENGTHS.includes(Number(site?.slot_s)) ? Number(site.slot_s) : SLOT);

@@ -102,6 +102,18 @@ export const SOURCES = [
     },
   },
   {
+    code: 'tariffscanner', name: 'Tariffscanner (FEA) UK domestic tariff catalogue',
+    contract: {
+      timeZone: 'Dates (available_from, available_to) are GB local days; rate rows start and end at Europe/London midnight',
+      timeRole: 'reference: the prices offered on the query date (today), one record per product x region x payment method x service type x rate type',
+      signs: '-',
+      units: 'Unit rates p/kWh and standing charges p/day as published (VAT basis not stated by the API); annual_cost in pounds',
+      missing: 'A price of 0 means the record has no such component (gas on an electricity-only record), never a free fuel',
+      revisions: 'A changed price supersedes the stored row (kept as history); rows are never deleted; withdrawals are not reported (the deleted-ids feed is not used)',
+      upstreamHistory: 'query_date returns the catalogue as it was on a past date; only today is swept',
+    },
+  },
+  {
     code: 'postcodes_io', name: 'postcodes.io',
     contract: { timeZone: '-', timeRole: 'reference', signs: '-', units: 'degrees', missing: '404 for unknown postcodes', revisions: '-', upstreamHistory: '-' },
   },

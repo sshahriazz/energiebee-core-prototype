@@ -8,7 +8,7 @@ Status labels used below: **Done** (built and tested), **Foundation** (the datab
 
 The database and build engine are ready for any country, currency, region, slot length and the common tariff shapes. That is not the same as supporting any provider, home or country.
 
-- A **provider** is supported only when its adapter is written and tested.
+- A **provider** is supported only when its adapter is written and tested, and its row in the market provider registry is switched on.
 - A **country** works only when it has a market row, verified tax rules and at least one price source.
 - A **home** works at scale only after per-site scoping and a PostgreSQL port.
 
@@ -26,7 +26,8 @@ Today one setup is proven with real data: a UK home with a Sunsynk inverter and 
 | Estimated Tempo days and per-meter off-peak windows | Done | Estimated days are flagged. |
 | Provenance labels (sourced, provider, user, placeholder, synthetic, derived) | Done | In the database, lineage, API and pages. |
 | Build engine, checks, forecast, revision log, "as known at" rebuilds | Done | Single home, UK providers. |
-| Provider registry per market, driven sync | In progress | At the time of writing, being built and not yet verified. |
+| Provider registry per market, driven sync | Done | Providers are chosen per market from the `market_provider` table (delta 008), not from code. Each home's sync runs a plan built from it: shared steps once per region, zone or tariff in a sync cycle, per-home steps per connection, each step failing on its own, and skips recorded with their reason. GB runs the same steps in the same order as before, plus the Tariffscanner catalogue step when its credential is set (next row). Every seeded provider has owner `core`; a row with owner `external` (another process owns that provider's rate budget) is never called by the core. FR and NL fetch weather only. `POST /api/sites/:id/connections` refuses providers the market does not allow. Tested in `test/providers.test.js` and `test/sync-plan.test.js` (18 tests), with the full suite passing (224 tests, 23 Oct 2026). Limits are in section 3. |
+| Tariffscanner UK tariff catalogue | Done, two items unverified | The core calls it itself with its own credential (`src/adapters/tariffscanner.js`; GB `tariff_catalogue`, additive with Octopus's catalogue): at most one sweep per 24 hours, at least 3 s between requests, the cooldown kept in `provider_state` across restarts, at most 60 requests per run (then it stops at a saved cursor), and an HTTP 429 aborts the run. `forceTariffscannerSweep()` sweeps by hand (a function, no endpoint); `/api/catalog?tariffs=tariffscanner` lists what is held. Tested against a fake API and clock in `test/tariffscanner.test.js` (15 tests). Unverified: the prices are assumed to exclude VAT (the API does not say; some sample values look like a VAT-inclusive price divided by 1.05), and the size of the first full sweep is unknown (section 6). |
 | Synthetic multi-market demo | Done | `scripts/demo-multi-market.js` and `scripts/demo-ui.js`. |
 
 ## 3. What does not work yet
@@ -36,10 +37,21 @@ Today one setup is proven with real data: a UK home with a Sunsynk inverter and 
 |---|---|---|
 | Other inverters (Solis, Fox, Huawei, SolarEdge, GivEnergy and so on) | Only Sunsynk has an adapter | One adapter and test set per vendor |
 | UK suppliers other than Octopus | Meter and tariff data come through Octopus's API | Adapter per supplier, if it offers an API |
-| French Linky meter reader | Design only | Local reader on an edge agent, cumulative index handling, consent per site |
-| Dutch P1 meter reader | Design only | Same pattern as Linky |
-| EU tariff and price source | No licensed source connected | Choose and license one, then write its adapter |
-| UK carbon outside GB | NESO covers GB only | EU carbon source per country |
+| French Linky meter reader | Design only. Listed in the registry as the FR `meter` provider, switched off, with the note "adapter not built" | Local reader on an edge agent, cumulative index handling, consent per site |
+| Dutch P1 meter reader | Design only. Listed as the NL `meter` provider, switched off, "adapter not built" | Same pattern as Linky |
+| EU tariff and price source | No licensed source connected. tounify and ENTSO-E are listed for FR and NL, switched off | Choose and license one, then write its adapter |
+| UK carbon outside GB | NESO covers GB only. The `carbon` role is empty ("no provider for this market") outside GB | EU carbon source per country |
+
+### What the provider registry does not do
+
+| Gap | Why | Work |
+|---|---|---|
+| No FR or NL adapters | The Linky, P1, tounify and ENTSO-E rows are placeholders (`origin = 'placeholder'`, `enabled = 0`). In FR and NL only weather fetches anything, and prices are typed in | Write the adapters (above), then switch the rows on |
+| No secret store | Credentials stay in `.env` and are read for the `.env` home only. Any other home's account or inverter can be connected (its non-secret reference is stored) but its step is skipped with "no credentials" | A secret store, needed before a second real home |
+| No way to manage the registry from the app | Rows come from `src/db/seed/providers.js`. Switching a provider on or off is an SQL update. The only write endpoint is `POST /api/sites/:id/connections` | An admin endpoint or page, if operators need one |
+| No way to type in a tariff from the app | Manual prices exist as core functions (`createTariff`, `putRateRows` with origin `user`), used by the demos and tests. The Data & trust page says manual entry is allowed, but has no form | An endpoint and a form |
+| No fallback during a sync | The fallback provider is chosen when the plan is built. A provider that fails during a sync is recorded as an error, and the next one by priority is not tried. The next sync chooses the same provider again while it stays switched on | Retry with the next provider, if a market ever has two live ones |
+| Other markets are minimal | DE, BE and ES list weather only, plus Sunsynk as in every market | Rows and adapters per market |
 
 ### Countries
 | Gap | Work |
@@ -60,10 +72,10 @@ The core is built for one home at a time. Many homes need per-site scoping on th
 | Source | What it gives | Blocker | Decision needed |
 |---|---|---|---|
 | **Octopus public API** | UK prices and meter data | None | In use |
-| **Tariffscanner (Tariff Tribe)** | UK tariff catalogue only, 14 regions, flat rates | UK only. Synced by the eb-auth project, which owns the 20-requests-a-minute limit | Confirm with the Tariffscanner team whether an EU product exists |
+| **Tariffscanner (Tariff Tribe)** | UK tariff catalogue only, 14 regions: single-rate, day/night and export rates (other rate types are skipped) | UK only. Called by the core with its own credential, within the 20-requests-a-minute limit, which every user of that credential shares. VAT basis not stated by the API | In use when the credential is set. Confirm with the Tariffscanner team the VAT basis of the prices and whether an EU product exists |
 | **tounify** | EU retail tariffs: supplier price, grid fees, taxes | Storage and reuse licence is unconfirmed. No standing, fixed or capacity charges. Serves only a few past days, so daily capture is mandatory | Get the licence terms in writing before building daily capture |
 | **ENTSO-E** | Wholesale day-ahead prices per bidding zone | Needs a registered token | Register for a token |
-| **Manual entry** | Any tariff typed by hand | None | Always available as a fallback |
+| **Manual entry** | Any tariff typed by hand | No page or API yet: core functions only | Always available as a fallback. Listed for FR and NL as `manual` |
 
 Rules for any new source: every adapter converts to minor units on the way in, records its origin, and writes into the existing tables. The schema does not change.
 
@@ -107,7 +119,10 @@ Predbat is an open-source battery planner. Every five minutes it predicts the ne
 | Item | Note |
 |---|---|
 | GB VAT at 0% for electricity from 1 October 2026 was read off Octopus prices, not HMRC | Labelled sourced with a note saying how it was obtained. Verify. |
-| Carbon is fetched once per site, not once per region | Wasteful for many homes. |
+| Tariffscanner prices are assumed to exclude VAT | The API does not state the basis. They are stored as published in `price_ex_vat`, and the core adds VAT. Some values in `test/fixtures/tariffscanner/` look like a VAT-inclusive price divided by 1.05 (product 329260: standing charge 69.49295238095237 = 72.9676 / 1.05), which supports the assumption. Confirm with Tariffscanner. |
+| Size of the first Tariffscanner sweep is unknown | No full sweep has been measured (the saved samples are three pages of 5 records; the smoke script asks for one page of 5), so how many runs of 60 requests the first sweep needs is not known. The sweep resumes from its saved cursor, so a large catalogue takes more runs, not more requests per run. |
+| Tariffscanner withdrawals are not detected | No deleted-ids feed is read, so a withdrawn tariff's rows stay current. |
+| Shared data is shared only within one sync cycle | Since the provider registry, the homes of one scheduler tick fetch carbon, the gas calorific value, a tariff's prices and the comparison once per region, zone or tariff (`test/sync-plan.test.js`). A home synced on its own (`POST /api/sites/:id/sync`) gets a cycle of its own and fetches again. Weather and solar facts are still stored per home. |
 | `compare.js` covers Octopus tariffs only | It is market-aware in structure but has only GB data. |
 | Raw readings have no origin column | Their label comes from the site's demo flag. |
 | Contracted capacity is not versioned | A change is not kept as history. |
@@ -116,7 +131,7 @@ Predbat is an open-source battery planner. Every five minutes it predicts the ne
 
 ## 7. Suggested order
 
-1. **Verify before relying:** check the FR and NL tax values, the GB 0% VAT claim, the tounify licence and the PredHeat description.
+1. **Verify before relying:** check the FR and NL tax values, the GB 0% VAT claim, the VAT basis of the Tariffscanner prices, the tounify licence and the PredHeat description.
 2. **Choose and license one EU price source,** then write its adapter.
 3. **Write the first non-UK meter reader** (Linky or P1), with consent per site.
 4. **Add inverters on demand,** one adapter per vendor, driven by real customers.

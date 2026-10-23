@@ -22,7 +22,7 @@ const market = {
 };
 
 const catalogue = {
-  code: 'fake_catalogue', countries: ['GB'], role: 'catalogue', owner: 'eb-auth',
+  code: 'fake_catalogue', countries: ['GB'], role: 'catalogue', owner: 'external',
   regionOf: () => ({ scheme: 'gb_dno', code: '12' }),
   listTariffs: async () => ({ status: 'not_modified', etag: 'W/"1"' }),
   versions: async () => ({ status: 'ok', etag: null, versions: [{ versionDate: '20261001', available: true }] }),
@@ -47,9 +47,11 @@ test('missing or malformed fields are each reported', () => {
 });
 
 test('only the owning process may call a provider', () => {
-  assert.throws(() => assertOwner(catalogue), /owned by eb-auth: core must read eb-auth's copy/);
-  assert.equal(assertOwner(catalogue, 'eb-auth'), catalogue);
+  assert.throws(() => assertOwner(catalogue), /fake_catalogue is owned by another process: the core must not call it \(one rate budget, one caller\)/);
+  assert.equal(assertOwner(catalogue, 'external'), catalogue);
   assert.equal(assertOwner(market), market);
+  assert.deepEqual(checkAdapter({ ...catalogue, owner: 'core' }), []);
+  assert.throws(() => assertAdapter({ ...catalogue, owner: 'someone_else' }), /owner must be one of core, external/);
 });
 
 test('price rows from an adapter pass, negative prices and a 23-hour day included', async () => {

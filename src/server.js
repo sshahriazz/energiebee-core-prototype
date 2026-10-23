@@ -14,11 +14,13 @@ import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor
 import { seriesId, readReadings } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
-import { ensureEnvSite, syncSite, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
+import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
+import { providerStatus, connectProvider } from './core/providers.js';
 import { runMaintenance } from './core/maintenance.js';
 import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
+import { resolveRegion } from './core/regions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
@@ -78,6 +80,9 @@ app.get('/api/sites', (req, res) => {
       // Provenance of the home itself: synthetic (demo), provider-fed, or typed in.
       ...siteOrigin(s, connections.map((c) => c.provider)),
       market_origin: db.prepare('SELECT origin FROM market WHERE code = ?').get(s.market_code ?? 'GB')?.origin ?? null,
+      // Per role, the provider the market provider registry gives this home and how it did
+      // (ok | error | skipped | disabled | none), from the last sync. Never any credential.
+      providers: providerStatus(db, s),
     };
   }));
 });
@@ -104,6 +109,18 @@ app.post('/api/sites/:id/slot', (req, res) => {
   try { r = setSlotLength(s.id, slotS); } catch (err) { throw badRequest(err.message); }
   const rebuilt = r.queued && req.body?.rebuild !== false ? processQueue().filter((x) => x.siteId === s.id) : [];
   res.json({ ...r, rebuilt });
+});
+
+// Connect a per-home provider (an inverter cloud, a meter account): { provider, role?, credentials? }.
+// Refused unless the registry lists the provider for the home's market in a per-home role, enabled,
+// licensed and owned by the core. Only the non-secret reference is stored (account number, plant
+// id): the core has no secret store, so keys and passwords stay in .env (for the .env home), and
+// the reply names the fields not stored without echoing any value.
+app.post('/api/sites/:id/connections', (req, res) => {
+  const s = site(req);
+  const b = req.body || {};
+  const r = connectProvider(db, s, { provider: b.provider, role: b.role ?? null, credentials: b.credentials ?? null });
+  res.status(r.created ? 201 : 200).json(r);
 });
 
 app.post('/api/sites/:id/sync', (req, res) => {
@@ -608,7 +625,29 @@ app.get('/api/sites/:id/devices', (req, res) => {
     .map((d) => { const a = JSON.parse(d.attrs || '{}'); return { kind: d.kind, provider: d.provider, label: d.label, profileClass: a.profileClass ?? null, annualKwh: a.annualKwh ?? null, gasUnit: a.gasUnit ?? null, state: a.status?.currentState ?? null }; }));
 });
 
+// The tariffs one provider holds (a catalogue such as tariffscanner), with the rate rows in force
+// now: { tariff_code, product_code, name, fuel, direction, structure, kind, region, currency, origin,
+// origin_note, rates: [{ component, register, payment_method, valid_from, valid_to, price_ex_vat, origin }] }.
+// region: a gb_dno code (MPAN 10-23) or any alias of one (an Octopus letter, a Tariffscanner name).
+function providerTariffs(provider, { region = null, limit = 100, offset = 0 } = {}) {
+  const now = nowSec();
+  const code = region == null || region === '' ? null
+    : (resolveRegion('gb_dno', region) ?? resolveRegion('octopus_gsp', region) ?? resolveRegion('tariffscan_name', region) ?? { code: String(region) }).code;
+  const tariffs = db.prepare(`SELECT id, tariff_code, product_code, name, fuel, direction, structure, kind, region, currency, country, origin, origin_note FROM tariff
+    WHERE provider = ? ${code ? 'AND region = ?' : ''} ORDER BY name, tariff_code LIMIT ? OFFSET ?`).all(...[provider, code, limit, offset].filter((v) => v !== null));
+  const rates = db.prepare(`SELECT component, register, payment_method, valid_from, valid_to, price_ex_vat, origin FROM rate_interval
+    WHERE tariff_id = ? AND site_id IS NULL AND superseded_at IS NULL AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY component, register, payment_method`);
+  return tariffs.map(({ id, ...t }) => ({ ...t, rates: rates.all(id, now, now) }));
+}
+
 app.get('/api/catalog', (req, res) => {
+  // Opt-in, additive: ?tariffs=<provider>[&region=&limit=&offset=] adds that provider's tariffs.
+  const extra = {};
+  if (req.query.tariffs) {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 1000);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    extra.tariffs = providerTariffs(String(req.query.tariffs), { region: req.query.region ?? null, limit, offset });
+  }
   res.json({
     sources: db.prepare('SELECT code, name, contract FROM source ORDER BY id').all().map((s) => ({ ...s, contract: JSON.parse(s.contract) })),
     metrics: db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric ORDER BY domain, code').all(),
@@ -616,6 +655,7 @@ app.get('/api/catalog', (req, res) => {
     taxRules: db.prepare('SELECT * FROM tax_rule WHERE superseded_at IS NULL ORDER BY country, fuel, direction, seq, valid_from').all().map((r) => ({ ...r, unverified: r.unverified === 1 })),
     markets: db.prepare('SELECT * FROM market ORDER BY code').all(),
     currencies: db.prepare('SELECT * FROM currency ORDER BY code').all(),
+    ...extra,
   });
 });
 
@@ -634,10 +674,12 @@ export function start() {
   const server = app.listen(port, () => {
     const minutes = startScheduler();
     console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
-    // Demo homes have no providers to sync: their data is generated.
-    for (const { id, name } of db.prepare('SELECT id, name FROM site WHERE is_demo = 0').all()) {
-      syncSite(id).then((r) => console.log(`synced ${name}: ${r.ok ? 'ok' : 'partial'}`)).catch((err) => console.error(`sync ${name}:`, err.message));
-    }
+    // Demo homes have no providers to sync: their data is generated. One cycle, home after home,
+    // so shared steps (a region, a tariff, a location) run once.
+    const names = new Map(db.prepare('SELECT id, name FROM site WHERE is_demo = 0').all().map((x) => [x.id, x.name]));
+    syncAll([...names.keys()], {
+      onSite: (id, r, err) => (err ? console.error(`sync ${names.get(id)}:`, err.message) : console.log(`synced ${names.get(id)}: ${r.ok ? 'ok' : 'partial'}`)),
+    }).catch((err) => console.error('sync:', err.message));
   });
 
   // Stop cleanly when asked (Ctrl+C, the supervisor, launchd): stop taking requests and close

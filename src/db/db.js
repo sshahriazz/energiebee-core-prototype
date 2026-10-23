@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SOURCES, METRICS, VAT_RATES, GB_VAT_NOTE } from './registry.js';
 import { todMinute } from '../core/time.js';
 import { seedMarkets, seedBiddingZones } from './seed/markets.js';
+import { seedProviders } from './seed/providers.js';
 import { seedRegionsGb } from './seed/regions-gb.js';
 import { resolveRegion } from '../core/regions.js';
 
@@ -190,14 +191,16 @@ db.exec(`UPDATE device SET recorded_at = COALESCE((SELECT MIN(r.finished_at) * 1
 db.exec('DROP INDEX IF EXISTS reading_current');
 
 // ───────────── Deltas: money and tax (002), markets and regions (003), tariff kind and ledger currency (004),
-// provenance labels (005), register windows and estimated rates (006), contracted capacity (007) ─────────────
+// provenance labels (005), register windows and estimated rates (006), contracted capacity (007),
+// market provider registry (008), provider state: rate-limit cooldown and sweep progress (009),
+// provider owner 'core' or 'external' (010: market_provider rebuilt, same rows) ─────────────
 // Applied on every open, after schema.sql and after vat_rate is seeded (002 copies GB VAT from it
 // into tax_rule). The rules each delta states at its top: statements end with ';' at the end of a
 // line, a trigger ends with a line 'END;', and an ADD COLUMN whose column exists is skipped (SQLite
 // has no ADD COLUMN IF NOT EXISTS). Everything else in a delta is safe to run again, and its
 // backfills are guarded by schema_delta, so homes and tariffs that exist the first time a delta
 // runs become GB / GBP / market GB once, and later ones are written with their own values.
-export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff-ledger.sql', '005-provenance.sql', '006-register-window.sql', '007-capacity.sql'];
+export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff-ledger.sql', '005-provenance.sql', '006-register-window.sql', '007-capacity.sql', '008-market-provider.sql', '009-provider-state.sql', '010-provider-owner.sql'];
 
 export function deltaStatements(sql) {
   const out = [];
@@ -245,8 +248,9 @@ export function syncGbVat(rates = VAT_RATES) {
 }
 syncGbVat();
 // Reference rows: markets (FR, NL and the unverified stand-ins), one bidding-zone region per market,
-// and the 14 GB distribution regions with their Octopus, Tariffscanner id and name aliases. Upserts.
-tx(() => { seedMarkets(db); seedBiddingZones(db); seedRegionsGb(db); });
+// the 14 GB distribution regions with their Octopus, Tariffscanner id and name aliases, and the
+// providers of each market's roles (seed/providers.js; their enabled and licence switches are kept). Upserts.
+tx(() => { seedMarkets(db); seedBiddingZones(db); seedRegionsGb(db); seedProviders(db); });
 // A GB home's distribution region, from the Octopus GSP letter that geo.js stored on the site
 // (from the postcode lookup): recorded once in site_region when the home has no current gb_dno
 // row. A row already there (an installer's correction) is never overwritten.

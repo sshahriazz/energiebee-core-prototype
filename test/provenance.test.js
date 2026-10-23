@@ -16,6 +16,7 @@ const { seriesId, putIntervals } = await import('../src/core/facts.js');
 const { dayBounds, addDays, nowSec, localDate } = await import('../src/core/time.js');
 const { PLACEHOLDER_TAX_RULES, GB_VAT_RULES } = await import('../src/core/tax.js');
 const { MARKETS } = await import('../src/db/seed/markets.js');
+const { GB_REGION_NOTE } = await import('../src/db/seed/regions-gb.js');
 const { ORIGINS, weakest, inputsProvenance, periodProvenance, checkOrigin } = await import('../src/core/provenance.js');
 const { app } = await import('../src/server.js');
 
@@ -93,7 +94,10 @@ test('seeds carry the right origins: FR/NL/DE/BE/ES placeholder, GB VAT and GB r
   // The FR and NL rules the scenario wrote are placeholders.
   assert.deepEqual(db.prepare("SELECT DISTINCT origin FROM tax_rule WHERE country IN ('FR', 'NL')").all().map((r) => r.origin), ['placeholder']);
   // GB distribution regions: sourced, with the files named; bidding zones follow their market.
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM region WHERE scheme = 'gb_dno' AND origin = 'sourced' AND origin_note LIKE '%eb-auth%'").get().n, 14);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM region WHERE scheme = 'gb_dno' AND origin = 'sourced' AND origin_note = ?").get(GB_REGION_NOTE).n, 14);
+  assert.match(GB_REGION_NOTE, /Octopus GSP letters/);
+  assert.match(GB_REGION_NOTE, /MPAN distributor ids/);
+  assert.match(GB_REGION_NOTE, /test\/fixtures\/tariffscanner/);
   const zones = Object.fromEntries(db.prepare("SELECT code, origin FROM region WHERE scheme = 'bzn'").all().map((r) => [r.code, r.origin]));
   assert.deepEqual(zones, { GB: 'sourced', FR: 'placeholder', NL: 'placeholder', 'DE-LU': 'placeholder', BE: 'placeholder', ES: 'placeholder' });
   assert.deepEqual(regionsOf(homes.gb.site.id).map((r) => [r.scheme, r.origin]), [['bzn', 'sourced'], ['gb_dno', 'sourced']]);

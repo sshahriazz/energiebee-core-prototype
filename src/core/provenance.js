@@ -2,7 +2,9 @@
 // build (site_hh.lineage), the API (origin fields and provenance blocks), the pages (badges and
 // banners), the demo output and the docs. Strongest first:
 //   sourced      taken from a named, checkable source; origin_note names it (GB VAT from
-//                registry.js VAT_RATES, GB region numbering from the eb-auth / Octopus / MPAN lists)
+//                registry.js VAT_RATES, GB region numbering from the Octopus GSP letters, the
+//                MPAN distributor ids and the Tariffscanner region ids and names captured in
+//                test/fixtures/tariffscanner/)
 //   provider     live data fetched from a provider for a real home (Octopus, Sunsynk)
 //   user         typed in by the user or installer
 //   derived      computed by us from the above; a figure computed from several inputs carries

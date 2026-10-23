@@ -18,7 +18,7 @@ Four things are settings, not code:
 ### Collect
 - Adapters pull from inverters, meters, tariff catalogues, carbon, weather and solar forecasts. Each response is saved raw first.
 - Failed requests are retried. After an outage, each provider's next fetch reaches back to its last successful sync, so gaps fill in.
-- Sites never call providers directly. Shared data (prices, carbon) is fetched once per tariff or region and shared by every home that uses it.
+- Sites never call providers directly. A registry per market says which provider fills each kind of data (section 8). Shared data (prices, carbon, gas calorific value) is fetched once per tariff, region or zone in each sync cycle and shared by every home that uses it.
 
 ### Keep the truth
 - Every fact is stored with its source, the time it applies to, and the time the system learned it.
@@ -133,29 +133,169 @@ Supporting rules:
 
 ## 7. Onboarding
 
-**A country (once):** a market row, its currency, calendars, tax rules from official sources, region schemes, and a spot-price feed.
+**A country (once):** a market row, its currency, calendars, tax rules from official sources, region schemes, a spot-price feed, and its `market_provider` rows saying which provider fills each role there (section 8).
 
 **A tariff (when a site selects it):** the catalogue entry is fetched, linked to the site through an agreement, and priced on a daily schedule if it is dynamic. Prices are captured every day because most providers serve only a few days of history.
 
 **Read-through cache:** the build only reads stored prices. If a price is missing, the slot stays unpriced and a fetch is queued. When the price arrives, the affected days rebuild.
 
-## 8. Price sources
+## 8. How providers are chosen
 
-The database is ready for any country's tariffs without choosing a provider. Real EU prices need a source only when they start flowing in.
+Providers are chosen by data, not by code. Which provider fills each kind of data in each market is a row in one table, `market_provider`. The sync job (`src/jobs/sync.js`) keeps no provider list of its own. For each home it builds a plan from those rows (`src/core/providers.js` `plan`) and runs it. Adding a provider to a market takes a row, plus one adapter registered under its code (`src/jobs/steps.js`) if the provider is new. Switching a provider off changes one column.
 
-| Source | What it gives | Status |
-|---|---|---|
-| **Octopus public API** | UK half-hourly and window prices | In use. Every Octopus tariff is stored as GB, in pounds, with its kind and price grain, labelled `provider`. |
-| **Tariffscanner (Tariff Tribe)** | UK tariff catalogue: flat rates in pence for 14 regions | UK only. Synced by the eb-auth project, which the core reads so the 20-requests-a-minute limit is not shared. No EU version found. |
-| **tounify** | Retail tariffs for EU markets: supplier price, grid fees, taxes | Off. The licence to store its data and serve it to many homes is unconfirmed. It has no standing, fixed or capacity charges, and it serves only a few past days. |
-| **ENTSO-E** | Wholesale day-ahead prices per bidding zone | Not connected. Free but needs a registered token. |
-| **Manual entry** | Any tariff typed in by hand | Always available as a fallback and for trials. |
+### Roles a home needs
 
-Until a source is chosen, France and Netherlands data in tests and demos is synthetic.
+A home needs up to ten kinds of data, called **roles**. Each role is either **shared** or **per home**:
 
-## 9. Local meters (future)
+- A shared role comes from public data. Work that is the same for several homes is done once per sync cycle, however many homes use it.
+- A per-home role runs only for a home with its own connection: its supplier account, its inverter.
 
-Dutch P1 and French Linky readers can stream live readings through an edge agent. They send cumulative index readings, and slot energy is the difference between indexes at slot boundaries. Linky also reports the current tariff period, which fixes French off-peak hours per meter. Consent is recorded per site because live meter data is personal data.
+| Role | What it gives | Usual scope | GB today | FR and NL today |
+|---|---|---|---|---|
+| `inverter` | Solar, battery and home power from the inverter cloud | per home | `sunsynk` | `sunsynk` (listed once for every market, `'*'`: an inverter does not depend on the country) |
+| `location` | Coordinates, outcode and regions from the postcode | shared | `geo` (postcodes.io, Octopus region letter, NESO carbon region) | none |
+| `weather` | Hourly weather and sunlight | shared | `open_meteo` | `open_meteo` |
+| `carbon` | Grid carbon intensity per carbon region | shared | `neso` | none |
+| `meter` | The supplier's meter readings and tariff agreements | per home | `octopus` (the home's account) | `linky` (FR), `p1` (NL): listed, off, adapter not built |
+| `gas_cv` | Daily gas calorific value per zone, to turn m³ into kWh | shared | `national_gas`, once the home has a gas meter | none |
+| `tariff_prices` | Unit rates and standing charges of the home's tariffs | shared | `octopus` (public rates) | `tounify` and `entsoe`: listed, off. `manual` (typed in, per home): on |
+| `tariff_catalogue` | The tariffs on sale | shared | `octopus`, read by the comparison step, and `tariffscanner` (the UK catalogue, with the core's own credential, at most once a day; section 9). Both run: catalogues add up | none |
+| `compare` | Reference tariffs for the comparison page | shared | `compare` (Agile import and Agile Outgoing for the home's region) | none: the page compares the market's tariffs already held, with nothing to fetch (section 2) |
+| `solar_forecast` | 48-hour solar forecast | shared | `quartz`, once panel size, tilt and direction are known | none |
+
+DE, BE and ES list weather only, plus Sunsynk as in every market.
+
+### The registry: `market_provider`
+
+Each row names a market (or `'*'` for every market), a role and an adapter code, with these settings:
+
+- **`priority`.** Lower is tried first. The first usable provider of a role is used, and the others are fallbacks.
+- **`enabled`.** `0` means listed but never called, for example when the adapter is not built or a token is missing.
+- **`owner`.** The one process allowed to call the provider: `core` or `external`. `external` means another process owns the provider's rate budget, so the core must not call it: the plan skips it with `<adapter> is owned by another process: the core must not call it` (`assertOwner`, which also checks the adapter's own `owner`, so a row cannot override the code). Every seeded row is `core`: the core calls each of its providers itself, Tariffscanner included.
+- **`scope`.** `shared` or `home`, as above.
+- **`needs_credentials`.** When set, the credentials are checked before the step runs.
+- **`licence_confirmed`.** `0` means the right to store and serve the provider's data is unconfirmed, so the provider is skipped even when switched on.
+- **`origin`.** The provenance label of what the provider gives (section 15).
+- **`note`.** An honest note. It says "adapter not built" wherever that is true.
+
+The rows are seeded from `src/db/seed/providers.js` every time the server starts. The seed refreshes the descriptions. It never changes `enabled` or `licence_confirmed` on a row that already exists, so a switch an operator set stays set. The columns and the full seed list are in `docs/database.md` (*Market provider registry*).
+
+### A home's connections and credentials
+
+The registry says what a market allows. A home's `connection` rows say which per-home providers that home uses, such as its Octopus account or its Sunsynk plant. `POST /api/sites/:id/connections` with `{ provider, role?, credentials? }` adds one. It is refused with HTTP 400 and a readable reason when:
+
+- the home's market does not list the provider;
+- the provider is listed but disabled, its licence is unconfirmed, another process owns it, or its adapter is not built;
+- the provider is shared or needs no connection;
+- the home is a demo home.
+
+For example, connecting `octopus` to a French home gives "octopus is not a provider for market FR; connections allowed for a home in market FR: sunsynk (inverter)".
+
+**Credentials stay in the environment, as before the registry.** The core has no secret store yet:
+
+- A connection keeps only the non-secret reference: the Octopus account number or the Sunsynk plant id.
+- Keys and passwords are read from `.env` (`OCTOPUS_API_KEY`, `OCTOPUS_ACCOUNT_NUMBER`, `SUNSYNK_USERNAME`, `SUNSYNK_PASSWORD`), and only for the home configured there.
+- The reply to a connection request lists the credential fields that were not stored, and never echoes a value.
+- Any other home's per-home step is skipped with "no credentials" until a secret store exists.
+
+### What a sync does with it
+
+1. **Plan.** For each role, the core goes through the market's rows and the `'*'` rows by priority. It uses the first provider that is enabled, licensed, owned by the core and built, and, for a per-home role, connected to this home. When the row needs credentials, they must be present.
+2. **Shared steps once per key.** The homes of one scheduler tick share one cycle. In that cycle each of these is fetched once:
+   - carbon, per carbon region;
+   - the calorific value, per gas zone;
+   - a tariff's prices, per tariff, when an earlier home's window already covers them;
+   - the comparison, per region.
+
+   Weather and solar forecasts are stored for each home separately, but a request identical to one already made in the cycle (same place, same panels) gets the first reply. A shared step that failed is not reused: the next home asks again.
+3. **Per-home steps per connection.** The inverter and meter steps run only for a home with that connection.
+4. **Each step fails alone.** An error is recorded on its own step and on its connection row. The home's other steps and the other homes still run.
+5. **Skipped is not an error.** A provider that is disabled, unlicensed, owned by another process, not built or missing its credentials is recorded in the sync log as skipped, with its reason. For example: `no credentials: OCTOPUS_API_KEY not set (start the server with --env-file=.env)`, or `disabled: adapter not built: …`. Its connection row is marked `skipped`. Before the registry, a sync without the key still called Octopus.
+
+   Three cases are not logged at all: a per-home role the home has no connection for, a fallback that was not needed, and typed-in prices (there is nothing to fetch).
+
+### Empty roles
+
+A role with no provider in a market is valid, not an error. It gets no step in the plan. `/api/sites` reports it as `none`, and the Data & trust page shows "no provider for this market".
+
+For every role, the providers card on that page shows:
+
+- the provider used, and whether it is shared or for this home only;
+- the status as a word: ok, error, skipped, disabled or none;
+- the origin, and a note with the reason;
+- the other providers listed, each with its status.
+
+Tariffs can always be entered by hand (origin `user`), in any market, whether or not a price source exists. Today that is done through the core functions `createTariff` and `putRateRows`, as the demo scripts and tests do. There is no page or API endpoint for typing a tariff in yet.
+
+### What each market gets today
+
+- **GB behaves as before, plus the Tariffscanner catalogue.** It has the same providers, steps and order as before the registry, with one step added:
+  1. `sunsynk`
+  2. `geo`
+  3. `weather`
+  4. `carbon`
+  5. `octopus`
+  6. `gas_cv`, once a gas meter is known
+  7. `tariff`, for tariff codes in `.env`
+  8. `tariffscanner`, only when `TARIFFSCAN_USERNAME` and `TARIFFSCAN_PASSWORD` are set and a sweep is due (once in a sync cycle, at most once a day; section 9)
+  9. `compare`
+  10. `solar_forecast`
+
+  The Octopus account is read first only when the home has no postcode. A GB home with no account and no inverter runs only the shared steps. Without the Tariffscanner credential, or when no sweep is due, the `tariffscanner` step is left out and nothing is logged for it (Octopus already serves the role). `test/providers.test.js` and `test/sync-plan.test.js` check this list without that credential, and check that nothing extra appears in the GB home's sync log; `test/tariffscanner.test.js` checks the step with it.
+- **FR and NL: weather only.** Weather is the only provider that fetches anything. The Sunsynk inverter can be connected as in any market, though it runs only for the `.env` home until a secret store exists. Prices are typed in (`manual`). These are listed but off:
+  - Linky (FR meter) and P1 (NL meter): adapters not built.
+  - tounify (retail prices): adapter not built, licence unconfirmed.
+  - ENTSO-E (wholesale prices): adapter not built, needs a registered token.
+
+  Location, carbon, gas calorific value, catalogue, comparison and solar forecast show none.
+- **DE, BE and ES:** weather only, plus Sunsynk.
+
+### What the registry does not do yet
+
+- **No FR or NL adapters.** The Linky, P1, tounify and ENTSO-E rows are placeholders, so nothing is read or priced from them.
+- **No secret store.** Only the `.env` home has credentials, so another home's account or inverter is listed and connected but skipped.
+- **No page or API to change the registry.** Switching a provider on or off, or adding a row, is done in the seed file or in SQL. The only write endpoint is `POST /api/sites/:id/connections`.
+- **No page or API for typed-in tariffs** (above).
+- **No fallback during a sync.** The fallback is chosen when the plan is built. If the chosen provider fails during a sync, the step is recorded as an error and the next one by priority is not tried. The next sync chooses the same provider again while it stays switched on.
+
+## 9. Price sources and local meters
+
+Each market's price sources are `tariff_prices` rows in the registry (section 8). Adding one takes a row and an adapter, never a change to the sync job. The database is ready for any country's tariffs without choosing a provider, so real EU prices need a source only when they start flowing in.
+
+| Source | What it gives | In the registry | Status |
+|---|---|---|---|
+| **Octopus public API** | UK half-hourly and window prices, and the list of products on sale | GB `tariff_prices` and `tariff_catalogue`, adapter `octopus`; GB `compare` (reference tariffs priced from the same rates) | In use. Every Octopus tariff is stored as GB, in pounds, with its kind and price grain, labelled `provider`. The home's own tariffs are priced in the meter step (from its Octopus account), or from tariff codes in `.env`. |
+| **Tariffscanner (Tariff Tribe)** | UK domestic tariff catalogue (FEA API): unit rates (p/kWh) and standing charges (p/day) per product, region (14), payment method and service type | GB `tariff_catalogue`, adapter `tariffscanner`, priority 20, `needs_credentials = 1`, owner `core`; runs alongside Octopus's catalogue | In use when `TARIFFSCAN_USERNAME` and `TARIFFSCAN_PASSWORD` are set: the core calls it itself (`src/adapters/tariffscanner.js`), at most one sweep per 24 hours, within the 20-requests-a-minute limit (below). Single-rate, day/night and export records are stored; other rate types are skipped and counted. Two things are not verified (below). UK only; no EU version found. |
+| **tounify** | Retail tariffs for EU markets: supplier price, grid fees, taxes | FR and NL, priority 10, `enabled = 0`, `licence_confirmed = 0` | Off. The adapter is not built, and the licence to store its data and serve it to many homes is unconfirmed. It has no standing, fixed or capacity charges, and serves only a few past days. |
+| **ENTSO-E** | Wholesale day-ahead prices per bidding zone | FR and NL, priority 20, `enabled = 0`, `needs_credentials = 1` | Off. The adapter is not built. Free, but needs a registered token. |
+| **Manual entry** | Any tariff typed in by hand | FR and NL, adapter `manual`, priority 90, `enabled = 1`, origin `user` | Available in any market, as a fallback and for trials (`createTariff` with origin `user`). It never runs as a sync step because there is nothing to fetch. Its status is ok once the home has a typed-in tariff ("tariff typed in"), and skipped before that. No page or API yet. |
+
+Until a source is built, France and Netherlands prices in tests and demos are synthetic.
+
+### Tariffscanner: how the core calls it
+
+The core queries Tariffscanner with its own credential (`TARIFFSCAN_USERNAME`, `TARIFFSCAN_PASSWORD` in `.env`), read whichever GB home's sync runs the step. Its limit, 20 requests a minute and at least 3 s between two requests, is per credential: anything else using the same credential spends the same budget. So the client:
+
+- **Throttles.** Every request, the token request included, goes through one queue, at least 3 s after the previous one, which also keeps it to 20 a minute at most (`TARIFFSCAN_MIN_REQUEST_INTERVAL_MS` can make the gap longer, never shorter).
+- **Keeps its cooldown across restarts.** The earliest moment of the next request is written to `provider_state.next_allowed_at` (row `tariffscanner`) before and after every request, so a restarted server cannot burst. A wait of more than 15 s is never slept inside a sync: a sweep that would have to wait that long is skipped (or, once running, stopped with the error recorded).
+- **Stops on a 429.** An HTTP 429 aborts the run and sets the cooldown from its `Retry-After`, at least 60 s.
+- **Has a budget.** At most 60 requests per run (`TARIFFSCAN_REQUEST_BUDGET`), the token request counted. Reaching it stops the sweep cleanly at a cursor saved in `provider_state.state`; the next run goes on from there.
+- **Sweeps at most once per 24 hours** unless forced. The first sweep reads every active tariff, one Tariffscanner region (id 1 to 14) at a time, in pages of up to 1,000 records. Once a full sweep has completed, later sweeps ask only for what changed since the day before the last complete sweep started (`last_updated_min`).
+
+`forceTariffscannerSweep()` (same module) sweeps now, whatever the daily gate says; the cooldown and the budget still hold, and the registry row must be enabled, licensed and owned by the core. It is a function only: no endpoint or page calls it yet. `GET /api/catalog?tariffs=tariffscanner` (with optional `region`, `limit`, `offset`) lists the tariffs held, with the rate rows in force now; without the parameter `/api/catalog` is unchanged. `scripts/tariffscanner-smoke.js` is a live check outside `npm test`: at most 3 requests (the token, one page of 5), nothing written to `data/core.db`.
+
+Each tariff is one product, service type, rate type, part (electricity import, gas, electricity export) and region, coded `TS-<product_id>-<service>-<rate_type>-<part>-<MPAN id>`, with one rate row per payment method. The region is found from Tariffscanner's region name and id through the region aliases (section 5); a record whose name and id disagree is skipped. For day/night tariffs the stated night hours are stored as register windows but not used for pricing, because a meter's own switch times may differ. A changed price supersedes the stored row (kept as history); nothing is deleted, and a withdrawn tariff is not detected.
+
+**Not verified:**
+
+- **The VAT basis.** The API does not state it. The prices are stored as published, in `price_ex_vat`: they are assumed to exclude VAT, and the core adds VAT from its tax rules. Some values in the saved samples look like a VAT-inclusive price divided by 1.05 (product 329260 in `test/fixtures/tariffscanner/page-2.json`: standing charge 69.49295238095237 = 72.9676 / 1.05, unit rate 29.323999999999998 = 30.7902 / 1.05), which supports the assumption, but Tariffscanner has not confirmed it. If the prices included VAT, the core would add VAT a second time wherever its GB VAT rule is not 0 %.
+- **The size of the first sweep.** No full sweep has been measured. The saved samples are three pages of 5 records and the smoke script asks for one page of 5, so how many pages, and so how many runs of 60 requests, the first sweep needs is not known.
+
+### Local meters (planned, not built)
+
+Dutch P1 and French Linky readers would stream live readings through an edge agent. They send cumulative index readings, and slot energy is the difference between indexes at slot boundaries. Linky also reports the current tariff period, which fixes French off-peak hours per meter. Consent will need to be recorded per site, because live meter data is personal data.
+
+Both are listed in the registry as the `meter` provider of their market (`linky` for FR, `p1` for NL), with `enabled = 0`, origin `placeholder` and the note "adapter not built". Neither adapter exists yet, so nothing is read. A request to connect one is refused with that reason, and a French home's sync log records `meter:linky` as skipped: `disabled: adapter not built: …`.
 
 ## 10. Dynamic by design: slot, country, currency, region
 
@@ -177,7 +317,7 @@ The build engine, the checks, the timeline and the pages run the same way for al
 
 **What "dynamic" means in practice**
 - **Slot:** change `site.slot_s` and the site's serving rows are rebuilt. Prices, meter data and forecasts of other lengths are converted by the rules in section 3.
-- **Country:** add a market row, its tax rules, its region scheme and (if needed) one adapter. No code in the build engine changes.
+- **Country:** add a market row, its tax rules, its region scheme, its provider rows and (if needed) one adapter. No code in the build engine or the sync job changes.
 - **Currency:** a tariff and a site carry their currency. Mixed currencies are rejected, never converted.
 - **Region:** aliases let one place carry several codes, so a UK area can be matched across Octopus, MPAN and Tariffscanner.
 - **Tariff:** a new shape is a new `kind` and some windows or price intervals. The price table is the same.
@@ -219,7 +359,7 @@ Predbat is an open-source battery planner. It predicts the next 48 hours, simula
 
 **Not built yet:** the planner, device control, PredHeat-style heating prediction, live P1 and Linky readers, the tounify and ENTSO-E adapters, and a fetcher for published Tempo colours (the calendar is stored and used, but filled by hand or by tests today). The foundation is built so none of them needs a schema redesign.
 
-**Built since the first multi-market pass (23 Oct 2026):** capacity charges are priced on a contracted capacity; register windows and calendars are stored as rows and expanded from them, with estimated Tempo days; Octopus tariffs carry currency, country, kind and price grain; the tariff comparison works per market (Octopus products in GB, the other tariffs of the market elsewhere); the pages use the home's slot length and currency in their words; a slot-length change rebuilds only the days with data; and every value carries a provenance label (section 15).
+**Built since the first multi-market pass (23 Oct 2026):** capacity charges are priced on a contracted capacity; register windows and calendars are stored as rows and expanded from them, with estimated Tempo days; Octopus tariffs carry currency, country, kind and price grain; the tariff comparison works per market (Octopus products in GB, the other tariffs of the market elsewhere); the pages use the home's slot length and currency in their words; a slot-length change rebuilds only the days with data; every value carries a provenance label (section 15); and each home's providers are chosen from the market provider registry, with shared steps run once per cycle (section 8).
 
 **Later:** multi-home scale with per-site scoping and a PostgreSQL port.
 
@@ -235,7 +375,7 @@ Providers -> Adapters -> Facts -> Build engine -> Timeline -> (Planner -> Comman
 2. Facts are written as readings (instants) or intervals (energy or prices over a period), each with its source and the time it was learned.
 3. The build engine aligns inverter power to the site's slots, reconciles sources, allocates flows, prices them and checks the result.
 4. Serving tables hold the timeline for display. They can always be rebuilt.
-5. A background sync runs every 10 minutes. A change to old data queues a rebuild from that day.
+5. A background sync runs every 10 minutes. Each home runs the plan its market's provider registry gives it (section 8). A change to old data queues a rebuild from that day.
 
 ## 13. Stack
 
@@ -265,8 +405,8 @@ Nobody should mistake a stand-in or a generated number for a sourced one. Every 
 
 | Label | Meaning | Examples today |
 |---|---|---|
-| `sourced` | Taken from a named, checkable source; the note names it | GB VAT (`src/db/registry.js` `VAT_RATES`: the 5 % domestic rate, and 0 % on electricity from 1 Oct 2026 as observed in Octopus published prices); the GB distribution-region numbering (eb-auth Tariffscanner fixtures and the Octopus / MPAN lists); the GB market row |
-| `provider` | Live data fetched from a provider for a real home | Octopus tariffs and rates, Sunsynk and Octopus readings of the live home |
+| `sourced` | Taken from a named, checkable source; the note names it | GB VAT (`src/db/registry.js` `VAT_RATES`: the 5 % domestic rate, and 0 % on electricity from 1 Oct 2026 as observed in Octopus published prices); the GB distribution-region numbering (the Octopus GSP letters, the MPAN distributor ids, and the Tariffscanner region ids and names as captured in the saved live samples `test/fixtures/tariffscanner/`, which show 10 of the 14 id/name pairs); the GB market row |
+| `provider` | Live data fetched from a provider for a real home | Octopus tariffs and rates, Tariffscanner catalogue tariffs and rates, Sunsynk and Octopus readings of the live home |
 | `user` | Typed in by the user or installer | A tariff entered by hand, a contracted capacity from the bill |
 | `derived` | Computed by the core from the above | Every cost and total. A computed figure carries its **weakest** input's label, so this word rarely appears on its own |
 | `placeholder` | A stand-in from memory or an assumption, **not verified** against an official source | FR and NL tax values; the FR, NL, DE, BE and ES market rows; "no tax rule for this country, taxes taken as 0"; anything marked `unverified` |

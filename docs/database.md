@@ -37,7 +37,7 @@ How the half-hour build works, what `final`, `provisional` and `missing` mean, a
 > | Processed `rebuild_queue` rows deleted | kept for ever | deleted after each rebuild |
 > | Raw payload row written before its file, removed if the file cannot be written; raw files live next to `DB_FILE` | file first, row second | no orphan files from failed writes |
 >
-> **Projection** with the new per-sync figures, for one home: forecast rows 84 × 144 syncs = 12,096 a day (was 77,674 from 539.4 × 144). Raw payloads 7 × 144 = 1,008 a day (was 3,169). These come from a single sync, and real values vary with how often providers change their forecasts. Still open: the old `gas_kwh` facts for the m³ meter (kept as history, unused); columns never set (`rate_interval.site_id`, `tariff.name`, `site.is_demo`); `vat_rate` has no overlap check; regional carbon and shared rate pages are still fetched per home; facts have no `site_id` column.
+> **Projection** with the new per-sync figures, for one home: forecast rows 84 × 144 syncs = 12,096 a day (was 77,674 from 539.4 × 144). Raw payloads 7 × 144 = 1,008 a day (was 3,169). These come from a single sync, and real values vary with how often providers change their forecasts. Still open: the old `gas_kwh` facts for the m³ meter (kept as history, unused); columns never set (`rate_interval.site_id`, `tariff.name`, `site.is_demo`); `vat_rate` has no overlap check; regional carbon and shared rate pages are still fetched per home (since 23 October, once per region or tariff within one sync cycle: *Market provider registry*, section 4); facts have no `site_id` column.
 
 ---
 
@@ -213,7 +213,7 @@ flowchart TB
 
 ### 2.2 The 10-minute sync loop and the hourly forecast record
 
-`startScheduler` (`src/jobs/sync.js`) runs `syncSite` for every site, one after another, every `SYNC_EVERY_MINUTES` (default 10). At the copy, consecutive scheduled runs started exactly 600 s apart (Q26). A sync took 21–40 s, 23.5 s on average, over the 30 syncs since the initial loads (Q29). Most of that time is provider calls: in sync 44, Octopus took 11.5 s and carbon 4.5 s, and the build took 0.2 s.
+`startScheduler` (`src/jobs/sync.js`) runs `syncSite` for every site, one after another, every `SYNC_EVERY_MINUTES` (default 10). Since 23 October each home runs the plan the market provider registry gives it (`market_provider`, section 4), in one cycle for all homes so that shared steps run once per region, zone or tariff; for the GB home the steps and their order below are unchanged. At the copy, consecutive scheduled runs started exactly 600 s apart (Q26). A sync took 21–40 s, 23.5 s on average, over the 30 syncs since the initial loads (Q29). Most of that time is provider calls: in sync 44, Octopus took 11.5 s and carbon 4.5 s, and the build took 0.2 s.
 
 ![The sync loop step by step, with the tables each step writes](diagrams/db-sync.svg)
 
@@ -572,6 +572,8 @@ erDiagram
 | `site_hh.lineage` (JSON) | source codes, tariff code, register, gas m³ and calorific value used | text, for the evidence page |
 | `connection.meta` (JSON) | e.g. `batteryCapacity.rawId` → `raw_payload.id`; Comparison product codes; gas zone and data item id | text |
 | `connection.provider` | adapter families (`sunsynk`, `octopus`, `weather`, `gas_cv`, …) | not the same values as `source.code` |
+| `market_provider.market_code` | `market.code`, or `'*'` for every market | no foreign key, because of `'*'`; a row for a code no home has is simply never matched (since delta 008) |
+| `market_provider.adapter` | the implementation registered under that code (`providers.js` `registerAdapter`, called in `src/jobs/steps.js`), and through it the `connection.provider` its steps update | in code; a row with no implementation is skipped as "adapter not built" |
 | `site.gsp_region` | `tariff.region` | used by `learnIogWindow` and the Comparison tariff codes |
 | `vat_rate (fuel, direction)` | `tariff (fuel, direction)` | matched by value and date in `vatAt` |
 | `site_day (site_id, local_date)` | `site_hh (site_id, local_date)` | both built together by `buildSite` |
@@ -627,10 +629,10 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 
 | | |
 |---|---|
-| Purpose | One row per home per provider integration (`sunsynk`, `octopus`, `tariff`, `weather`, `carbon`, `solar_forecast`, `compare`, `gas_cv`), with `status`, `last_success_at`, `last_error`, `external_ref` (Sunsynk plant id, Octopus account number) and `meta` JSON. |
+| Purpose | One row per home per provider integration (`sunsynk`, `octopus`, `tariff`, `weather`, `carbon`, `solar_forecast`, `compare`, `gas_cv`, `tariffscanner` on the GB home whose sync ran the catalogue step), with `status` (`new`, `ok`, `error`, or `skipped` when the plan skipped the step, for example for want of credentials), `last_success_at`, `last_error`, `external_ref` (Sunsynk plant id, Octopus account number) and `meta` JSON. **No secret is ever stored here**: the core has no secret store, so keys and passwords stay in `.env` and are read for the `.env` home only. |
 | Keys and constraints | `id` PRIMARY KEY; UNIQUE (`site_id`, `provider`); `site_id` → `site` ON DELETE CASCADE |
-| Written by | `sync.js` `ensureConnection`, `setConnection` (after every step); `sunsynk.js` (plant id, battery reading in `meta`); `derive.js` (measured battery capacity in `meta`); `compare.js` (product codes in `meta`); `nationalgas.js` (gas zone and data item id in `meta`) |
-| Read by | `sync.js` (which providers to call; whether a provider has run before), `build.js` (an Octopus connection means meter data is expected), `compare.js`, `nationalgas.js`, `derive.js`, `server.js` (`/api/sites`, `/everything`, `/health`) |
+| Written by | `sync.js` `ensureConnection`, `setConnection` (after every step), `markSkipped`; `providers.js` `connectProvider` (`POST /api/sites/:id/connections`: a per-home provider the registry allows in the home's market, with its non-secret reference only); `sunsynk.js` (plant id, battery reading in `meta`); `derive.js` (measured battery capacity in `meta`); `compare.js` (product codes in `meta`; a home whose comparison step was shared in the cycle gets the first home's copy); `nationalgas.js` (gas zone and data item id in `meta`) |
+| Read by | `providers.js` `plan` (which per-home roles the home has), `steps.js` (whether a provider has run before, `resumeDate`), `build.js` (an Octopus connection means meter data is expected), `compare.js`, `nationalgas.js`, `derive.js`, `server.js` (`/api/sites`, `/everything`, `/health`) |
 | Rows now | 8 |
 | Growth | One row per provider per home. Updated on every step of every sync; earlier states are not kept, but each step's result is in `sync_run.detail`. |
 
@@ -665,8 +667,8 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 |---|---|
 | Purpose | One row per tariff code: provider, product, fuel, direction, structure (parsed from the code by `parseTariffCode`), region, name. |
 | Keys and constraints | `id` PRIMARY KEY; `tariff_code` UNIQUE; CHECK on `fuel` and `direction` |
-| Written by | `octopus.js` `upsertTariff`, called for account agreements, `.env` codes and Comparison codes |
-| Read by | `pricing.js`, `compare.js`, `sync.js` (tariffs whose rates to fetch), `server.js` (`/tariffs`, `/everything`, `/evidence`) |
+| Written by | `octopus.js` `upsertTariff`, called for account agreements, `.env` codes and Comparison codes; `tariffscanner.js` `storeMapped` (the Tariffscanner catalogue, `TS-` codes, provider `tariffscanner`; see *Market provider registry*, delta 009) |
+| Read by | `pricing.js`, `compare.js`, `sync.js` (tariffs whose rates to fetch), `server.js` (`/tariffs`, `/everything`, `/evidence`, `/api/catalog?tariffs=<provider>`) |
 | Rows now | 14 |
 | Growth | One row per distinct tariff code, shared by every home on it. |
 
@@ -745,7 +747,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 |---|---|
 | Purpose | Unit and standing prices per tariff, excluding VAT, with validity periods; versioned like facts. (Since 23 Oct 2026 also fixed and capacity charges with a charge period, and any register name: see *Markets, money and tax* below.) |
 | Keys and constraints | `id` PRIMARY KEY; partial index **`rate_current`** (`tariff_id`, `component`, `register`, `valid_from`) WHERE `superseded_at IS NULL`; CHECK `valid_to IS NULL OR valid_to > valid_from`; CHECK on `component` and `register`; trigger **`rate_no_overlap`**: before inserting a current row, abort if a current row for the same tariff, home, component, register and payment method overlaps it (the schema calls it a stand-in for a PostgreSQL exclusion constraint); `tariff_id` → `tariff`, `site_id` → `site`, `raw_id` → `raw_payload` |
-| Written by | `octopus.js` `putRates` via `syncTariffRates`, from `sync.js` (tariffs in force), `syncEnvTariffs` and `compare.js` `syncComparison`. A changed price supersedes the old row. A current row that now overlaps the new one is superseded too, and its parts outside the new period are re-inserted, so no time is left without a price. |
+| Written by | `octopus.js` `putRates` via `syncTariffRates`, from `sync.js` (tariffs in force), `syncEnvTariffs` and `compare.js` `syncComparison`. A changed price supersedes the old row. A current row that now overlaps the new one is superseded too, and its parts outside the new period are re-inserted, so no time is left without a price. `tariffscanner.js` `putCatalogueRates` writes the Tariffscanner catalogue's rows the same way (one per payment method; the part of an old row before the new start is kept at the old price). |
 | Read by | `pricing.js` `loadPricing` and `learnIogWindow`; `compare.js`; `server.js` (`/evidence`, `/health`) |
 | Rows now | 3,117; no superseded rows; `site_id` set on none (Q5b, column check A4) |
 | Growth | Per tariff, shared by all homes on it: 48 unit rows per day for each half-hourly (Agile) tariff (Q21); a row per price change for other tariffs. |
@@ -860,7 +862,7 @@ Three tables keep history that the serving tables do not. The Data & trust page 
 
 ### Markets, money and tax (added 23 Oct 2026)
 
-These tables make the database ready for more than one country, currency, region scheme, tariff shape and slot length. They come from delta files in `src/db/deltas/` that `db.js` applies on every open, after `schema.sql` and after `vat_rate` is seeded: `002-money-tax.sql`, `003-market-region.sql`, `004-tariff-ledger.sql`, and (same day) `005-provenance.sql`, `006-register-window.sql`, `007-capacity.sql`, described in *Provenance, register windows and capacity* below. The rules are stated at the top of each delta: statements end with `;` at the end of a line, a trigger ends with `END;`, an `ADD COLUMN` whose column exists is skipped (SQLite has no `ADD COLUMN IF NOT EXISTS`), and everything else can run again. Backfills are guarded by `schema_delta`, so homes and tariffs that exist the first time a delta runs become country GB, currency GBP, market GB once; later rows are written with their own values. After the deltas, `db.js` upserts the reference rows (markets, one bidding-zone region per market, the 14 GB distribution regions and their aliases).
+These tables make the database ready for more than one country, currency, region scheme, tariff shape and slot length. They come from delta files in `src/db/deltas/` that `db.js` applies on every open, after `schema.sql` and after `vat_rate` is seeded: `002-money-tax.sql`, `003-market-region.sql`, `004-tariff-ledger.sql`, and (same day) `005-provenance.sql`, `006-register-window.sql`, `007-capacity.sql`, described in *Provenance, register windows and capacity* below, and `008-market-provider.sql`, `009-provider-state.sql` and `010-provider-owner.sql`, described in *Market provider registry* below. The rules are stated at the top of each delta: statements end with `;` at the end of a line, a trigger ends with `END;`, an `ADD COLUMN` whose column exists is skipped (SQLite has no `ADD COLUMN IF NOT EXISTS`), and everything else can run again. Backfills are guarded by `schema_delta`, so homes and tariffs that exist the first time a delta runs become country GB, currency GBP, market GB once; later rows are written with their own values. After the deltas, `db.js` upserts the reference rows (markets, one bidding-zone region per market, the 14 GB distribution regions and their aliases, and the providers of each market's roles).
 
 Row counts below are from a copy of the live database opened by the new code on 23 October (one home, 14 tariffs, 3,786 rate rows).
 
@@ -872,7 +874,7 @@ Row counts below are from a copy of the live database opened by the new code on 
 | Keys and constraints | `name` PRIMARY KEY, `WITHOUT ROWID`; `applied_at` in ms |
 | Written by | The last statement of each delta (`INSERT OR IGNORE`) |
 | Read by | The deltas' backfill statements |
-| Rows now | 6 |
+| Rows now | 6 on the 23 October copy (002–007); 9 once deltas 008, 009 and 010 are applied (one per delta file, 002–010) |
 | Growth | One row per delta file. |
 
 #### `currency`
@@ -916,7 +918,7 @@ How pricing uses it: every unit tax is linear in the price, so the price paid pe
 |---|---|
 | Purpose | Every way a country is divided, as (`scheme`, `code`): `gb_dno` (the 14 GB distribution regions, code = MPAN distributor id 10–23), `bzn` (one bidding zone per market: the whole-country region of FR, NL, GB), and later others (`gb_carbon`, …). Each scheme is its own partition of the map. |
 | Keys and constraints | `id` PRIMARY KEY; UNIQUE (`scheme`, `code`); CHECK `country`; trigger **`region_scheme_not_an_alias`** |
-| Written by | `db.js` on open: `seedRegionsGb` (`src/db/seed/regions-gb.js`; `origin = 'sourced'`, the note names the eb-auth / Octopus / MPAN files) and `seedBiddingZones` (`seed/markets.js`; each zone carries its market row's origin, the note says it is derived from it) |
+| Written by | `db.js` on open: `seedRegionsGb` (`src/db/seed/regions-gb.js`; `origin = 'sourced'`; the note names the sources: the MPAN distributor ids, the Octopus GSP letters, and the Tariffscanner region ids and names as captured in the saved live samples `test/fixtures/tariffscanner/`) and `seedBiddingZones` (`seed/markets.js`; each zone carries its market row's origin, the note says it is derived from it) |
 | Read by | `region_alias` and `site_region` (foreign keys), `sites.js` `assignRegion`, `regionsOf`, `/api/sites` |
 | Rows now | 20 (14 `gb_dno`, 6 `bzn`) |
 | Growth | Rows per scheme added. |
@@ -930,7 +932,7 @@ How pricing uses it: every unit tax is linear in the price, so the price paid pe
 | Written by | `db.js` on open (`seedRegionsGb`) |
 | Read by | `src/core/regions.js` keeps the same index in memory (`resolveRegion`, `aliasesOf`); SQL joins as in `deltas.test.js` |
 | Rows now | 42 (3 per GB region) |
-| Growth | Rows per numbering added. The Tariffscanner id order is taken from probe fixtures and is not documented upstream. |
+| Growth | Rows per numbering added. The Tariffscanner ids (1–14, in alphabetical order of the names) are not documented upstream. The saved live samples in `test/fixtures/tariffscanner/` show 10 of the 14 id/name pairs, and `test/regions-gb.test.js` checks each against these aliases; 2 East Midlands, 3 London, 8 Scottish Hydro and 10 Seeboard are not in a sample. The adapter skips a record whose region name and id disagree. |
 
 #### `site_region`
 
@@ -978,7 +980,7 @@ The API adds, without changing existing keys: `origin` on `/api/sites`, the tari
 |---|---|
 | Purpose | When each register of a tariff applies: wall-clock `start_min` 0–1439 and `end_min` 1–1440 (end ≤ start wraps past midnight), `weekdays` bit mask (bit 0 = Monday, read on the day the window starts), optional `calendar` + `day_type` (a Tempo colour), `clock` `local` or `utc`, optional validity, the hours as the bill prints them (`source_text`), `origin`. A window with `device_id` is that meter's own and replaces the tariff's for that meter (French HP/HC hours per Linky meter). Versioned (`recorded_at`, `superseded_at` in ms). |
 | Keys and constraints | `id` PRIMARY KEY; `tariff_id` → `tariff`, `device_id` → `device` ON DELETE CASCADE, `calendar` → `calendar`; CHECKs on the minutes, weekdays 1–127, clock, validity order, `day_type` only with a calendar; index **`register_window_tariff`** (`tariff_id`, `device_id`) WHERE current |
-| Written by | `tariffs.js` `putWindows` (via `storeWindows`): a window equal to a current row is not stored twice |
+| Written by | `tariffs.js` `putWindows` (via `storeWindows`): a window equal to a current row is not stored twice; `tariffscanner.js` (the stated night hours of a day/night catalogue tariff: a different set supersedes the current one) |
 | Read by | `tariffs.js` `expandStored` |
 | Growth | A few rows per windows tariff, plus one set per meter with its own hours. |
 
@@ -988,7 +990,7 @@ The API adds, without changing existing keys: `origin` on `/api/sites`, the tari
 |---|---|
 | Purpose | A calendar (`fr_tempo`, bank holidays) with the local minute its day starts (`day_start_min`: Tempo 06:00), and the type of each day (`calendar_day`: a Tempo colour), versioned like facts. A day with no current row is unknown. |
 | Keys and constraints | `calendar.code` PRIMARY KEY; `calendar_day` PRIMARY KEY (`calendar`, `local_date`, `recorded_at`), partial UNIQUE index **`calendar_day_current`** (`calendar`, `local_date`) WHERE current; CHECK date format; `origin` CHECK on both |
-| Written by | `tariffs.js` `putCalendar` (via `storeWindows`): a changed day type supersedes the old row (kept) |
+| Written by | `tariffs.js` `putCalendar` (via `storeWindows`): a changed day type supersedes the old row (kept). The new row is always recorded after the one it supersedes: `recorded_at` defaults to `time.js` `recordedNow()`, which never gives the same millisecond twice in a process, and a stamp that is not later than the current row's is moved to 1 ms after it, so two corrections in one millisecond cannot clash on the primary key |
 | Read by | `tariffs.js` `expandStored` |
 
 | Table | Added | Notes |
@@ -1001,6 +1003,80 @@ The API adds, without changing existing keys: `origin` on `/api/sites`, the tari
 | Table | Added | Notes |
 |---|---|---|
 | `site` | `contracted_kva` REAL CHECK > 0, `contracted_kva_origin` (vocabulary), `contracted_kva_note` | Written by `sites.js` `setContractedCapacity` (origin required; queues a rebuild of the built days). `pricing.js` prices each current `capacity` rate row as `price × contracted_kva` per its `charge_period` (`day`: per local day over the day's real slots; `month`/`year`: by real seconds, `fixedChargePerSlot`), taxed with the other fixed charges. Without a contracted capacity the charge is left out, every slot says `capacity_unknown` and the day gets a `capacity_charge` warn: never guessed. Not versioned: an "as known at" rebuild uses today's value. |
+
+### Market provider registry (added 23 Oct 2026)
+
+**Delta 008, market provider registry.** Which provider fills each role a home needs, per market: providers are chosen by data, not by code. Before it, `sync.js` called a fixed list of providers; now it runs each home's plan, built by `src/core/providers.js` `plan` from these rows and from the implementation registered for each adapter code (`registerAdapter`; the steps, wrapping the adapters exactly as the sync job called them before, are in `src/jobs/steps.js`). The delta creates one table and one index and changes no existing table. A home's own choices are its `connection` rows (above); credentials are not stored anywhere in the database.
+
+#### `market_provider`
+
+| | |
+|---|---|
+| Purpose | One row per market, role and adapter. Roles: `location`, `inverter`, `meter`, `weather`, `carbon`, `solar_forecast`, `gas_cv`, `tariff_catalogue`, `tariff_prices`, `compare` (checked in code, `providers.js` `ROLES`, not by a CHECK, so a new role is a row, never a table rebuild). `scope`: `shared` (runs for every home of the market from public data; work the same for several homes is done once per sync cycle) or `home` (runs only for a home with its own connection row, when the adapter needs one). `priority` (column default 100; seeded rows 10, except the FR and NL price fallbacks below; lower first; the first usable provider of a role is used, the others are fallbacks), `enabled` (0 = listed but never called), `owner` (`core` or `external`: only the owner may call the provider, `contract.js` `assertOwner`; `external` means another process owns the provider's rate budget, so the core must not call it; every seeded row is `core`), `needs_credentials` (1 = the home's credentials are checked before the step runs), `licence_confirmed` (0 = the right to store and serve the data is unconfirmed: skipped even when enabled), `origin` (the provenance vocabulary of what the provider gives: `provider` for a built adapter, `user` for typed-in prices, `placeholder` for an adapter that does not exist) and an honest `note` (it begins "adapter not built" where that is so). |
+| Keys and constraints | PRIMARY KEY (`market_code`, `role`, `adapter`), WITHOUT ROWID; CHECKs: `market_code` is `'*'` (any market: inverter clouds) or two upper-case letters, `scope` in (`shared`, `home`), `enabled`, `needs_credentials`, `licence_confirmed` 0/1, `owner` in (`core`, `external`) (since delta 010, below), `origin` NOT NULL in the vocabulary; index **`market_provider_role`** (`role`, `market_code`, `priority`). No foreign key to `market`, because of `'*'`. Defaults: `enabled` 1, `owner` `core`, `needs_credentials` 0, `licence_confirmed` 1. |
+| Written by | `src/db/seed/providers.js` `seedProviders`, called by `db.js` on every open: inserts missing rows and refreshes `priority`, `owner`, `scope`, `needs_credentials`, `origin` and `note` of the rows it lists. It never changes `enabled` or `licence_confirmed` on a row that exists, so an operator's switches stay (`test/providers.test.js`). No API or page writes the table; a switch is an SQL `UPDATE`. |
+| Read by | `providers.js` (`providersFor`: the market's rows and the `'*'` rows of a role, by `priority`, then the market's own before `'*'`, then adapter; `plan`; `providerStatus` for `/api/sites`; `connectProvider` for `POST /api/sites/:id/connections`), `sync.js` (`ensureEnvSite`: which connections the `.env` home gets in its market) |
+| Rows now | 24 (the seed): GB 10, any market (`*`) 1, FR 5, NL 5, DE, BE and ES 1 each |
+| Growth | A few rows per market; changes only when a provider is added. |
+
+What the seed lists:
+
+| Market | Role → adapter | Switches | Origin, note |
+|---|---|---|---|
+| `*` | `inverter` → `sunsynk` (home) | enabled, needs credentials | `provider`; the owner's own login from `.env` |
+| GB | `location` → `geo`, `weather` → `open_meteo`, `carbon` → `neso`, `gas_cv` → `national_gas`, `tariff_prices` → `octopus`, `tariff_catalogue` → `octopus`, `compare` → `compare`, `solar_forecast` → `quartz` (shared); `meter` → `octopus` (home, needs credentials) | all enabled | `provider`: exactly the providers the sync called before the registry |
+| GB | `tariff_catalogue` → `tariffscanner` (shared, priority 20) | enabled, needs credentials (the core's own, `TARIFFSCAN_USERNAME`, `TARIFFSCAN_PASSWORD`) | `provider`; the UK domestic catalogue, run as well as Octopus's (`tariff_catalogue` is additive: every usable provider runs) |
+| FR, NL | `weather` → `open_meteo` | enabled | `provider` |
+| FR, NL | `meter` → `linky` (FR) / `p1` (NL) | `enabled = 0` | `placeholder`; "adapter not built" |
+| FR, NL | `tariff_prices` → `tounify` (priority 10) | `enabled = 0`, `licence_confirmed = 0` | `placeholder`; adapter not built, licence unconfirmed |
+| FR, NL | `tariff_prices` → `entsoe` (priority 20) | `enabled = 0`, needs credentials | `placeholder`; adapter not built, needs a registered token |
+| FR, NL | `tariff_prices` → `manual` (priority 90, home) | enabled | `user`; prices typed in, nothing to fetch |
+| DE, BE, ES | `weather` → `open_meteo` | enabled | `provider` |
+
+FR and NL have no location, carbon, gas calorific value, catalogue, comparison or solar-forecast provider, and DE, BE and ES have only weather (and Sunsynk through `'*'`). An empty role is valid: it gets no step in the plan, and the API reports it as `none` ("no provider for this market"). Typed-in tariffs (`tariffs.js` `createTariff`, `putRateRows` with origin `user`) work in every market whether or not a row lists `manual`; there is no API endpoint for them yet.
+
+**How the sync uses it.** For each home, `plan` walks the roles in run order and, for each, the providers `providersFor` lists, using the first one that passes every check below; the checks run in this order, and the first that fails gives the reason.
+
+| Check | Reason recorded | In the sync log | Status word |
+|---|---|---|---|
+| `enabled = 0` | `disabled: <note>` | yes | `disabled` |
+| `licence_confirmed = 0` | `unlicensed: <note>` | yes | `disabled` |
+| owner is not `core` (the row's, or the implementation's, so a row cannot override the code) | `<adapter> is owned by another process: the core must not call it (one rate budget, one caller)` (`assertOwner`) | yes | `skipped` |
+| no implementation registered | `adapter not built: no implementation registered for <adapter>` | yes | `disabled` |
+| `scope = 'home'`, the adapter needs a connection and the home has none | `not connected for this home` | no | `skipped` |
+| `needs_credentials = 1` and they are missing | `no credentials: <VARIABLES> not set (start the server with --env-file=.env)`; for any home but the `.env` one, `no credentials: secrets are read from .env for the .env home only (the core has no secret store yet)` | yes | `skipped` |
+| an earlier provider of the role is used | `fallback: <adapter> is used` | no | listed in `alternatives` |
+
+A logged skip is written to the run's step log as `{ "step": …, "ok": true, "ms": 0, "skipped": "<reason>" }`, never as an error, and the step's connection row (if it has one) gets `status = 'skipped'`. The reasons name variables, never values. A chosen provider with nothing to run (typed-in prices, the catalogue read by the comparison step) is not logged either.
+
+The GB home's plan is the step list of before, in the same order: `sunsynk`, `geo`, `weather`, `carbon`, `octopus`, `gas_cv` (once a gas meter is known), `tariff` (with tariff codes in `.env`), `compare`, `solar_forecast`, with the Octopus account read first only when the home has no postcode; nothing extra is logged for it (`test/providers.test.js`, without the Tariffscanner credential). One step is added: `tariffscanner`, between `tariff` and `compare`, when `TARIFFSCAN_USERNAME` and `TARIFFSCAN_PASSWORD` are set and a sweep is due (once per sync cycle, at most once a day; below). Without the credential, or when no sweep is due, it is left out and not logged, because Octopus already serves the role. Each step runs on its own (`sync.js` `runEntry`, `step`): an error is recorded on that step and its connection row, and the home's other steps and the other homes still run. The fallback is chosen when the plan is built: a provider that fails during the sync is recorded as an error and the next one by priority is not tried in that sync.
+
+The homes of one scheduler tick share a cycle (`syncAll`, `providers.js` `newCycle`): carbon is fetched once per carbon region, the calorific value once per gas zone, a tariff's rates once per tariff when an earlier home's window covers them, the comparison once per market and Octopus region. A later home's log entry says `shared: "fetched for home N earlier in this cycle (carbon:3)"`, and its rebuild range still covers what the first home fetched. Weather and solar forecast facts are stored per home, so each home's step runs, but an identical request in the cycle (method, URL and body; never one with an authorization header) is answered from the first reply (`http.js` `shareResponses`). A failed shared step is not reused: the next home asks again. A home synced on its own (`POST /api/sites/:id/sync`) gets a cycle of its own (`test/sync-plan.test.js`).
+
+**API.** `/api/sites` adds `providers` to each home: per role `{ role, label, adapter, status, origin, note, scope, reason, alternatives }` with status `ok`, `error`, `skipped`, `disabled` or `none`. The status comes from the last sync run (the role's own steps, then the steps of other roles that also serve it: the Octopus meter step prices the tariffs, the comparison step reads the catalogue); else, for typed-in prices, from whether the home has a current agreement with a tariff of origin `user` (`ok` "tariff typed in", else `skipped` "no tariff typed in yet"); else from the connection row. A demo home shows every chosen provider as `skipped` ("demo home: its data is generated, nothing is synced"). No credential appears in the response. The Data & trust page shows the list in words, one row per role, with "no provider for this market" for an empty role.
+
+`POST /api/sites/:id/connections` `{ provider, role?, credentials? }` stores a per-home connection only when the registry allows that provider for the home's market: 201 when created, 200 when it existed (a call without a reference keeps the stored one). It answers 400 with a readable reason when the provider is not listed for the market (the message lists the connections allowed there), serves a shared role, is disabled, unlicensed, owned by another process, not built or needs no connection, or the home is a demo home; 404 for an unknown home. It keeps only the non-secret reference (`accountNumber`, `plantId`) as `external_ref`, and its reply (`secrets_stored: false`, `not_stored`, `credentials_note`) names the credential fields it did not store, never their values.
+
+**What the registry does not do yet:** no FR or NL meter or price adapter exists (the Linky, P1, tounify and ENTSO-E rows are placeholders); there is no secret store, so only the `.env` home has credentials; there is no API or page to change the rows; and there is no endpoint for typed-in tariffs.
+
+**Delta 009, provider state.** What a rate-limited provider must remember across restarts, one row per provider. Used by the Tariffscanner adapter (`src/adapters/tariffscanner.js`, provider `tariffscanner`), which the core calls itself with its own credential. The delta creates one table and changes no existing table.
+
+#### `provider_state`
+
+| | |
+|---|---|
+| Purpose | Per provider: `next_allowed_at` (ms: no request before this moment), `cooldown_reason` (why it lies beyond the normal gap, for example `HTTP 429 at …`), `state` (JSON: the provider's own progress) and `updated_at` (ms). For `tariffscanner`, `state` holds the sweep cursors (`full`: region batch and offset of the first sweep; `inc`: the `since` date and offset of an incremental one), `last_run_at` (the once-a-day gate), `last_complete_at`, `last_ok_at`, `last_summary`, `last_error` and `last_error_at`. Never a credential or a token. |
+| Keys and constraints | `provider` PRIMARY KEY, `WITHOUT ROWID`; CHECK `state IS NULL OR json_valid(state)` |
+| Written by | `tariffscanner.js`: `dbStore().setNextAllowedAt` before and after every request (start + 3 s, end + 3 s) and on an HTTP 429 (its `Retry-After`, at least 60 s), and `next_allowed_at` only ever moves later; the sweep writes `state` when it starts, after each page (in the same transaction as that page's rows), after each region batch and when it ends or fails |
+| Read by | `tariffscanner.js` (`sweepDue`, `sweepCatalogue`, `sweepStatus` for `/api/sites` providers, the client before every request) |
+| Rows now | 0 until the first Tariffscanner sweep starts; then 1 (`tariffscanner`) |
+| Growth | One row per rate-limited provider, updated in place. |
+
+**What the Tariffscanner sweep writes.** Each page is landed raw first (`raw_payload`, source `tariffscanner`, no home). Then, in one transaction with the cursor: one `tariff` per product × service type × rate type × part × region, coded `TS-<product_id>-<service>-<rate_type>-<part>-<gb_dno>` (part `E` electricity import, `G` gas, `X` electricity export; `region` is the `gb_dno` code resolved from Tariffscanner's region name and id, and a record whose two disagree is skipped), country GB, GBP, origin `provider`; `rate_interval` unit (p/kWh) and standing (p/day) rows, one per payment method as given, from Europe/London midnight of the later of `available_from` and the day the rate was added, to the midnight after `available_to` (NULL while offered); for a day/night tariff (structure `e7`) the stated night hours as `register_window` rows, not used for pricing. Only rate types `constant`, `day_night` and `export` are mapped; the others are skipped and counted. A row the current one already states (same price and end) changes nothing; a changed one supersedes it (kept). Nothing is deleted, and a withdrawn tariff is not detected. A sweep runs at most once per 24 hours (by the first GB home whose sync finds it due, or by hand with `forceTariffscannerSweep()`, a function with no endpoint), at least 3 s between requests, at most 60 requests per run (it then stops at the saved cursor), and an HTTP 429 aborts the run. The first sweep reads every active tariff, region (id 1–14) by region; later ones only what changed since the day before the last complete sweep started. `GET /api/catalog?tariffs=tariffscanner[&region=&limit=&offset=]` lists the tariffs held with the rate rows in force now.
+
+Not verified: the prices are stored as published in `price_ex_vat`, assumed to exclude VAT, because the API does not state the basis (some values in `test/fixtures/tariffscanner/` look like a VAT-inclusive price divided by 1.05, for example product 329260's standing charge 69.49295238095237 = 72.9676 / 1.05); and the size of the first full sweep is unknown (no full sweep has been measured: the saved samples are three pages of 5 records), so neither its row counts nor the number of runs it takes are given here.
+
+**Delta 010, provider owner.** `market_provider.owner` takes `core` or `external` (another process owns the provider's rate budget; the core must not call it). A table created by an older delta 008 allowed `core` and one other process's name; a CHECK cannot be altered, so the delta rebuilds the table with SQLite's procedure, in its one transaction: rows copied to a temporary table, the table dropped and created again, rows copied back with every owner other than `core` turned into `external`, the temporary table dropped, index `market_provider_role` created again. Columns, defaults, the other CHECKs, the primary key and `WITHOUT ROWID` are as in delta 008, which now creates the table with the new CHECK itself, so on a new database the rebuild changes nothing. SQLite cannot run DDL conditionally, so the rebuild runs on every open; the table holds a few dozen rows and the result is the same each time (`test/deltas.test.js`). No trigger, view or foreign key refers to the table.
 
 ## 5. How the tables relate in practice
 
@@ -1221,13 +1297,13 @@ Every read path in `server.js`, `build.js`, `forecast.js` and `pricing.js` is li
 | Shared data | Where | Stored once? |
 |---|---|---|
 | Registry, VAT | `source`, `metric`, `vat_rate` | yes |
-| Tariffs and prices | `tariff`, `rate_interval` (`site_id` is never set) | prices yes: an unchanged price is not written again. The raw rate pages, however, are fetched and stored by every home on every sync (11.25 files per sync, about 7.8 MB per home per day; 6.4). |
-| Comparison tariffs (Agile) | `tariff`, `rate_interval` | prices yes; raw pages per home, as above |
+| Tariffs and prices | `tariff`, `rate_interval` (`site_id` is never set) | prices yes: an unchanged price is not written again. The raw rate pages, however, were fetched and stored by every home on every sync at the copy (11.25 files per sync, about 7.8 MB per home per day; 6.4). Since delta 008, a later home in the same sync cycle whose window is already covered does not fetch them again. |
+| Comparison tariffs (Agile) | `tariff`, `rate_interval` | prices yes; raw pages per home at the copy, as above; since delta 008 once per market and Octopus region per sync cycle |
 | Carbon history | `interval_fact`, series `carbon:<region>` | yes: an unchanged value is not written again |
-| Carbon forecast | `forecast_fact`, series `carbon:<region>` | **no**: each home's sync inserts a new issue of the region's series (95.5 rows), because `issued_at` is the time of that home's fetch |
+| Carbon forecast | `forecast_fact`, series `carbon:<region>` | **no** at the copy: each home's sync inserted a new issue of the region's series (95.5 rows), because `issued_at` is the time of that home's fetch. Since delta 008 the homes of one sync cycle in the same carbon region fetch it once (again only for a later home whose window starts earlier, such as a first sync), so normally one issue per region per cycle. |
 | Gas calorific value | `interval_fact`, series `ldz:<zone>` | yes |
 
-The shared data is small (6.3). The cost is in fetching and storing it per home: rate pages, carbon payloads and carbon forecast issues.
+The shared data is small (6.3). The cost is in fetching and storing it per home: rate pages, carbon payloads and carbon forecast issues. Since the provider registry (delta 008), the homes of one sync cycle fetch a carbon region, a gas zone, a tariff's rate pages and a comparison region once, and identical weather and solar forecast requests once; each home still stores its own weather and solar facts.
 
 ### 7.3 Indexes the read paths rely on
 

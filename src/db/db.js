@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOURCES, METRICS, VAT_RATES, GB_VAT_NOTE } from './registry.js';
-import { todMinute } from '../core/time.js';
 import { seedMarkets, seedBiddingZones, marketSeedPending } from './seed/markets.js';
 import { seedProviders, providerSeedPending } from './seed/providers.js';
 import { seedRegionsGb, regionSeedPending } from './seed/regions-gb.js';
@@ -25,109 +24,30 @@ export const db = new DatabaseSync(dbFile);
 // An up-to-date database is opened without writing anything (below), so opening it never waits.
 export const BUSY_TIMEOUT_MS = 5000;
 db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`);
-// Tariff agreements became versioned (16 Oct 2026). The old table had UNIQUE (device_id, valid_from),
-// which a superseded version would break, so it is rebuilt once before the schema is applied.
-const agreementCols = db.prepare("SELECT name FROM pragma_table_info('tariff_agreement')").all().map((c) => c.name);
-if (agreementCols.length && !agreementCols.includes('recorded_at')) {
-  // SQLite's table-rebuild procedure: foreign-key checks off while rows are copied (it cannot be changed inside a transaction).
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`BEGIN;
-    DROP TRIGGER IF EXISTS agreement_no_overlap;
-    ALTER TABLE tariff_agreement RENAME TO tariff_agreement_v1;
-    CREATE TABLE tariff_agreement (
-      id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
-      device_id INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE, tariff_id INTEGER NOT NULL REFERENCES tariff(id),
-      valid_from INTEGER NOT NULL, valid_to INTEGER, recorded_at INTEGER, superseded_at INTEGER,
-      CHECK (valid_to IS NULL OR valid_to > valid_from));
-    INSERT INTO tariff_agreement (id, site_id, device_id, tariff_id, valid_from, valid_to) SELECT id, site_id, device_id, tariff_id, valid_from, valid_to FROM tariff_agreement_v1;
-    DROP TABLE tariff_agreement_v1;
-    COMMIT;`);
-  db.exec('PRAGMA foreign_keys = ON');
-}
-// Device columns added with versioning; must exist before the schema's statements run.
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'device'").get()) {
-  const devCols = new Set(db.prepare("SELECT name FROM pragma_table_info('device')").all().map((c) => c.name));
-  for (const c of ['recorded_at', 'retired_at']) if (!devCols.has(c)) db.exec(`ALTER TABLE device ADD COLUMN ${c} INTEGER`);
-}
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'site_day_revision'").get()
-  && !db.prepare("SELECT 1 FROM pragma_table_info('site_day_revision') WHERE name = 'kind'").get()) {
-  db.exec("ALTER TABLE site_day_revision ADD COLUMN kind TEXT NOT NULL DEFAULT 'recorded'");
-}
-// Slot length per home (slot plumbing, Oct 2026): site.slot_s, and serving rows that carry their
-// own length and local time of day. The old site_hh only allowed half-hours (CHECK slot_start % 1800);
-// a CHECK cannot be altered, so that table is set aside here and recreated by the schema below.
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'site'").get()
-  && !db.prepare("SELECT 1 FROM pragma_table_info('site') WHERE name = 'slot_s'").get()) {
-  db.exec('ALTER TABLE site ADD COLUMN slot_s INTEGER NOT NULL DEFAULT 1800 CHECK (slot_s IN (900, 1800, 3600))');
-}
-const oldServing = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'site_hh'").get()
-  && !db.prepare("SELECT 1 FROM pragma_table_info('site_hh') WHERE name = 'dur_s'").get();
-if (oldServing) {
-  db.exec('DROP TABLE IF EXISTS site_hh_v1; DROP INDEX IF EXISTS site_hh_day; ALTER TABLE site_hh RENAME TO site_hh_v1;');
-}
+// A database is created by schema.sql and from then on changed only by the deltas (below). One from
+// before the deltas is not upgraded: it is refused before anything is written (see predatesSchema).
 const SCHEMA = fs.readFileSync(path.join(here, 'schema.sql'), 'utf8');
-upgradeRates();
-db.exec(SCHEMA);
-if (oldServing) upgradeServing();
-
-// Rate rows for more than GB (Oct 2026): components fixed and capacity with a charge_period, and
-// registers beyond single/day/night (hp, hc, blue_hc ...). The old table's CHECKs refuse those and a
-// CHECK cannot be altered, so the table is rebuilt once with SQLite's procedure: in one transaction
-// with foreign-key checks off, renamed, recreated by schema.sql, every row copied with its id, the
-// old table dropped. Rate rows are facts (the only copy), so a failure rolls everything back.
-// The overlap trigger is left off while copying (the rows already passed it) and put back by
-// schema.sql right after, so the index and trigger are the new ones.
-function upgradeRates() {
-  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rate_interval'").get()?.sql;
-  if (!sql || sql.includes("'capacity'")) return;
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec('BEGIN');
-  try {
-    db.exec('DROP TRIGGER IF EXISTS rate_no_overlap; DROP INDEX IF EXISTS rate_current; ALTER TABLE rate_interval RENAME TO rate_interval_v1;');
-    db.exec(SCHEMA);
-    db.exec('DROP TRIGGER rate_no_overlap');
-    const newCols = new Set(db.prepare("SELECT name FROM pragma_table_info('rate_interval')").all().map((c) => c.name));
-    const cols = db.prepare("SELECT name FROM pragma_table_info('rate_interval_v1')").all().map((c) => c.name).filter((c) => newCols.has(c)).join(', ');
-    db.exec(`INSERT INTO rate_interval (${cols}) SELECT ${cols} FROM rate_interval_v1; DROP TABLE rate_interval_v1;`);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  } finally {
-    db.exec('PRAGMA foreign_keys = ON');
-  }
+if (predatesSchema()) {
+  db.close();
+  throw new Error('This database predates the current schema; delete data/core.db and start fresh (npm run reset)');
 }
+db.exec(SCHEMA);
 
-// Serving tables are rebuilt from facts, so they are disposable. Old rows are all half-hours
-// (the old CHECK made sure), so they are carried over as 1800 s slots with their local time of
-// day, which keeps the "restated" marks and needs no rebuild. If that copy fails for any reason
-// the rows are dropped and a full rebuild is queued for every home; facts are never touched.
-function upgradeServing() {
-  const newCols = new Set(db.prepare("SELECT name FROM pragma_table_info('site_hh')").all().map((c) => c.name));
-  const cols = db.prepare("SELECT name FROM pragma_table_info('site_hh_v1')").all().map((c) => c.name).filter((c) => newCols.has(c) && c !== 'dur_s' && c !== 'tod_min');
-  const hasTz = db.prepare("SELECT 1 FROM pragma_table_info('site') WHERE name = 'timezone'").get();
-  const tzOf = new Map(db.prepare(`SELECT id, ${hasTz ? 'timezone' : 'NULL AS timezone'} FROM site`).all().map((s) => [s.id, s.timezone || 'Europe/London']));
-  db.exec('BEGIN');
+// A database from before the deltas: no schema_delta table, and a table schema.sql defines is there
+// without every column schema.sql gives it (for example a tariff_agreement without recorded_at, or
+// a site_hh without dur_s). A new, empty file is not, nor is one whose first open stopped after
+// schema.sql and before the first delta (its tables already have today's shape).
+function predatesSchema() {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_delta'").get()) return false;
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((t) => t.name);
+  if (!tables.length) return false;
+  const fresh = new DatabaseSync(':memory:');
   try {
-    const ins = db.prepare(`INSERT INTO site_hh (${cols.join(',')}, dur_s, tod_min) VALUES (${cols.map(() => '?').join(',')}, 1800, ?)`);
-    for (const r of db.prepare(`SELECT ${cols.join(',')} FROM site_hh_v1`).all()) {
-      ins.run(...cols.map((c) => r[c]), todMinute(tzOf.get(r.site_id) || 'Europe/London', r.slot_start));
-    }
-    db.exec('DROP TABLE site_hh_v1');
-    db.exec('COMMIT');
-  } catch {
-    db.exec('ROLLBACK');
-    const now = Math.floor(Date.now() / 1000);
-    db.exec('BEGIN');
-    try {
-      db.exec('DROP TABLE IF EXISTS site_hh_v1; DELETE FROM site_hh; DELETE FROM site_day;');
-      const q = db.prepare('INSERT INTO rebuild_queue (site_id, from_ts, to_ts, reason, enqueued_at) VALUES (?, 0, ?, ?, ?)');
-      for (const id of tzOf.keys()) q.run(id, now, 'serving tables recreated for per-home slot length', now);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
+    fresh.exec(SCHEMA);
+    const cols = (c, t) => c.prepare('SELECT name FROM pragma_table_info(?)').all(t).map((r) => r.name);
+    return tables.some((t) => { const have = new Set(cols(db, t)); return cols(fresh, t).some((c) => !have.has(c)); });
+  } finally {
+    fresh.close();
   }
 }
 
@@ -188,31 +108,6 @@ function seedRegistry() {
 }
 seedRegistry();
 
-// Columns added after a database was created. Serving tables are rebuilt from facts, so adding is safe.
-function addColumns(table, cols) {
-  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
-  for (const c of cols) if (!have.has(c)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} REAL`);
-}
-for (const t of ['site_hh', 'site_day']) addColumns(t, ['solar_to_loss', 'battery_to_loss', 'grid_to_loss', 'loss_cost']);
-// Battery stock carried from one day to the next, so a rebuild can start at any day.
-addColumns('site_day', ['battery_eff']);
-if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'battery_stock')) db.exec('ALTER TABLE site_day ADD COLUMN battery_stock TEXT');
-// The slot length each day was built with; days built before it was recorded were half-hours.
-if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'slot_s')) {
-  db.exec('ALTER TABLE site_day ADD COLUMN slot_s INTEGER; UPDATE site_day SET slot_s = 1800;');
-}
-// Devices and agreements from before versioning: when each was first known is taken from the
-// sync log (the first sync whose step for that provider succeeded), else now. Never left empty,
-// so a rebuild "as known at" a moment always has an answer. Checked first, so an up-to-date open
-// runs no UPDATE (an UPDATE takes the write lock even when it changes no row).
-if (db.prepare('SELECT 1 FROM device WHERE recorded_at IS NULL UNION ALL SELECT 1 FROM tariff_agreement WHERE recorded_at IS NULL LIMIT 1').get()) db.exec(`UPDATE device SET recorded_at = COALESCE((SELECT MIN(r.finished_at) * 1000 FROM sync_run r, json_each(r.detail) j
-    WHERE r.site_id = device.site_id AND json_valid(r.detail) AND json_extract(j.value, '$.step') = (CASE device.provider WHEN 'env' THEN 'tariff' ELSE 'octopus' END)
-      AND json_extract(j.value, '$.ok') = 1), CAST(strftime('%s', 'now') AS INTEGER) * 1000) WHERE recorded_at IS NULL;
-  UPDATE tariff_agreement SET recorded_at = COALESCE((SELECT recorded_at FROM device WHERE device.id = tariff_agreement.device_id), CAST(strftime('%s', 'now') AS INTEGER) * 1000)
-    WHERE recorded_at IS NULL;`);
-// The primary key (series_id, ts, recorded_at) already serves every reading lookup; this index was never used.
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'reading_current'").get()) db.exec('DROP INDEX reading_current');
-
 // ───────────── Deltas: money and tax (002), markets and regions (003), tariff kind and ledger currency (004),
 // provenance labels (005), register windows and estimated rates (006), contracted capacity (007),
 // market provider registry (008), provider state: rate-limit cooldown and sweep progress (009),
@@ -225,7 +120,7 @@ if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'rea
 // last statement) is skipped, so an open of an up-to-date database runs no delta and writes nothing.
 // A recorded delta is applied again only when an object it creates is missing (a table, index or
 // trigger named in a CREATE ... IF NOT EXISTS, or an ADD COLUMN's column; for example a trigger lost
-// with a table that db.js rebuilt): deltas stay safe to run again, so this only restores what is missing.
+// with a table rebuilt by hand): deltas stay safe to run again, so this only restores what is missing.
 // A change to the schema is therefore a NEW delta file, never an edit of an applied one.
 // 010 rebuilds market_provider only while the table still has an older owner CHECK (a table created
 // by today's 008 already has 'core'/'external'); otherwise it is recorded without the rebuild.

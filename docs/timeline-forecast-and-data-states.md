@@ -594,7 +594,7 @@ Meters and tariffs follow the same rule:
 - **Devices** that stop being used are retired (`retired_at`). For example, the stand-in `.env` tariff meters are retired once the Octopus meters are read.
 - **Agreements:** a changed account history supersedes the old tariff agreements (kept) and adds the new ones.
 - **Timestamps:** a version's time always moves forward, even for two changes in the same millisecond.
-- **Upgrade:** a database from before this upgrades itself on open. The agreement table is rebuilt once, and the first-known times are filled from the sync log.
+- **Upgrade:** a database from before this is no longer upgraded on open; it is refused with a message to start fresh (`npm run reset`).
 
 ### 8.8 Corrections by EnergieBee
 

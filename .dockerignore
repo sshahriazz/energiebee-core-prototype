@@ -1,0 +1,23 @@
+# Never bake secrets or local data into the image.
+.env
+.env.*
+!.env.example
+data
+node_modules
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+test
+docs.zip
+*.docx
+docs/erl_crash.dump
+docs/benchmarks
+docs/diagrams
+docs/reports
+docs/branding
+scripts/*.py
+scripts/report-requirements.txt
+Dockerfile
+docker-compose.yml
+.dockerignore

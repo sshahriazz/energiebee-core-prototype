@@ -1,0 +1,20 @@
+# docker compose up -d --build     then open http://localhost:8080
+# Settings and credentials come from .env (copy .env.example and fill it in). The database, raw
+# payloads and logs persist in the named volume.
+services:
+  energiebee:
+    build: .
+    image: energiebee-core
+    container_name: energiebee
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "4100"
+      DB_FILE: data/core.db        # relative to /app: lives in the volume below
+    ports:
+      - "8080:80"
+    volumes:
+      - energiebee-data:/app/data
+volumes:
+  energiebee-data:

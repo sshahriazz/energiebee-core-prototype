@@ -57,7 +57,8 @@ export function num(v, d) {
   const a = Math.abs(v);
   // Without d: up to 3 significant decimals, no trailing zeros (95, 94.8, 0.325). With d: exactly d decimals.
   const dp = d ?? (a >= 1000 ? 0 : a >= 100 ? 1 : a >= 1 ? 2 : 3);
-  return v.toLocaleString('en-GB', { minimumFractionDigits: d ?? 0, maximumFractionDigits: dp }).replace(/^-/, '−');
+  const out = v.toLocaleString('en-GB', { minimumFractionDigits: d ?? 0, maximumFractionDigits: dp }).replace(/^-/, '−');
+  return /^−0(\.0+)?$/.test(out) ? out.slice(1) : out;   // a tiny negative rounds to 0, not −0
 }
 // The API's units in words a person reads: money in the home's own minor unit (p or c), °C, gCO₂.
 const UNIT_WORD = { degC: '°C', gCO2: 'gCO₂', 'gCO2/kWh': 'gCO₂/kWh', m3: 'm³', 'MJ/m3': 'MJ/m³', 'W/m2': 'W/m²', count: '', factor: '', s: 's', readings: 'readings' };

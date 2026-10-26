@@ -929,3 +929,7 @@ a.xp-cov-day:hover { outline: 2px solid var(--text-3); outline-offset: 1px; }
 .xp-kv.xp-kv-one { grid-template-columns: minmax(0, 1fr); margin-bottom: 10px; }
 .xp-kv.xp-kv-one dd { white-space: normal; text-align: right; overflow-wrap: anywhere; }
 .xp-io-val { max-width: 60vw; overflow-wrap: anywhere; white-space: normal; }
+#slot-flows ~ .xp-price { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.xp-flowlist { margin-top: 12px; }
+.xp-cat .xp-pager { gap: 6px; }
+.xp-cat .xp-pager [aria-label="First page"], .xp-cat .xp-pager [aria-label="Last page"] { display: none; }

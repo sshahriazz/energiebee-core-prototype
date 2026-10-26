@@ -487,7 +487,7 @@ function drawFlows(host, o) {
   const L = [...new Set(list.map((f) => f.from))].sort((a, b) => ord(LEFT_ORDER, a) - ord(LEFT_ORDER, b));
   const R = [...new Set(list.map((f) => f.to))].sort((a, b) => ord(RIGHT_ORDER, a) - ord(RIGHT_ORDER, b));
   const narrow = W < 520;
-  const m = { l: narrow ? 92 : 140, r: narrow ? 92 : 140, t: 8, b: 8 };
+  const m = { l: narrow ? 92 : 140, r: narrow ? 92 : 140, t: 10, b: 22 };   // room under the last node for its two label lines
   const gap = 18; const bar = 10;
   const sum = (side, k) => list.filter((f) => (side === 'L' ? f.from : f.to) === k).reduce((s, f) => s + f.kwh, 0);
   const total = list.reduce((s, f) => s + f.kwh, 0);

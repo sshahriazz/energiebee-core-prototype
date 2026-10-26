@@ -194,16 +194,23 @@ test('validate a slot: every check says what it compared; synthetic data pass; a
   assert.equal(v.summary.fail, 0, JSON.stringify(v.checks.filter((c) => c.status === 'fail')));
   const byId = (list, id) => list.find((c) => c.id === id);
   assert.equal(byId(v.checks, 'stored_vs_rebuild').status, 'pass');
+  // Plain words with the slot's own numbers.
+  const cost = byId(v.checks, 'cost_arithmetic');
+  assert.ok(cost.explanation.endsWith(`saved ${row.total_cost.toFixed(2)} p.`), cost.explanation);
+  assert.match(cost.how, /^We redid the sum/);
+  const bal = byId(v.checks, 'balance_slot');
+  assert.ok(bal.explanation.startsWith(`In: ${(row.solar + row.grid_import + row.battery_discharge).toFixed(3)} kWh.`), bal.explanation);
+  assert.match(byId(v.checks, 'tax_rule').explanation, /5% VAT/);
   assert.equal(byId(v.checks, 'cost_arithmetic').status, 'pass');
   assert.equal(byId(v.checks, 'rate_published').status, 'skip', 'synthetic rate rows have no payload');
-  assert.match(byId(v.checks, 'rate_published').explanation, /no payload/);
+  assert.match(byId(v.checks, 'rate_published').explanation, /not downloaded from a supplier/);
   // Corrupt the stored row: the rebuild comparison fails and names the column; the cost no longer adds up.
   db.prepare('UPDATE site_hh SET total_cost = total_cost + 3 WHERE site_id = ? AND slot_start = ?').run(gb.site.id, row.slot_start);
   try {
     const bad = await get(`/api/explorer/validate?site=${gb.site.id}&slot=${row.slot_start}`);
     const s = byId(bad.checks, 'stored_vs_rebuild');
     assert.equal(s.status, 'fail');
-    assert.match(s.explanation, /total_cost stored .* vs rebuilt/);
+    assert.match(s.explanation, new RegExp(`total cost is saved as ${(row.total_cost + 3).toFixed(2)} p but works out as ${row.total_cost.toFixed(2)} p`));
     near(s.our_value - s.source_value, 3, 1e-9);
     assert.equal(byId(bad.checks, 'cost_arithmetic').status, 'fail');
     near(byId(bad.checks, 'cost_arithmetic').diff, 3, 1e-9);
@@ -221,6 +228,12 @@ test('validate a range: per-slot checks aggregated per day, with the day checks'
   const agg = v.checks.find((c) => c.id === 'stored_vs_rebuild' && c.date === m.NL.change);
   assert.equal(agg.slots.pass, 100, 'every quarter-hour of the 25-hour day');
   assert.equal(agg.status, 'pass');
+  // Aggregated words: readable local times, never an ISO stamp.
+  for (const c of v.checks.filter((x) => x.slots)) {
+    assert.match(c.explanation, /^\d+ quarter-hours on \d{1,2} Oct: /);
+    assert.match(c.explanation, /\d\d:\d\d to \d\d:\d\d on \d{1,2} Oct/);
+    assert.doesNotMatch(c.explanation, /\d{4}-\d\d-\d\dT|T\d\d:\d\d[+-]/);
+  }
   assert.equal(v.summary.fail, 0, JSON.stringify(v.checks.filter((c) => c.status === 'fail').slice(0, 3)));
   assert.equal((await call(`/api/explorer/validate?site=${nl.site.id}`)).status, 400);
   assert.equal((await call(`/api/explorer/validate?site=${nl.site.id}&from=2025-01-01&to=2025-03-01`)).status, 400);

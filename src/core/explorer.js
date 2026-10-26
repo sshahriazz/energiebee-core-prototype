@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, dataDir } from '../db/db.js';
 import { QUALITY } from './facts.js';
-import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTime, findSeries } from './explain.js';
+import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTime, findSeries, minorOf, dayWords, slotWords, pctWords } from './explain.js';
 import { series as plannerSeries } from './planner-read.js';
 import { loadPricing, priceAt, fixedPerDay } from './pricing.js';
 import { buildSite } from './build.js';
@@ -318,6 +318,7 @@ function localHHMM(tz, ts) {
 const LOOKUPS = {
   sunsynk_5min: {
     how: 'the record at the same plant-clock HH:mm under the same label, with the contract\'s signs (grid positive = import, battery positive = discharging)',
+    plain: 'each five-minute reading matched by its time of day',
     index(body) { const m = new Map(); for (const info of body?.data?.infos ?? []) for (const rec of info.records ?? []) { const k = `${info.label}|${rec.time}`; (m.get(k) || m.set(k, []).get(k)).push(rec.value); } return m; },
     find(ix, fact, meta, tz) {
       const [label, sign] = SUNSYNK_LABEL[meta.metric] ?? [];
@@ -330,21 +331,25 @@ const LOOKUPS = {
   },
   sunsynk_daily: {
     how: 'the record of the same plant-local day under the counter\'s label',
+    plain: 'each daily total matched by its date',
     index(body) { const m = new Map(); for (const info of body?.data?.infos ?? []) for (const rec of info.records ?? []) m.set(`${info.label}|${rec.time}`, Number(rec.value)); return m; },
     find(ix, fact, meta, tz) { const k = `${SUNSYNK_MONTH[meta.metric]}|${localDate(tz, fact.start_ts)}`; return ix.has(k) ? { value: ix.get(k) } : { missing: `no record ${k}` }; },
   },
   octopus_meter: {
     how: 'the consumption row with the same interval_start and interval_end',
+    plain: 'each meter reading matched by its start and end time',
     index(body) { const m = new Map(); for (const x of body?.results ?? []) m.set(`${parseIso(x.interval_start)}|${parseIso(x.interval_end)}`, x.consumption); return m; },
     find(ix, fact) { const k = `${fact.start_ts}|${fact.end_ts}`; return ix.has(k) ? { value: ix.get(k) } : { missing: 'no row for that period' }; },
   },
   carbon_regional: {
     how: 'the period with the same from and to: its intensity.forecast',
+    plain: 'each half-hour\'s figure matched by its time',
     index(body) { const d = body?.data; const list = Array.isArray(d) ? d[0]?.data : d?.data; const m = new Map(); for (const x of list ?? []) m.set(`${parseIso(x.from)}|${parseIso(x.to)}`, x.intensity?.forecast ?? null); return m; },
     find(ix, fact) { const k = `${fact.start_ts}|${fact.end_ts}`; return ix.has(k) ? { value: ix.get(k) } : { missing: 'no period with those times' }; },
   },
   open_meteo: {
     how: 'the hourly value at the same unix time (irradiance: the value at the end of the hour it covers)',
+    plain: 'each hourly value matched by its hour',
     index(body) { const h = body?.hourly; return { h, at: new Map((h?.time ?? []).map((t, i) => [t, i])) }; },
     find(ix, fact, meta) {
       const key = OPEN_METEO[meta.metric];
@@ -355,6 +360,7 @@ const LOOKUPS = {
   },
   national_gas_cv: {
     how: 'the CSV line whose Applicable For date is the gas day',
+    plain: 'the energy in the gas matched by its gas day',
     index(text) { const m = new Map(); for (const line of String(text ?? '').trim().split(/\r?\n/).slice(1)) { const c = line.match(/("([^"]*)"|[^,]*)(,|$)/g)?.map((x) => x.replace(/,$/, '').replace(/^"|"$/g, '')) ?? []; m.set(c[1], Number(c[3])); } return m; },
     find(ix, fact, meta, tz) { const [y, mo, d] = localDate(tz, fact.start_ts).split('-'); const k = `${d}/${mo}/${y}`; return ix.has(k) ? { value: ix.get(k) } : { missing: `no line for ${k}` }; },
     text: true,
@@ -902,9 +908,31 @@ function loadCx(site, from, to, { slot = null } = {}) {
 function seriesMetaOf(site) { return new Map(siteSeries(site).map((s) => [s.id, s])); }
 const overlapOf = (f, s, e) => Math.min(f.end_ts, e) - Math.max(f.start_ts, s);
 
+// ── Words ──
+// Every check's `how` and `explanation` are short plain sentences with the slot's own numbers in them.
+const kw = (v, d = 3) => `${fx(v, d)} kWh`;
+const mo = (cx, v, d = 2) => `${fx(v, d)} ${minorOf(cx.site.currency)}`;
+const perKwh = (cx, v) => `${mo(cx, v)} per kWh`;
+const minutes = (s) => `${Math.round(s / 60)} minutes`;
+// A stored figure in words, by its column's unit.
+function valWords(cx, field, v) {
+  if (typeof v !== 'number') return v == null ? 'empty' : String(v);
+  const unit = TIMELINE_VARS[field]?.unit;
+  if (unit === 'kWh') return kw(v);
+  if (unit === 'minor') return mo(cx, v);
+  if (unit === 'minor/kWh') return perKwh(cx, v);
+  if (unit === 'fraction') return pctWords(v);
+  if (unit === '%') return `${fx(v, 1)}%`;
+  return fx(v, 4);
+}
+const fieldWords = (field) => (TIMELINE_VARS[field]?.label ?? field.replace(/_/g, ' ')).toLowerCase();
+const PROVIDER_WORDS = { sunsynk_5min: 'the inverter (Sunsynk)', sunsynk_daily: 'the inverter (Sunsynk daily totals)', octopus_meter: 'the smart meter (Octopus)', carbon_regional: 'the grid operator (Carbon Intensity)',
+  open_meteo: 'the weather service (Open-Meteo)', national_gas_cv: 'National Gas', octopus_rates: 'the supplier (Octopus)', tariffscanner: 'Tariffscanner', tounify: 'tounify' };
+const providerWords = (source) => PROVIDER_WORDS[source] ?? source;
+
 // ── Per-slot checks ──
 function slotChecks(cx, row) {
-  const { site, tz, slotS } = cx;
+  const { slotS } = cx;
   const slot = row.slot_start; const end = slot + slotS; const h = slotS / 3600; const noun = slotNoun(slotS);
   const lin = (() => { try { return JSON.parse(row.lineage || '{}'); } catch { return {}; } })();
   const out = [];
@@ -918,13 +946,15 @@ function slotChecks(cx, row) {
   const first = cmp.diffs.find((d) => d.field !== 'quality' && typeof d.stored === 'number') ?? cmp.diffs[0];
   const stale = rb && row.method_version !== rb.method_version;
   const lineageOnly = rb && cmp.matches && !cmp.lineage_matches;
-  out.push(ck('stored_vs_rebuild', 'consistency', 'Stored row equals a rebuild from the facts held now',
-    'The slot\'s days were rebuilt by the production build as a dry run (nothing written), continuing from the battery stock stored at the end of the day before (as the build does), and every column of the rebuilt row compared with the stored one (numbers within 1e-6; the lineage apart).',
+  const shown = cmp.diffs.filter((d) => d.field !== 'quality').slice(0, 4);
+  out.push(ck('stored_vs_rebuild', 'consistency', 'The saved figures match a fresh calculation',
+    `We worked the ${noun} out again from the data we hold now, exactly as the timeline is built (carrying on from the battery's saved state the day before), and compared every figure with the saved one.`,
     { source_value: first ? first.recomputed : null, our_value: first ? first.stored : null, unit: first ? (TIMELINE_VARS[first.field]?.unit ?? null) : null, diff: first?.diff ?? null, tolerance: 1e-6,
       status: !rb ? 'skip' : lineageOnly ? 'warn' : cmp.matches ? 'pass' : stale ? 'warn' : 'fail', evidence: ev({ table: 'site_hh' }),
-      explanation: !rb ? 'the rebuild did not produce this slot' : lineageOnly ? `every number equals the rebuild; the lineage differs in ${cmp.lineage_diffs.map((d) => d.key).join(', ')} (built before the build recorded them: rebuild the day to refresh it)`
-        : cmp.matches ? 'every column of the stored row equals the rebuild'
-        : `${cmp.diffs.length} column(s) differ: ${cmp.diffs.slice(0, 6).map((d) => `${d.field} stored ${typeof d.stored === 'number' ? fx(d.stored, 6) : d.stored} vs rebuilt ${typeof d.recomputed === 'number' ? fx(d.recomputed, 6) : d.recomputed}`).join('; ')}. ${stale ? 'The stored row was built with another method version.' : 'The stored timeline is stale (facts changed since it was built) or the row was altered.'}`,
+      explanation: !rb ? `The fresh calculation did not produce this ${noun}.`
+        : lineageOnly ? `Every number matches. Only the saved note of where the numbers came from is older (it lacks ${cmp.lineage_diffs.map((d) => d.key).join(', ')}); recalculating the day would refresh it.`
+          : cmp.matches ? `Every saved figure matches the fresh calculation.`
+            : `${cmp.diffs.length} figure${cmp.diffs.length > 1 ? 's differ' : ' differs'}: ${shown.map((d) => `${fieldWords(d.field)} is saved as ${valWords(cx, d.field, d.stored)} but works out as ${valWords(cx, d.field, d.recomputed)}`).join('; ')}${cmp.diffs.some((d) => d.field === 'quality') ? ' (so it would also be marked as revised)' : ''}. ${stale ? 'The saved figures were made with an older method.' : 'The saved timeline is out of date (data arrived or changed after it was built) or was edited.'}`,
       diffs: cmp.diffs.slice(0, 20), lineage_diffs: cmp.lineage_diffs.map((d) => d.key) }));
 
   // Completeness: the facts behind the slot.
@@ -937,40 +967,48 @@ function slotChecks(cx, row) {
   const minCount = Object.values(counts).length ? Math.min(...Object.values(counts)) : null;
   // One five-minute sample may fall either side of a boundary (the inverter's clock drifts), as trust.js counts.
   const complete = (minCount == null || minCount >= expected - 1) && (!expectMeter || meterCover >= slotS);
-  out.push(ck('completeness', 'source', 'Facts present for the slot', `Counted the current five-minute inverter readings of each power series inside the ${noun} (${expected} expected, one fewer allowed: a sample can fall either side of a boundary) and the seconds of it the import meter's readings cover (${slotS} expected).`,
+  const short = Object.entries(counts).filter(([, n]) => n < expected - 1).map(([k, n]) => `${POWER_WORDS[k]} ${n} of ${expected}`);
+  out.push(ck('completeness', 'source', 'All the readings are there',
+    `We counted the inverter's five-minute readings in the ${noun} (${expected} expected for each flow; one fewer is fine, because a reading can fall either side of the boundary) and checked that the smart meter covers the whole ${noun}.`,
     { source_value: expected, our_value: minCount, unit: 'readings', diff: minCount == null ? null : minCount - expected, tolerance: 1,
       status: minCount == null && !expectMeter ? 'skip' : complete ? 'pass' : 'warn', evidence: ev({ table: 'reading', series_id: cx.power.solar ?? null }),
-      explanation: `${Object.entries(counts).map(([k, n]) => `${POWER[k]} ${n}/${expected}`).join(', ') || 'no inverter series'}; meter covers ${meterCover} of ${slotS} s${expectMeter ? '' : ' (no import meter)'}`,
+      explanation: minCount == null && !expectMeter ? `This home sends no inverter readings and has no smart meter.`
+        : complete ? `All there: at least ${minCount} of ${expected} readings for each flow${expectMeter ? ` and the meter covers all ${minutes(slotS)}` : ''}.`
+          : `Something is missing: ${[...short, ...(expectMeter && meterCover < slotS ? [`the smart meter covers ${minutes(meterCover)} of ${minutes(slotS)}`] : [])].join('; ')}.`,
       counts, meter_cover_s: meterCover }));
 
   // Meter vs inverter clamp.
+  const clampWords = 'the inverter\'s own sensor on the grid cable (its "clamp")';
   for (const [dir, col, key] of [['import', 'grid_import', 'imp'], ['export', 'grid_export', 'exp']]) {
     const meterUsed = lin[dir] === 'octopus_meter';
     const clamp = lin.ct?.[key];
     const meterFact = F.meters[dir][0];
+    const id = `meter_vs_ct${dir === 'export' ? '_export' : ''}`;
+    const title = `The smart meter and the inverter agree (${dir})`;
+    const how = `We compared what the smart meter measured ${dir === 'import' ? 'coming from' : 'going to'} the grid with what ${clampWords} measured in the same ${noun}. The meter is the official figure; the clamp is a cross-check.`;
     if (!meterUsed || clamp == null) {
-      out.push(ck(`meter_vs_ct${dir === 'export' ? '_export' : ''}`, 'consistency', `Smart meter vs inverter clamp (${dir})`, `Compared the smart meter's ${dir} with the inverter clamp's fitted ${dir} for the same ${noun}.`,
-        { status: 'skip', unit: 'kWh', evidence: ev({}), explanation: !meterUsed ? `the ${dir} came from ${lin[dir] ?? 'no source'}: no meter reading to compare` : 'no clamp samples in this slot' }));
+      out.push(ck(id, 'consistency', title, how, { status: 'skip', unit: 'kWh', evidence: ev({}),
+        explanation: !meterUsed ? `There is no smart meter ${dir} reading for this ${noun}${lin[dir] === 'sunsynk_ct' ? ', so the clamp figure is used on its own' : ''}: nothing to compare.` : `The inverter sent no readings for this ${noun}.` }));
       continue;
     }
     const meter = row[col]; const diff = meter - clamp; const tol = Math.max(0.05 * h * 2, 0.1 * Math.abs(meter));
-    out.push(ck(`meter_vs_ct${dir === 'export' ? '_export' : ''}`, 'consistency', `Smart meter vs inverter clamp (${dir})`, `Compared the smart meter's ${dir} (used) with the inverter clamp's fitted ${dir} for the same ${noun} (lineage.ct).`,
-      { source_value: meter, our_value: clamp, unit: 'kWh', diff, tolerance: tol, status: Math.abs(diff) <= tol ? 'pass' : 'warn',
+    const ok = Math.abs(diff) <= tol;
+    out.push(ck(id, 'consistency', title, how,
+      { source_value: meter, our_value: clamp, unit: 'kWh', diff, tolerance: tol, status: ok ? 'pass' : 'warn',
         evidence: ev({ table: 'interval_fact', series_id: meterFact?.series_id ?? null, raw_id: meterFact?.raw_id ?? null }),
-        explanation: `meter ${fx(meter, 3)} kWh, clamp ${fx(clamp, 3)} kWh: ${Math.abs(diff) <= tol ? 'they agree' : 'they disagree'} within ${fx(tol, 3)} kWh (the larger of ${fx(0.1 * h, 3)} kWh and 10%)` }));
+        explanation: `The meter measured ${kw(meter)}, the clamp ${kw(clamp)}. ${ok ? `They agree (we allow up to ${kw(tol)} difference).` : `They differ by ${kw(Math.abs(diff))}, more than the ${kw(tol)} we allow; we use the meter's figure.`}` }));
   }
 
   // Energy balance: in = out + loss.
-  if (row.state === 'missing') out.push(ck('balance_slot', 'consistency', 'Energy balance of the slot', 'in = out + loss', { status: 'skip', unit: 'kWh', evidence: ev({}), explanation: 'the slot is missing' }));
+  if (row.state === 'missing') out.push(ck('balance_slot', 'consistency', 'Energy in equals energy out', 'We add up what came in and what went out.', { status: 'skip', unit: 'kWh', evidence: ev({}), explanation: `The ${noun} is missing, so there is nothing to add up.` }));
   else {
     const inn = (row.solar ?? 0) + (row.grid_import ?? 0) + (row.battery_discharge ?? 0);
     const outE = (row.home ?? 0) + (row.grid_export ?? 0) + (row.battery_charge ?? 0);
     const loss = (row.solar_to_loss ?? 0) + (row.battery_to_loss ?? 0) + (row.grid_to_loss ?? 0);
     const diff = inn - outE - loss;
-    out.push(ck('balance_slot', 'consistency', 'Energy balance of the slot (in = out + loss)', 'Added what came in (solar + grid import + battery discharge) and compared it with what went out (home + grid export + battery charge) plus the inverter loss flows.',
+    out.push(ck('balance_slot', 'consistency', 'Energy in equals energy out', 'We added up what came in (solar, grid and battery) and what went out (house, export, battery charging and what the inverter used). The two should be equal.',
       { source_value: inn, our_value: outE + loss, unit: 'kWh', diff, tolerance: 0.02, status: Math.abs(diff) <= 0.02 ? 'pass' : 'warn', evidence: ev({ table: 'site_hh' }),
-        explanation: Math.abs(diff) <= 0.02 ? `${fx(inn, 3)} kWh in = ${fx(outE, 3)} kWh out + ${fx(loss, 3)} kWh loss`
-          : `${fx(-diff, 3)} kWh of measured export or charging is not covered by any source in this ${noun} (measurement mismatch between meter and clamp, or between the inverter's own channels)` }));
+        explanation: `In: ${kw(inn)}. Out: ${kw(outE)}, plus ${kw(loss)} used by the inverter. ${Math.abs(diff) <= 0.02 ? 'They match.' : `${kw(-diff)} of the export or battery charging is not covered by anything that came in: the meter and the inverter disagree slightly.`}` }));
   }
 
   // Gas: the meter's reading converted to kWh (m3 x 1.02264 x calorific value / 3.6).
@@ -979,31 +1017,36 @@ function slotChecks(cx, row) {
     const cover = F.meters.gas.filter((f) => f.value != null).reduce((t, f) => t + overlapOf(f, slot, end), 0);
     const want = cover < slotS ? null : cx.gasM3 ? (F.cv ? (share * 1.02264 * F.cv.value) / 3.6 : null) : share;
     const gDiff = want != null && row.gas != null ? row.gas - want : null;
-    out.push(ck('gas_conversion', 'consistency', cx.gasM3 ? 'Gas kWh = meter m3 x 1.02264 x calorific value / 3.6' : 'Gas kWh = the meter\'s kWh', cx.gasM3
-      ? `Took the gas meter's m3 over the ${noun}, the volume correction 1.02264 and National Gas's calorific value for ${cx.gasLdz} on that gas day, and compared with the stored gas kWh.`
-      : `Took the gas meter's kWh over the ${noun} and compared with the stored gas kWh.`,
+    const ok = gDiff != null && Math.abs(gDiff) <= 1e-6;
+    out.push(ck('gas_conversion', 'consistency', 'Gas turned into kWh correctly', cx.gasM3
+      ? `The gas meter measures volume (m3) but gas is billed in kWh. We redid the sum: m3 x 1.02264 (a standard correction for temperature and pressure) x the energy in the gas that day (published by National Gas for ${cx.gasLdz}) / 3.6.`
+      : 'The gas meter reports kWh; we checked the saved gas figure is the meter\'s.',
       { source_value: want, our_value: row.gas, unit: 'kWh', diff: gDiff, tolerance: 1e-6,
-        status: want == null && row.gas == null ? 'skip' : gDiff != null && Math.abs(gDiff) <= 1e-6 ? 'pass' : 'fail',
+        status: want == null && row.gas == null ? 'skip' : ok ? 'pass' : 'fail',
         evidence: ev({ table: 'interval_fact', series_id: F.meters.gas[0]?.series_id ?? null, raw_id: F.meters.gas[0]?.raw_id ?? null }),
-        explanation: want == null && row.gas == null ? (cover < slotS ? 'the gas meter has not covered this slot' : 'no calorific value published yet for that gas day')
-          : cx.gasM3 ? `${fx(share, 3)} m3 x 1.02264 x ${fx(F.cv?.value, 2)} MJ/m3 / 3.6 = ${fx(want, 4)} kWh; stored ${fx(row.gas, 4)}` : `${fx(share, 3)} kWh metered; stored ${fx(row.gas, 4)}` }));
+        explanation: want == null && row.gas == null ? (cover < slotS ? `The gas meter reading for this ${noun} has not arrived yet.` : 'National Gas has not yet published the energy in the gas for that day.')
+          : cx.gasM3 ? `${fx(share, 3)} m3 x 1.02264 x ${fx(F.cv?.value, 1)} MJ/m3 / 3.6 = ${kw(want)}; saved ${kw(row.gas)}${ok ? '.' : ': they differ.'}` : `The meter read ${kw(share)}; saved ${kw(row.gas)}${ok ? '.' : ': they differ.'}` }));
   }
 
   // Prices.
   out.push(...priceChecks(cx, row));
 
   // Carbon intensity used = the source's value for the period.
-  if (cx.carbonId == null) out.push(ck('carbon_used', 'source', 'Carbon intensity used', 'Compared with the regional carbon intensity facts.', { status: 'skip', unit: 'gCO2/kWh', evidence: ev({}), explanation: 'this home has no carbon region' }));
+  const carbonTitle = 'The carbon figure is the grid operator\'s';
+  const carbonHow = `We checked the carbon intensity used for the ${noun} against the value the grid operator published for that time.`;
+  if (cx.carbonId == null) out.push(ck('carbon_used', 'source', carbonTitle, carbonHow, { status: 'skip', unit: 'gCO2/kWh', evidence: ev({}), explanation: 'This home has no carbon region, so no carbon figure is used.' }));
   else {
     const fs_ = F.carbon.filter((f) => f.value != null);
     const w = fs_.reduce((s, f) => s + overlapOf(f, slot, end), 0);
     const src = w ? fs_.reduce((s, f) => s + f.value * overlapOf(f, slot, end), 0) / w : null;
     const diff = src != null && row.carbon_intensity != null ? row.carbon_intensity - src : null;
-    out.push(ck('carbon_used', 'source', 'Carbon intensity used = the source\'s value for the period', `Took the regional carbon intensity facts overlapping the ${noun} (time-weighted when more than one) and compared with the stored carbon_intensity.`,
+    out.push(ck('carbon_used', 'source', carbonTitle, carbonHow,
       { source_value: src, our_value: row.carbon_intensity, unit: 'gCO2/kWh', diff, tolerance: 1e-6,
         status: src == null && row.carbon_intensity == null ? 'skip' : diff != null && Math.abs(diff) <= 1e-6 ? 'pass' : 'fail',
         evidence: ev({ table: 'interval_fact', series_id: cx.carbonId, raw_id: fs_[0]?.raw_id ?? null }),
-        explanation: src == null && row.carbon_intensity == null ? 'no carbon fact for this period' : diff != null && Math.abs(diff) <= 1e-6 ? `${fx(src, 1)} gCO2/kWh, as published` : `stored ${fx(row.carbon_intensity, 1)} but the facts say ${fx(src, 1)}` }));
+        explanation: src == null && row.carbon_intensity == null ? 'The grid operator published no figure for this time.'
+          : diff != null && Math.abs(diff) <= 1e-6 ? `The grid's carbon intensity was ${fx(src, 0)} g CO2 per kWh, and that is the figure used.`
+            : `We used ${fx(row.carbon_intensity, 0)} g CO2 per kWh, but the grid operator's figure is ${fx(src, 0)}.` }));
   }
 
   out.push(...forecastChecks(cx, row));
@@ -1011,6 +1054,7 @@ function slotChecks(cx, row) {
   out.push(unitSanity(cx, row));
   return out;
 }
+const POWER_WORDS = { solar: 'solar', load: 'house', imp: 'grid import', exp: 'grid export', chg: 'battery charging', dis: 'battery discharging' };
 
 function priceChecks(cx, row) {
   const { tz, slotS, pricing } = cx;
@@ -1018,57 +1062,66 @@ function priceChecks(cx, row) {
   const out = [];
   const ev = (o) => ({ ts: slot, ...o });
   if (row.import_rate_ex == null) {
-    out.push(ck('rate_used', 'price', 'Import rate used', 'Looked for the import rate in force.', { status: 'fail', unit: 'minor/kWh', evidence: ev({ table: 'rate_interval' }), explanation: `no import rate covers this ${noun}: it is not costed` }));
+    out.push(ck('rate_used', 'price', 'The price used is the right one', 'We looked for the import price in force.', { status: 'fail', unit: 'minor/kWh', evidence: ev({ table: 'rate_interval' }), explanation: `No import price covers this ${noun}, so it is not costed.` }));
     return out;
   }
   for (const [dir, kind] of [['import', 'meter_import'], ['export', 'meter_export']]) {
     const pieces = cx.pieces(kind, slot);
     if (dir === 'export' && (!pieces.length || pieces.every((p) => p.price == null))) continue;
+    const Dir = dir === 'import' ? 'Import' : 'Export';
     // The published rate row of each part of the slot.
     const checked = []; const missing = [];
     for (const p of pieces) {
       const rate = p.rate;
-      if (!rate) { missing.push(`${new Date(p.from * 1000).toISOString().slice(11, 16)}: no rate row`); continue; }
-      if (rate.raw_id == null) { missing.push(`rate row ${rate.rate_id} has no payload (origin ${rate.origin ?? 'unknown'})`); continue; }
+      if (!rate) { missing.push(`no price row covers ${hhmmOf(tz, p.from)}`); continue; }
+      if (rate.raw_id == null) { missing.push(`this price was not downloaded from a supplier (it was typed in or generated for the demo), so there is no saved copy to compare with`); continue; }
       const pl = cx.pc.get(rate.raw_id);
       let pub = null;
-      if (!pl?.r) pub = { missing: `payload ${rate.raw_id} not found` };
-      else if (pl.text == null) pub = { missing: `the file of payload ${rate.raw_id} is not on this machine` };
+      if (!pl?.r) pub = { missing: `the saved copy (${rate.raw_id}) was not found` };
+      else if (pl.text == null) pub = { missing: `the saved copy (${rate.raw_id}) is not on this computer` };
       else if (RATE_LOOKUP[pl.r.source]) pub = RATE_LOOKUP[pl.r.source](pl.body, rate);
       else if (['tariffscanner', 'tounify'].includes(pl.r.source)) {
         const d = cx.rederived.get(rate.raw_id) ?? cx.rederived.set(rate.raw_id, derivedRates(pl.r, pl.body, cx.site)).get(rate.raw_id);
         const x = d.rows.find((y) => (d.anyTariff || y.tariff_code === p.tariff) && y.component === 'unit' && y.register === rate.register && (y.payment_method ?? 'ANY') === (rate.payment_method ?? 'ANY') && y.valid_from <= rate.valid_from && (y.valid_to == null || y.valid_to > rate.valid_from));
-        pub = x ? { value: x.value, valid_from: x.valid_from, valid_to: x.valid_to } : { missing: 'the normaliser gives no row for it' };
-      } else pub = { missing: `no published-rate reader for ${pl.r.source}` };
+        pub = x ? { value: x.value, valid_from: x.valid_from, valid_to: x.valid_to } : { missing: 'the saved copy has no such row' };
+      } else pub = { missing: `we cannot read price lists from ${pl.r.source}` };
       checked.push({ p, rate, pub });
     }
     const bad_ = checked.filter((c) => c.pub.value == null || Math.abs(c.pub.value - c.rate.price_ex) > 1e-9 || (c.pub.valid_to !== undefined && c.pub.valid_from === c.rate.valid_from && (c.pub.valid_to ?? null) !== (c.rate.valid_to ?? null)));
     const worst = bad_[0] ?? checked[0];
-    out.push(ck(`rate_published${dir === 'export' ? '_export' : ''}`, 'price', `${dir === 'import' ? 'Import' : 'Export'} rate used = the published rate row`,
-      'Followed each rate row the slot used (rate_interval.raw_id) to the payload it was stored from and compared the published price (ex tax) and its validity with the stored row.',
+    const until = (t) => (t == null ? 'further notice' : `${hhmmOf(tz, t)} on ${dayWords(localDate(tz, t))}`);
+    const uniq = [...new Set(checked.map((c) => c.rate.price_ex))];
+    out.push(ck(`rate_published${dir === 'export' ? '_export' : ''}`, 'price', `${Dir} price matches the supplier's list`,
+      `We opened the saved copy of the price list the supplier sent us and checked that the ${dir} price we used, and the dates it applies between, are exactly what it says.`,
       { source_value: worst?.pub.value ?? null, our_value: worst?.rate.price_ex ?? null, unit: 'minor/kWh', diff: worst?.pub.value != null ? worst.rate.price_ex - worst.pub.value : null, tolerance: 1e-9,
         status: !checked.length ? 'skip' : bad_.length ? 'fail' : 'pass', evidence: ev({ table: 'rate_interval', raw_id: worst?.rate.raw_id ?? null, rate_id: worst?.rate.rate_id ?? null }),
-        explanation: !checked.length ? (missing.join('; ') || 'no rate row to follow') : bad_.length
-          ? `rate row ${worst.rate.rate_id}: stored ${fx(worst.rate.price_ex)} valid to ${worst.rate.valid_to ?? 'open'}, published ${worst.pub.value == null ? worst.pub.missing : `${fx(worst.pub.value)} valid to ${worst.pub.valid_to ?? 'open'}`}`
-          : `${checked.length} rate row(s) match their payloads: ${checked.map((c) => `${fx(c.rate.price_ex)} (payload ${c.rate.raw_id})`).join(', ')}${missing.length ? `; not followed: ${missing.join('; ')}` : ''}` }));
+        explanation: !checked.length ? `${(missing[0] ?? 'there is no price row to follow').replace(/^./, (c) => c.toUpperCase())}.`
+          : bad_.length ? `We used ${perKwh(cx, worst.rate.price_ex)} before VAT, valid until ${until(worst.rate.valid_to)}, but the supplier's list ${worst.pub.value == null ? `could not be matched: ${worst.pub.missing}` : `says ${perKwh(cx, worst.pub.value)}, valid until ${until(worst.pub.valid_to)}`}.`
+            : `The ${dir} price we used, ${uniq.map((v) => perKwh(cx, v)).join(' and ')} before VAT, is exactly what the supplier published.` }));
     // The rate stored on the row = the rate rows over the slot (+ per-kWh levies), time-weighted.
     const priced = pieces.filter((p) => p.rate && p.unit_ex != null);
     const src = priced.length === pieces.length && pieces.length ? pieces.reduce((s, p) => s + (p.rate.price_ex + (p.unit_ex - p.supply_ex)) * (p.to - p.from), 0) / slotS : null;
     const ours = dir === 'import' ? row.import_rate_ex : row.export_rate != null && pieces[0]?.vat != null ? row.export_rate / (1 + pieces[0].vat) : null;
     const diff = src != null && ours != null ? ours - src : null;
-    out.push(ck(`rate_used${dir === 'export' ? '_export' : ''}`, 'price', `${dir === 'import' ? 'Import' : 'Export'} rate on the row = its rate rows over the slot`,
-      `Took the rate row of each 15-minute part of the ${noun}, added any per-kWh levy, weighted by time, and compared with the stored ${dir === 'import' ? 'import_rate_ex' : 'export_rate (ex tax)'}.`,
-      { source_value: src, our_value: ours, unit: 'minor/kWh', diff, tolerance: 1e-6, status: src == null ? 'skip' : Math.abs(diff) <= 1e-6 ? 'pass' : 'fail',
+    const ok = diff != null && Math.abs(diff) <= 1e-6;
+    const varies = new Set(pieces.map((p) => p.unit_ex)).size > 1;
+    const quarterly = pieces.every((p) => p.to - p.from === 900) && pieces.length <= 4;
+    const parts = varies ? (quarterly ? pieces.map((p, i) => `${mo(cx, p.unit_ex)} for the ${['first', 'second', 'third', 'fourth'][i]} quarter-hour`) : pieces.map((p) => `${mo(cx, p.unit_ex)} from ${hhmmOf(tz, p.from)} to ${hhmmOf(tz, p.to)}`)) : [];
+    out.push(ck(`rate_used${dir === 'export' ? '_export' : ''}`, 'price', `${Dir} price for the ${noun} adds up`,
+      `We took the price in force for each part of the ${noun} (if the price changed part-way, each part counts for its share of the time) and checked it gives the ${dir} price saved for the ${noun}.`,
+      { source_value: src, our_value: ours, unit: 'minor/kWh', diff, tolerance: 1e-6, status: src == null ? 'skip' : ok ? 'pass' : 'fail',
         evidence: ev({ table: 'rate_interval', rate_id: priced[0]?.rate.rate_id ?? null, raw_id: priced[0]?.rate.raw_id ?? null }),
-        explanation: src == null ? 'a part of the slot has no rate row' : `${pieces.length > 1 && new Set(pieces.map((p) => p.unit_ex)).size > 1 ? 'time-weighted ' : ''}${fx(src)} from the rate rows, ${fx(ours)} stored` }));
+        explanation: src == null ? `Part of the ${noun} has no price.`
+          : `${varies ? `Price: ${parts.join(' and ')}, so the ${noun} counts as the average ${mo(cx, src)} before VAT.` : `The price was ${perKwh(cx, src)} before VAT for the whole ${noun}.`} Saved: ${mo(cx, ours)}${ok ? '. They match.' : '. They differ.'}` }));
   }
 
   // Tax: the rule in force, read from the rule tables.
   const tax = taxInForce(cx, 'electricity', 'import', slot);
   const tDiff = tax.vat != null && row.import_vat != null ? row.import_vat - tax.vat : null;
-  out.push(ck('tax_rule', 'price', 'Tax rate applied = the rule in force', `Read the ${tax.source} rows in force at the slot for electricity import and compared their percentage with the stored import_vat (price paid = import_rate_ex x (1 + import_vat)).`,
-    { source_value: tax.vat, our_value: row.import_vat, unit: 'fraction', diff: tDiff, tolerance: 1e-9, status: tax.vat == null ? 'skip' : Math.abs(tDiff) <= 1e-9 ? 'pass' : 'fail',
-      evidence: ev({ table: tax.source, id: tax.ids?.[0] ?? null }), explanation: tax.explanation }));
+  const tOk = tDiff != null && Math.abs(tDiff) <= 1e-9;
+  out.push(ck('tax_rule', 'price', 'The right VAT rate is applied', `We looked up the tax rate in force on that date and checked it is the one added to the price.`,
+    { source_value: tax.vat, our_value: row.import_vat, unit: 'fraction', diff: tDiff, tolerance: 1e-9, status: tax.vat == null ? 'skip' : tOk ? 'pass' : 'fail',
+      evidence: ev({ table: tax.source, id: tax.ids?.[0] ?? null }), explanation: `${tax.explanation} ${pctWords(row.import_vat)} was applied${tOk ? '.' : ': they differ.'}` }));
 
   // Standing charge per slot = the day's amount x slot length / day length.
   const date = row.local_date; const [ds, de] = dayBounds(tz, date);
@@ -1077,20 +1130,25 @@ function priceChecks(cx, row) {
   const perDay = pi ? fixedPerDay(pi, slot, tz) + (pg ? fixedPerDay(pg, slot, tz) : 0) : null;
   const want = perDay != null ? (perDay * slotS) / (de - ds) : null;
   const sDiff = want != null && row.standing_cost != null ? row.standing_cost - want : null;
-  out.push(ck('standing_share', 'price', 'Standing charge per slot = day amount x slot / day length', `Took the fixed charges of the day including tax (${pg ? 'electricity and gas' : 'electricity'}) and multiplied by ${slotS} s / ${de - ds} s (this day's real length).`,
-    { source_value: want, our_value: row.standing_cost, unit: 'minor', diff: sDiff, tolerance: 1e-6, status: want == null ? 'skip' : Math.abs(sDiff) <= 1e-6 ? 'pass' : 'fail', evidence: ev({ table: 'rate_interval' }),
-      explanation: want == null ? 'no fixed charge in force' : `${fx(perDay)} a day x ${slotS}/${de - ds} = ${fx(want, 6)}; stored ${fx(row.standing_cost, 6)}` }));
+  const sOk = sDiff != null && Math.abs(sDiff) <= 1e-6;
+  out.push(ck('standing_share', 'price', `The standing charge is shared fairly`, `The standing charge is a daily amount${pg ? ' (electricity and gas)' : ''}. We shared it over the day by time and checked this ${noun}'s share.`,
+    { source_value: want, our_value: row.standing_cost, unit: 'minor', diff: sDiff, tolerance: 1e-6, status: want == null ? 'skip' : sOk ? 'pass' : 'fail', evidence: ev({ table: 'rate_interval' }),
+      explanation: want == null ? 'No standing charge is in force.' : `${mo(cx, perDay)} a day x ${minutes(slotS)} / ${(de - ds) / 3600} hours in ${dayWords(date)} = ${mo(cx, want, 4)}; saved ${mo(cx, row.standing_cost, 4)}${sOk ? '.' : ': they differ.'}` }));
 
   // Cost arithmetic.
   const inc = row.import_rate_ex * (1 + row.import_vat);
   const gasCost = row.gas != null && row.gas_rate_ex != null ? row.gas * row.gas_rate_ex * (1 + row.gas_vat) : (row.gas != null ? null : 0);
-  const total = ((row.grid_to_home ?? 0) + (row.grid_to_battery ?? 0) + (row.grid_to_loss ?? 0)) * inc + (row.standing_cost ?? 0) + (gasCost ?? 0) - ((row.solar_to_grid ?? 0) + (row.battery_to_grid ?? 0)) * (row.export_rate ?? 0);
+  const gridKwh = (row.grid_to_home ?? 0) + (row.grid_to_battery ?? 0) + (row.grid_to_loss ?? 0);
+  const expKwh = (row.solar_to_grid ?? 0) + (row.battery_to_grid ?? 0);
+  const total = gridKwh * inc + (row.standing_cost ?? 0) + (gasCost ?? 0) - expKwh * (row.export_rate ?? 0);
   const cDiff = row.total_cost != null ? row.total_cost - total : null;
-  out.push(ck('cost_arithmetic', 'price', 'Cost = imported kWh x price + standing + gas - export credit', 'Recomputed the total from the stored row: (grid to home + grid to battery + grid to loss) x import_rate_ex x (1 + import_vat) + standing + gas kWh x gas price incl. tax - (solar to grid + battery to grid) x export_rate.',
-    { source_value: total, our_value: row.total_cost, unit: 'minor', diff: cDiff, tolerance: 1e-6, status: cDiff == null ? 'skip' : Math.abs(cDiff) <= 1e-6 ? 'pass' : 'fail', evidence: ev({ table: 'site_hh' }),
-      explanation: `${fx((row.grid_to_home ?? 0) + (row.grid_to_battery ?? 0) + (row.grid_to_loss ?? 0), 4)} kWh x ${fx(inc)} + ${fx(row.standing_cost)} + ${fx(gasCost)} - ${fx((row.solar_to_grid ?? 0) + (row.battery_to_grid ?? 0), 4)} kWh x ${fx(row.export_rate)} = ${fx(total, 6)}; stored ${fx(row.total_cost, 6)}` }));
+  const cOk = cDiff != null && Math.abs(cDiff) <= 1e-6;
+  out.push(ck('cost_arithmetic', 'price', 'The cost adds up', 'We redid the sum: energy from the grid x its price, plus the standing charge and gas, minus what exports earned.',
+    { source_value: total, our_value: row.total_cost, unit: 'minor', diff: cDiff, tolerance: 1e-6, status: cDiff == null ? 'skip' : cOk ? 'pass' : 'fail', evidence: ev({ table: 'site_hh' }),
+      explanation: `${kw(gridKwh)} x ${mo(cx, inc)} + ${mo(cx, row.standing_cost)} standing${row.gas != null ? ` + ${mo(cx, gasCost)} gas` : ''}${expKwh > 0 ? ` - ${kw(expKwh)} x ${mo(cx, row.export_rate)} for export` : ''} = ${mo(cx, total)}; saved ${mo(cx, row.total_cost)}${cOk ? '.' : `: ${mo(cx, Math.abs(cDiff))} ${cDiff > 0 ? 'too much' : 'too little'}.`}` }));
   return out;
 }
+const hhmmOf = (tz, ts) => { const p = zonedParts(tz, ts); return `${pad2(p.hh)}:${pad2(p.mm)}`; };
 
 // The percentage tax in force for one fuel and direction, read from tax_rule (or vat_rate).
 function taxInForce(cx, fuel, direction, ts) {
@@ -1099,22 +1157,25 @@ function taxInForce(cx, fuel, direction, ts) {
     AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY seq`).all(site.country, fuel, direction, ts, ts) : [];
   const agreement = cx.pricing.agreements.find((a) => a.kind === (direction === 'export' ? 'meter_export' : fuel === 'gas' ? 'meter_gas' : 'meter_import') && a.valid_from <= ts && (a.valid_to == null || a.valid_to > ts));
   const pct = rules.filter((r) => r.kind === 'percent' && r.applies_to !== 'fixed');
+  const when = dayWords(localDate(site.timezone, ts));
   if (rules.length) {
     const bySeq = new Map();
     for (const r of pct) bySeq.set(r.seq, (bySeq.get(r.seq) ?? 0) + r.value);
     const groups = [...bySeq.values()];
     const vat = groups.length <= 1 ? (groups[0] ?? 0) : groups.reduce((m, v) => m * (1 + v), 1) - 1;
-    return { source: 'tax_rule', vat, ids: rules.map((r) => r.id), explanation: `${pct.map((r) => `${r.code} ${fx(r.value * 100, 2)}% (seq ${r.seq}, ${r.origin ?? 'no origin'})`).join(', ') || 'no percentage rule'}${groups.length > 1 ? ', compounded' : ''}${agreement?.taxes_in_price === 1 ? '; the tariff holds its levies in its prices' : ''}` };
+    const unverified = rules.some((r) => r.unverified === 1);
+    return { source: 'tax_rule', vat, ids: rules.map((r) => r.id),
+      explanation: `${pct.length ? `The tax on ${fuel} on ${when} was ${pct.map((r) => `${pctWords(r.value)} ${r.code.toUpperCase()}`).join(' and ')}${groups.length > 1 ? ' (one on top of the other)' : ''}` : `No percentage tax applied to ${fuel} on ${when}`}${unverified ? ' (a stand-in rate, not yet checked against an official source)' : ''}${agreement?.taxes_in_price === 1 ? '; the supplier\'s prices already include the other levies' : ''}.` };
   }
   if (site.country == null || site.country === 'GB') {
     const v = db.prepare('SELECT * FROM vat_rate WHERE fuel = ? AND direction = ? AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').get(fuel, direction, ts, ts);
-    return { source: 'vat_rate', vat: v ? v.rate : 0, ids: v ? [v.id ?? null] : [], explanation: v ? `GB VAT ${fx(v.rate * 100, 2)}% in force (vat_rate)` : 'no GB VAT row in force: 0' };
+    return { source: 'vat_rate', vat: v ? v.rate : 0, ids: v ? [v.id ?? null] : [], explanation: v ? `UK VAT on ${fuel} was ${pctWords(v.rate)} on ${when}.` : `No UK VAT rate is recorded for ${when}, so 0%.` };
   }
-  return { source: 'tax_rule', vat: 0, ids: [], explanation: `no tax rule for ${site.country}: taxes taken as 0 (an assumption)` };
+  return { source: 'tax_rule', vat: 0, ids: [], explanation: `We hold no tax rules for ${site.country}, so taxes are taken as 0% (an assumption).` };
 }
 
 function forecastChecks(cx, row) {
-  const { slotS } = cx;
+  const { tz, slotS } = cx;
   const slot = row.slot_start; const end = slot + slotS; const noun = slotNoun(slotS);
   const out = [];
   const ev = (o) => ({ ts: slot, ...o });
@@ -1127,25 +1188,32 @@ function forecastChecks(cx, row) {
   const part = (f) => (f.start_ts >= slot && f.end_ts <= end ? (f.value || 0) : ((f.value || 0) * overlapOf(f, slot, end)) / (f.end_ts - f.start_ts));
   const rec = used.length ? used.reduce((s, f) => s + part(f), 0) : null;
   const rDiff = rec != null && row.solar_forecast != null ? row.solar_forecast - rec : null;
-  out.push(ck('solar_forecast_record', 'forecast', 'Solar forecast stored = the forecast of record', `For each forecast period in the ${noun}, took the latest issue made before the period started (Quartz, else our own forecast) and added them up.`,
+  const rOk = rDiff != null && Math.abs(rDiff) <= 1e-6;
+  const lastIssue = used.length ? Math.max(...used.map((f) => f.issued_at)) : null;
+  out.push(ck('solar_forecast_record', 'forecast', 'The saved forecast was made in advance', `We looked up the solar forecast made before this ${noun} started (the latest one issued in advance, never one made afterwards) and checked it is the one saved.`,
     { source_value: rec, our_value: row.solar_forecast, unit: 'kWh', diff: rDiff, tolerance: 1e-6,
-      status: rec == null && row.solar_forecast == null ? 'skip' : rDiff != null && Math.abs(rDiff) <= 1e-6 ? 'pass' : 'fail',
+      status: rec == null && row.solar_forecast == null ? 'skip' : rOk ? 'pass' : 'fail',
       evidence: ev({ table: 'forecast_fact', series_id: used[0]?.series_id ?? null, raw_id: used[0]?.raw_id ?? null }),
-      explanation: rec == null && row.solar_forecast == null ? 'no forecast was made in advance for this slot' : `${used.length} ${source} period(s) issued before they started: ${fx(rec, 4)} kWh; stored ${fx(row.solar_forecast, 4)} kWh` }));
+      explanation: rec == null && row.solar_forecast == null ? `No solar forecast was made before this ${noun}.`
+        : `The forecast made at ${hhmmOf(tz, lastIssue)} on ${dayWords(localDate(tz, lastIssue))} (${source === 'quartz' ? 'Quartz' : 'our own forecast'}) said ${kw(rec)}; saved ${kw(row.solar_forecast)}${rOk ? '.' : ': they differ.'}` }));
   // Forecast error against what the panels made.
+  const eTitle = 'How good the solar forecast was';
+  const eHow = `We compared the forecast made in advance with the solar the panels actually made. A big miss means the forecast was off, not that the data is wrong.`;
   if (row.solar_forecast != null && row.solar != null) {
     const err = row.solar - row.solar_forecast; const tol = Math.max(0.2 * (slotS / 1800), 0.5 * Math.max(row.solar, row.solar_forecast));
-    out.push(ck('solar_forecast_error', 'forecast', 'Solar forecast of record vs actual', `Compared the forecast made in advance with the solar the inverter measured in the ${noun}. A miss is a forecast quality figure, not a data fault.`,
+    out.push(ck('solar_forecast_error', 'forecast', eTitle, eHow,
       { source_value: row.solar, our_value: row.solar_forecast, unit: 'kWh', diff: err, tolerance: tol, status: Math.abs(err) <= tol ? 'pass' : 'warn', evidence: ev({ table: 'site_hh' }),
-        explanation: `actual ${fx(row.solar, 3)} kWh, forecast ${fx(row.solar_forecast, 3)} kWh: error ${fx(err, 3)} kWh (${row.solar_forecast > 0 ? fx((err / row.solar_forecast) * 100, 0) : '-'}%), allowed ${fx(tol, 3)}` }));
-  } else out.push(ck('solar_forecast_error', 'forecast', 'Solar forecast of record vs actual', 'Compared the forecast made in advance with the measured solar.', { status: 'skip', unit: 'kWh', evidence: ev({}), explanation: 'no forecast or no solar for this slot' }));
+        explanation: `Forecast ${kw(row.solar_forecast)}, actual ${kw(row.solar)}: ${Math.abs(err) < 0.0005 ? 'spot on' : `${kw(Math.abs(err))} ${err > 0 ? 'more' : 'less'} than forecast${row.solar_forecast > 0 ? ` (${fx(Math.abs(err / row.solar_forecast) * 100, 0)}%)` : ''}`}. ${Math.abs(err) <= tol ? 'That is within the normal range' : 'That is a bigger miss than usual'} (up to ${kw(tol)}).` }));
+  } else out.push(ck('solar_forecast_error', 'forecast', eTitle, eHow, { status: 'skip', unit: 'kWh', evidence: ev({}), explanation: `There was no forecast or no solar reading for this ${noun}.` }));
   // Temperature: the hourly reading of the hour holding the slot start.
   const hour = floorTo(slot, 3600);
   const t = F.temp;
   const tDiff = t && row.outdoor_temp != null ? row.outdoor_temp - t.value : null;
-  out.push(ck('temperature', 'forecast', 'Outdoor temperature = the weather reading of the hour', 'Compared the stored outdoor_temp with the Open-Meteo reading at the start of the hour holding the slot.',
-    { source_value: t?.value ?? null, our_value: row.outdoor_temp, unit: 'degC', diff: tDiff, tolerance: 1e-9, status: !t && row.outdoor_temp == null ? 'skip' : tDiff != null && Math.abs(tDiff) <= 1e-9 ? 'pass' : 'fail',
-      evidence: ev({ table: 'reading', series_id: cx.tempId, raw_id: t?.raw_id ?? null, ts: hour }), explanation: !t && row.outdoor_temp == null ? 'no temperature reading for that hour' : `reading ${fx(t?.value, 1)} degC, stored ${fx(row.outdoor_temp, 1)} degC` }));
+  const tOk = tDiff != null && Math.abs(tDiff) <= 1e-9;
+  out.push(ck('temperature', 'forecast', 'The outdoor temperature is the weather service\'s', `We checked the outdoor temperature saved for the ${noun} against the weather service's reading for that hour.`,
+    { source_value: t?.value ?? null, our_value: row.outdoor_temp, unit: 'degC', diff: tDiff, tolerance: 1e-9, status: !t && row.outdoor_temp == null ? 'skip' : tOk ? 'pass' : 'fail',
+      evidence: ev({ table: 'reading', series_id: cx.tempId, raw_id: t?.raw_id ?? null, ts: hour }),
+      explanation: !t && row.outdoor_temp == null ? 'The weather service has no reading for that hour.' : `The weather service gave ${fx(t?.value, 1)} °C at ${hhmmOf(tz, hour)}; saved ${fx(row.outdoor_temp, 1)} °C${tOk ? '.' : ': they differ.'}` }));
   return out;
 }
 
@@ -1169,19 +1237,21 @@ function lookupChecks(cx, row) {
   const out = [];
   for (const [source, list] of bySource) {
     const L = LOOKUPS[source];
+    const who = providerWords(source);
     const res = list.map(({ f, meta }) => ({ f, meta, pub: L ? publishedValue(cx.pc, f, meta, tz) : { unsupported: true } }));
     const found = res.filter((x) => x.pub.value !== undefined);
     const mism = found.filter((x) => x.pub.value == null ? x.f.value != null : Math.abs(Number(x.pub.value) - x.f.value) > 1e-9);
     const missing = res.filter((x) => x.pub.value === undefined);
     const worst = mism[0] ?? found[0] ?? res[0];
-    out.push(ck(`source_lookup:${source}`, 'source', `Stored facts = the values published in their payloads (${source})`,
-      L ? `Opened the raw payload each fact cites (raw_id) and read ${L.how}, independently of the adapter, then compared with the stored value.` : `No published-value reader for ${source}.`,
+    const unit = worst?.meta.unit ?? '';
+    out.push(ck(`source_lookup:${source}`, 'source', `Our numbers match what ${who} sent`,
+      L ? `We opened the saved copy of what ${who} sent us and checked every stored number against it (${L.plain}).` : `We cannot read ${who}'s replies yet.`,
       { source_value: worst?.pub.value ?? null, our_value: worst?.f.value ?? null, unit: worst?.meta.unit ?? null, diff: worst?.pub.value != null ? worst.f.value - Number(worst.pub.value) : null, tolerance: 1e-9,
         status: !L || !found.length ? 'skip' : mism.length ? 'fail' : 'pass',
         evidence: { ts: worst?.f.ts ?? worst?.f.start_ts ?? slot, raw_id: worst?.f.raw_id ?? null, series_id: worst?.f.series_id ?? null, table: worst?.f.kind === 'reading' ? 'reading' : 'interval_fact' },
-        explanation: !L ? `no reader for ${source} payloads` : !found.length ? `${missing.length} fact(s), none found in a payload: ${missing[0]?.pub.missing ?? missing[0]?.pub.unsupported ?? ''}`
-          : mism.length ? `${mism.length} of ${found.length} fact(s) differ from their payload: ${worst.meta.metric} stored ${fx(worst.f.value)} vs published ${fx(Number(worst.pub.value))} (payload ${worst.f.raw_id})`
-            : `${found.length} fact(s) equal their published values${missing.length ? `; ${missing.length} not found (${missing[0].pub.missing ?? missing[0].pub.unsupported})` : ''}`,
+        explanation: !L ? `We cannot read ${who}'s replies yet.` : !found.length ? `We could not check ${missing.length === 1 ? 'the number' : `the ${missing.length} numbers`}: ${missing[0]?.pub.missing ?? 'no saved copy'}.`
+          : mism.length ? `${mism.length} of ${found.length} numbers differ: ${worst.meta.metric.replace(/_/g, ' ')} is stored as ${fx(worst.f.value)} ${unit} but the copy says ${fx(Number(worst.pub.value))} ${unit}.`
+            : `${found.length > 1 ? `All ${found.length} numbers match` : 'The number matches'} what ${who} sent (${found.length > 1 ? 'for example ' : ''}${fx(worst.f.value, unit === 'W' ? 0 : 3)} ${unit}).${missing.length ? ` ${missing.length} could not be checked: ${missing[0].pub.missing ?? 'no saved copy'}.` : ''}`,
         checked: found.length, mismatched: mism.length, not_found: missing.length - missing.filter((x) => x.pub.deferred).length, not_opened: missing.filter((x) => x.pub.deferred).length }));
   }
   return out;
@@ -1198,6 +1268,7 @@ function rederiveChecks(cx, rawIds) {
     const part = ids.slice(i, i + 500);
     for (const r of db.prepare(`SELECT p.id, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id IN (${part.map(() => '?').join(',')})`).all(...part)) sourceOf.set(r.id, r.source);
   }
+  const how = 'We re-ran the code that turns the provider\'s reply into our rows on the saved copy of the reply, and compared the result with what we stored.';
   for (const id of ids) {
     const source = sourceOf.get(id);
     if (!source) continue;
@@ -1205,59 +1276,74 @@ function rederiveChecks(cx, rawIds) {
     const p = cx.pc.get(id);
     const res = rederive(p.r, p.json ? p.body : null, cx.site);
     const d = res.diffs[0];
-    out.push(ck('rederive', 'source', `Payload ${id} re-derived by the adapter's normaliser`, `Re-ran ${res.normaliser ?? 'the normaliser'} on the stored body and compared its rows with the ${res.stored_count} stored row(s) citing payload ${id}.`,
+    out.push(ck('rederive', 'source', `A saved reply from ${providerWords(source)} reads the same again`, how,
       { source_value: d?.rederived?.value ?? null, our_value: d?.stored?.value ?? null, unit: 'minor/kWh', diff: d?.rederived && d?.stored ? d.stored.value - d.rederived.value : null, tolerance: 1e-9,
         status: res.ok ? 'pass' : 'fail', evidence: { raw_id: id, table: 'rate_interval' },
-        explanation: res.ok ? `${res.stored_count} stored row(s) equal the normaliser's output (${res.rederived_count} rows)` : `${res.diff_count ?? 0} difference(s)${res.reason ? `: ${res.reason}` : ''}${d ? `; first ${d.key}` : ''}` }));
+        explanation: res.ok ? `All ${res.stored_count} stored price rows match what the reply says.`
+          : `${res.diff_count ?? 0} of ${res.stored_count} stored price rows differ${d?.stored && d?.rederived ? `: one is stored as ${perKwh(cx, d.stored.value)} but the reply says ${perKwh(cx, d.rederived.value)}` : ''}${res.reason ? ` (${res.reason})` : ''}.` }));
   }
-  for (const [source, ids] of skipped) {
-    out.push(ck('rederive', 'source', `Payloads re-derived by the adapter's normaliser (${source})`, 'Re-running the adapter\'s normaliser on the stored body needs a side-effect-free normaliser.',
-      { status: 'skip', evidence: { raw_id: ids[0], table: 'raw_payload' }, explanation: `${ids.length} ${source} payload(s) behind these facts: ${NOT_PURE[source] ?? 'no normaliser known'}; nothing is refactored, so they are not re-run (their values are compared with the payloads directly: source_lookup:${source})`, raw_ids: ids.slice(0, 50) }));
+  for (const [source, list] of skipped) {
+    out.push(ck('rederive', 'source', `Saved replies from ${providerWords(source)} read the same again`, how,
+      { status: 'skip', evidence: { raw_id: list[0], table: 'raw_payload' },
+        explanation: `${list.length} saved repl${list.length > 1 ? 'ies' : 'y'} from ${providerWords(source)} ${list.length > 1 ? 'lie' : 'lies'} behind these figures. The code that reads them also saves as it reads, so it cannot safely be re-run on its own; their numbers are checked against the saved copies directly instead (see "${source === 'octopus_rates' ? 'Import price matches the supplier\'s list' : `Our numbers match what ${providerWords(source)} sent`}").`,
+        reason: NOT_PURE[source] ?? null, raw_ids: list.slice(0, 50) }));
   }
   return out;
 }
 
 function unitSanity(cx, row) {
-  const { site, slotS } = cx; const h = slotS / 3600;
+  const { site, slotS } = cx; const h = slotS / 3600; const noun = slotNoun(slotS);
   const limits = {
     solar: site.pv_kwp ? site.pv_kwp * h * 1.2 : 30 * h, grid_import: 24 * h, grid_export: 24 * h,
     battery_charge: site.battery_kwh ? Math.max(site.battery_kwh, 6 * h) : 15 * h, battery_discharge: site.battery_kwh ? Math.max(site.battery_kwh, 6 * h) : 15 * h, home: 24 * h + (site.pv_kwp ?? 0) * h,
   };
   const hard = []; const soft = [];
-  for (const k of ['solar', 'grid_import', 'grid_export', 'battery_charge', 'battery_discharge', 'home', 'gas', 'ev']) if (row[k] != null && row[k] < -1e-9) hard.push(`${k} is negative (${fx(row[k], 4)} kWh)`);
-  for (const [k, lim] of Object.entries(limits)) if (row[k] != null && row[k] > lim) soft.push(`${k} ${fx(row[k], 3)} kWh is above ${fx(lim, 3)} kWh`);
-  if (row.soc_end != null && (row.soc_end < 0 || row.soc_end > 100)) hard.push(`soc_end ${row.soc_end}% is outside 0-100`);
-  if (row.import_rate_ex != null && Math.abs(row.import_rate_ex) > 500) soft.push(`import_rate_ex ${fx(row.import_rate_ex)} looks implausible`);
+  for (const k of ['solar', 'grid_import', 'grid_export', 'battery_charge', 'battery_discharge', 'home', 'gas', 'ev']) if (row[k] != null && row[k] < -1e-9) hard.push(`${fieldWords(k)} is below zero (${kw(row[k], 4)})`);
+  for (const [k, lim] of Object.entries(limits)) if (row[k] != null && row[k] > lim) soft.push(`${fieldWords(k)} of ${kw(row[k])} is more than the ${kw(lim)} the system could manage in a ${noun}`);
+  if (row.soc_end != null && (row.soc_end < 0 || row.soc_end > 100)) hard.push(`the battery level of ${row.soc_end}% is outside 0 to 100%`);
+  if (row.import_rate_ex != null && Math.abs(row.import_rate_ex) > 500) soft.push(`a price of ${perKwh(cx, row.import_rate_ex)} looks wrong`);
   const worst = Object.entries(limits).map(([k, lim]) => [k, (row[k] ?? 0) / lim]).sort((a, b) => b[1] - a[1])[0];
-  return ck('unit_sanity', 'consistency', 'Units and plausible ranges', `Checked that every energy is not negative and within what the system can do in a ${slotNoun(slotS)}: solar up to ${site.pv_kwp ? 'the panels\' kWp' : '30 kW'} x 1.2, grid 24 kW (100 A), battery up to its capacity; charge level 0-100%.`,
+  return ck('unit_sanity', 'consistency', 'The figures are in a believable range', `We checked that no energy figure is below zero or bigger than the system can manage in a ${noun} (${site.pv_kwp ? `${site.pv_kwp} kW of panels` : 'up to 30 kW of panels'}, a normal 100 A supply, a ${site.battery_kwh ? `${site.battery_kwh} kWh` : 'typical'} battery), and that the battery level is between 0 and 100%.`,
     { source_value: worst ? limits[worst[0]] : null, our_value: worst ? row[worst[0]] : null, unit: 'kWh', diff: null, tolerance: null, status: hard.length ? 'fail' : soft.length ? 'warn' : 'pass',
-      evidence: { ts: row.slot_start, table: 'site_hh' }, explanation: [...hard, ...soft].join('; ') || `all within range (highest: ${worst?.[0]} at ${fx((worst?.[1] ?? 0) * 100, 0)}% of its limit)` });
+      evidence: { ts: row.slot_start, table: 'site_hh' },
+      explanation: hard.length || soft.length ? `${[...hard, ...soft].join('; ').replace(/^./, (c) => c.toUpperCase())}.` : `All figures are in a normal range (the closest to its limit is ${fieldWords(worst?.[0] ?? 'solar')}, at ${fx((worst?.[1] ?? 0) * 100, 0)}% of what the system could manage).` });
 }
 
 // ── Day checks ──
 const NODE_CHECK = { solar: ['solar_kwh', 'solar'], load: ['load_kwh', 'load'], import: ['grid_import_kwh', 'imp'], export: ['grid_export_kwh', 'exp'], charge: ['battery_charge_kwh', 'chg'], discharge: ['battery_discharge_kwh', 'dis'] };
+const NODE_DAY_WORDS = { solar: 'solar', load: 'house use', import: 'grid import', export: 'grid export', charge: 'battery charging', discharge: 'battery discharging' };
 function dayChecks(cx, date) {
-  const { tz } = cx;
+  const { tz, slotS } = cx;
+  const noun = slotNoun(slotS);
   const out = [];
   const [ds] = dayBounds(tz, date);
+  const day = dayWords(date);
   const stored = (code) => cx.checks.find((c) => c.local_date === date && c.check_code === code) ?? null;
   const rebuiltCheck = (code) => cx.built.checks.find((c) => c[0] === date && c[1] === code) ?? null;
   // Inverter daily counters vs the 5-minute samples (the build's own check, with the counter fact).
   for (const [k, [metric]] of Object.entries(NODE_CHECK)) {
     const c = stored(`counter_fit_${k}`);
     const counter = cx.daily[metric].find((f) => f.start_ts === ds) ?? null;
-    if (!c) { if (counter) out.push(ck(`counter_fit_${k}`, 'consistency', `Daily counter vs five-minute samples (${k})`, 'The build compares each inverter daily counter with the day\'s integrated samples.', { status: 'skip', unit: 'kWh', evidence: { ts: ds, table: 'interval_fact', series_id: counter.series_id, raw_id: counter.raw_id }, explanation: rebuiltCheck(`counter_fit_${k}`) ? 'not stored for this day (the day is not over)' : 'the samples are too small to compare (or the day is today)' })); continue; }
+    const title = `The inverter's daily total agrees with its readings (${NODE_DAY_WORDS[k]})`;
+    const how = `The inverter keeps its own total for each day. We added up its five-minute readings and compared. A difference of up to 10% (or 0.2 kWh) is normal; we then scale that day's readings so they add up to the inverter's total (the "correction factor").`;
+    if (!c) {
+      if (counter) out.push(ck(`counter_fit_${k}`, 'consistency', title, how, { status: 'skip', unit: 'kWh', evidence: { ts: ds, table: 'interval_fact', series_id: counter.series_id, raw_id: counter.raw_id },
+        explanation: rebuiltCheck(`counter_fit_${k}`) ? `${day} is not over yet, so it is not compared yet.` : `The amounts on ${day} are too small to compare (or the day is not over).` }));
+      continue;
+    }
     const integrated = counter && c.measured ? counter.value / c.measured : null;
-    out.push(ck(`counter_fit_${k}`, 'consistency', `Daily counter vs five-minute samples (${k})`, 'The inverter\'s own daily counter (kWh, read in 0.1 steps) against its five-minute power samples integrated over the day; the build scales the day by their ratio (the fit). Passes within 10% or 0.2 kWh.',
+    out.push(ck(`counter_fit_${k}`, 'consistency', title, how,
       { source_value: counter?.value ?? null, our_value: integrated, unit: 'kWh', diff: integrated != null ? counter.value - integrated : null, tolerance: 0.1, status: c.status,
-        evidence: { ts: ds, table: 'interval_fact', series_id: counter?.series_id ?? null, raw_id: counter?.raw_id ?? null }, explanation: `${c.detail}; fit ${fx(c.measured, 4)}`, fit: c.measured }));
+        evidence: { ts: ds, table: 'interval_fact', series_id: counter?.series_id ?? null, raw_id: counter?.raw_id ?? null },
+        explanation: `The inverter's own total for ${NODE_DAY_WORDS[k]} on ${day} was ${fx(counter?.value, 1)} kWh; its five-minute readings add up to ${fx(integrated, 2)} kWh, so the readings are scaled by ${fx(c.measured, 3)}. ${c.status === 'pass' ? 'That is a normal difference.' : 'That is a bigger difference than usual.'}`, fit: c.measured }));
     if (counter) {
       const meta = cx.meta.get(counter.series_id);
       const pub = meta ? publishedValue(cx.pc, counter, meta, tz) : { missing: 'unknown series' };
-      out.push(ck(`source_lookup:sunsynk_daily:${k}`, 'source', `Daily counter = the value published in its payload (${k})`, `Opened the payload the counter cites and read ${LOOKUPS.sunsynk_daily.how}.`,
+      const ok = pub.value != null && Math.abs(counter.value - pub.value) <= 1e-9;
+      out.push(ck(`source_lookup:sunsynk_daily:${k}`, 'source', `The daily total matches what the inverter sent (${NODE_DAY_WORDS[k]})`, `We opened the saved copy of the inverter's daily report and checked the total for ${day}.`,
         { source_value: pub.value ?? null, our_value: counter.value, unit: 'kWh', diff: pub.value != null ? counter.value - pub.value : null, tolerance: 1e-9,
-          status: pub.value === undefined ? 'skip' : Math.abs(counter.value - pub.value) <= 1e-9 ? 'pass' : 'fail', evidence: { ts: ds, table: 'interval_fact', series_id: counter.series_id, raw_id: counter.raw_id },
-          explanation: pub.value === undefined ? (pub.missing ?? pub.unsupported) : `published ${pub.value} kWh, stored ${counter.value} kWh` }));
+          status: pub.value === undefined ? 'skip' : ok ? 'pass' : 'fail', evidence: { ts: ds, table: 'interval_fact', series_id: counter.series_id, raw_id: counter.raw_id },
+          explanation: pub.value === undefined ? `We could not check it: ${pub.missing ?? 'no saved copy'}.` : `The inverter's report says ${pub.value} kWh; we stored ${counter.value} kWh${ok ? '.' : ': they differ.'}` }));
     }
   }
   // Meter vs clamp over the day (the build's check, with the sums it compared).
@@ -1265,10 +1351,11 @@ function dayChecks(cx, date) {
   for (const [code, dir, col, key] of [['meter_vs_ct', 'import', 'grid_import', 'imp'], ['meter_vs_ct_export', 'export', 'grid_export', 'exp']]) {
     const c = stored(code);
     if (!c) continue;
-    let meter = 0; let clamp = 0;
-    for (const r of rows) { const l = JSON.parse(r.lineage || '{}'); if (l[dir] === 'octopus_meter' && l.ct) { meter += r[col] ?? 0; clamp += l.ct[key] ?? 0; } }
-    out.push(ck(`${code}_day`, 'consistency', `Smart meter vs inverter clamp over the day (${dir})`, 'The build\'s day check: the meter\'s kWh against the clamp\'s fitted kWh over the slots both measured; passes within 5%.',
-      { source_value: meter, our_value: clamp, unit: 'kWh', diff: meter - clamp, tolerance: 0.05, status: c.status, evidence: { ts: ds, table: 'check_result' }, explanation: c.detail }));
+    let meter = 0; let clamp = 0; let n = 0;
+    for (const r of rows) { const l = JSON.parse(r.lineage || '{}'); if (l[dir] === 'octopus_meter' && l.ct) { meter += r[col] ?? 0; clamp += l.ct[key] ?? 0; n++; } }
+    out.push(ck(`${code}_day`, 'consistency', `The smart meter and the inverter agree over the day (${dir})`, `Over the ${noun}s both measured, we compared the smart meter's ${dir} with the inverter's own sensor on the grid cable (its "clamp"). Within 5% is normal.`,
+      { source_value: meter, our_value: clamp, unit: 'kWh', diff: meter - clamp, tolerance: 0.05, status: c.status, evidence: { ts: ds, table: 'check_result' },
+        explanation: `On ${day}, over ${n} ${noun}s, the meter measured ${kw(meter, 2)} and the clamp ${kw(clamp, 2)}: ${meter > 0 ? `${fx(Math.abs((meter - clamp) / meter) * 100, 1)}% apart` : 'no difference to measure'}. ${c.status === 'pass' ? 'That is normal.' : 'That is more than usual.'}` }));
   }
   // Energy balance of the day.
   const d = cx.days.find((x) => x.local_date === date);
@@ -1278,20 +1365,25 @@ function dayChecks(cx, date) {
     const loss = (d.solar_to_loss ?? 0) + (d.battery_to_loss ?? 0) + (d.grid_to_loss ?? 0);
     const diff = inn - outE - loss; const tol = 0.1;
     const eb = stored('energy_balance');
-    out.push(ck('balance_day', 'consistency', 'Energy balance of the day (in = out + loss)', 'Added the day\'s solar, grid import and battery discharge and compared with home, grid export and battery charge plus the inverter loss flows.',
+    out.push(ck('balance_day', 'consistency', 'Energy in equals energy out over the day', 'We added up the day\'s solar, grid and battery energy coming in, and the house, export, battery charging and inverter use going out. The two should be equal.',
       { source_value: inn, our_value: outE + loss, unit: 'kWh', diff, tolerance: tol, status: Math.abs(diff) <= tol ? 'pass' : 'warn', evidence: { ts: ds, table: 'site_day' },
-        explanation: `${fx(inn, 2)} kWh in, ${fx(outE, 2)} kWh out, ${fx(loss, 2)} kWh inverter loss${Math.abs(diff) > tol ? `: ${fx(-diff, 2)} kWh of measured export or charging is covered by no source` : ''}${eb ? `. Inverter loss against this home's typical day: ${eb.status} (${eb.detail})` : ''}` }));
+        explanation: `On ${day}: in ${kw(inn, 2)}; out ${kw(outE, 2)}, plus ${kw(loss, 2)} used by the inverter. ${Math.abs(diff) <= tol ? 'They match.' : `${kw(-diff, 2)} of the export or battery charging is not covered by anything that came in (small disagreements between the meters).`}${eb ? ` The inverter's own use that day is ${eb.status === 'pass' ? 'normal for this home' : eb.status === 'skip' ? 'not judged yet (we need a week of history first)' : 'unusual for this home'}.` : ''}` }));
   }
-  for (const code of ['completeness', 'rate_coverage']) {
-    const c = stored(code);
-    if (c) out.push(ck(`${code}_day`, code === 'rate_coverage' ? 'price' : 'source', code === 'completeness' ? 'Slots of the day built final' : 'Slots of the day priced', 'The build\'s own day check.',
-      { source_value: c.tolerance, our_value: c.measured, unit: 'fraction', diff: c.measured != null && c.tolerance != null ? c.measured - c.tolerance : null, tolerance: 0, status: c.status, evidence: { ts: ds, table: 'check_result' }, explanation: c.detail }));
+  if (d) {
+    const c = stored('completeness');
+    if (c) out.push(ck('completeness_day', 'source', `The ${noun}s of the day are complete`, `We counted how many ${noun}s of the day are final, still waiting for the smart meter, or missing.`,
+      { source_value: c.tolerance, our_value: c.measured, unit: 'fraction', diff: c.measured != null && c.tolerance != null ? c.measured - c.tolerance : null, tolerance: 0, status: c.status, evidence: { ts: ds, table: 'check_result' },
+        explanation: `On ${day}: ${d.slots_final} ${noun}s final, ${d.slots_provisional} waiting for the smart meter, ${d.slots_missing} missing.` }));
+    const r = stored('rate_coverage');
+    if (r) out.push(ck('rate_coverage_day', 'price', `Every ${noun} of the day has a price`, `We counted the ${noun}s of the day that have an import price.`,
+      { source_value: r.tolerance, our_value: r.measured, unit: 'fraction', diff: r.measured != null && r.tolerance != null ? r.measured - r.tolerance : null, tolerance: 0, status: r.status, evidence: { ts: ds, table: 'check_result' },
+        explanation: `${Math.round((r.measured ?? 0) * (d.slots ?? 0))} of ${d.slots} ${noun}s on ${day} have a price.` }));
   }
   if (d && d.solar_forecast != null) {
     const err = (d.solar ?? 0) - d.solar_forecast; const tol = Math.max(1, 0.3 * Math.max(d.solar ?? 0, d.solar_forecast));
-    out.push(ck('solar_forecast_error_day', 'forecast', 'Solar forecast of record vs actual over the day', 'The day\'s measured solar against the sum of the forecasts made in advance. A miss is a forecast quality figure, not a data fault.',
+    out.push(ck('solar_forecast_error_day', 'forecast', 'How good the solar forecast was over the day', 'We compared the solar forecast made in advance with what the panels made over the whole day. A big miss means the forecast was off, not that the data is wrong.',
       { source_value: d.solar, our_value: d.solar_forecast, unit: 'kWh', diff: err, tolerance: tol, status: Math.abs(err) <= tol ? 'pass' : 'warn', evidence: { ts: ds, table: 'site_day' },
-        explanation: `actual ${fx(d.solar, 2)} kWh, forecast ${fx(d.solar_forecast, 2)} kWh (${d.solar_forecast > 0 ? fx((err / d.solar_forecast) * 100, 0) : '-'}%)` }));
+        explanation: `On ${day} we forecast ${kw(d.solar_forecast, 1)} of solar in advance and the panels made ${kw(d.solar, 1)}${d.solar_forecast > 0 ? ` (${fx(Math.abs(err / d.solar_forecast) * 100, 0)}% ${err > 0 ? 'more' : 'less'})` : ''}. ${Math.abs(err) <= tol ? 'That is within the normal range.' : 'That is a bigger miss than usual.'}` }));
   }
   return out;
 }
@@ -1307,18 +1399,21 @@ const rawIdsOf = (cx, rows) => {
   return ids;
 };
 
-function aggregate(list, date, noun, tz) {
+function aggregate(list, date, noun, tz, slotS) {
   const groups = new Map();
   for (const c of list) (groups.get(c.id) || groups.set(c.id, []).get(c.id)).push(c);
   return [...groups.values()].map((g) => {
     const counts = { pass: 0, warn: 0, fail: 0, skip: 0 };
     for (const c of g) counts[c.status]++;
-    const worst = g.reduce((w, c) => (STATUS_RANK[c.status] > STATUS_RANK[w.status] ? c : w), g[0]);
+    // The worst status, and among those the largest difference.
+    const size = (c) => Math.abs(c.diff ?? 0);
+    const worst = g.reduce((w, c) => (STATUS_RANK[c.status] > STATUS_RANK[w.status] || (STATUS_RANK[c.status] === STATUS_RANK[w.status] && size(c) > size(w)) ? c : w), g[0]);
     const status = counts.fail ? 'fail' : counts.warn ? 'warn' : counts.pass ? 'pass' : 'skip';
     const rest = { ...worst };
     delete rest.diffs; delete rest.counts;
+    const tally = [counts.pass ? `${counts.pass} fine` : null, counts.warn ? `${counts.warn} to look at` : null, counts.fail ? `${counts.fail} wrong` : null, counts.skip ? `${counts.skip} not checked` : null].filter(Boolean).join(', ');
     return { ...rest, status, date, slots: counts,
-      explanation: `${g.length} ${noun}(s) on ${date}: ${counts.pass} pass, ${counts.warn} warn, ${counts.fail} fail, ${counts.skip} skip.${status !== 'pass' && status !== 'skip' ? ` Worst at ${localTime(tz, worst.evidence?.ts ?? 0)}: ${worst.explanation}` : ` E.g. ${worst.explanation}`}` };
+      explanation: `${g.length} ${noun}s on ${dayWords(date)}: ${tally}.${status === 'warn' || status === 'fail' ? ` The biggest, ${slotWords(tz, worst.evidence?.ts ?? 0, slotS)}: ${worst.explanation}` : ` For example ${slotWords(tz, worst.evidence?.ts ?? 0, slotS)}: ${worst.explanation}`}` };
   });
 }
 
@@ -1347,7 +1442,7 @@ export function validate(q) {
     for (const date of daysBetween(from, to)) {
       const rows = cx.rows.filter((r) => r.local_date === date);
       if (!rows.length) continue;
-      checks.push(...aggregate(rows.flatMap((r) => slotChecks(cx, r)), date, noun, site.timezone), ...dayChecks(cx, date).map((c) => ({ ...c, date })));
+      checks.push(...aggregate(rows.flatMap((r) => slotChecks(cx, r)), date, noun, site.timezone, cx.slotS), ...dayChecks(cx, date).map((c) => ({ ...c, date })));
     }
     checks.push(...rederiveChecks(cx, rawIdsOf(cx, cx.rows)));
     scope = { from, to };

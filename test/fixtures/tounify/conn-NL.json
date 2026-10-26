@@ -1,0 +1,1 @@
+{"reference":"core-verify-NL","country":"NL","tariffs":{"consumption":null,"feedin":null,"grid":null},"postal_code":"1011","grid_resolution":{"operator":{"id":"LIAN","name":"Liander"},"source":"postal_code","location_mapped":true,"assumed":false,"bidding_zone":null},"created_at":"2026-10-26T04:06:37.231Z","updated_at":"2026-10-26T04:06:37.231Z"}

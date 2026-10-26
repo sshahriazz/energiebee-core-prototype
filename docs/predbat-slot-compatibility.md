@@ -18,7 +18,7 @@ How the core's time model lines up with Predbat's step, slot, window and horizon
 | Five **actions** per slot | No plan table | Missing |
 | Export start offset (0 to 25 min) | Not built. Rule for other slot lengths: offset is a multiple of 5 min and less than the slot | Missing |
 | Write only on change, read back | No device control | Missing |
-| Stale inputs give a demand-only plan | Data states exist (final, provisional, missing); no planner gate | Missing |
+| Stale inputs give a demand-only plan | `freshness()` in the planner read layer marks each live input ok, stale or missing (below); no planner acts on it yet | Partial |
 | Two inverters planned as one battery | Not handled | Missing |
 
 ## Example 1: the grid
@@ -80,6 +80,20 @@ A 30-minute slot with two 15-minute prices (illustrative numbers, not real tarif
 | Plan, plan slots | Not built (`plan_run`, `plan_slot` are designed in the roadmap) |
 
 A plan slot would join to what actually happened on the same key: `plan_slot.slot_start = site_hh.slot_start`.
+
+## The planner read layer: which function feeds which input
+
+`src/core/planner-read.js` (plan item B10) turns the facts into the arrays Predbat and PredHeat read: one value per 5-minute step or per slot, on an explicit time axis, as known at a given moment, with gaps left empty. The rules are in `docs/what-it-does.md`, "Planner read layer". The ids are those of `docs/predbat-predheat-requirements.md`.
+
+| Function | Feeds (catalogue ids) | Notes |
+|---|---|---|
+| `window(site, now, { horizonH, slotS })` | PB-PLAN-04 (5-minute steps, slots, 48-hour horizon), PB-OTH-61 (forecast hours), PB-RATE-01 (plan slot length), PH-MOD-17 (5-minute step) | `planStart`, `minuteOffset`, `firstStep` as in Example 1, at 15, 30 or 60-minute slots. `slotOf` and `stepOf` convert between the two indexes. `todIndex` maps each step to the local clock (for load profiles), and `dayStartSteps` marks the counter resets. |
+| `rates(site, from, to, { stepS, asOf, direction })` | PB-RATE-03, PB-RATE-04, PB-RATE-05 (import, export, gas rates), PB-RATE-07 (rate including tax), PB-RATE-09 (standing charge per day), PB-RATE-34, PB-RATE-36 (Intelligent Octopus dispatches priced by the allowance), PH-RATE-01 (gas price in gas mode, import in heat-pump mode) | Minor units per kWh including tax, priced as the timeline prices a slot. Each step also gives its tariff, register, weakest origin, and whether it is estimated or missing. On the GB home it equals the timeline's price for every half-hour. |
+| `forecast(site, metric, from, to, { case, stepS, asOf })` | PB-PV-02, PB-PV-10 (solar per slot: `central`, `p10`, `p50`, `p90`, source, time issued), PB-PV-17 (provider forecast, Quartz), PB-LOAD-27 (an external load forecast: our own `load_kwh`), PB-LOAD-37, PH-WX-01 (hourly temperature forecast) | The issue of record as the core stored it by `asOf`, with `issuedAt` per step and runs of steps per issue. A case with no stored forecast gives empty steps and says so. |
+| `counterDifferenceSeries(site, metric, from, to, { stepS, asOf })` | PB-LOAD-01 (`load_today`), PB-LOAD-02 (`import_today`), PB-LOAD-03 (`export_today`), PB-PV-01 (`pv_today`) | Energy per step and the counter that resets at local midnight (23- and 25-hour days included), fitted to the inverter's daily total as the timeline is. It equals the timeline's solar and battery figures on the GB home. |
+| `loadHistory(site, { daysPrevious, stepS, asOf, excludeMetrics, holidays })`, `predictLoad(history, weights, scaling)` | PB-LOAD-09, PB-LOAD-10 (`days_previous`, weights), PB-LOAD-08 (drop the lowest day), PB-LOAD-13 (holiday days left out), PB-LOAD-16, PB-LOAD-17, PB-LOAD-18 (load scaling), PB-LOAD-22, PB-LOAD-25 (car energy removed), PH-LINK-02 (heat-pump energy removed), PH-CFG-05, PH-CFG-06 (PredHeat's `days_previous` and weights) | One local time-of-day axis, so 17:00 lines up on every day. A gap is left out of the mean rather than filled (Predbat's PB-LOAD-05 and PB-LOAD-06 fill it). `projectProfile` lays the result onto a `window`. |
+| `series(site, metric, from, to, { stepS, asOf, source })` | PB-INV-56 (battery temperature history), PB-INV-72 (battery power and charge history for curves and capacity), PB-LOAD-34 (5-minute load, solar and temperature for a learned load model), PH-SEN-01, PH-SEN-02, PH-SEN-03 (outside, inside and set-point temperature history; several inside sensors averaged), PH-SEN-04 (heating energy, per step) | Any metric, by its registry rule (power averaged, energy split by overlap, level held). |
+| `state(site, asOf)`, `freshness(site, asOf, limits)` | PB-INV-49, PB-INV-50 (charge level in kWh and %), PB-INV-51 (battery power, + discharging), PB-INV-52 (solar power), PB-INV-53 (load power), PB-INV-54 (grid power, − importing), PB-INV-55 (battery temperature), PB-INV-57 (battery calibrating), PB-CAR-04, PB-CAR-08, PB-CAR-09 (car plugged in, charge limit, charge level), PH-SEN-05 (heating on now), PH-SEN-06 (flow set-point reading; the fixed value is the `flow_temp_c` attribute), PH-SEN-07 (radiator water temperature), PD-06 (stale-input gate) | The latest reading of each, with its time, from the freshest source. The gate's default limit is 60 minutes (PD-06, unverified). Devices, attributes and settings as known at `asOf` come with it. |
 
 ## What would need building
 

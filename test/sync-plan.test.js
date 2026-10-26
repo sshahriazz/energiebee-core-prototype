@@ -116,26 +116,25 @@ test('missing credentials: the step is skipped with a reason, no call is made, t
   assert.deepEqual(unexpected, []);
 });
 
-test('a French home: weather runs; the unbuilt and unlicensed providers are skipped, never called', async () => {
+test('a French home: weather runs; the unbuilt and unlicensed providers (tounify) are skipped, never called', async () => {
   const fr = createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 }).id;
   calls.length = 0;
   let r = await syncSite(fr);
   assert.deepEqual(r.log.filter((l) => !['build', 'forecast'].includes(l.step)).map((l) => [l.step, l.ok, l.skipped ?? null]), [
     ['weather', true, 'no hourly data'],
     ['meter:linky', true, 'disabled: adapter not built: Linky meter data (Enedis with the customer\'s consent, or a local reader) is planned; nothing is read yet'],
-    ['tariff_prices:tounify', true, 'disabled: adapter not built: tounify retail tariffs (supplier price, grid fees, taxes); the licence to store its data and serve it to many homes is unconfirmed'],
+    ['tounify', true, 'unlicensed: tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
     ['tariff_prices:entsoe', true, 'disabled: adapter not built: ENTSO-E day-ahead wholesale price per bidding zone (not a retail tariff); needs a registered ENTSO-E token'],
+    ['tounify_catalogue', true, 'unlicensed: tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
   ]);
   assert.deepEqual(calls.map(kind), ['weather'], 'only Open-Meteo is asked');
   // Switched on but still unlicensed: skipped, its implementation never called.
   let called = 0;
   const restore = P.registerAdapter('tounify', { roles: { tariff_prices: [{ step: 'tounify', order: 70, run: async () => { called++; return {}; } }] } });
-  db.prepare("UPDATE market_provider SET enabled = 1 WHERE market_code = 'FR' AND adapter = 'tounify'").run();
   r = await syncSite(fr);
   assert.match(entry(r.log, 'tounify').skipped, /^unlicensed: /);
   assert.equal(entry(r.log, 'tounify').ok, true);
   assert.equal(called, 0);
-  db.prepare("UPDATE market_provider SET enabled = 0 WHERE market_code = 'FR' AND adapter = 'tounify'").run();
   restore();
 });
 

@@ -32,3 +32,13 @@ test('no page hard-codes "0p" or a GB-only half-hour where the home\'s own words
     assert.ok(!/['"`][^'"`]*\b[Hh]alf-hours?\b[^'"`]*['"`]/.test(code.replace(/NESO is its forecast for each half-hour/g, '')), `${f}: half-hour in a string`);
   }
 });
+
+test('the shared provider, Connectors and Compatibility views say no GB-only slot or currency words either', () => {
+  const dir = path.resolve(import.meta.dirname, '..', 'public', 'js');
+  for (const f of ['providers-ui.js', 'connectors-view.js', 'compatibility-view.js']) {
+    const code = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    assert.ok(!/\b0p\b/.test(code), `${f}: 0p`);
+    assert.ok(!/['"`][^'"`]*\b[Hh]alf-hours?\b[^'"`]*['"`]/.test(code), `${f}: half-hour in a string`);
+    assert.ok(!/['"`][^'"`]*[£€][^'"`]*['"`]/.test(code), `${f}: a currency symbol in a string`);
+  }
+});

@@ -55,6 +55,10 @@ const adapters = new Map();
  *                only the owner may call the provider, so the core never calls an 'external' one (assertOwner)
  *   connection   the home's connection row it needs for a per-home role ('octopus', 'sunsynk'),
  *                null when it needs none (manual entry)
+ *   licenceOverride  (row, env) => label | null: a development override of an UNCONFIRMED licence
+ *                (licence_confirmed = 0) for this adapter's rows; the label says why it runs and is
+ *                carried on the plan entry (dev_override). Only tounify has one (TOUNIFY_DEV=1 with
+ *                a test token); every other adapter is gated as before.
  *   credentials  (site) => { creds } | { missing: reason }, checked when the registry row says
  *                needs_credentials; reasons name variables, never values
  *   externalRef  (credentials) => the non-secret reference kept on the connection row
@@ -91,6 +95,8 @@ export function registerAdapter(code, impl) {
 }
 
 export const adapterFor = (code) => adapters.get(code) ?? null;
+// Every adapter code with an implementation registered (the Connectors page lists these with the registry rows).
+export const adapterCodes = () => [...adapters.keys()];
 
 // ───────────── Registry rows ─────────────
 
@@ -113,10 +119,18 @@ export function envCredentials(site, vars, optional = {}, env = process.env) {
 // .env home, whichever home's sync runs the step. envCredentials(SERVICE_CREDENTIALS, vars).
 export const SERVICE_CREDENTIALS = Object.freeze({ env_key: 'env' });
 
+// A development override of an unconfirmed licence (impl.licenceOverride), as its label, or null.
+export function devOverride(row, impl, env = process.env) {
+  if (row.licence_confirmed || typeof impl?.licenceOverride !== 'function') return null;
+  try { return impl.licenceOverride(row, env) || null; } catch { return null; }
+}
+// Whether a row's licence lets it run: confirmed, or overridden for development (devOverride).
+export const licensed = (row, impl, env = process.env) => !!row.licence_confirmed || !!devOverride(row, impl, env);
+
 // Why a listed provider cannot be used for this home ({ reason, log }), or {} with its credentials.
 function gate(row, impl, site, conns) {
   if (!row.enabled) return { reason: `disabled: ${row.note || 'switched off'}`, log: true, status: 'disabled' };
-  if (!row.licence_confirmed) return { reason: `unlicensed: ${row.note || 'the licence to store and serve its data is unconfirmed'}`, log: true, status: 'disabled' };
+  if (!licensed(row, impl)) return { reason: `unlicensed: ${row.note || 'the licence to store and serve its data is unconfirmed'}`, log: true, status: 'disabled' };
   for (const owner of [row.owner, impl?.owner ?? row.owner]) {
     try { assertOwner({ code: row.adapter, owner }); } catch (err) { return { reason: err.message, log: true, status: 'skipped' }; }
   }
@@ -161,13 +175,16 @@ export function plan(db, site, { conns = null } = {}) {
       const g = gate(row, impl, site, conns);
       if (g.reason) { skip(g.reason, g.log && !chosen, g.status); continue; }
       chosen ??= row.adapter;
+      // Running on a development override of an unconfirmed licence: said on the entry (never otherwise present).
+      const dev = devOverride(row, impl);
+      const devMark = dev ? { dev_override: dev } : {};
       const steps = def ? def.steps.filter((s) => !s.when || s.when(p)) : [];
       if (!steps.length) {
-        out.push(hidden({ ...base, step: `${role}:${row.adapter}`, order, connection: null, run: false, chosen: true, log: false, skipped: def?.idle || 'nothing to fetch' }, { def }));
+        out.push(hidden({ ...base, ...devMark, step: `${role}:${row.adapter}`, order, connection: null, run: false, chosen: true, log: false, skipped: def?.idle || 'nothing to fetch' }, { def }));
         continue;
       }
       for (const s of steps) {
-        out.push(hidden({ ...base, step: s.step, order: s.order, connection: s.connection ?? null, run: true, chosen: true, log: true }, { def: s, roleDef: def, creds: g.creds ?? null }));
+        out.push(hidden({ ...base, ...devMark, step: s.step, order: s.order, connection: s.connection ?? null, run: true, chosen: true, log: true }, { def: s, roleDef: def, creds: g.creds ?? null }));
       }
     }
   }
@@ -253,25 +270,39 @@ const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
  * is stored (see CREDENTIALS_NOTE); the reply names the credential fields that were not stored and
  * never echoes a value. Throws a 400 error with a readable message when the provider is refused.
  */
-export function connectProvider(db, site, { provider, role = null, credentials = null } = {}) {
+/**
+ * The registry check of a per-home connection, shared by every provider (connectProvider, and the
+ * tounify registration in src/adapters/tounify.js): the provider must be listed for the home's
+ * market in a per-home role, switched on, licensed (or on its development override), owned by the
+ * core and built. Returns { row, impl, market }; throws a 400 error with a readable message.
+ */
+export function connectable(db, site, { provider, role = null } = {}) {
   if (!provider || typeof provider !== 'string') throw bad('provider is required: the adapter code of an inverter or meter (octopus, sunsynk, ...)');
   if (site.is_demo) throw bad('demo home: its data is generated, it takes no provider connection');
   const market = site.market_code ?? 'GB';
   if (role && !ROLE_CODES.includes(role)) throw bad(`unknown role ${role} (one of ${ROLE_CODES.join(', ')})`);
   const rows = db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND adapter = ? ${role ? 'AND role = ?' : ''}
     ORDER BY scope = 'home' DESC, priority`).all(...[market, provider, role].filter(Boolean));
-  const homeRoles = db.prepare(`SELECT role, adapter FROM market_provider WHERE market_code IN (?, '*') AND scope = 'home' AND enabled = 1 AND licence_confirmed = 1 AND owner = 'core'
-    ORDER BY role, priority`).all(market).filter((r) => adapters.get(r.adapter)?.connection).map((r) => `${r.adapter} (${r.role})`);
+  const homeRoles = db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND scope = 'home' AND enabled = 1 AND owner = 'core'
+    ORDER BY role, priority`).all(market).filter((r) => adapters.get(r.adapter)?.connection && licensed(r, adapters.get(r.adapter))).map((r) => `${r.adapter} (${r.role})`);
   const allowed = `connections allowed for a home in market ${market}: ${homeRoles.join(', ') || 'none'}`;
   if (!rows.length) throw bad(`${provider} is not a provider for market ${market}${role ? ` in role ${role}` : ''}; ${allowed}`);
   const row = rows[0];
   if (row.scope !== 'home') throw bad(`${provider} serves ${rows.map((r) => r.role).join(', ')} in market ${market}, a shared role: it runs for every home of the market and needs no connection`);
   if (!row.enabled) throw bad(`${provider} is listed for ${row.role} in market ${market} but disabled: ${row.note}`);
-  if (!row.licence_confirmed) throw bad(`${provider} is listed for ${row.role} in market ${market} but its licence is unconfirmed: ${row.note}`);
   const impl = adapters.get(provider);
+  if (!licensed(row, impl)) throw bad(`${provider} is listed for ${row.role} in market ${market} but its licence is unconfirmed: ${row.note}`);
   try { assertOwner({ code: provider, owner: row.owner }); if (impl) assertOwner(impl); } catch (err) { throw bad(err.message); }
   if (!impl) throw bad(`${provider} is listed for ${row.role} in market ${market} but its adapter is not built`);
   if (!impl.connection) throw bad(`${provider} needs no connection: ${row.note}`);
+  return { row, impl, market };
+}
+
+export function connectProvider(db, site, { provider, role = null, credentials = null } = {}) {
+  const { row, impl, market } = connectable(db, site, { provider, role });
+  // A provider that registers the home upstream (tounify: one connection per home, billed per
+  // connection) is connected by its own registration, never by a bare row here.
+  if (impl.registers) throw bad(`${provider} connects a home by registering it upstream: ${impl.registers}`);
   const given = credentials && typeof credentials === 'object' && !Array.isArray(credentials) ? credentials : {};
   const ref = impl.externalRef?.(given) ?? null;
   const notStored = Object.keys(given).filter((k) => !(impl.publicFields ?? []).includes(k));

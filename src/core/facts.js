@@ -116,20 +116,23 @@ export function putIntervals(series, rows, rawId) {
 }
 
 const insForecast = db.prepare(
-  'INSERT OR IGNORE INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, raw_id) VALUES (?, ?, ?, ?, ?, ?)');
-const latestForecast = db.prepare('SELECT value FROM forecast_fact WHERE series_id = ? AND start_ts = ? ORDER BY issued_at DESC LIMIT 1');
+  'INSERT OR IGNORE INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, raw_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+const latestForecast = db.prepare('SELECT value FROM forecast_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? ORDER BY issued_at DESC LIMIT 1');
 
 // A new issue is stored only for periods whose value changed since the latest issue.
 // The forecast of record for a period is then still "the latest issue made before a
 // time", but repeated identical issues (every 10-minute sync) are not stored again.
-export function putForecasts(series, issuedAt, rows, rawId) {
+// A period is its start AND end (delta 040): one of another length from the same start is a new
+// period, compared with its own latest issue and stored, never dropped. recorded_at (ms) is when
+// the core stored the issue (readForecastAsOf); issuedAt (s) stays the provider's issue time.
+export function putForecasts(series, issuedAt, rows, rawId, { recordedAt = Date.now() } = {}) {
   let n = 0;
   tx(() => {
     for (const r of rows) {
       const value = r.value === undefined ? null : r.value;
-      const last = latestForecast.get(series, r.start);
+      const last = latestForecast.get(series, r.start, r.end);
       if (last && same(last.value, value)) continue;
-      n += Number(insForecast.run(series, r.start, r.end, issuedAt, value, rawId ?? null).changes);
+      n += Number(insForecast.run(series, r.start, r.end, issuedAt, value, rawId ?? null, recordedAt).changes);
     }
   });
   return n;
@@ -173,20 +176,75 @@ export function readReadings(seriesIds, from, to) {
   return db.prepare(q).all(...seriesIds, from, to);
 }
 
-export function readIntervals(seriesIds, from, to) {
-  if (!seriesIds.length) return [];
-  const q = `SELECT series_id, start_ts, end_ts, value, quality, raw_id FROM interval_fact
-             WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND end_ts > ? AND start_ts < ? AND ${inForce()}
-             ORDER BY start_ts`;
-  return db.prepare(q).all(...seriesIds, from, to);
+// The longest fact (end_ts - start_ts, s) of a set of series, from series.max_span_s (delta 013:
+// kept by triggers on every interval and forecast fact, never shrinking), or null when any of them
+// has none recorded. A fact that overlaps [from, to) (end_ts > from) then starts at or after
+// from - span, so that bound can be added to a read without leaving any row out, and the primary
+// key (series_id, start_ts, ...) is searched as a range instead of the series' whole history.
+// null: no bound (a series without facts, or a database without the column).
+let hasSpan = null;
+export function spanColumn() {
+  hasSpan ??= Boolean(db.prepare("SELECT 1 FROM pragma_table_info('series') WHERE name = 'max_span_s'").get());
+  return hasSpan;
+}
+export function spanOf(seriesIds) {
+  if (!seriesIds.length || !spanColumn()) return null;
+  const r = db.prepare(`SELECT MAX(max_span_s) AS span, COUNT(max_span_s) AS known, COUNT(*) AS n FROM series WHERE id IN (${seriesIds.map(() => '?').join(',')})`).get(...seriesIds);
+  return r && r.known === r.n && r.span != null ? r.span : null;
 }
 
-// Forecast of record: for each target slot, the latest issue made before `asOf`.
+export function readIntervals(seriesIds, from, to) {
+  if (!seriesIds.length) return [];
+  const span = spanOf(seriesIds);
+  const q = `SELECT series_id, start_ts, end_ts, value, quality, raw_id FROM interval_fact
+             WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND ${inForce()}
+             ORDER BY start_ts`;
+  return db.prepare(q).all(...seriesIds, from, to, ...(span == null ? [] : [from - span]));
+}
+
+// Forecast of record: for each target slot, the latest issue made before `asOf`. The outer read is
+// bounded to the same [from, to) as the inner one (it joins on start_ts, so this changes nothing
+// but the rows searched).
 export function readForecastOfRecord(seriesId, from, to, asOf) {
   return db.prepare(
     `SELECT f.start_ts, f.end_ts, f.value, f.issued_at FROM forecast_fact f
      JOIN (SELECT start_ts, MAX(issued_at) AS iss FROM forecast_fact
            WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= ? GROUP BY start_ts) last
        ON last.start_ts = f.start_ts AND last.iss = f.issued_at
-     WHERE f.series_id = ? ORDER BY f.start_ts`).all(seriesId, from, to, asOf, seriesId);
+     WHERE f.series_id = ? AND f.start_ts >= ? AND f.start_ts < ? ORDER BY f.start_ts`).all(seriesId, from, to, asOf, seriesId, from, to);
+}
+
+// Forecasts as the core knew them at asOfMs (bitemporal, delta 040): for each series and period
+// overlapping [from, to), the latest issue the core had RECORDED by then (recorded_at <= asOfMs), so
+// a replay never sees an issue fetched later, whatever the provider's own issue time says. Storage
+// is change-only, so an unchanged period's record is the earlier issue that last set it. A period
+// overlapped by a period of a later issue (the provider changed its period length) is left out:
+// the later issue is the record for that time. Ordered by series, start, end. The lower bound
+// start_ts >= from - max_span_s (series.max_span_s, delta 013) only narrows the rows searched.
+export function readForecastAsOf(seriesIds, from, to, asOfMs) {
+  if (!seriesIds.length) return [];
+  const asOf = Math.floor(Number(asOfMs));
+  if (!Number.isFinite(asOf)) throw new TypeError(`readForecastAsOf: asOfMs must be a number of ms, not ${asOfMs}`);
+  const list = seriesIds.map(() => '?').join(',');
+  const span = spanOf(seriesIds);
+  const bound = span == null ? '' : ' AND start_ts >= ?';
+  const rows = db.prepare(
+    `SELECT f.series_id, f.start_ts, f.end_ts, f.issued_at, f.recorded_at, f.value FROM forecast_fact f
+     JOIN (SELECT series_id, start_ts, end_ts, MAX(issued_at) AS iss FROM forecast_fact
+           WHERE series_id IN (${list}) AND end_ts > ? AND start_ts < ?${bound} AND recorded_at <= ?
+           GROUP BY series_id, start_ts, end_ts) last
+       ON last.series_id = f.series_id AND last.start_ts = f.start_ts AND last.end_ts = f.end_ts AND last.iss = f.issued_at
+     ORDER BY f.series_id, f.start_ts, f.end_ts`).all(...seriesIds, from, to, ...(span == null ? [] : [from - span]), asOf);
+  // Within one series, drop a period that a later-issued period of another length overlaps.
+  const out = [];
+  for (let i = 0, j = 0; i < rows.length; i = j) {
+    for (j = i; j < rows.length && rows[j].series_id === rows[i].series_id; j++);
+    const s = rows.slice(i, j);
+    const mixed = s.some((r) => r.end_ts - r.start_ts !== s[0].end_ts - s[0].start_ts);
+    for (const r of s) {
+      if (mixed && s.some((o) => o !== r && o.issued_at > r.issued_at && o.start_ts < r.end_ts && o.end_ts > r.start_ts)) continue;
+      out.push(r);
+    }
+  }
+  return out;
 }

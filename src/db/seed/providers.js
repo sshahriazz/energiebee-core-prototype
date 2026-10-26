@@ -5,8 +5,15 @@
 // GB lists the providers the core called before the registry, in the same roles, plus the
 // Tariffscanner catalogue (a second tariff_catalogue provider, run alongside Octopus's). FR and NL
 // list what is planned: weather works today (Open-Meteo is worldwide); the meter readers (Linky,
-// P1) and the price sources (tounify, ENTSO-E) are NOT built and are listed disabled, saying why;
-// typed-in prices ('manual', origin user) are always allowed. DE, BE and ES have weather only.
+// P1) and ENTSO-E are NOT built and are listed disabled, saying why; typed-in prices ('manual',
+// origin user) are always allowed. DE, BE and ES have weather only.
+// tounify v3 (src/adapters/tounify.js), an EU tariff source (not UK), is built and listed for FR and
+// NL only: tariff_prices per home (one tounify connection per home, billed per connection) and
+// tariff_catalogue shared, both switched on but with licence_confirmed = 0, so the plan skips them
+// ('unlicensed: ...') until the storage and reuse licence is confirmed in writing (TOUNIFY_DEV=1 with
+// a test token lets a developer run them, labelled). GB keeps Octopus and Tariffscanner only. DE, BE
+// and ES are not listed: no answer from them was captured and whether tounify serves them with data
+// (its /public/country-stats) was not checked.
 // Inverter clouds do not depend on the country: Sunsynk is listed once, for every market ('*').
 // Origins follow src/core/provenance.js: 'provider' for live data from a built adapter, 'user' for
 // typed-in prices, 'placeholder' for an entry whose adapter does not exist yet.
@@ -16,7 +23,7 @@
 
 const OPEN_METEO = 'Open-Meteo hourly weather and sunlight for the home\'s coordinates (any country); the free host is for non-commercial use, production needs a paid plan';
 const NOT_BUILT = 'adapter not built';
-const TOUNIFY = `${NOT_BUILT}: tounify retail tariffs (supplier price, grid fees, taxes); the licence to store its data and serve it to many homes is unconfirmed`;
+export const TOUNIFY = 'tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits';
 const ENTSOE = `${NOT_BUILT}: ENTSO-E day-ahead wholesale price per bidding zone (not a retail tariff); needs a registered ENTSO-E token`;
 const MANUAL = 'prices typed in by the user or installer (src/core/tariffs.js createTariff, putRateRows with origin user): always allowed, nothing to fetch';
 export const TARIFFSCANNER = 'Tariffscanner (FEA) UK domestic tariff catalogue, queried with the core\'s own credential; contract terms not read by us.';
@@ -25,8 +32,15 @@ const row = (market_code, role, adapter, scope, origin, note, extra = {}) => ({
   market_code, role, adapter, scope, origin, note, priority: 10, enabled: 1, owner: 'core', needs_credentials: 0, licence_confirmed: 1, ...extra,
 });
 
+// tounify: built, switched on, licence unconfirmed (delta 011 switches on the rows an older seed
+// inserted disabled). Prices per home (its own connection), the catalogue shared per market.
+const tounify = (m, note, priority) => [
+  row(m, 'tariff_prices', 'tounify', 'home', 'provider', note, { priority, enabled: 1, licence_confirmed: 0, needs_credentials: 1 }),
+  row(m, 'tariff_catalogue', 'tounify', 'shared', 'provider', note, { priority, enabled: 1, licence_confirmed: 0, needs_credentials: 1 }),
+];
+
 const euTariffs = (m) => [
-  row(m, 'tariff_prices', 'tounify', 'shared', 'placeholder', TOUNIFY, { priority: 10, enabled: 0, licence_confirmed: 0, needs_credentials: 1 }),
+  ...tounify(m, TOUNIFY, 10),
   row(m, 'tariff_prices', 'entsoe', 'shared', 'placeholder', ENTSOE, { priority: 20, enabled: 0, needs_credentials: 1 }),
   row(m, 'tariff_prices', 'manual', 'home', 'user', MANUAL, { priority: 90 }),
 ];
@@ -60,12 +74,30 @@ export const PROVIDERS = Object.freeze([
 ].map((r) => Object.freeze(r)));
 
 export const PROVIDER_COLUMNS = Object.freeze(['market_code', 'role', 'adapter', 'priority', 'enabled', 'owner', 'scope', 'needs_credentials', 'licence_confirmed', 'origin', 'note']);
-// Refreshed from the seed on every open; enabled and licence_confirmed are written on insert only.
-const DESCRIPTIVE = ['priority', 'owner', 'scope', 'needs_credentials', 'origin', 'note'];
+// What the adapter code states about itself, so the seed keeps it in line with the code on an
+// existing row (written only where it differs): who may call it, home or shared, whether it needs
+// credentials, the provenance of what it gives and its note. The plan depends on these (tounify
+// moved from shared to home scope this way). The operator's columns are written on insert only and
+// never changed afterwards: priority (the order of fallbacks), enabled and licence_confirmed.
+const DESCRIPTIVE = ['owner', 'scope', 'needs_credentials', 'origin', 'note'];
 
-// Writes the rows into a database that has delta 008 applied (any node:sqlite DatabaseSync).
+const keyOf = (r) => `${r.market_code}|${r.role}|${r.adapter}`;
+function pendingProviders(db, providers) {
+  const have = new Map(db.prepare(`SELECT market_code, role, adapter, ${DESCRIPTIVE.join(', ')} FROM market_provider`).all().map((r) => [keyOf(r), r]));
+  return providers.filter((p) => { const r = have.get(keyOf(p)); return !r || DESCRIPTIVE.some((c) => r[c] !== (p[c] ?? null)); });
+}
+
+// Writes the rows into a database that has delta 008 applied (any node:sqlite DatabaseSync): the
+// missing rows in full, and on existing rows only the descriptive columns that differ.
+// Returns the number of rows written.
 export function seedProviders(db, providers = PROVIDERS) {
   const up = db.prepare(`INSERT INTO market_provider (${PROVIDER_COLUMNS.join(', ')}) VALUES (${PROVIDER_COLUMNS.map(() => '?').join(', ')})
     ON CONFLICT (market_code, role, adapter) DO UPDATE SET ${DESCRIPTIVE.map((c) => `${c} = excluded.${c}`).join(', ')}`);
-  for (const p of providers) up.run(...PROVIDER_COLUMNS.map((c) => p[c] ?? null));
+  let n = 0;
+  for (const p of pendingProviders(db, providers)) n += Number(up.run(...PROVIDER_COLUMNS.map((c) => p[c] ?? null)).changes);
+  return n;
+}
+// True when seedProviders would write a row (read only).
+export function providerSeedPending(db, providers = PROVIDERS) {
+  return pendingProviders(db, providers).length > 0;
 }

@@ -44,6 +44,7 @@ npm start                  # open http://localhost:4100
 | `npm run service:install` | macOS only. Installs the supervisor as a login service (launchd), so it starts when you log in and after a reboot. Run `nvm use 22` first; the service uses that Node. |
 | `npm run service:status` / `service:uninstall` | Shows whether the service is loaded, with the last log lines / removes it. |
 | `npm run history:reconstruct` | One-off: fills the revision log for the time before it was kept by rebuilding each completed day as known at every earlier sync. Writes only to `site_day_revision`; `-- --force` redoes it. |
+| `npm run retention` | Shows what retention would delete (raw payloads that feed no fact, old sync runs, superseded old forecast issues, finished queue rows), in counts and bytes; `-- --apply` deletes it. The server runs the same check at every start: a report unless `RETENTION=apply` (`.env.example`; `docs/database.md` section 10.5). Best run with the server stopped. |
 
 What happens when something fails:
 - **A provider is down or slow:** each request is retried twice (after 1 s and 4 s, or as long as the provider's Retry-After asks). Only network errors, timeouts, 429 and 5xx are retried; a 401 (bad key) fails at once. A step that still fails is recorded, and the other providers carry on.
@@ -194,7 +195,7 @@ data/                  core.db and raw/ (git-ignored)
 `GET /api/sites` · `POST /api/sites/:id/sync` · `POST /api/sites/:id/rebuild`
 `GET /api/sites/:id/` + `now`, `timeline?period=today|yesterday|7d|30d`, `summary?period=`, `forecast`, `solar-expected?period=`,
 `insights`, `ev`, `tariffs`, `evidence?slot=<epoch>`, `health`, `system`,
-`trust?period=` (coverage, cross-checks, balance, revisions, corrections), `revisions?date=|period=`, `asof?date=YYYY-MM-DD&at=<epoch>` (a day rebuilt as known then; nothing written) · `GET /api/status` · `GET /api/raw/:id` · `GET /api/catalog`
+`trust?period=` (coverage, cross-checks, balance, revisions, corrections), `revisions?date=|period=`, `asof?date=YYYY-MM-DD&at=<epoch>` (a day rebuilt as known then; nothing written) · `GET /api/status` · `GET /api/raw/:id` · `GET /api/catalog` · `GET /api/connectors` (every adapter the core has or needs, with a status word each; the Connectors page)
 
 ## Known limits (prototype)
 

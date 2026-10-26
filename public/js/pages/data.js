@@ -4,6 +4,7 @@
 // to bill, and the connections, syncs and rebuild behind it all.
 import { api, fmt, timeFmt, ago, esc, minorName, slotNoun, slotNouns, SlotNoun, originBadge, originLegend } from '../api.js';
 import { init, card } from '../layout.js';
+import { ROLE_LABEL, PROVIDER_STATUS, SCOPE_WORD, statusBadge } from '../providers-ui.js';
 import { headlineCard, coverageCard, drawCoverage, crossCheckCard, balanceCard, revisionsCard, asOfCard, wireAsOf, correctionsCard, detailHistoryHtml, evidenceFlow } from './trust-views.js';
 
 const QUALITY = [[1, 'measured'], [2, 'fallback source'], [4, 'interpolated'], [8, 'estimated'], [16, 'partial coverage'], [32, 'suspect'], [64, 'check failed'], [128, 'restated']];
@@ -119,28 +120,9 @@ function systemCard(sys, t) {
 // registry gives each kind of data, how its last sync went, where its data comes from (origin badge)
 // and whether it is shared across homes or per home. The status is always a word on a badge, never
 // a colour only. Entry: { role, adapter, status, origin, note, scope } (+ label, reason, alternatives
-// when the backend sends them).
-const ROLE_LABEL = {
-  inverter: 'Inverter', meter: 'Meter', location: 'Location', weather: 'Weather', carbon: 'Grid carbon intensity',
-  gas_cv: 'Gas energy content', tariff_prices: 'Tariff prices', tariff_catalogue: 'Tariffs on sale',
-  compare: 'Tariffs to compare with', solar_forecast: 'Solar forecast',
-};
-const PROVIDER_STATUS = {
-  ok: ['good', 'OK', 'the last sync from this provider worked'],
-  error: ['bad', 'Error', 'the last sync failed; the other providers still ran'],
-  skipped: ['warn', 'Skipped', 'not run on the last sync (nothing to fetch yet, no credentials, or a demo home); not a failure'],
-  disabled: ['', 'Disabled', 'listed for this market but switched off; the note says why'],
-  none: ['', 'None', 'no provider is listed for this kind of data in this market'],
-};
-const SCOPE_WORD = { shared: ['Shared across homes', 'fetched once per region, tariff or location and used by every home that needs it'],
-  home: ['Per home', "uses this home's own connection (an account or an inverter)"] };
+// when the backend sends them). The words and badges are shared with the Connectors page (providers-ui.js).
 const ORIGIN_ORDER = ['sourced', 'provider', 'user', 'derived', 'placeholder', 'synthetic'];
 const NO_PROVIDER_RE = /^no provider for this market\.?$/i;
-
-const statusBadge = (status) => {
-  const [cls, word] = PROVIDER_STATUS[status] || ['', status || 'unknown'];
-  return `<span class="badge ${cls}">${esc(word)}</span>`;
-};
 
 function providerNote(x) {
   const lines = [];

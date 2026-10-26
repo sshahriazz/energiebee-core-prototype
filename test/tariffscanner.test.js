@@ -314,7 +314,7 @@ test('sweep: a 429 aborts the run, the cooldown from Retry-After is persisted, a
   assert.equal(s.next_allowed_at, hit.at + 120000);
   assert.match(s.cooldown_reason, /^HTTP 429/);
   assert.deepEqual(TS.sweepStatus(), { status: 'error', reason: err.message });
-  assert.equal(TS.sweepDue(), false);
+  assert.equal(TS.sweepDue(clock.now()), false);   // the test's clock, not today's: the cooldown is measured from it
   const n = api.calls.length;
   const again = await TS.sweepCatalogue({ client: c, force: true });
   assert.match(again.skipped, /^cooling down: no request to Tariffscanner before .* \(HTTP 429/);

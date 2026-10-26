@@ -21,14 +21,19 @@
 // buildSite(site, from, to, { asOf }) rebuilds as the core stood at an earlier moment: every
 // fact, price and system detail is read as it was known then, and "now" is that moment.
 // With { dryRun } nothing is written and the rows are returned (for comparing with today's).
-import { db, tx } from '../db/db.js';
+// With { trace: { slot } } (src/core/explain.js) the plain object is filled with the intermediate
+// values of exactly that slot (samples, fit, meter vs clamp, balance, flows, prices, stock); it only
+// reads values already computed, so no row changes. Absent, every trace line is skipped.
+import { db, tx, optimizeDb } from '../db/db.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
 import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
+import { siteAt } from './versions.js';
 import { loadPricing, priceOver, fixedOver } from './pricing.js';
 import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
+import { buildHeat, hasHeatingSeries } from './heat.js';
 
 export const METHOD_VERSION = 'v3-stock-follows-charge';
 
@@ -137,7 +142,10 @@ export function dayChanges(before, beforeChecks, after, afterChecks) {
 }
 
 function build(siteId, fromDate, toDate, opts) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  // As known at asOf: the home's zone, slot length, currency, sizes ... as they stood then
+  // (site_version, H5). { currentSettings: true } keeps today's settings (a what-if on old facts).
+  const versioned = opts.asOf != null && !opts.currentSettings;
+  const site = versioned ? siteAt(siteId, opts.asOf * 1000) : db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
   const tz = site.timezone;
   // The home's slot grid: its length, and where local midnight sits on it (0 for whole-hour zones).
@@ -156,6 +164,9 @@ function build(siteId, fromDate, toDate, opts) {
   const phase = ((winStart % slotS) + slotS) % slotS;
   const fl = (t) => slotFloor(t, slotS, phase);
   const sid = (metric, source) => seriesId('site', siteId, metric, source);
+  // The calculation trace of one slot (opts.trace), or null: every `if (T…)` line below is then skipped.
+  const T = opts.trace && Number.isFinite(opts.trace.slot) ? opts.trace : null;
+  if (T) Object.assign(T, { slotS, tz, phase, now, asOf, winStart, winEnd, batteryKwh, batterySource, forecastSource: new Map() });
 
   // ── Facts for the whole window ──
   const powerIds = Object.fromEntries(Object.entries(NODES).map(([k, [w]]) => [k, sid(w, 'sunsynk_5min')]));
@@ -174,6 +185,7 @@ function build(siteId, fromDate, toDate, opts) {
   const approximations = [];
   for (const m of meters) if (m.approximateAttrs) approximations.push(`${m.kind} details as first recorded at ${new Date(m.approximateAttrs).toISOString()}`);
   if (asOf != null && !battAttr) approximations.push('battery size: current value (no earlier record)');
+  if (versioned && site.approximateSettings != null) approximations.push(`home settings as first recorded at ${new Date(site.approximateSettings).toISOString()}`);
   const meterFacts = {};
   // Gas in m3 is converted per gas day with National Gas's calorific value for the meter's zone:
   // kWh = m3 × 1.02264 (volume correction) × CV (MJ/m3) ÷ 3.6. Without a published CV the
@@ -213,7 +225,7 @@ function build(siteId, fromDate, toDate, opts) {
     const best = new Map();
     for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
     const covered = new Set(solarFc.map((f) => fl(f.start_ts)));
-    for (const f of best.values()) if (!covered.has(fl(f.start_ts))) solarFc.push(f);
+    for (const f of best.values()) if (!covered.has(fl(f.start_ts))) { solarFc.push(f); if (T) T.forecastSource.set(f, source); }
   }
   const solarFcBySlot = new Map();
   for (const f of solarFc) {
@@ -224,8 +236,9 @@ function build(siteId, fromDate, toDate, opts) {
       (solarFcBySlot.get(s) || solarFcBySlot.set(s, []).get(s)).push(part);
     }
   }
-  const pricing = loadPricing(siteId, winStart, winEnd);
+  const pricing = loadPricing(siteId, winStart, winEnd, versioned ? site : null);
   const dataOrigin = dataOriginOf(site);
+  if (T) Object.assign(T, { pricing, ids: { power: powerIds, daily: dailyIds, soc: socId }, hasInverter, hasImportMeter, expectMeter, gasM3: !!gasM3, gasLdz, approximations });
 
   // Rows as stored now: for the "revised" flag and the revision log. An as-of rebuild has no "before".
   const previous = asOf != null ? new Map() : new Map(db.prepare('SELECT slot_start, dur_s, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
@@ -286,6 +299,8 @@ function build(siteId, fromDate, toDate, opts) {
     const nSlotsDay = (dayEnd - dayStart) / slotS;
     const { eff, note: effNote } = efficiencyFor(date);
     lastEff = { date, eff, note: effNote };
+    // The traced slot's day: its length, battery round trip and (below) each node's fit.
+    const TD = T && T.slot >= dayStart && T.slot < dayEnd ? (T.day = { date, today, dayStart, dayEnd, nSlotsDay, eff, effNote, align: {} }) : null;
 
     // ── 1 Align: fit each node's slots to the inverter's daily total ──
     const fit = {};
@@ -300,6 +315,7 @@ function build(siteId, fromDate, toDate, opts) {
         const ok = Math.abs(f - 1) <= 0.1 || Math.abs(totalRow.value - sum) <= 0.2;
         if (date < today) checks.push([date, FIT_CHECK[k], ok ? 'pass' : 'warn', f, 0.1, `inverter's daily counter ${totalRow.value} kWh vs 5-minute samples ${sum.toFixed(2)} kWh`]);
       }
+      if (TD) TD.align[k] = { counter: totalRow ?? null, integratedDay: sum, fit: fit[k] };
     }
     const e = (k, slot) => (aligned[k].energy.get(slot) || 0) * fit[k];
     // Slots shorter than the meter's half-hour: the meter's energy is shared out in proportion to
@@ -317,6 +333,7 @@ function build(siteId, fromDate, toDate, opts) {
     for (const slot of slots) {
       let q = 0;
       const coverage = hasInverter ? (aligned.solar.cover.get(slot) || aligned.imp.cover.get(slot) || 0) / slotS : 0;
+      const TS = TD && slot === T.slot ? (T.slotTrace = { coverage }) : null;
 
       // ── 2 Reconcile ──
       const solar = hasInverter ? e('solar', slot) : 0;
@@ -351,6 +368,22 @@ function build(siteId, fromDate, toDate, opts) {
       const gas = gasRaw == null ? null : gasM3 ? (cv != null ? (gasRaw * VOLUME_CORRECTION * cv) / 3.6 : null) : gasRaw;
       if (gasM3 && gasRaw != null && cv == null) day.gasNoCv++;
       const ev = slotSum(evFacts, slot, slotS);
+      if (TS) {
+        // The facts this slot read, with the share of a longer meter reading it took (null: time share).
+        const over = (list, k) => {
+          if (!list) return null;
+          const shape = k ? ctShape(k) : null;
+          return overlapping(list, slot, slotS).filter((f) => f.end_ts > slot && f.start_ts < slot + slotS).map((f) => {
+            const overlap = Math.min(f.end_ts, slot + slotS) - Math.max(f.start_ts, slot);
+            return { ...f, overlap, share: shape && overlap < f.end_ts - f.start_ts ? shape(f, slot) : null };
+          });
+        };
+        TS.samples = Object.fromEntries([...Object.entries(powerIds), ['soc', socId]].map(([k, id]) => [k, (readings.get(id) || []).filter((r) => r.ts >= slot - 300 && r.ts < slot + slotS)]));
+        TS.nodes = Object.fromEntries(Object.keys(NODES).map((k) => [k, { integrated: aligned[k].energy.get(slot) ?? null, coverS: aligned[k].cover.get(slot) ?? 0, fit: fit[k], fitted: hasInverter ? e(k, slot) : null }]));
+        TS.meter = { import: over(meterFacts.meter_import, 'imp'), export: over(meterFacts.meter_export, 'exp'), gas: over(meterFacts.meter_gas, null), ev: over(evFacts, null),
+          gasCv: gasM3 ? gasCv.find((f) => f.start_ts <= slot && f.end_ts > slot) ?? null : null, volumeCorrection: gasM3 ? VOLUME_CORRECTION : null };
+        TS.reconcile = { solar, chg, dis, mImp, mExp, imp, exp, impSrc, expSrc, missing, balance, measuredLoad, home, loss, meterVsCt, ct, gasRaw, cv, gas, ev };
+      }
 
       // ── 3 Allocate (slot-level priority) ──
       const sToHome = Math.min(solar, home);
@@ -367,6 +400,7 @@ function build(siteId, fromDate, toDate, opts) {
       const sToLoss = Math.max(0, solar - sToHome - sToBatt - sToGrid);
       const bToLoss = Math.max(0, dis - bToHome - bToGrid);
       const gToLoss = Math.max(0, (imp || 0) - gToHome - gToBatt);
+      if (TS) TS.allocate = { sToHome, sLeft, sToBatt, sToGrid, bToHome, bToGrid, gToHome, gToBatt, sToLoss, bToLoss, gToLoss };
 
       // ── 4 Price ──
       const pi = priceOver(pricing, 'meter_import', slot, slotS);
@@ -381,8 +415,10 @@ function build(siteId, fromDate, toDate, opts) {
       if (priceEstimated) { q |= QUALITY.ESTIMATED; day.estimated++; }
       const capacityUnknown = !!(pi?.capacityUnknown || pg?.capacityUnknown);
       if (capacityUnknown) day.capacityUnknown++;
+      if (TS) TS.price = { pi, pe, pg, impInc, expRate, prov, priceEstimated, capacityUnknown };
 
       // Battery stock, first in, first out: draw what was discharged, then add what was charged.
+      if (TS) TS.stock = { before: stock.map((l) => ({ ...l })), eff };
       let draw = dis; let drawCost = 0; let fromUnknown = 0;
       while (draw > 1e-9 && stock.length) {
         const l = stock[0]; const take = Math.min(draw, l.kwh);
@@ -393,8 +429,10 @@ function build(siteId, fromDate, toDate, opts) {
       // Unknown when energy comes from the opening layer, or more is drawn than the records hold.
       const unknownDraw = fromUnknown > 1e-6 || draw > 1e-6;
       if (unknownDraw) { unknownStock = true; q |= QUALITY.ESTIMATED; }
+      if (TS) Object.assign(TS.stock, { drawCost, fromUnknown, notCovered: draw, unknownDraw, afterDraw: stock.map((l) => ({ ...l })) });
       if (gToBatt > 0) addLayer(gToBatt * eff, (impInc ?? 0) / eff);
       if (sToBatt > 0) addLayer(sToBatt * eff, 0);   // solar has no fuel cost
+      if (TS) TS.stock.afterCharge = stock.map((l) => ({ ...l }));
       // The stock follows the measured charge level. Energy in × efficiency − energy out drifts
       // from what the battery holds (efficiency and capacity are measured, not exact); left alone
       // it ran dry while the battery still held 20%. All layers are scaled together, so their
@@ -403,8 +441,10 @@ function build(siteId, fromDate, toDate, opts) {
       if (socEnd != null && batteryKwh) {
         const held = (socEnd / 100) * batteryKwh;
         const total = stock.reduce((t, l) => t + l.kwh, 0);
+        if (TS) TS.stock.soc = { socEnd, held, total };
         if (total > 1e-6) { const k = held / total; for (const l of stock) l.kwh *= k; } else if (held > 1e-6) stock.push({ kwh: held, p: null });
       }
+      if (TS) TS.stock.after = stock.map((l) => ({ ...l }));
 
       // Fixed charges with their taxes (a credit such as the Dutch heffingskorting is negative).
       const standing = pi ? fixedOver(pi, slot, slotS, nSlotsDay, tz) + (pg ? fixedOver(pg, slot, slotS, nSlotsDay, tz) : 0) : 0;
@@ -424,6 +464,11 @@ function build(siteId, fromDate, toDate, opts) {
       const temp = tempByHour.get(floorTo(slot, 3600)) ?? null;
       const fcRows = solarFcBySlot.get(slot) || [];
       const solarForecast = fcRows.length ? fcRows.reduce((s, v) => s + v, 0) : null;
+      if (TS) {
+        TS.costs = { standing, gasCost, gToHomeCost, gToBattCost, lossCost, bToHomeCost, exportCredit, totalCost, gridOnly };
+        TS.context = { ci, carbon: overlapping(carbonFacts, slot, slotS).filter((f) => f.end_ts > slot && f.start_ts < slot + slotS), carbonG, carbonSaved, temp, tempHour: floorTo(slot, 3600), solarForecast, forecastParts: [...fcRows],
+          forecast: solarFc.filter((f) => f.start_ts < slot + slotS && f.end_ts > slot).map((f) => ({ ...f, source: T.forecastSource.get(f) ?? null })) };
+      }
 
       // ── 5 Check and state ──
       let state = 'final';
@@ -433,6 +478,7 @@ function build(siteId, fromDate, toDate, opts) {
       // Once revised, always marked: the flag survives later rebuilds.
       // A row of another slot length is a different slot, not an earlier version of this one.
       if (prev && prev.dur_s === slotS && ((prev.quality & QUALITY.RESTATED) || (prev.state === 'final' && (Math.abs((prev.home ?? 0) - home) > 0.001 || Math.abs((prev.total_cost ?? 0) - (totalCost ?? 0)) > 0.01)))) q |= QUALITY.RESTATED;
+      if (TS) TS.state = { state, date, today, expectMeter, prev: prev ?? null };
 
       const row = {
         site_id: siteId, slot_start: slot, local_date: date, dur_s: slotS, tod_min: todMinute(tz, slot), state, quality: q,
@@ -455,6 +501,7 @@ function build(siteId, fromDate, toDate, opts) {
         method_version: METHOD_VERSION, built_at: now,
       };
       day.rows.push(row);
+      if (TS) TS.row = row;
       day.home += home;
       if (loss != null) { day.loss += loss; day.lossN++; }
     }
@@ -622,9 +669,13 @@ export function processQueue() {
     const t0 = Date.now();
     const reasons = db.prepare('SELECT DISTINCT reason FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL AND reason IS NOT NULL').all(p.site_id).map((r) => r.reason);
     const res = from <= to ? buildSite(p.site_id, from, to, { reason: reasons.join('; ') || null }) : { days: 0, slots: 0 };
+    // Heating rows (site_heat_slot, src/core/heat.js) only for a home with a heating series: one query otherwise.
+    const heat = from <= to && hasHeatingSeries(p.site_id) ? buildHeat(p.site_id, from, to) : null;
     // Processed requests are removed; the sync run records what was rebuilt.
     db.prepare('DELETE FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL').run(p.site_id);
-    out.push({ siteId: p.site_id, from, to, ms: Date.now() - t0, ...res });
+    out.push({ siteId: p.site_id, from, to, ms: Date.now() - t0, ...res, ...(heat ? { heat: { days: heat.days, slots: heat.slots } } : {}) });
   }
+  // Fresh planner statistics after a rebuild (cheap when nothing is out of date).
+  if (out.length) optimizeDb();
   return out;
 }

@@ -1,6 +1,7 @@
 // Writing tariffs, their rate rows and agreements from core code (no provider calls): what a
 // price adapter or an installer form hands over, in the shape the build prices from.
-//   createTariff     a tariff with its market, currency, kind, price grain and origin
+//   createTariff     a tariff with its market, currency, kind, price grain and origin (and
+//                    taxesInPrice: its prices already hold the levies, delta 011; default 0)
 //   putRateRows      unit, standing, fixed (per day / month / year) or capacity rows, ex tax
 //   storeWindows     a tariff's register windows (HP/HC, Tempo, day/night with known times),
 //                    stored in register_window (calendar days in calendar_day) and expanded FROM
@@ -22,16 +23,17 @@ const KINDS = ['flat', 'tou', 'calendar_tou', 'dynamic', 'spot_indexed', 'dispat
 
 export function createTariff({
   provider, tariffCode, fuel = 'electricity', direction = 'import', structure, kind, country, currency,
-  nativePeriodS = null, region = null, name = null, productCode = null, origin, originNote = null, defaultRegister = null,
+  nativePeriodS = null, region = null, name = null, productCode = null, origin, originNote = null, defaultRegister = null, taxesInPrice = 0,
 }) {
   if (!provider || !tariffCode || !structure) throw new Error('a tariff needs provider, tariffCode and structure');
   if (!KINDS.includes(kind)) throw new Error(`tariff kind must be one of ${KINDS.join(', ')}, not ${kind}`);
   currencyOf(currency);
   if (!/^[A-Z]{2}$/.test(country ?? '')) throw new Error(`tariff country must be ISO alpha-2, not ${country}`);
   checkOrigin(origin, `tariff ${tariffCode}`);
-  db.prepare(`INSERT INTO tariff (provider, product_code, tariff_code, fuel, direction, structure, region, name, kind, country, currency, native_period_s, origin, origin_note, default_register)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(provider, productCode, tariffCode, fuel, direction, structure, region, name, kind, country, currency, nativePeriodS, origin, originNote, defaultRegister);
+  if (![0, 1, false, true].includes(taxesInPrice)) throw new Error(`taxesInPrice must be 0 or 1, not ${taxesInPrice}`);
+  db.prepare(`INSERT INTO tariff (provider, product_code, tariff_code, fuel, direction, structure, region, name, kind, country, currency, native_period_s, origin, origin_note, default_register, taxes_in_price)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(provider, productCode, tariffCode, fuel, direction, structure, region, name, kind, country, currency, nativePeriodS, origin, originNote, defaultRegister, taxesInPrice ? 1 : 0);
   return db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariffCode);
 }
 

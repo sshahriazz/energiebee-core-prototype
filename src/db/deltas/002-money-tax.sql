@@ -1,4 +1,5 @@
--- Delta 002: money and tax. Applied on top of schema.sql; NOT yet applied by db.js.
+-- Delta 002: money and tax. Applied on top of schema.sql by db.js, once (recorded in schema_delta;
+-- applied again only if an object it creates is missing).
 --
 -- Applying it: statements end with ';' at the end of a line; a CREATE TRIGGER ends with a line
 -- 'END;'. SQLite has no ADD COLUMN IF NOT EXISTS, so the applier skips an

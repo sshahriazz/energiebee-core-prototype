@@ -1,5 +1,5 @@
 -- Delta 004: tariff kind and ledger currency. Applied after 003 (it reads market and currency)
--- by db.js on every open. Same applying rules as 002 and 003: statements end with ';' at the end
+-- by db.js, once. Same applying rules as 002 and 003: statements end with ';' at the end
 -- of a line, a trigger ends with 'END;', an ADD COLUMN whose column exists is skipped, and every
 -- other statement may be run again (backfills are guarded by schema_delta: first application only).
 --

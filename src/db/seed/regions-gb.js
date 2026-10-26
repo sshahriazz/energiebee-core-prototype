@@ -48,11 +48,27 @@ export const GB_REGION_ALIASES = Object.freeze(GB_DNO.flatMap(([code, letter, ts
 ].map((a) => Object.freeze(a))));
 
 // Writes the rows into a database that has delta 003 applied (any node:sqlite DatabaseSync).
+// Inserts only the regions and aliases that are missing. An existing row is never changed: a
+// region's name, or the region an alias points to, stays as an operator set it (an alias is never
+// moved to another region silently). Returns the number of rows written.
 export function seedRegionsGb(db) {
   const region = db.prepare(`INSERT INTO region (scheme, code, country, name, origin, origin_note) VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT (scheme, code) DO UPDATE SET country = excluded.country, name = excluded.name, origin = excluded.origin, origin_note = excluded.origin_note`);
+    ON CONFLICT (scheme, code) DO NOTHING`);
   const alias = db.prepare(`INSERT INTO region_alias (scheme, code, alias_scheme, alias_code) VALUES (?, ?, ?, ?)
-    ON CONFLICT (alias_scheme, alias_code) DO UPDATE SET scheme = excluded.scheme, code = excluded.code`);
-  for (const r of GB_REGIONS) region.run(r.scheme, r.code, r.country, r.name, r.origin, r.origin_note);
-  for (const a of GB_REGION_ALIASES) alias.run(a.scheme, a.code, a.alias_scheme, a.alias_code);
+    ON CONFLICT (alias_scheme, alias_code) DO NOTHING`);
+  const { regions, aliases } = missingGb(db);
+  let n = 0;
+  for (const r of regions) n += Number(region.run(r.scheme, r.code, r.country, r.name, r.origin, r.origin_note).changes);
+  for (const a of aliases) n += Number(alias.run(a.scheme, a.code, a.alias_scheme, a.alias_code).changes);
+  return n;
+}
+function missingGb(db) {
+  const haveRegion = new Set(db.prepare("SELECT code FROM region WHERE scheme = 'gb_dno'").all().map((r) => r.code));
+  const haveAlias = new Set(db.prepare('SELECT alias_scheme, alias_code FROM region_alias').all().map((r) => `${r.alias_scheme}|${r.alias_code}`));
+  return { regions: GB_REGIONS.filter((r) => !haveRegion.has(r.code)), aliases: GB_REGION_ALIASES.filter((a) => !haveAlias.has(`${a.alias_scheme}|${a.alias_code}`)) };
+}
+// True when seedRegionsGb would write a row (read only).
+export function regionSeedPending(db) {
+  const { regions, aliases } = missingGb(db);
+  return regions.length > 0 || aliases.length > 0;
 }

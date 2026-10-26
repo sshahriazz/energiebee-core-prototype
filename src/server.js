@@ -4,19 +4,22 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, dataDir, dbFile } from './db/db.js';
+import { db, dataDir, dbFile, optimizeDb, closeDb } from './db/db.js';
 import { buildSite, processQueue, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
 import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
-import { seriesId, readReadings } from './core/facts.js';
+import { seriesId, readReadings, spanColumn } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
 import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
 import { providerStatus, connectProvider } from './core/providers.js';
-import { runMaintenance } from './core/maintenance.js';
+import { connectors } from './core/connectors.js';
+import { compatibility } from './core/compatibility.js';
+import { connectTounify, tounifyAllowance } from './adapters/tounify.js';
+import { runMaintenance, retentionSummary } from './core/maintenance.js';
 import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
@@ -116,12 +119,23 @@ app.post('/api/sites/:id/slot', (req, res) => {
 // licensed and owned by the core. Only the non-secret reference is stored (account number, plant
 // id): the core has no secret store, so keys and passwords stay in .env (for the .env home), and
 // the reply names the fields not stored without echoing any value.
-app.post('/api/sites/:id/connections', (req, res) => {
+// tounify (an EU tariff source, FR and NL) registers the home upstream, one connection per home (billed
+// per connection): { provider: 'tounify', postal_code?, consumption_tariff, feedin_tariff?, capacity?,
+// metering?, grid_operator? }, after the same registry check (listed for the market, switched on,
+// licensed or TOUNIFY_DEV=1 with a test token, built) and only with TOUNIFY_API_KEY set.
+app.post('/api/sites/:id/connections', async (req, res) => {
   const s = site(req);
   const b = req.body || {};
+  if (b.provider === 'tounify') {
+    const r = await connectTounify(db, s, b);
+    return res.status(r.created ? 201 : 200).json(r);
+  }
   const r = connectProvider(db, s, { provider: b.provider, role: b.role ?? null, credentials: b.credentials ?? null });
   res.status(r.created ? 201 : 200).json(r);
 });
+
+// tounify's allowance counters (requests today, distinct companies and tariffs, cooldown): never the token.
+app.get('/api/tounify/allowance', (req, res) => res.json(tounifyAllowance(db)));
 
 app.post('/api/sites/:id/sync', (req, res) => {
   const s = site(req);
@@ -139,6 +153,7 @@ app.post('/api/sites/:id/rebuild', (req, res) => {
   const before = db.prepare('SELECT ROUND(SUM(total_cost), 6) AS c, ROUND(SUM(home), 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
   const t0 = Date.now();
   const r = buildSite(s.id, first, localDate(s.timezone, nowSec()), { reason: 'full rebuild requested' });
+  optimizeDb();
   const after = db.prepare('SELECT ROUND(SUM(total_cost), 6) AS c, ROUND(SUM(home), 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
   res.json({ ...r, ms: Date.now() - t0, method: METHOD_VERSION, before, after });
 });
@@ -170,10 +185,12 @@ app.get('/api/sites/:id/now', (req, res) => {
   };
   // The latest forecast for the period that holds the start of the current slot (by overlap,
   // so a 15-minute slot at :15 reads the half-hour that began at :00).
+  // Bounded below by the series' longest period (series.max_span_s): the same row, without reading the whole history.
   const carbon = s.carbon_region != null ? db.prepare(
     `SELECT f.value, f.issued_at FROM forecast_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
      WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.start_ts <= ? AND f.end_ts > ?
-     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(`carbon:${s.carbon_region}`, slot, slot) : null;
+       ${spanColumn() ? 'AND f.start_ts >= ? - IFNULL(se.max_span_s, 9000000000)' : ''}
+     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(`carbon:${s.carbon_region}`, slot, slot, ...(spanColumn() ? [slot] : [])) : null;
   const today = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date = ?').get(s.id, localDate(s.timezone, now));
   res.json({ at: now, live, price: priceRow(slot), next: Array.from({ length: 10800 / SLOT }, (_, i) => priceRow(slot + (i + 1) * SLOT)), carbon: carbon?.value ?? null, today: today || null, ...ledgerOf(s) });
 });
@@ -478,7 +495,9 @@ app.get('/api/sites/:id/everything', (req, res) => {
   events.sort((a, b) => a.ts - b.ts);
 
   // The parts of the system, with what feeds each one and how fresh it is.
-  const conns = Object.fromEntries(db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ?').all(s.id).map((c) => [c.provider, c]));
+  // By provider (the order of the (site_id, provider) index the read always used), stated so that
+  // planner statistics (PRAGMA optimize) cannot reorder the keys.
+  const conns = Object.fromEntries(db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? ORDER BY provider').all(s.id).map((c) => [c.provider, c]));
   const devices = db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id);
   const mask = (ref) => (ref && ref.length > 6 ? `…${ref.slice(-4)}` : ref);
   res.json({
@@ -659,6 +678,17 @@ app.get('/api/catalog', (req, res) => {
   });
 });
 
+// Every connector (adapter) the core has or needs, with a status word each (src/core/connectors.js):
+// the market provider rows of every market merged per adapter code, whether an implementation is
+// registered, and what the homes' latest syncs recorded. No home needed; nothing is called or stored.
+app.get('/api/connectors', (req, res) => res.json(connectors(db)));
+
+// How and why the database is compatible with Predbat and PredHeat (src/core/compatibility.js): the
+// coverage matrix's 481 items, each target checked to exist in this database now (cached 60 s), how
+// they read data and where it lives here. No home needed; no credential and no home's data in it.
+app.get('/api/compatibility', (req, res) => res.json(compatibility(db)));
+app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
+
 app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message });
 });
@@ -670,6 +700,8 @@ export function start() {
   const envSite = ensureEnvSite();
   const maintenance = runMaintenance();
   if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
+  // Retention: a dry-run report unless RETENTION=apply (counts only; src/core/maintenance.js).
+  if (maintenance.retention) console.log(retentionSummary(maintenance.retention));
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, () => {
     const minutes = startScheduler();
@@ -687,7 +719,7 @@ export function start() {
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, () => {
       server.close();
-      try { db.close(); } catch { /* already closed */ }
+      try { closeDb(); } catch { /* already closed */ }
       process.exit(0);
     });
   }

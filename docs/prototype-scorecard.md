@@ -126,7 +126,7 @@ These are rough projections to help plan, not promises.
 3. Human code review of the pricing, build and registry paths.
 4. Identity, an encrypted secret store and a consent log, with a connect and disconnect flow for API-key and password providers.
 5. One OAuth or OIDC provider end to end, with token refresh and a "needs re-authorisation" state.
-6. A real non-UK home: a Linky or P1 meter reader and a licensed price source (tounify once its storage licence is confirmed, or ENTSO-E with a token).
+6. A real non-UK home: a Linky or P1 meter reader and a licensed price source. The tounify v3 adapter, an EU tariff source (not UK), is built, tested on captured FR and NL answers and off by default until its storage licence is confirmed. ENTSO-E would need a token.
 
 ### Then (planning)
 - **Planner in shadow mode** on the real GB home. Predbat-style: a fixed 5-minute step, a decision per slot, windows merged for the device, and plans stored only when they change. It is scored against what actually happened. At least two weeks of data are needed before judging it.
@@ -143,7 +143,7 @@ These are rough projections to help plan, not promises.
 - **Operations:** monitoring, alerts, backup and restore, and one-command setup.
 
 ### Decisions needed
-- **tounify licence:** get the storage and reuse terms in writing before building daily capture.
+- **tounify licence:** get the storage and reuse terms in writing. The v3 adapter, with daily capture, is already built but off until then. It is a preview API, billed per connection, and its free test token has tiny limits, guarded by the adapter's allowance counters.
 - **ENTSO-E token:** register for one.
 - **Dutch trial timing:** model annual net metering for 2026, or start on 2027 rules.
 - **First OAuth or OIDC provider:** which one decides the flow details.

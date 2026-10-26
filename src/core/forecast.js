@@ -13,7 +13,7 @@
 // Each half-hour also carries a low and a high case, and `accuracy` scores our own
 // stored forecasts (source core_forecast) against what the home then used.
 import { db } from '../db/db.js';
-import { seriesId, readForecastOfRecord, readReadings, readIntervals } from './facts.js';
+import { seriesId, readForecastOfRecord, readReadings, readIntervals, spanOf } from './facts.js';
 import { loadPricing, priceOver } from './pricing.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, slotLength, slotPhase, slotFloor, slotsPerDay, slotOfDay, slotLabel, todMinute, eachSlotOverlap } from './time.js';
 
@@ -319,8 +319,10 @@ function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
   const fcS = seriesId('site', siteId, 'load_kwh', 'core_forecast');
   const hh = db.prepare(`SELECT slot_start, local_date, home FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start + dur_s <= ? AND dur_s = ?
       AND state != 'missing' AND home IS NOT NULL ORDER BY slot_start`).all(siteId, now - 7 * 86400, now, slotS);
-  const facts = hh.length ? db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ? AND issued_at <= end_ts - ? ORDER BY start_ts')
-    .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ACCURACY_LEAD) : [];
+  // Lower bound from the series' longest period (spanOf): the same rows, without reading the whole history.
+  const span = spanOf([fcS]);
+  const facts = hh.length ? db.prepare(`SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND issued_at <= end_ts - ? ORDER BY start_ts`)
+    .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ...(span == null ? [] : [hh[0].slot_start - span]), ACCURACY_LEAD) : [];
   const rows = [];
   let lo = 0;
   for (const h of hh) {

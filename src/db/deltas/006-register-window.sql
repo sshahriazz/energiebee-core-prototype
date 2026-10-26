@@ -1,5 +1,5 @@
--- Delta 006: register windows, calendars and estimated rate rows. Applied after 005 by db.js on
--- every open. Same applying rules as 002-005: statements end with ';' at the end of a line, a
+-- Delta 006: register windows, calendars and estimated rate rows. Applied after 005 by db.js,
+-- once. Same applying rules as 002-005: statements end with ';' at the end of a line, a
 -- trigger ends with 'END;', an ADD COLUMN whose column exists is skipped, and every other
 -- statement may be run again.
 --

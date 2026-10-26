@@ -24,7 +24,9 @@ function buildAt(slotS) {
     const first = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(SITE).d;
     // Whole days only: today's last part-slot depends on the slot length.
     const last = addDays(localDate(site.timezone, asOf), -1);
-    return { ...buildSite(SITE, first, last, { asOf, dryRun: true }), tz: site.timezone };
+    // currentSettings: the facts as known at the golden moment, cut with the slot length set just now
+    // (a what-if; without it the as-of build uses the slot length in force then, site_version).
+    return { ...buildSite(SITE, first, last, { asOf, dryRun: true, currentSettings: true }), tz: site.timezone };
   } finally {
     db.prepare('UPDATE site SET slot_s = 1800 WHERE id = ?').run(SITE);
   }

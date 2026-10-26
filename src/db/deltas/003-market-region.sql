@@ -1,5 +1,5 @@
--- Delta 003: markets and regions. Applied after 002 (market.currency references currency);
--- NOT yet applied by db.js. Same applying rules as 002: statements end with ';' at the end of a
+-- Delta 003: markets and regions. Applied after 002 (market.currency references currency)
+-- by db.js, once. Same applying rules as 002: statements end with ';' at the end of a
 -- line, a trigger ends with 'END;', an ADD COLUMN whose column exists is skipped, and every other
 -- statement may be run again (backfills are guarded by schema_delta: first application only).
 -- Region and market rows beyond GB come from src/db/seed/regions-gb.js and seed/markets.js.

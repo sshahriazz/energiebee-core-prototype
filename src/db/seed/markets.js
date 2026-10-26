@@ -25,11 +25,28 @@ export const MARKETS = Object.freeze([
 export const MARKET_COLUMNS = Object.freeze(['code', 'country', 'timezone', 'currency', 'price_interval_s', 'meter_interval_s', 'default_slot_s', 'bidding_zone', 'origin', 'origin_note']);
 
 // Writes the rows into a database that has delta 003 applied (any node:sqlite DatabaseSync).
+// Inserts only the markets that are missing: a row that exists is never changed, so an operator's
+// correction (an interval, a zone, a note) is kept. A changed seed value reaches an existing
+// database only through a delta. Returns the number of rows written.
 export function seedMarkets(db, markets = MARKETS) {
-  const set = MARKET_COLUMNS.filter((c) => c !== 'code').map((c) => `${c} = excluded.${c}`).join(', ');
-  const up = db.prepare(`INSERT INTO market (${MARKET_COLUMNS.join(', ')}) VALUES (${MARKET_COLUMNS.map(() => '?').join(', ')})
-    ON CONFLICT (code) DO UPDATE SET ${set}`);
-  for (const m of markets) up.run(...MARKET_COLUMNS.map((c) => m[c] ?? null));
+  const ins = db.prepare(`INSERT INTO market (${MARKET_COLUMNS.join(', ')}) VALUES (${MARKET_COLUMNS.map(() => '?').join(', ')})
+    ON CONFLICT (code) DO NOTHING`);
+  let n = 0;
+  for (const m of missingMarkets(db, markets)) n += Number(ins.run(...MARKET_COLUMNS.map((c) => m[c] ?? null)).changes);
+  return n;
+}
+const missingMarkets = (db, markets) => {
+  const have = new Set(db.prepare('SELECT code FROM market').all().map((r) => r.code));
+  return markets.filter((m) => !have.has(m.code));
+};
+const missingZones = (db, markets) => {
+  const have = new Set(db.prepare("SELECT code FROM region WHERE scheme = 'bzn'").all().map((r) => r.code));
+  return markets.filter((m) => m.bidding_zone && !have.has(m.bidding_zone));
+};
+// True when seedMarkets or seedBiddingZones would write a row (read only: an up-to-date database
+// is opened without taking the write lock).
+export function marketSeedPending(db, markets = MARKETS) {
+  return missingMarkets(db, markets).length > 0 || missingZones(db, markets).length > 0;
 }
 
 // One region per bidding zone (scheme 'bzn', code = the ENTSO-E zone): the whole-country region
@@ -38,10 +55,13 @@ export function seedMarkets(db, markets = MARKETS) {
 // Each zone row is derived from its market row and so carries that row's origin (GB sourced, the
 // others placeholders), with a note saying so.
 const ZONE_NAMES = { GB: 'Great Britain', FR: 'France', NL: 'Netherlands', 'DE-LU': 'Germany and Luxembourg', BE: 'Belgium', ES: 'Spain' };
+// Inserts only the zones that are missing (an existing row, its name included, is never changed).
 export function seedBiddingZones(db, markets = MARKETS) {
-  const up = db.prepare(`INSERT INTO region (scheme, code, country, name, origin, origin_note) VALUES ('bzn', ?, ?, ?, ?, ?)
-    ON CONFLICT (scheme, code) DO UPDATE SET country = excluded.country, name = excluded.name, origin = excluded.origin, origin_note = excluded.origin_note`);
-  for (const m of markets) {
-    if (m.bidding_zone) up.run(m.bidding_zone, m.country, ZONE_NAMES[m.bidding_zone] ?? m.bidding_zone, m.origin ?? null, m.origin_note ? `derived from market ${m.code} (bidding_zone '${m.bidding_zone}'), whose row is ${m.origin}: ${m.origin_note}` : null);
+  const ins = db.prepare(`INSERT INTO region (scheme, code, country, name, origin, origin_note) VALUES ('bzn', ?, ?, ?, ?, ?)
+    ON CONFLICT (scheme, code) DO NOTHING`);
+  let n = 0;
+  for (const m of missingZones(db, markets)) {
+    n += Number(ins.run(m.bidding_zone, m.country, ZONE_NAMES[m.bidding_zone] ?? m.bidding_zone, m.origin ?? null, m.origin_note ? `derived from market ${m.code} (bidding_zone '${m.bidding_zone}'), whose row is ${m.origin}: ${m.origin_note}` : null).changes);
   }
+  return n;
 }

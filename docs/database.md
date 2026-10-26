@@ -13,6 +13,7 @@ This document explains how the prototype stores its data:
 7. **Scaling path,** grounded in the design as it stands.
 8. **Retention and recovery:** what can be deleted, and what cannot.
 9. **Appendix:** the queries and commands behind every measured number.
+10. **Hardening, 26 October 2026:** how the database is opened, the integrity triggers, indexes and bounded reads, retention, and the security status (Phase A of `docs/hardening-and-planning-plan.md`).
 
 How the half-hour build works, what `final`, `provisional` and `missing` mean, and how the forecast is made are in [Timeline, forecast, data states and data provenance](timeline-forecast-and-data-states.md). This document does not repeat them.
 
@@ -96,16 +97,17 @@ Each fact therefore has two times:
 
 "Current" means `superseded_at IS NULL`. "What the core knew at time T" means `recorded_at ≤ T AND (superseded_at IS NULL OR superseded_at > T)`. At the copy, 40 of 29,158 readings and 250 of 4,012 interval facts were superseded versions, and none of the 3,117 rate rows were (Q5b).
 
-Forecasts are kept differently. Every issue is stored whole with its `issued_at` and is never superseded (`putForecasts`, `INSERT OR IGNORE`). The forecast used for a past half-hour is the latest issue made before it (`readForecastOfRecord`; the build's `solar_forecast`).
+Forecasts are kept differently. An issue is stored with its `issued_at` and is never superseded, but only for the periods whose value changed since the latest stored issue of that period (`putForecasts`, change-only, `INSERT OR IGNORE`; corrected 26 Oct 2026: this said "stored whole", which stopped being true on 16 October). The forecast used for a past half-hour is the latest issue made before it (`readForecastOfRecord`; the build's `solar_forecast`). Retention thins the issues of periods older than 14 days to the ones a read can pick (section 10.5).
 
 This gives:
 - the same facts always build the same half-hours;
 - the evidence page can show every version and the raw payload it came from;
 - a correction is visible instead of silent: the build marks a final half-hour whose numbers changed as revised (quality bit 128, see [section 2 of the timeline document](timeline-forecast-and-data-states.md#2-what-the-data-states-mean)).
 
-Two tables do not follow the rule:
-- `tariff_agreement` is deleted and re-inserted from the Octopus account on every sync, so its history is not kept;
-- registry rows (`source`, `metric`, `vat_rate`) are updated in place from `registry.js`.
+One group of tables does not follow the rule:
+- registry rows (`source`, `metric`, `vat_rate`) are brought in line with `registry.js` in place, written only where they differ (section 10.2).
+
+(Corrected 26 Oct 2026: this list also said that `tariff_agreement` is deleted and re-inserted on every sync with no history. It has been versioned like facts since 16 October: `devices.js` `supersedeAgreements` stamps `superseded_at` on the old rows and inserts the new ones, and an "as known at" read uses `recorded_at` / `superseded_at`.)
 
 ### 1.2 Why the serving tables are disposable
 
@@ -208,6 +210,8 @@ flowchart TB
 | `GET …/health` | `site`, `connection`, `sync_run`, `site_day`, `check_result`, `raw_payload`, counts of `site_hh`, `reading`, `interval_fact`, `forecast_fact`, `rate_interval`, file size | data, grid |
 | `GET …/devices` | `device` | my |
 | `GET /api/catalog` | `source`, `metric`, `vat_rate` | data |
+| `GET /api/connectors` | `market_provider` (every market), `site`, `connection`, `sync_run` (latest with a log, per home), plan per home via `providers.js` `plan`; status hooks: `provider_state` (Tariffscanner, tounify), `tariff_agreement` + `tariff` (typed-in prices) | connectors |
+| `GET /api/tounify/allowance` | `provider_state` (row `tounify`: the allowance counters and the cooldown; never the token) | (none yet) |
 
 "Pricing tables" means `loadPricing` (`src/core/pricing.js`), which reads `tariff_agreement`, `device`, `tariff`, `rate_interval`, `vat_rate`, Kraken dispatches in `interval_fact` and `site`.
 
@@ -518,7 +522,7 @@ erDiagram
   }
   site_hh {
     INTEGER site_id PK,FK
-    INTEGER slot_start PK "multiple of 1800"
+    INTEGER slot_start PK "multiple of 900; length in dur_s"
     TEXT local_date "indexed with site_id"
     TEXT state "provisional, final, missing"
     INTEGER quality "bit flags"
@@ -609,7 +613,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | Keys and constraints | `id` PRIMARY KEY; `code` UNIQUE; CHECK on `time_role` and `aggregation` |
 | Written by | `db.js` `seedRegistry()` |
 | Read by | `db.js` `metricId()`; joins in `pricing.js`, `compare.js`, `sync.js`, `server.js`. `time_role`, `aggregation` and `domain` are read only by `/api/catalog`; the build decides how to aggregate in code. |
-| Rows now | 23 (including `gas_m3` and `gas_cv_mjm3`, added on 16 October) |
+| Rows now | 23 (including `gas_m3` and `gas_cv_mjm3`, added on 16 October); 53 from 26 October: the 29 planning metrics (*Planning data* below) and `battery_soc_kwh` (*Plans and commands*) |
 | Growth | One row per new metric. |
 
 ### Context
@@ -632,7 +636,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | Purpose | One row per home per provider integration (`sunsynk`, `octopus`, `tariff`, `weather`, `carbon`, `solar_forecast`, `compare`, `gas_cv`, `tariffscanner` on the GB home whose sync ran the catalogue step), with `status` (`new`, `ok`, `error`, or `skipped` when the plan skipped the step, for example for want of credentials), `last_success_at`, `last_error`, `external_ref` (Sunsynk plant id, Octopus account number) and `meta` JSON. **No secret is ever stored here**: the core has no secret store, so keys and passwords stay in `.env` and are read for the `.env` home only. |
 | Keys and constraints | `id` PRIMARY KEY; UNIQUE (`site_id`, `provider`); `site_id` → `site` ON DELETE CASCADE |
 | Written by | `sync.js` `ensureConnection`, `setConnection` (after every step), `markSkipped`; `providers.js` `connectProvider` (`POST /api/sites/:id/connections`: a per-home provider the registry allows in the home's market, with its non-secret reference only); `sunsynk.js` (plant id, battery reading in `meta`); `derive.js` (measured battery capacity in `meta`); `compare.js` (product codes in `meta`; a home whose comparison step was shared in the cycle gets the first home's copy); `nationalgas.js` (gas zone and data item id in `meta`) |
-| Read by | `providers.js` `plan` (which per-home roles the home has), `steps.js` (whether a provider has run before, `resumeDate`), `build.js` (an Octopus connection means meter data is expected), `compare.js`, `nationalgas.js`, `derive.js`, `server.js` (`/api/sites`, `/everything`, `/health`) |
+| Read by | `providers.js` `plan` (which per-home roles the home has), `steps.js` (whether a provider has run before, `resumeDate`), `build.js` (an Octopus connection means meter data is expected), `compare.js`, `nationalgas.js`, `derive.js`, `server.js` (`/api/sites`, `/everything`, `/health`), `connectors.js` (`/api/connectors`: `status`, `last_success_at`, `last_error`; never `external_ref`) |
 | Rows now | 8 |
 | Growth | One row per provider per home. Updated on every step of every sync; earlier states are not kept, but each step's result is in `sync_run.detail`. |
 
@@ -667,9 +671,9 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 |---|---|
 | Purpose | One row per tariff code: provider, product, fuel, direction, structure (parsed from the code by `parseTariffCode`), region, name. |
 | Keys and constraints | `id` PRIMARY KEY; `tariff_code` UNIQUE; CHECK on `fuel` and `direction` |
-| Written by | `octopus.js` `upsertTariff`, called for account agreements, `.env` codes and Comparison codes; `tariffscanner.js` `storeMapped` (the Tariffscanner catalogue, `TS-` codes, provider `tariffscanner`; see *Market provider registry*, delta 009) |
+| Written by | `octopus.js` `upsertTariff`, called for account agreements, `.env` codes and Comparison codes; `tariffscanner.js` `storeMapped` (the Tariffscanner catalogue, `TS-` codes, provider `tariffscanner`; see *Market provider registry*, delta 009); `tounify.js` (`TOUNIFY-<country>-<tariff id>`, provider `tounify`, `taxes_in_price` 1 when the answer carries its levies in `fees` and states its VAT; delta 011, off by default) |
 | Read by | `pricing.js`, `compare.js`, `sync.js` (tariffs whose rates to fetch), `server.js` (`/tariffs`, `/everything`, `/evidence`, `/api/catalog?tariffs=<provider>`) |
-| Rows now | 14 |
+| Rows now | 8,511 on the 26 October copy (14 Octopus tariffs, the rest the Tariffscanner catalogue; corrected from 14). Index `tariff_structure_region` (`structure`, `region`) since delta 013. |
 | Growth | One row per distinct tariff code, shared by every home on it. |
 
 #### `tariff_agreement`
@@ -735,9 +739,9 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | | |
 |---|---|
 | Purpose | Forecasts: one row per target period per issue. Sources: Open-Meteo (temperature, cloud, sunlight), NESO carbon, Quartz solar, Kraken planned dispatches, and the core's own forecast (`core_forecast`). |
-| Keys and constraints | PRIMARY KEY (`series_id`, `start_ts`, `issued_at`), `WITHOUT ROWID`; CHECK `end_ts > start_ts`; no other index; `series_id` → `series`; `raw_id` → `raw_payload` (NULL for `core_forecast`) |
-| Written by | `facts.js` `putForecasts` (`INSERT OR IGNORE`), called by `openmeteo.js`, `carbon.js`, `quartz.js`, `octopus.js` `normalisePlanned`, and `sync.js` `recordForecast` |
-| Read by | `facts.js` `readForecastOfRecord` (forecast); `build.js` (solar forecast of record); `forecast.js` `scoreAccuracy`; `sync.js` (time of the last own issue); `server.js` (`/now` carbon, Quartz issues in `/everything`) |
+| Keys and constraints | PRIMARY KEY (`series_id`, `start_ts`, `end_ts`, `issued_at`) since delta 040 (before: without `end_ts`, so a period of another length from the same start was dropped by `INSERT OR IGNORE`), `WITHOUT ROWID`; `recorded_at` (ms, NOT NULL, when the core stored the issue; rows from before 040 have `issued_at` × 1000) with index **`forecast_recorded`** (`series_id`, `recorded_at`) (delta 040, *Planning data* below); CHECK `end_ts > start_ts`; indexes `forecast_issued` (`series_id`, `issued_at`) and `forecast_fact_raw` (`raw_id`) since delta 013 (section 10.4; corrected from "no other index"); `series_id` → `series`; `raw_id` → `raw_payload` (NULL for `core_forecast`) |
+| Written by | `facts.js` `putForecasts` (`INSERT OR IGNORE`; change-only per period, a period being its start and end), called by `openmeteo.js`, `carbon.js`, `quartz.js`, `octopus.js` `normalisePlanned`, `sync.js` `recordForecast` and `solar-cases.js` `deriveSolarCases` |
+| Read by | `facts.js` `readForecastOfRecord` (forecast) and `readForecastAsOf` (what was recorded by a moment; no caller in the build); `build.js` (solar forecast of record); `solar-cases.js`; `forecast.js` `scoreAccuracy`; `sync.js` (time of the last own issue); `server.js` (`/now` carbon, Quartz issues in `/everything`) |
 | Rows now | 11,992 |
 | Growth | 539.4 rows per sync, plus 288 per hourly own issue. This is the fastest-growing table (section 6). |
 
@@ -794,7 +798,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | | |
 |---|---|
 | Purpose | Ranges of a home that need rebuilding. |
-| Keys and constraints | `id` PRIMARY KEY; `site_id` → `site` ON DELETE CASCADE; no other index |
+| Keys and constraints | `id` PRIMARY KEY; `site_id` → `site` ON DELETE CASCADE; index `rebuild_queue_site` (`site_id`) since delta 013 |
 | Written by | `facts.js` `markDirty` (called once per sync by `syncSite`, to now; by `sites.js` `setSlotLength` and `setContractedCapacity`, to the end of the home's last built or data day); `build.js` `processQueue` sets `done_at` |
 | Read by | `build.js` `processQueue` only: rows with `done_at IS NULL`, `MIN(from_ts)` and `MAX(to_ts)` per home. The rebuild runs from the earliest day asked (never before the home's first energy data) to the latest day asked (never after today), so a slot-length change of a home with three days of data rebuilds those three days, not every day up to today (`test/slot-rebuild-range.test.js`). |
 | Rows now | 44, all done |
@@ -807,7 +811,7 @@ Row counts are from the copy (Q1). Growth is per home unless the table is shared
 | Purpose | One row per sync: start, finish, `status` (`running`, `ok`, `partial`, `error`, or `interrupted` when a crash or restart cut it short; set at the next start), and `detail`, a JSON list of each step's result (time taken, counts, errors). |
 | Keys and constraints | `id` PRIMARY KEY; `site_id` → `site` ON DELETE CASCADE |
 | Written by | `sync.js` `syncSite`: insert at start, update at the end |
-| Read by | `server.js` (`/api/sites` latest run, `/health` last 8, `/everything` events in the period) |
+| Read by | `server.js` (`/api/sites` latest run, `/health` last 8, `/everything` events in the period), `providers.js` `providerStatus` and `connectors.js` (`/api/connectors`: each home's latest run with a log) |
 | Rows now | 44 |
 | Growth | 1 row per sync, about 1.1 KB each (Q17); never deleted. |
 
@@ -862,7 +866,7 @@ Three tables keep history that the serving tables do not. The Data & trust page 
 
 ### Markets, money and tax (added 23 Oct 2026)
 
-These tables make the database ready for more than one country, currency, region scheme, tariff shape and slot length. They come from delta files in `src/db/deltas/` that `db.js` applies on every open, after `schema.sql` and after `vat_rate` is seeded: `002-money-tax.sql`, `003-market-region.sql`, `004-tariff-ledger.sql`, and (same day) `005-provenance.sql`, `006-register-window.sql`, `007-capacity.sql`, described in *Provenance, register windows and capacity* below, and `008-market-provider.sql`, `009-provider-state.sql` and `010-provider-owner.sql`, described in *Market provider registry* below. The rules are stated at the top of each delta: statements end with `;` at the end of a line, a trigger ends with `END;`, an `ADD COLUMN` whose column exists is skipped (SQLite has no `ADD COLUMN IF NOT EXISTS`), and everything else can run again. Backfills are guarded by `schema_delta`, so homes and tariffs that exist the first time a delta runs become country GB, currency GBP, market GB once; later rows are written with their own values. After the deltas, `db.js` upserts the reference rows (markets, one bidding-zone region per market, the 14 GB distribution regions and their aliases, and the providers of each market's roles).
+These tables make the database ready for more than one country, currency, region scheme, tariff shape and slot length. They come from delta files in `src/db/deltas/` that `db.js` applies once each (since 26 October; before that, on every open), after `schema.sql` and after `vat_rate` is seeded: `002-money-tax.sql`, `003-market-region.sql`, `004-tariff-ledger.sql`, and (same day) `005-provenance.sql`, `006-register-window.sql`, `007-capacity.sql`, described in *Provenance, register windows and capacity* below, and `008-market-provider.sql`, `009-provider-state.sql`, `010-provider-owner.sql` and `011-tounify.sql`, described in *Market provider registry* below. The rules are stated at the top of each delta: statements end with `;` at the end of a line, a trigger ends with `END;`, an `ADD COLUMN` whose column exists is skipped (SQLite has no `ADD COLUMN IF NOT EXISTS`), and everything else can run again. Backfills are guarded by `schema_delta`, so homes and tariffs that exist the first time a delta runs become country GB, currency GBP, market GB once; later rows are written with their own values. After the deltas, `db.js` upserts the reference rows (markets, one bidding-zone region per market, the 14 GB distribution regions and their aliases, and the providers of each market's roles).
 
 Row counts below are from a copy of the live database opened by the new code on 23 October (one home, 14 tariffs, 3,786 rate rows).
 
@@ -873,8 +877,8 @@ Row counts below are from a copy of the live database opened by the new code on 
 | Purpose | Which deltas have been applied, and when. Guards the first-time backfills. |
 | Keys and constraints | `name` PRIMARY KEY, `WITHOUT ROWID`; `applied_at` in ms |
 | Written by | The last statement of each delta (`INSERT OR IGNORE`) |
-| Read by | The deltas' backfill statements |
-| Rows now | 6 on the 23 October copy (002–007); 9 once deltas 008, 009 and 010 are applied (one per delta file, 002–010) |
+| Read by | The deltas' backfill statements; `db.js` `deltaPending` (since 26 October a recorded delta is skipped unless an object it creates is missing, section 10.1) |
+| Rows now | 6 on the 23 October copy (002–007); 10 once deltas 008 to 011 are applied (one per delta file, 002–011) |
 | Growth | One row per delta file. |
 
 #### `currency`
@@ -894,7 +898,7 @@ Row counts below are from a copy of the live database opened by the new code on 
 |---|---|
 | Purpose | Taxes and levies as dated, ordered rules per country, fuel, direction and customer class. `kind`: `percent` (a fraction, no currency), `per_kwh` (minor units per kWh, on the unit charge), `per_period` (minor units per `charge_period` day, month or year, on the fixed charge; may be negative, such as the Dutch yearly credit). Applied in `seq` order by `src/core/tax.js` `applyTaxes`: a percentage applies to the price plus every tax with a lower `seq`, so VAT is charged on an energy tax. `unverified = 1` marks a placeholder value. Versioned like facts (`recorded_at`, `superseded_at` in ms), so an "as known at" rebuild reads the rules of that moment. Takes over from `vat_rate`. |
 | Keys and constraints | `id` PRIMARY KEY; index **`tax_rule_lookup`** (`country`, `fuel`, `direction`, `valid_from`) WHERE current; CHECKs: currency only and always for amounts, `charge_period` only and always for `per_period`, a percent between 0 and 1, `per_kwh` on unit only, `per_period` on fixed only, `valid_to > valid_from`; trigger **`tax_rule_no_overlap`**: the same tax may not apply twice to the same charge at the same moment (`all` overlaps `unit` and `fixed`) |
-| Written by | Delta 002: GB VAT copied from `vat_rate`, row for row (same rates and dates, `seq` 100, `applies_to = 'all'`, `recorded_at` 0), only while there is no GB VAT rule. `db.js` `syncGbVat()` on every open: if `VAT_RATES` in `registry.js` has changed since, the current GB VAT rules are superseded (kept) and the new set recorded, labelled `origin = 'sourced'`. The FR and NL placeholder rules in `tax.js` are **not** written by the deltas; the demo and tests write them into their throwaway databases with `origin = 'placeholder'` and their `source` text as `origin_note`. Since delta 005 every rule has `origin` / `origin_note` (below). |
+| Written by | Delta 002: GB VAT copied from `vat_rate`, row for row (same rates and dates, `seq` 100, `applies_to = 'all'`, `recorded_at` 0), only while there is no GB VAT rule. `db.js` `syncGbVat()` on every open (a read; it writes only when something changed): if `VAT_RATES` in `registry.js` has changed since, the current GB VAT rules are superseded (kept) and the new set recorded, labelled `origin = 'sourced'`. The FR and NL placeholder rules in `tax.js` are **not** written by the deltas; the demo and tests write them into their throwaway databases with `origin = 'placeholder'` and their `source` text as `origin_note`. Since delta 005 every rule has `origin` / `origin_note` (below). |
 | Read by | `pricing.js` `loadPricing` (the home's country, as known at the moment built) and `taxesAt`; `server.js` (`/evidence`, `/api/catalog`) |
 | Rows now | 4 (GB VAT: electricity import 5 % to 1 Oct 2026 then 0 %, export 0 %, gas 5 %) |
 | Growth | One row per rate change per country. |
@@ -907,7 +911,7 @@ How pricing uses it: every unit tax is linear in the price, so the price paid pe
 |---|---|
 | Purpose | One row per market: country, its own clock (IANA zone), currency, price interval, usual meter interval, default slot length for a new home, ENTSO-E bidding zone. |
 | Keys and constraints | `code` PRIMARY KEY, `WITHOUT ROWID`; `currency` → `currency`; CHECK intervals divide an hour and are multiples of 5 minutes; CHECK `default_slot_s IN (900, 1800, 3600)` |
-| Written by | Delta 003 inserts GB (needed by the backfill); `db.js` upserts all of `src/db/seed/markets.js` on every open, with `origin`: GB `sourced` (half-hourly settlement, Elexon BSC), FR, NL, DE, BE and ES `placeholder` (written from memory; DE, BE and ES also marked unverified in the seed). |
+| Written by | Delta 003 inserts GB (needed by the backfill); `db.js` inserts the rows of `src/db/seed/markets.js` that are missing (since 26 October; it used to upsert every column on every open, so an operator's correction reverted), with `origin`: GB `sourced` (half-hourly settlement, Elexon BSC), FR, NL, DE, BE and ES `placeholder` (written from memory; DE, BE and ES also marked unverified in the seed). |
 | Read by | `sites.js` `createSite` (defaults for a new home), trigger `site_currency_matches_market_*`, `/api/catalog` |
 | Rows now | 6 (GB, FR, NL, DE, BE, ES) |
 | Growth | One row per market. |
@@ -950,7 +954,7 @@ How pricing uses it: every unit tax is linear in the price, so the price paid pe
 | Table | Added | Notes |
 |---|---|---|
 | `site` | `currency` → `currency`, `country`, `market_code` → `market` | Deltas 002/003; backfilled GB / GBP / GB once. New homes are written by `sites.js` `createSite`, which defaults to market GB, GBP, Europe/London and 1800 s (the `.env` home) and takes the market's own defaults otherwise (NL: EUR, Europe/Amsterdam, 900 s). Triggers: **`site_currency_matches_agreements`** (delta 002) and **`site_currency_matches_market_insert` / `_update`** (delta 004): a home is billed in its market's currency. `slot_s` (900/1800/3600) is changed by `sites.js` `setSlotLength` or `POST /api/sites/:id/slot`, which queues a rebuild of the built days (first built day to last built or data day, not to today). Delta 007 adds `contracted_kva`, `contracted_kva_origin`, `contracted_kva_note` (below). |
-| `tariff` | `currency`, `country`, `native_period_s`, `kind` | Deltas 002/003/004. `kind` is the adapter contract's (`flat`, `tou`, `calendar_tou`, `dynamic`, `spot_indexed`, `dispatch`, `market`), backfilled from the Octopus `structure` once. `structure` stays the pricing method; the new value `windows` means the unit rows were expanded from register windows (`tariff-expand.js` `expandWindows`, written by `tariffs.js` `storeWindows`), so the row covering an instant gives its register. Trigger **`tariff_currency_matches_agreements`**. `octopus.js` `upsertTariff` sets `currency = 'GBP'`, `country = 'GB'`, `kind` from the structure (flat/export → `flat`, tou/e7 → `tou`, agile/agile_export/tracker → `dynamic`, iog → `dispatch`), `native_period_s` (Agile 1800, tracker 86400, others NULL) and `origin = 'provider'`, and fills them in on a row stored before they existed without overwriting set values. Delta 005 adds `origin` / `origin_note`, delta 006 `default_register` (below). |
+| `tariff` | `currency`, `country`, `native_period_s`, `kind` | Deltas 002/003/004. `kind` is the adapter contract's (`flat`, `tou`, `calendar_tou`, `dynamic`, `spot_indexed`, `dispatch`, `market`), backfilled from the Octopus `structure` once. `structure` stays the pricing method; the new value `windows` means the unit rows were expanded from register windows (`tariff-expand.js` `expandWindows`, written by `tariffs.js` `storeWindows`), so the row covering an instant gives its register. Trigger **`tariff_currency_matches_agreements`**. `octopus.js` `upsertTariff` sets `currency = 'GBP'`, `country = 'GB'`, `kind` from the structure (flat/export → `flat`, tou/e7 → `tou`, agile/agile_export/tracker → `dynamic`, iog → `dispatch`), `native_period_s` (Agile 1800, tracker 86400, others NULL) and `origin = 'provider'`, and fills them in on a row stored before they existed without overwriting set values. Delta 005 adds `origin` / `origin_note`, delta 006 `default_register` (below), delta 011 `taxes_in_price` (0/1, default 0: below). |
 | `tariff_agreement` | (triggers only) | **`agreement_same_currency_insert` / `_update`** (delta 002): a tariff in another currency than the home's cannot be agreed. `pricing.js` `loadPricing` checks again and refuses to price a mixed pair. |
 | `rate_interval` | `component` now `unit`, `standing`, `fixed`, `capacity`; `charge_period` (`day`, `month`, `year`); `register` any non-empty text | The old CHECKs (unit/standing; single/day/night) cannot be altered, so `db.js` `upgradeRates()` rebuilds the table once: in one transaction with foreign-key checks off, renamed, recreated from `schema.sql`, every row copied with its id, the old table dropped; then `schema.sql` puts back **`rate_current`** and **`rate_no_overlap`** (now also keyed on `charge_period`). CHECK: `unit` has no period, `standing` is per day, `fixed` and `capacity` need one. `standing` stays the GB per-day charge; `fixed` rows (per day, month or year) are spread by real seconds (`tariff-expand.js` `fixedChargePerSlot`); `capacity` rows are priced per kW (kVA) of the home's `site.contracted_kva` per period, the same way (delta 007, below). Prices are minor units of the tariff's currency, ex tax. Delta 005 adds `origin` / `origin_note`, delta 006 `estimated`. |
 | `site_day` | `currency` → `currency` | Delta 004; backfilled from the home once, then written by `build.js`. The currency of the day's money and of its `site_hh` rows (both in minor units). The API adds `currency` and `slot_s` to every response with money or slots, without changing existing keys. |
@@ -1014,9 +1018,9 @@ The API adds, without changing existing keys: `origin` on `/api/sites`, the tari
 |---|---|
 | Purpose | One row per market, role and adapter. Roles: `location`, `inverter`, `meter`, `weather`, `carbon`, `solar_forecast`, `gas_cv`, `tariff_catalogue`, `tariff_prices`, `compare` (checked in code, `providers.js` `ROLES`, not by a CHECK, so a new role is a row, never a table rebuild). `scope`: `shared` (runs for every home of the market from public data; work the same for several homes is done once per sync cycle) or `home` (runs only for a home with its own connection row, when the adapter needs one). `priority` (column default 100; seeded rows 10, except the FR and NL price fallbacks below; lower first; the first usable provider of a role is used, the others are fallbacks), `enabled` (0 = listed but never called), `owner` (`core` or `external`: only the owner may call the provider, `contract.js` `assertOwner`; `external` means another process owns the provider's rate budget, so the core must not call it; every seeded row is `core`), `needs_credentials` (1 = the home's credentials are checked before the step runs), `licence_confirmed` (0 = the right to store and serve the data is unconfirmed: skipped even when enabled), `origin` (the provenance vocabulary of what the provider gives: `provider` for a built adapter, `user` for typed-in prices, `placeholder` for an adapter that does not exist) and an honest `note` (it begins "adapter not built" where that is so). |
 | Keys and constraints | PRIMARY KEY (`market_code`, `role`, `adapter`), WITHOUT ROWID; CHECKs: `market_code` is `'*'` (any market: inverter clouds) or two upper-case letters, `scope` in (`shared`, `home`), `enabled`, `needs_credentials`, `licence_confirmed` 0/1, `owner` in (`core`, `external`) (since delta 010, below), `origin` NOT NULL in the vocabulary; index **`market_provider_role`** (`role`, `market_code`, `priority`). No foreign key to `market`, because of `'*'`. Defaults: `enabled` 1, `owner` `core`, `needs_credentials` 0, `licence_confirmed` 1. |
-| Written by | `src/db/seed/providers.js` `seedProviders`, called by `db.js` on every open: inserts missing rows and refreshes `priority`, `owner`, `scope`, `needs_credentials`, `origin` and `note` of the rows it lists. It never changes `enabled` or `licence_confirmed` on a row that exists, so an operator's switches stay (`test/providers.test.js`). No API or page writes the table; a switch is an SQL `UPDATE`. |
-| Read by | `providers.js` (`providersFor`: the market's rows and the `'*'` rows of a role, by `priority`, then the market's own before `'*'`, then adapter; `plan`; `providerStatus` for `/api/sites`; `connectProvider` for `POST /api/sites/:id/connections`), `sync.js` (`ensureEnvSite`: which connections the `.env` home gets in its market) |
-| Rows now | 24 (the seed): GB 10, any market (`*`) 1, FR 5, NL 5, DE, BE and ES 1 each |
+| Written by | `src/db/seed/providers.js` `seedProviders`, called by `db.js` when something is missing or out of date: inserts missing rows and brings `owner`, `scope`, `needs_credentials`, `origin` and `note` of the rows it lists in line with the adapter code, written only where they differ. It never changes `priority`, `enabled` or `licence_confirmed` on a row that exists, so an operator's order of fallbacks and switches stay (`test/providers.test.js`, `test/db-open.test.js`; `priority` was refreshed on every open until 26 October). No API or page writes the table; a switch is an SQL `UPDATE`. |
+| Read by | `providers.js` (`providersFor`: the market's rows and the `'*'` rows of a role, by `priority`, then the market's own before `'*'`, then adapter; `plan`; `providerStatus` for `/api/sites`; `connectProvider` for `POST /api/sites/:id/connections`), `sync.js` (`ensureEnvSite`: which connections the `.env` home gets in its market), `connectors.js` (`/api/connectors`: every row of every market, merged per adapter) |
+| Rows now | 26 (the seed): GB 10, any market (`*`) 1, FR 6, NL 6, DE, BE and ES 1 each |
 | Growth | A few rows per market; changes only when a provider is added. |
 
 What the seed lists:
@@ -1028,19 +1032,19 @@ What the seed lists:
 | GB | `tariff_catalogue` → `tariffscanner` (shared, priority 20) | enabled, needs credentials (the core's own, `TARIFFSCAN_USERNAME`, `TARIFFSCAN_PASSWORD`) | `provider`; the UK domestic catalogue, run as well as Octopus's (`tariff_catalogue` is additive: every usable provider runs) |
 | FR, NL | `weather` → `open_meteo` | enabled | `provider` |
 | FR, NL | `meter` → `linky` (FR) / `p1` (NL) | `enabled = 0` | `placeholder`; "adapter not built" |
-| FR, NL | `tariff_prices` → `tounify` (priority 10) | `enabled = 0`, `licence_confirmed = 0` | `placeholder`; adapter not built, licence unconfirmed |
+| FR, NL | `tariff_prices` → `tounify` (priority 10, home) and `tariff_catalogue` → `tounify` (priority 10, shared) | `enabled = 1`, `licence_confirmed = 0`, needs credentials (the core's own `TOUNIFY_API_KEY`) | `provider`; "tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits". An EU tariff source (not UK): no GB row. No DE, BE or ES row either, because their service was not checked. Skipped as unlicensed unless `TOUNIFY_DEV=1` with a test token (below) |
 | FR, NL | `tariff_prices` → `entsoe` (priority 20) | `enabled = 0`, needs credentials | `placeholder`; adapter not built, needs a registered token |
 | FR, NL | `tariff_prices` → `manual` (priority 90, home) | enabled | `user`; prices typed in, nothing to fetch |
 | DE, BE, ES | `weather` → `open_meteo` | enabled | `provider` |
 
-FR and NL have no location, carbon, gas calorific value, catalogue, comparison or solar-forecast provider, and DE, BE and ES have only weather (and Sunsynk through `'*'`). An empty role is valid: it gets no step in the plan, and the API reports it as `none` ("no provider for this market"). Typed-in tariffs (`tariffs.js` `createTariff`, `putRateRows` with origin `user`) work in every market whether or not a row lists `manual`; there is no API endpoint for them yet.
+FR and NL have no location, carbon, gas calorific value, comparison or solar-forecast provider (their catalogue is tounify's, unlicensed), and DE, BE and ES have only weather (and Sunsynk through `'*'`). An empty role is valid: it gets no step in the plan, and the API reports it as `none` ("no provider for this market"). Typed-in tariffs (`tariffs.js` `createTariff`, `putRateRows` with origin `user`) work in every market whether or not a row lists `manual`; there is no API endpoint for them yet.
 
 **How the sync uses it.** For each home, `plan` walks the roles in run order and, for each, the providers `providersFor` lists, using the first one that passes every check below; the checks run in this order, and the first that fails gives the reason.
 
 | Check | Reason recorded | In the sync log | Status word |
 |---|---|---|---|
 | `enabled = 0` | `disabled: <note>` | yes | `disabled` |
-| `licence_confirmed = 0` | `unlicensed: <note>` | yes | `disabled` |
+| `licence_confirmed = 0`, unless the implementation's `licenceOverride` applies (only tounify: `TOUNIFY_DEV=1` and a token with the test prefix; the plan entry then carries `dev_override`) | `unlicensed: <note>` | yes | `disabled` |
 | owner is not `core` (the row's, or the implementation's, so a row cannot override the code) | `<adapter> is owned by another process: the core must not call it (one rate budget, one caller)` (`assertOwner`) | yes | `skipped` |
 | no implementation registered | `adapter not built: no implementation registered for <adapter>` | yes | `disabled` |
 | `scope = 'home'`, the adapter needs a connection and the home has none | `not connected for this home` | no | `skipped` |
@@ -1057,7 +1061,9 @@ The homes of one scheduler tick share a cycle (`syncAll`, `providers.js` `newCyc
 
 `POST /api/sites/:id/connections` `{ provider, role?, credentials? }` stores a per-home connection only when the registry allows that provider for the home's market: 201 when created, 200 when it existed (a call without a reference keeps the stored one). It answers 400 with a readable reason when the provider is not listed for the market (the message lists the connections allowed there), serves a shared role, is disabled, unlicensed, owned by another process, not built or needs no connection, or the home is a demo home; 404 for an unknown home. It keeps only the non-secret reference (`accountNumber`, `plantId`) as `external_ref`, and its reply (`secrets_stored: false`, `not_stored`, `credentials_note`) names the credential fields it did not store, never their values.
 
-**What the registry does not do yet:** no FR or NL meter or price adapter exists (the Linky, P1, tounify and ENTSO-E rows are placeholders); there is no secret store, so only the `.env` home has credentials; there is no API or page to change the rows; and there is no endpoint for typed-in tariffs.
+**Connectors (`GET /api/connectors`, the Connectors page).** One entry per adapter code: the codes of every `market_provider` row, in every market, plus any implementation registered without a row (`providers.js` `adapterCodes`). Computed at request time by `src/core/connectors.js`; nothing is stored, no home is needed, and no existing endpoint changed. Reply: `{ generated_at, summary: { error, needs_credentials, connected, available, disabled, not_built, total }, homes: { total, demo }, statuses, connectors }`. Each connector has `adapter`, `label` (a name kept in `connectors.js`: the registry records codes only), `roles`, `markets` (per market: `enabled`, `licence_confirmed`, lowest `priority`, and each role row with its switches, scope, owner, origin and note), `scope` (`home` if any usable row is per home, else `shared`) and `scopes`, `owner`, `auth` (`credentials` when any row has `needs_credentials = 1`, else `none`; there is no `auth_note`, because the registry records no auth text), `built` (an implementation is registered), `enabled` (any row on), `licence_confirmed` (every row confirmed), `origin` and `note` (of its first usable row, else its first row), `status`, `reason`, `warning`, `homes_connected`, `homes_error`, `homes_total_in_markets` (real homes only), `homes_demo`, `last_success_at`, `last_error`, `last_error_at`, `steps` (its step names), `last_run` (`{ site_id, at, steps: [{ step, ok, skipped?, shared?, error? }] }`, the most recent run holding its steps), and `homes` (`{ site_id, name, market_code, is_demo, status, reason, last_success_at, next }`). The status is the first that applies: `not_built` (no implementation; the reason is the row's note), `disabled` (no row enabled, licensed and owned by the core, worded as the plan's gate words it, or listed in no market), `error` (for at least one real home the latest outcome failed), `connected` (for at least one real home the latest outcome is ok), `needs_credentials` (a usable row needs credentials and no home's plan has them), `available` (nothing has run yet). A home's latest outcome for a connector is read in this order: its steps in the home's latest sync log (a failure, then a success), the adapter's status hook (`sweepStatus` for Tariffscanner; typed-in tariffs for `manual`), its connection rows (`error`, then `ok`), a skip in the log, then the home's plan (no credentials, not connected, not synced yet, nothing to fetch). Demo homes (`is_demo`) are listed as `demo` and counted only in `homes_demo`. `warning` and a home's `next` say when a connector connected by its last run would be skipped by the next sync for want of credentials in this process. No credential is returned: `external_ref` is never read into the reply, the plan's credentials are never touched, and the value of every secret variable in the environment (names with PASSWORD, SECRET, TOKEN, API_KEY, USERNAME or ACCOUNT_NUMBER, 6 characters or more) is replaced by `[redacted]` in every text (`test/connectors.test.js`).
+
+**What the registry does not do yet:** no licensed FR or NL meter or price adapter exists (the Linky, P1 and ENTSO-E rows are placeholders; tounify is built but unlicensed); there is no secret store, so only the `.env` home has credentials; there is no API or page to change the rows; and there is no endpoint for typed-in tariffs.
 
 **Delta 009, provider state.** What a rate-limited provider must remember across restarts, one row per provider. Used by the Tariffscanner adapter (`src/adapters/tariffscanner.js`, provider `tariffscanner`), which the core calls itself with its own credential. The delta creates one table and changes no existing table.
 
@@ -1068,15 +1074,267 @@ The homes of one scheduler tick share a cycle (`syncAll`, `providers.js` `newCyc
 | Purpose | Per provider: `next_allowed_at` (ms: no request before this moment), `cooldown_reason` (why it lies beyond the normal gap, for example `HTTP 429 at …`), `state` (JSON: the provider's own progress) and `updated_at` (ms). For `tariffscanner`, `state` holds the sweep cursors (`full`: region batch and offset of the first sweep; `inc`: the `since` date and offset of an incremental one), `last_run_at` (the once-a-day gate), `last_complete_at`, `last_ok_at`, `last_summary`, `last_error` and `last_error_at`. Never a credential or a token. |
 | Keys and constraints | `provider` PRIMARY KEY, `WITHOUT ROWID`; CHECK `state IS NULL OR json_valid(state)` |
 | Written by | `tariffscanner.js`: `dbStore().setNextAllowedAt` before and after every request (start + 3 s, end + 3 s) and on an HTTP 429 (its `Retry-After`, at least 60 s), and `next_allowed_at` only ever moves later; the sweep writes `state` when it starts, after each page (in the same transaction as that page's rows), after each region batch and when it ends or fails |
-| Read by | `tariffscanner.js` (`sweepDue`, `sweepCatalogue`, `sweepStatus` for `/api/sites` providers, the client before every request) |
-| Rows now | 0 until the first Tariffscanner sweep starts; then 1 (`tariffscanner`) |
+| Read by | `tariffscanner.js` (`sweepDue`, `sweepCatalogue`, `sweepStatus` for `/api/sites` providers and `/api/connectors`, the client before every request); `tounify.js` (below) |
+| Rows now | 0 until the first Tariffscanner sweep starts; then 1 (`tariffscanner`); a second (`tounify`) once tounify is first called |
 | Growth | One row per rate-limited provider, updated in place. |
 
 **What the Tariffscanner sweep writes.** Each page is landed raw first (`raw_payload`, source `tariffscanner`, no home). Then, in one transaction with the cursor: one `tariff` per product × service type × rate type × part × region, coded `TS-<product_id>-<service>-<rate_type>-<part>-<gb_dno>` (part `E` electricity import, `G` gas, `X` electricity export; `region` is the `gb_dno` code resolved from Tariffscanner's region name and id, and a record whose two disagree is skipped), country GB, GBP, origin `provider`; `rate_interval` unit (p/kWh) and standing (p/day) rows, one per payment method as given, from Europe/London midnight of the later of `available_from` and the day the rate was added, to the midnight after `available_to` (NULL while offered); for a day/night tariff (structure `e7`) the stated night hours as `register_window` rows, not used for pricing. Only rate types `constant`, `day_night` and `export` are mapped; the others are skipped and counted. A row the current one already states (same price and end) changes nothing; a changed one supersedes it (kept). Nothing is deleted, and a withdrawn tariff is not detected. A sweep runs at most once per 24 hours (by the first GB home whose sync finds it due, or by hand with `forceTariffscannerSweep()`, a function with no endpoint), at least 3 s between requests, at most 60 requests per run (it then stops at the saved cursor), and an HTTP 429 aborts the run. The first sweep reads every active tariff, region (id 1–14) by region; later ones only what changed since the day before the last complete sweep started. `GET /api/catalog?tariffs=tariffscanner[&region=&limit=&offset=]` lists the tariffs held with the rate rows in force now.
 
 Not verified: the prices are stored as published in `price_ex_vat`, assumed to exclude VAT, because the API does not state the basis (some values in `test/fixtures/tariffscanner/` look like a VAT-inclusive price divided by 1.05, for example product 329260's standing charge 69.49295238095237 = 72.9676 / 1.05); and the size of the first full sweep is unknown (no full sweep has been measured: the saved samples are three pages of 5 records), so neither its row counts nor the number of runs it takes are given here.
 
-**Delta 010, provider owner.** `market_provider.owner` takes `core` or `external` (another process owns the provider's rate budget; the core must not call it). A table created by an older delta 008 allowed `core` and one other process's name; a CHECK cannot be altered, so the delta rebuilds the table with SQLite's procedure, in its one transaction: rows copied to a temporary table, the table dropped and created again, rows copied back with every owner other than `core` turned into `external`, the temporary table dropped, index `market_provider_role` created again. Columns, defaults, the other CHECKs, the primary key and `WITHOUT ROWID` are as in delta 008, which now creates the table with the new CHECK itself, so on a new database the rebuild changes nothing. SQLite cannot run DDL conditionally, so the rebuild runs on every open; the table holds a few dozen rows and the result is the same each time (`test/deltas.test.js`). No trigger, view or foreign key refers to the table.
+**Delta 010, provider owner.** `market_provider.owner` takes `core` or `external` (another process owns the provider's rate budget; the core must not call it). A table created by an older delta 008 allowed `core` and one other process's name; a CHECK cannot be altered, so the delta rebuilds the table with SQLite's procedure, in its one transaction: rows copied to a temporary table, the table dropped and created again, rows copied back with every owner other than `core` turned into `external`, the temporary table dropped, index `market_provider_role` created again. Columns, defaults, the other CHECKs, the primary key and `WITHOUT ROWID` are as in delta 008, which now creates the table with the new CHECK itself, so on a new database the rebuild changes nothing. SQLite cannot run DDL conditionally, so `db.js` decides: since 26 October the rebuild runs only while the table still has an older owner CHECK, and a table that is already current (every database created by today's delta 008) only has the delta recorded (`test/db-open.test.js`). Until then it ran on every open, which is why each open changed the schema version (database review H1); the result was the same each time (`test/deltas.test.js`). No trigger, view or foreign key refers to the table.
+
+**Delta 011, tounify v3.** Adds `tariff.taxes_in_price` (INTEGER NOT NULL DEFAULT 0, CHECK 0/1). `1` means the tariff's own prices and fixed charges already hold the per-kWh levies and the per-period credits: tounify's `fees` and its `credit` components. `pricing.js` `taxesAt` then applies only the percent rules (VAT) of `tax_rule` and leaves out the per_kwh and per_period rules, so nothing is counted twice. Every existing tariff is `0` and priced exactly as before (`test/golden-gb.test.js` and every price test unchanged). The delta also switches on (`enabled = 1`) the tounify rows an older seed inserted disabled. It does this once, guarded by `schema_delta`, and only while those rows still carry the old "adapter not built" note, so an operator's later switch-off is kept. `licence_confirmed` stays 0.
+
+**What tounify writes** (`src/adapters/tounify.js`; only while the licence is confirmed or on the `TOUNIFY_DEV` override):
+
+- **`connection`.** One row per registered home: provider `tounify`, `external_ref` = `eb-site-<site id>` (the upstream reference; no personal data, postal code only), `meta` = the non-secret applied info (country, tariffs, the grid operator's id and name, `location_mapped`, `assumed`, the latest version, resolution, `settlement_interval`, `taxes_in_price`, `defaults_used`).
+- **`tariff`.** `TOUNIFY-<country>-<tariff id>`, shared by the homes on it.
+- **`rate_interval`.**
+  - Home-specific (`site_id`) `unit` rows, one per price point (merged up to the settlement interval when the answer repeats it), at (energy + grid + fees) × 100 minor units per kWh ex VAT.
+  - `fixed` rows, register `<group>:<kind>`, `charge_period` from the component, the resolved amount × 100 (credits negative), open-ended from the component's `valid_from`, else the capture day.
+  - A charge missing from a later answer is ended at that day.
+  - All rows have origin `provider` and the note `tounify v3 (test token): storage licence unconfirmed` for a test token, plus `TOUNIFY_DEV=1: development override …` when the override is used.
+- **`device` and `tariff_agreement`.** A device (`meter_import`, provider `tounify`, `external_ref` = the reference) and its agreement, unless another meter already prices the home. A changed tariff ends the old agreement at the capture day.
+- **`raw_payload`.** Every answer, source `tounify`. An answer missing an expected field is landed `quarantined` with `unexpected shape: …`.
+
+Writes are idempotent (the same answer twice writes nothing), a change supersedes (kept), nothing is deleted.
+
+**`provider_state` row `tounify`.** `next_allowed_at` / `cooldown_reason` hold the 1 s gap and a 429's cooldown (`Retry-After`, `rateLimit.resetAt`, or midnight UTC for a daily limit). `state` holds three keys:
+
+- `allowance`: `day` (UTC), `requests` that day, `scopes` (the new things asked per endpoint that day), `companies` and `tariffs` (every distinct id ever named, since a test token's totals never reset), `upstream` (the `X-Testing-*-Remaining` and `X-RateLimit-Remaining` last seen), `exhausted` (a 403 `testingLimit`: kind, limit, used, blocked ids).
+- `connections`, per reference: `last_price_day` (UTC; at most one price read a day), `next_at` (the answer's `next`: no read before it), the prices and components `etag` and `raw` id (a 304 is mapped again from that stored copy), `settlement_interval`, `company`, `pending_from`, `last_read_at`, `last_error`, `conn_etag` (sent back in `If-Match`).
+- `catalogue`, per country: `refreshed_at` (at most once per 7 days), `properties`, `companies`, `tariffs` per company, their `etags` and `raw` ids, and `last_error`.
+
+Never a token: the counters are read by `tounifyAllowance(db)` (`GET /api/tounify/allowance`).
+
+### Planner configuration and "as known at" settings (added 26 Oct 2026)
+
+Phase B1, B2, the device kinds of B3, and review finding H5 of `docs/hardening-and-planning-plan.md`. Deltas `020-attribute-registry.sql`, `021-site-setting.sql`, `024-site-tariff-columns.sql` (run before 022: the site and tariff columns 022 copies, for databases from an early schema), `022-site-version.sql` and `023-registry-refs.sql`. Registry rows: `src/db/seed/attributes.js` and `src/db/seed/settings.js` (inserted only when missing). Code: `src/core/value-check.js` (one set of value rules), `src/core/attributes.js`, `src/core/settings.js`, `src/core/versions.js`, `src/core/devices.js` (`deviceKind`, `checkDeviceKind`), and small edits in `build.js` and `pricing.js` (as-of builds only). Tests: `test/planner-config.test.js`, `test/registry-upgrade.test.js`, `test/site-version-gb.test.js`.
+
+**What it is for.** Everything a Predbat-style battery planner and a PredHeat-style heating planner need as configuration has a standard name, unit and range, and is versioned like facts: the installation's figures (`attribute_def` / `attribute_value`, per home or per device), the planner's tunables per home (`setting_def` / `site_setting`), and what kinds of device exist (`device_kind`). Each registry row names the requirement it covers in `refs`: the ids of `docs/predbat-predheat-requirements.md` (202 of its catalogue ids; the configuration items it does not take are listed under *Left to other tables* below). **A new key, tunable or kind is one registry row**: no migration and no code (`test/planner-config.test.js` "extension").
+
+**Validation.** `value-check.js` `checkValue(def, value)` applies a row's rules: `value_type` (`number`, `integer`, `boolean`, `string`, `enum`, `json`), `min_value` / `max_value` (inclusive), `step` (a whole multiple), `allowed_values` and `json_shape` (a named structure check: `soc_curve`, `temp_curve`, `crate_curve`, `wc_curve`, `delta_t_curve`, `efficiency_curve`, `cop_curve`, `cop_grid`, `pv_arrays`, `zones`, `schedule`, `days_list`, `weights`, `export_triggers`, `time_hhmm`, `code`). A key with no row, a key that does not apply to the subject, a value outside the rules, or a label outside the provenance vocabulary is refused with a `RangeError` naming the key, the rule and the value ("attribute heat_loss_w_per_k: must be at most 2000 W/K (got 5000)").
+
+**H5: settings that change results now have versions.** The home and tariff columns that build and pricing read were overwritten in place (a Sunsynk sync rewrites `site.timezone`; slot length and contracted capacity are plain UPDATEs; a catalogue sweep rewrites a tariff's structure, kind, currency or default register), so a day rebuilt "as known at" an earlier moment used today's values. Triggers on `site` and `tariff` now keep every version (`site_version`, `tariff_version`), whoever writes. `buildSite(..., { asOf })` reads the home with `versions.js` `siteAt(siteId, asOf × 1000)` and passes it to `loadPricing`, which reads each agreement's tariff columns with `tariffFlagsAt` inside `withKnownAt`. Builds without `asOf` are unchanged (same query, same code path). `{ asOf, currentSettings: true }` keeps today's settings with the facts of then (a what-if; `test/slot-build.test.js` uses it to cut the golden facts into 15- and 60-minute slots). **The GB timeline is identical:** on a copy of `data/core.db` the as-of build with versioned settings equals, row for row with lineage, the build with today's settings, its hash is the golden one, and changing the slot length and zone afterwards does not move it (`test/site-version-gb.test.js`; `test/golden-gb.test.js` unchanged). Before a row's first version (a moment earlier than the home's creation, or than when a tariff was first known) the first version is used and the build lists "home settings as first recorded at …" in `approximations`.
+
+#### `attribute_def`
+
+| | |
+|---|---|
+| Purpose | One row per attribute key a home or device may have: `label`, `unit` (kW, kWh, %, degC, W/K, minor/kWh = minor units of the home's currency, fraction), `value_type`, `min_value`, `max_value`, `step`, `allowed_values` (JSON list), `json_shape`, `applies_to` (JSON list of `site` and `device:<kind>`; `device:*` = any device), `origins` (JSON list: the provenance labels a value may carry; all six by default), `storage` (`site_attribute` for the four details the build reads, `attribute_value` for every other key), `site_column` (the `site` column the resolved value is cached on: `pv_kwp`, `pv_tilt`, `pv_orientation`, `battery_kwh`, `lat`, `lon`), `alias_of` (a key written and read as another: `pv_kwp_total` = `pv_kwp`), `unverified` (1 = not backed by the catalogue), `description` (names the Predbat or PredHeat setting; keeps the catalogue's docs-versus-code conflicts), `refs` (delta 023: JSON list of catalogue ids) |
+| Keys and constraints | `key` PRIMARY KEY, `WITHOUT ROWID`; `alias_of` → `attribute_def`; CHECKs on `value_type`, `storage` (`site_attribute` only for the four build keys), `site_column` (the six cacheable columns), `min_value <= max_value`, an `enum` has `allowed_values`, JSON lists valid |
+| Rows | 141 since the coverage matrix (21 added, listed under "Coverage matrix: what it added"; 39 unverified, of which 5 carry "unverified: from memory of PredHeat; check against its docs"): battery and inverter (capacity, usable capacity, scaling, reserve and its maximum, charge, discharge and export rate caps, charge and discharge curves and their fallbacks, temperature curves, efficiencies and losses, voltage, depth of discharge, state of health, AC, DC and PV AC limits, export and import limits, G98/G99, number of inverters, the capability profile flags, rate step, read-back delay, write interval and limits, clock offset and skews), solar (`pv_kwp` and its alias `pv_kwp_total`, `arrays` with tilt, azimuth, efficiency and shading, `pv_scaling`, degradation), car and charger (rate, minimum, inside the CT clamp, ready-by time, target level, battery size, loss, shared charger), immersion and diverter (power, tank volume, target temperature), heating (PredHeat's `heat_loss_watts`, `heat_loss_degrees`, `heat_gain_static`, `heat_output`, `heat_volume`, `heat_max_power`, `heat_min_power`, `heat_cop`, `flow_temp`, `flow_difference_target`, `weather_compensation`, `delta_correction`, `gas_efficiency`, `heat_pump_efficiency`, `hysteresis`; plus floor area, volume, insulation class, set-back, comfort band, heating system, emitters, design flow temperature, boiler efficiency and output, a two-dimensional COP grid, defrost penalty, minimum run and off times, hot-water cylinder and target, zones), site (`latitude`, `longitude`, `altitude_m`; the time zone stays on `site`), and a holiday calendar reference |
+| Written by | `db.js` seed (`seed/attributes.js` `seedAttributeDefs`): missing rows only; an operator's `INSERT` |
+| Read by | `attributes.js` (`attributeDef`, `attributeDefs`, and every writer) |
+
+#### `attribute_value`
+
+| | |
+|---|---|
+| Purpose | Every value of every key whose `storage` is `attribute_value`, for a home (`site_id`) or a device (`device_id`), one current row per source (`installer`, `measured`, `provider`, `estimated`), resolved by source rank like `site_attribute`. `value` is JSON (a number, true/false, text, object or list); `origin` the provenance label (given by the writer, else the one its source implies: installer → user, measured → derived, provider → provider, estimated → placeholder); `note`; `recorded_at`, `superseded_at` (ms) |
+| Keys and constraints | `id` PRIMARY KEY; `site_id` → `site`, `device_id` → `device` (both ON DELETE CASCADE), exactly one set (CHECK); `key` → `attribute_def`; CHECK `json_valid(value)`, `origin` in the vocabulary, `superseded_at >= recorded_at`; unique **`attribute_value_current`** (subject, `key`, `source`) WHERE current; indexes **`attribute_value_site`**, **`attribute_value_device`** (subject, `key`, `recorded_at`) |
+| Written by | `attributes.js` `setAttribute(siteId, key, value, source, note, { origin })` (any registry key; the four build keys still go to `site_attribute`), `setDeviceAttribute(deviceId, key, value, source, { origin, note })`. Unchanged value and origin: nothing written; null withdraws (supersedes, no new row). A key with a `site_column` also updates that column (latitude → `site.lat`), which `site_version` then versions |
+| Read by | `attributeAt(siteId, key, atMs)`, `deviceAttributeAt(deviceId, key, atMs)`, `attributesAt({ siteId } or { deviceId }, atMs)`, `attributeValueHistory` |
+| Growth | One row per change per key per source; nothing is deleted |
+
+#### `device_kind`
+
+| | |
+|---|---|
+| Purpose | The kinds a device may have: `label`, `class` (`passive`: measured only; `controllable`: the planner may send it commands), `attribute_keys` (JSON list: the attribute keys of the kind; a key listed here applies to the kind even when its `applies_to` does not say so), `action_codes` (JSON list of action names; `device_action`, delta 030, is the authority on what each does, and `devices.js` `deviceKind` adds any action it defines that the row does not list) |
+| Keys and constraints | `kind` PRIMARY KEY, `WITHOUT ROWID`; triggers **`device_kind_known_insert`** and **`device_kind_known_update`** on `device`: a device of a kind with no row is refused (an empty registry refuses nothing). Existing devices are not judged |
+| Rows | 18: `battery`, `inverter`, `meter_import`, `meter_export`, `meter_gas`, `meter_heat`, `ev`, `ev_charger`, `immersion`, `iboost`, `heat_pump`, `boiler`, `thermostat`, `trv`, `temperature_sensor`, `hot_water_tank`, `hot_water` (the hot-water service the `heat_water` action plans), `smart_plug` |
+| Written by | `db.js` seed (`seed/attributes.js`), missing rows only; delta 023 replaced the first seed's rows once |
+| Read by | `devices.js` `deviceKind`, `deviceKinds`, `checkDeviceKind`; `attributes.js` (which keys apply to a device) |
+
+#### `setting_def` and `site_setting`
+
+| | |
+|---|---|
+| Purpose | `setting_def`: one row per planner tunable: `label`, `unit`, `value_type`, `default_value` (JSON; `null` = none), `min_value`, `max_value`, `step`, `allowed_values`, `json_shape`, `planner` (`predbat`, `predheat`), `applies_to` (the part of the plan it tunes: planner, battery, control, tariff, solar, load, car, iboost, saving_session, grid, heating, hot_water), `unverified`, `description`, `refs`. `site_setting`: a home's own values, versioned: `value` (JSON), `origin` (required from the writer), `note`, `recorded_at`, `superseded_at` (ms) |
+| Keys and constraints | `setting_def.key` PRIMARY KEY; `site_setting` PRIMARY KEY (`site_id`, `key`, `recorded_at`), `WITHOUT ROWID`, `key` → `setting_def`, `site_id` → `site` ON DELETE CASCADE; unique **`site_setting_current`** (`site_id`, `key`) WHERE current |
+| Rows | `setting_def`: 185 since the coverage matrix (22 added, listed under "Coverage matrix: what it added"; 170 Predbat, 15 PredHeat; 13 unverified: names the user asked for that the catalogue does not have, such as `set_charge_window`, `set_soc_enable`, `calculate_best_charge`, `rate_low_match_export`, `charge_rate_override`, `saving_session_enable`, and the heating planning design `heating_schedule`, `heat_pump_cycle_penalty`, `comfort_penalty_per_degree_hour`, `price_vs_comfort_weight`, `hot_water_schedule`). Defaults and ranges are the catalogue's (for example `plan_interval_min` 30 in steps of 5, `load_scaling` 1.05, `battery_rate_max_scaling_discharge` 1.05, `iboost_rate_threshold` 100, `combine_charge_slots` off). `mode` defaults to `monitor` although Predbat's code default is "Control charge & discharge" (catalogue 1.4) |
+| Written by | Seed (`seed/settings.js`); `settings.js` `setSetting(siteId, key, value, { origin, note })`, `clearSetting` (the default applies again; the old value is kept) |
+| Read by | `settingAt(siteId, key, atMs)` and `settingsAt(siteId, atMs, { planner })`: the home's value in force at the moment, else the registry default (`isDefault`; origin `sourced` when the catalogue backs it, else `placeholder`); `settingHistory` |
+| Note | A default should not be changed in place: a home that never set the key would read the new default "as known at" an earlier moment. Record explicit values first, or add a new key |
+
+#### `site_version` and `tariff_version`
+
+| | |
+|---|---|
+| Purpose | Every version of the `site` columns the build and pricing read (`timezone`, `slot_s`, `currency`, `market_code`, `country`, `gsp_region`, `carbon_region`, `lat`, `lon`, `pv_kwp`, `pv_tilt`, `pv_orientation`, `battery_kwh`, `contracted_kva`, its origin and note, `is_demo`) and of the `tariff` columns that change a price (`structure`, `region`, `kind`, `currency`, `country`, `native_period_s`, `taxes_in_price`, `default_register`, `fuel`, `direction`, `origin`), with `recorded_at`, `superseded_at` (ms). `site` and `tariff` keep the current values, so everyday reads are unchanged |
+| Keys and constraints | PRIMARY KEY (`site_id` or `tariff_id`, `recorded_at`), `WITHOUT ROWID`, ON DELETE CASCADE; unique **`site_version_current`**, **`tariff_version_current`** WHERE current |
+| Written by | Triggers **`site_version_on_insert`** (first version at `created_at`), **`site_version_on_update`**, **`tariff_version_on_insert`**, **`tariff_version_on_update`**: an UPDATE that really changes one of the columns closes the current version and opens one; the same values again write nothing; versions move forward (+1 ms at least). Backfill (022, first application): one version per home at its creation and per tariff when first known (its first rate row or agreement), with today's values: earlier values were not kept |
+| Read by | `versions.js` `siteAt`, `tariffAt`, `tariffFlagsAt`, `siteVersions`, `tariffVersions`; `build.js` (as-of builds), `pricing.js` (inside `withKnownAt`) |
+| Rows now | One per home and per tariff (about 8,500 tariff rows on the GB copy), then one per change |
+| Not versioned yet | `pricing.js` `learnIogWindow` reads the current `tariff.structure` and `region` of the Octopus IOG price lists; `metric` and `market` rows (the rest of H5) |
+
+#### Columns and triggers added to existing tables
+
+- `site_attribute.origin` (020): the provenance label of each version; existing rows got the label their source implies.
+- `device`: the two `device_kind_known_*` triggers (020).
+- `site`, `tariff` (024, early schemas only): the columns 022 copies, where missing.
+- `attribute_def.refs`, `setting_def.refs` (023). On its first application 023 also removed the rows of the registries' first seed that nothing used (that seed was written from memory before the catalogue existed), so the current seed replaced them; a row with values keeps its first text.
+
+**Left to other tables (catalogue configuration items not in these registries).** Vendor wiring and credentials (PB-INV-42 to 47, PB-RATE-06, 13, 33, 37, PB-PV-03, 05, 07, PB-LOAD-04, 37, PB-CAR-24, PB-OTH-21, 37) to `connection` (`meta` keys named by the adapter; secret values never stored), `market_provider` and the adapters; the inverter serial (PB-INV-04) is `device.external_ref` and the number of cars (PB-CAR-01) the count of `ev` devices; tariff data (PB-RATE-02, 08 to 14, 39) to `currency`, `site_region`, `rate_interval`, `register_window` and `compare.js`; time zone (PB-OTH-83, PH-CFG-08) stays on `site` (versioned in `site_version`); PredHeat's weather entity and links to Predbat (PH-WX-01, PH-LINK-01, 02) are the Open-Meteo source, forecast issues and the `heatpump_elec_kwh` and `extra_load_kwh` metrics. Since the coverage matrix (below) the vendor protocol flags of the capability profile, manual per-slot overrides, rate overrides and dispatch pricing rules are registry rows, and a typed-in car charge level (PB-CAR-12) is a reading from source `manual_entry`. Not data: PB-LOAD-12 (Home Assistant retention), PB-OTH-67 (UI gating), PH-CFG-07 (entity prefix), PH-MOD-17 (code constants), PH-RATE-02 (archived); the full list with reasons is `docs/predbat-predheat-coverage.md`.
+
+### Plans and commands (added 26 Oct 2026): tables only, no planner yet
+
+Phase B6, B7 and the plan side of B8 of `docs/hardening-and-planning-plan.md`. Deltas `030-plan.sql`, `031-command.sql` and `032-plan-requirements.sql` (032 adds what the requirements catalogue `docs/predbat-predheat-requirements.md` needs that 030 and 031 had no place for; `033-device-kind-actions.sql` adds 032's `auto` and `release` to `device_kind.action_codes` rows seeded before it). Helpers: `src/core/plans.js` and `src/core/commands.js`. **No planner and no executor exist.** Nothing in the core writes these tables on its own, and the build engine never reads them, so `site_hh` and `site_day` cannot change (`test/golden-gb.test.js`, and a dry-run fingerprint in `test/plan-tables.test.js`). Units: `*_at` columns in ms; `plan_start`, `slot_start`, `valid_from`, `valid_until` and the windows in epoch seconds; money in minor units of `plan_run.currency`. Tests: `test/plan-tables.test.js` and `test/commands.test.js`.
+
+**Slot grids (B8, plan side).** A plan has its own grid: `plan_run.slot_s` is any multiple of 300 s up to 3600, whatever the home's ledger slot is. The CHECKs on the ledger grid are left as they are and are the only intentional limit: `site.slot_s IN (900, 1800, 3600)` and `site_hh.slot_start % 900 = 0`. A plan finer than the ledger is compared with it by summing its slots inside each ledger slot (`v_plan_vs_actual`). Only grids that divide the hour (5, 10, 15, 20, 30 or 60 minutes) line up with prices.
+
+#### `device_action`
+
+| | |
+|---|---|
+| Purpose | What a device kind can be told to do, as data. `params_schema` (JSON `{name: {type, unit, min, max, enum, required}}`) declares the parameters: a name that is a typed `plan_slot` column (`charge_limit_pct`, `export_limit_pct`, `target_soc_kwh`, `power_w`, `power_fraction`, `setpoint_c`, `start_offset_min`) is read from it, others from `plan_slot.params`. `side_effect_class`: `none` (the device follows its own mode), `energy`, `grid_export`, `comfort`, `safety` (can switch heating off; frost protection must be verified). `is_default`: the action of a slot with no row. |
+| Keys and constraints | PRIMARY KEY (`device_kind`, `action`), `WITHOUT ROWID`; unique index **`device_action_default`**: one default per kind; CHECK `json_valid(params_schema)` |
+| Rows | battery and inverter: `demand` (default), `charge`, `freeze_charge`, `export`, `freeze_export`, `hold`, `pause`, `force_discharge`, `release` (hand back); ev_charger: `auto` (default), `charge`, `stop`, `set_current`; immersion, iboost: `auto`, `on`, `off`; heat_pump, boiler: `auto`, `set_flow_temp`, `set_target_temp`, `heat_on`, `heat_off`, `boost`, `setback`; thermostat, trv: `auto`, `set_target_temp`; hot_water: `auto`, `heat_water`. 48 rows. |
+| Written by | Deltas 030 and 032 (`INSERT OR IGNORE`). A new action or kind is one more row; nothing else changes (test "extension by a registry row only"). |
+| Read by | `plan_slot` and `device_capability` triggers; `plans.js` `checkParams`, `defaultAction`; `v_plan_window` |
+
+#### `device_capability`
+
+| | |
+|---|---|
+| Purpose | What one device can deliver, so "never plan an action a device cannot deliver" is data. `supported = 0`: plans refuse the action. `supported = 1`: the only state a command accepts. No row: unknown (a shadow plan may still use it, a command may not). `source`: `adapter`, `vendor_doc`, `probe`, `installer`, `user`, `placeholder`. |
+| Keys and constraints | PRIMARY KEY (`device_id`, `action`), `WITHOUT ROWID`; triggers **`device_capability_known_action`** (and `_update`): the action must exist in `device_action` for the device's kind |
+| Written by | `plans.js` `setCapability` (an adapter or installer would call it) |
+
+#### `plan_run`
+
+| | |
+|---|---|
+| Purpose | One saved plan. `scenario`: `live` (the executor follows it), `shadow` (planned, never sent: scored), `baseline` (do nothing new), `twin`, `what_if`; `variant` separates parallel runs of one scenario. `plan_start` (s) on the home's local slot grid (`plans.js` `planFrame`); `slot_s`, `horizon_h`, `step_s` (300); `facts_as_of` (ms, the "as known at" cut, replayed with `facts.js` `withKnownAt`); `method_version`; `plan_hash` (decisions only, not predictions or `plan_start`); `inputs_hash`; `settings_snapshot` (JSON); `soc_start_kwh`; `currency`; `metric_base`, `metric_best`, `metric_best10`, `cost_pv50`, `cost_pv10`; `duration_ms`; `status`; `error` (the failure, or the stale input); `superseded_at`; `parent_run_id`. Delta 032: `record_end` (end of the part of the horizon the metric counts), `soc_max_kwh`, `reserve_kwh`, `control_mode` (`monitor`, `soc_only`, `charge_only`, `charge_export`, `read_only`), `metric_base10`, `summary` (JSON totals and checkpoints: lowest charge and when, charge at +1, +8, +12 h, hours left, throughput, clipped, car, diverter, carbon, import into battery vs house, marginal costs), `carry_state` (JSON, what the next run starts from), `debug_raw_id` (a debug dump landed as a raw payload). Series per scenario are runs: base = `baseline`, best = `live`, the pessimistic case of either = variant `pv10` with `parent_run_id`. |
+| Keys and constraints | `id` PRIMARY KEY; **`plan_run_current`** unique (`site_id`, `scenario`, `variant`) WHERE status IN (`ok`, `stale_inputs`): one current plan per scenario; index `plan_run_site`; CHECKs: `slot_s % 300 = 0` and 300–3600, `plan_start % 300 = 0`, `horizon_h` 1–168, `step_s` divides `slot_s`, `facts_as_of <= created_at`, `superseded` if and only if `superseded_at`, an `error` or `stale_inputs` run states why. Triggers: **`plan_run_unchanged`** (the same `plan_hash` and status as the current run is refused: the "UNIQUE (site, scenario, plan_hash)" rule, against the current run only, so a plan that changes and changes back is a new run), **`plan_run_append_only`** and `_032` (only `status` and `superseded_at` change), **`plan_run_status_flow`** (only `ok` or `stale_inputs` become `superseded`). |
+| Written by | `plans.js` `savePlan`: in one transaction, the current run is superseded and the new run, its devices, slots and input references written; nothing when the decisions are unchanged (`{ written: false }`). A `stale_inputs` run (the demand-only fallback) and an `error` run (no slots) also supersede the current run, so an old plan never runs on. |
+| Read by | `v_current_plan`; `plans.js` `currentPlan` |
+
+#### `plan_run_device`
+
+| | |
+|---|---|
+| Purpose | Which devices a run planned: `controlled` (it decides their actions), `aggregate` (planned as one with others, for example two inverters as one battery), `observed` (modelled for predictions only, never given an action). |
+| Keys and constraints | PRIMARY KEY (`plan_run_id`, `device_id`), `WITHOUT ROWID`; trigger `plan_run_device_same_site` |
+
+#### `plan_slot`
+
+| | |
+|---|---|
+| Purpose | Device-generic and sparse: one row per run, device and slot that says something (a non-default action, a parameter, a prediction or a note). No row = the kind's default action (battery `demand`, other kinds `auto`: no instruction). Decisions: `action`, `params` (JSON), `start_offset_min` (a multiple of 5, less than the slot), `charge_limit_pct` (0 = no charge), `export_limit_pct` (100 = no export), `target_soc_kwh`, `power_w` (NULL = the maximum), `power_fraction` (032), `setpoint_c`. Predictions: `soc_end_kwh`; for the home `import_kwh`, `export_kwh`, `pv_kwh`, `load_kwh`, `cost_minor`, and (032) `pv10_kwh`, `load10_kwh`, `extra_load_kwh`, `car_kwh`, `iboost_kwh`, `carbon_g`, `cost_running_minor` (each carried by one device row per slot); for heating `heat_kwh` (delivered), `indoor_temp_c_end`, `outdoor_temp_c`, and (032) `heat_input_kwh`, `heat_cost_minor`, `setpoint_used_c`, `heating_frac`, `water_temp_c_end`; extras in `predicted` (JSON). How it was decided (032): `state` (the status label, derived ones such as Hold charging included), `decision_source` (`optimiser`, `manual`, `rule`, `fallback`), `reason_code`, `reason_params` (JSON), `reason`. |
+| Keys and constraints | PRIMARY KEY (`plan_run_id`, `device_id`, `slot_start`), `WITHOUT ROWID`; CHECKs: `slot_start % 300 = 0`, limits 0–100, offsets a multiple of 5, energies ≥ 0. Trigger **`plan_slot_checks`**: `slot_start` exactly on the run's grid from `plan_start` and inside its horizon, the offset less than the slot, the device planned by the run (`controlled` or `aggregate`), the action defined for the device's kind, and not known to be unsupported. Trigger `plan_slot_append_only`: rows are never updated (a changed plan is a new run), only deleted by retention. |
+| Predicted vs actual | Joined to the ledger on (`site_id`, `slot_start`) = `site_hh` (`site_id`, `slot_start`), `plan_run` giving `site_id`. |
+| Growth and retention | A Predbat-style plan every 5 minutes would be 288 runs × 96 slots a day; storing only changed plans and sparse slots cuts that to the runs whose decisions changed. `plans.js` `prunePlanSlots` (dry run by default): slots a run was in force for (the run was current for part of the slot: what ran, or for a shadow run what would have) are kept forever; the other slots of runs older than 7 days are deleted. Runs, devices, inputs and scores are kept. |
+
+#### `plan_input_ref`
+
+| | |
+|---|---|
+| Purpose | What a run read, for replay: `kind` (`rates`, `pv`, `load`, `soc`, `settings`, `attributes`, `weather`, `other`), `ref_table`, `ref_key` (a series, tariff or forecast issue), `ref_hash` (sha256 of the canonical rows read), `as_of` (ms), `from_ts`, `to_ts`, `row_count`. Re-reading the same key with `withKnownAt(as_of)` gives the same hash however the facts changed since (`plans.js` `inputRef`, `verifyInput`). |
+| Keys and constraints | PRIMARY KEY (`plan_run_id`, `kind`, `ref_table`, `ref_key`), `WITHOUT ROWID` |
+
+#### `plan_score`
+
+| | |
+|---|---|
+| Purpose | Predicted against actual per run, ledger slot, device row and metric (`import_kwh`, `export_kwh`, `pv_kwh`, `load_kwh`, `cost_minor`, `soc_end_pct`); `error` = predicted − actual; `actual_source` `site_hh` (heating figures will come from `site_heat_slot`). |
+| Keys and constraints | `id` PRIMARY KEY; unique **`plan_score_key`** (`plan_run_id`, `slot_start`, IFNULL(`device_id`, 0), `metric`) |
+| Written by | `plans.js` `scorePlan` from `v_plan_vs_actual` (final ledger slots by default); scoring again replaces, never duplicates |
+
+Predictions can also be stored as forecast issues under source **`core_plan`** (`registry.js`; `savePlan` with `predictionsTo: 'forecast'` or `'both'`): home import, export, solar and use, the pessimistic solar case (`solar_kwh_p10`), car charging, and per device the energy stored (new metric **`battery_soc_kwh`**), heat delivered (`heat_output_kwh`) and indoor temperature (`indoor_temp_c`). The build reads only the `quartz` and `core_forecast` solar issues, so these change nothing.
+
+#### Views
+
+| View | What it gives |
+|---|---|
+| `v_current_plan` | The current run of each site, scenario and variant. |
+| `v_plan_vs_actual` | Each run's predictions against `site_hh`, per device row and LEDGER slot: import, export, solar, use, cost (the slot's electricity bill: `total_cost` without standing charges and gas) and charge level (% of `site.battery_kwh`), each with its error, the ledger `state`, and `in_force`. A finer plan is summed over the ledger slot and a figure is given only when every plan slot inside it has one; a coarser plan is not compared. |
+| `v_plan_in_force` (032) | The slots each run was in force for: what ran (Predbat's History view). |
+| `v_plan_window` (032) | Contiguous slots of one device with the same action and parameters merged into windows (default actions left out); `window_start` includes the first slot's start offset. |
+
+#### `command` and `command_log`
+
+| | |
+|---|---|
+| Purpose | The control path as data. `command`: one device's desired state for a period, vendor-neutral: `desired` (canonical JSON) and its hash, with typed copies `action`, `window_start` / `window_end` (the charge window, or the action's one window), `target_soc_pct`, `limit_pct`, `rate_w`, `setpoint_c`, `mode`, and (032) `reserve_pct`, `charge_rate_w`, `discharge_rate_w`, `current_a`, `export_start` / `export_end`; `requested_at`; `valid_from` / `valid_until` (never sent after); `status` (`pending`, `sent`, `acked`, `failed`, `expired`, `cancelled`, `skipped_unchanged`); `attempts`, `last_error`, `sent_at`, `acked_at` (when the device was confirmed to run it); `readback_raw_id` (FK `raw_payload`), `reported` (what the device says it runs), `diff` (desired minus reported); `idempotency_key`; `supersedes_command_id`; `plan_run_id`. `command_log`: every step (`enqueued`, `sent`, `readback`, `acked`, `retry`, `failed`, `expired`, `cancelled`, `skipped_unchanged`, `observed`), with JSON detail. `observed` holds what the executor sees but never plans: Predbat's derived states (hold charging, hold for car), control conflicts and failures, calibration, clock skew. |
+| Keys and constraints | `command.id` PRIMARY KEY; `idempotency_key` UNIQUE; **`command_open`** unique (`device_id`) WHERE status IN (`pending`, `sent`): one open command per device; indexes for the last confirmed state, expiry, plan run and supersedes. Triggers: **`command_checks`** (a known `supported = 1` capability, a plan run of the same home, starts `pending`, not already expired), **`command_desired_fixed`** and `_032` (the desired state never changes), **`command_status_flow`** (`pending` → `sent`, `failed`, `expired`, `cancelled`, `skipped_unchanged`; `sent` → `acked`, `failed`, `expired`, `cancelled`, back to `pending` for a retry; the rest are final), **`command_never_late`** (never `sent` after `valid_until`), `command_export_window`; `command_log` append-only (no UPDATE, no DELETE). |
+| Written by | `commands.js`: `enqueueIfChanged` (nothing when the desired state equals the last state the device confirmed, or the open command already wants it; an open command that wants something else is cancelled and superseded), `markSent`, `markAcked` (acked only when the read-back matches; otherwise `reported` and `diff` are kept and it stays `sent`), `markSkipped` (the device already runs it: nothing written to it), `markFailed` (optionally back to `pending` for a retry), `cancelCommand`, `expireStale`, `logObserved`; read with `lastAcked`. |
+
+**What a planner and an executor would still have to build:** the simulator, optimiser and window choice (a pure function of the facts known at `facts_as_of`), load and pessimistic-case prediction, the freshness gate that turns stale inputs into a `stale_inputs` run, a scheduler that runs it every 5 minutes, the vendor adapters that translate a desired state into writes and read it back, the mode gate (monitor and read-only write nothing), and per-device write limits.
+
+### Planning data: metrics, bitemporal forecasts, solar cases and heating slots (added 26 Oct 2026)
+
+Phase B3 (metrics), B4, B5 and B9 of `docs/hardening-and-planning-plan.md`: the data side of the heating planner (PredHeat) and the forecast inputs a battery planner (Predbat) reads. Deltas `040-forecast-bitemporal.sql` and `041-heat-slot.sql`; metric and source rows in `src/db/registry.js` (registry rows, no migration). Code: `src/core/facts.js` (`putForecasts`, `readForecastAsOf`), `src/adapters/openmeteo.js`, `src/core/solar-cases.js`, `src/core/heat.js`, and two lines in `build.js` `processQueue`. **The battery timeline does not move:** `site_hh` and `site_day` gain no column; on a copy of `data/core.db` the golden dry-run build (rows and lineage), `forecastSite` (its accuracy score and solar path) and every forecast read give the same output before and after (`test/forecast-bitemporal-live.test.js`, `test/golden-gb.test.js`, `test/heat-gb.test.js`).
+
+**Metrics added (29).** Each has a one-line `description` in `registry.js` (code only: the `metric` table has no column for it). A 0/1 flag is an instant aggregated by mean, so a slot's value is the share of it the flag was 1. The ids in the last column are those of `docs/predbat-predheat-requirements.md` that the metric holds (live value, history, or a forecast of it).
+
+| Code | Unit | Time role, aggregation | Domain | What it is | Catalogue ids |
+|---|---|---|---|---|---|
+| `indoor_temp_c` | degC | instant, mean | heating | Air temperature indoors (one series per sensor) | PH-SEN-02, PH-OUT-01 |
+| `indoor_temp_setpoint_c` | degC | instant, mean | heating | Temperature the heating control is set to hold | PH-SEN-03, PH-OUT-03 |
+| `heating_demand_kwh` | kWh | interval, sum | heating | Heat the home needed to hold its set-point (a device or model estimate, never a meter) | — |
+| `heat_output_kwh` | kWh | interval, sum | heating | Heat delivered into the heating circuit (heat meter or device report) | — |
+| `heatpump_elec_kwh` | kWh | interval, sum | heating | Electricity the heat pump used (already inside grid import) | PH-SEN-04 (pump), PH-OUT-06, PH-LINK-02, PB-LOAD-22 |
+| `heatpump_flow_temp_c`, `heatpump_return_temp_c` | degC | instant, mean | heating | Water leaving and coming back to the heat pump | — |
+| `heatpump_cop` | ratio | interval, mean | heating | COP a device reports for a period (`site_heat_slot` recomputes it from the energies) | — (PredHeat's `heat_cop`, PH-MOD-09, is configuration) |
+| `heating_on` | 0/1 | instant, mean | heating | Heating calling for heat | PH-SEN-05, PH-OUT-04 |
+| `valve_position_pct` | % | instant, mean | heating | Radiator or zone valve opening | — |
+| `boiler_gas_kwh` | kWh | interval, sum | heating | Gas the boiler burnt (already inside the gas meter reading) | PH-SEN-04 (gas), PH-OUT-06 |
+| `boiler_flow_temp_c`, `boiler_return_temp_c` | degC | instant, mean | heating | Boiler flow and return water; a condensing boiler's efficiency depends on the return | input of PH-MOD-15 |
+| `flow_temp_setpoint_c` | degC | instant, mean | heating | Flow temperature the heat source is asked for | PH-SEN-06 |
+| `radiator_temp_c` | degC | instant, mean | heating | Radiator water temperature | PH-SEN-07, PH-STATE-01, PH-OUT-08 |
+| `hot_water_temp_c` | degC | instant, mean | hot_water | Cylinder temperature | — (PredHeat does not model hot water) |
+| `immersion_on` | 0/1 | instant, mean | hot_water | Immersion heater switched on | PB-OTH-19 |
+| `immersion_kwh` | kWh | interval, sum | hot_water | Immersion or solar diverter electricity (already inside home use) | PB-OTH-17, PB-LOAD-22 |
+| `humidity_pct`, `dew_point_c` | %, degC | instant, mean | weather | Outdoor air at 2 m (Open-Meteo); heat-pump defrost | — |
+| `wind_speed_ms` | m/s | instant, mean | weather | Wind at 10 m (Open-Meteo); raises heat loss | — |
+| `solar_kwh_p10`, `solar_kwh_p50`, `solar_kwh_p90` | kWh | interval, sum | solar | Pessimistic, median and optimistic solar per period: a provider's own percentiles (Solcast `pv_estimate10/90`) or `core_solar_cases` | PB-PV-02, PB-PV-10 |
+| `battery_calibrating` | 0/1 | instant, mean | battery | Battery running a calibration cycle | PB-INV-57 |
+| `battery_temperature_c` | degC | instant, mean | battery | Cell or pack temperature | PB-INV-55, PB-INV-56 |
+| `ev_soc_pct` | % | instant, last | ev | The car's charge level | PB-CAR-09 |
+| `ev_charge_limit_pct` | % | instant, last | ev | Level the car or charger stops at (own limit or a supplier's smart-charge target) | PB-CAR-08, PB-CAR-20 |
+| `ev_connected` | 0/1 | instant, mean | ev | Car plugged in | PB-CAR-04 (PB-CAR-03 with the Kraken planned dispatches) |
+
+Live and history items the existing metrics already hold: `battery_soc_pct` (PB-INV-50; PB-INV-49 is `battery_soc_kwh`, added with the plan tables), `battery_charge_w` / `battery_discharge_w` (PB-INV-51), `solar_w` (PB-INV-52), `load_w` (PB-INV-53), `grid_import_w` / `grid_export_w` (PB-INV-54), `solar_kwh` (PB-PV-01; PB-PV-17 as Quartz's issues, PB-PV-18 as `core_forecast`'s), `load_kwh`, `grid_import_kwh`, `grid_export_kwh` (PB-LOAD-01 to 03), `ev_charge_kwh` (PB-LOAD-22), `ev_w` (PB-CAR-05, PB-CAR-06), `carbon_intensity` (PB-OTH-37), `outdoor_temp_c` (PH-SEN-01, PH-WX-01, PH-OUT-02, PB-LOAD-37). **Not added because an existing code holds them:** an outdoor temperature, cloud or sunlight forecast (the `forecast_fact` rows of `outdoor_temp_c`, `cloud_pct`, `ghi_wm2` / `open_meteo`, written by every weather sync since before this change), a house-use forecast (`load_kwh` / `core_forecast`), a price forecast (rate rows flagged `estimated`, delta 006). **Left to other tables:** every configuration item (PB-INV-01 to 48, the PB-PV, PB-LOAD, PB-CAR and PB-OTH switches, weights and sizes, PH-CFG, PH-WX-02, PH-MOD) to the attribute and setting registries; the inverter's own settings read back (PB-INV-58 to 71) to `command` / `command_log`; plan outputs (PB-INV-73 to 75, PB-PV-19 to 23, PB-LOAD-30 to 42, PB-CAR-25 to 29, PB-OTH-18, 20, 75, PH-OUT-01 to 09 as predictions) to the plan tables, or to forecast issues of these metrics under the model's source; weather alerts (PB-OTH-73) and an external load forecast feed (PB-LOAD-27) are the metrics `weather_alert_keep_pct` and `extra_load_kwh` since the coverage matrix (below).
+
+**Sources added (3).** `core_solar_cases` (the derived solar cases, origin derived), `core_heat_model` (the derived figures of `site_heat_slot`; a heating model's predictions would be its forecast issues), `heating_telemetry` (generic thermostat, heat pump and boiler readings: no vendor adapter exists, only synthetic test and demo data use it; a vendor adapter gets its own source code and contract).
+
+**Forecasts are bitemporal (delta 040, review M11).** `forecast_fact.recorded_at` (ms) is when the core stored an issue; `issued_at` stays the provider's issue time. `facts.js` `readForecastAsOf(seriesIds, from, to, asOfMs)` returns, per series and period overlapping [from, to), the latest issue recorded by `asOfMs`, so a replay never sees an issue fetched later (Quartz's `issued_at` is its own timestamp, not when it was fetched); a period overlapped by a later-issued period of another length is left out. The key gained `end_ts`, and `putForecasts` compares a period (start and end) with its own latest issue, so a period of another length is stored, never dropped. The delta rebuilds the table with SQLite's procedure in one transaction (rows copied to a temporary table and back, unchanged; `recorded_at` = `issued_at` × 1000 for the old rows); `db.js` `keepTableObjects` creates again every index and trigger other deltas had put on the table (013's `forecast_issued`, `forecast_fact_raw`, `forecast_fact_span_insert` and `_update`). On the copy of 26 Oct (56,550 rows) the open that applied it (with 012 and 013) took 0.2 s, and the next open wrote nothing. `readForecastOfRecord`, the build's solar forecast of record, `scoreAccuracy` and Quartz's history are unchanged (they select on issue time); scoring per period rather than per issue (the rest of M11) is not done.
+
+**Weather for heating (B4).** The Open-Meteo request (still one per sync) also asks for `relative_humidity_2m`, `dew_point_2m` and `wind_speed_10m` (`wind_speed_unit=ms`), stored like temperature: past hours as readings, future hours as one change-only forecast issue per sync. Tested against a hand-made fixture (`test/fixtures/openmeteo/forecast-hourly.synthetic.json`, the documented response shape with invented values), never a live call.
+
+**Solar cases (B5, `src/core/solar-cases.js` `deriveSolarCases(siteId, nowSec)`).** For the next 48 hours: the central forecast of record (`solar_kwh` / `core_forecast` by default, or Quartz) × the 10th, 50th and 90th percentile of this home's own actual ÷ forecast-of-record ratios at the same local time of day (slots of the home's length, last 30 days, ratios only where the forecast was at least 0.05 kWh per half-hour), capped at the most the home made in one slot. A time of day with fewer than 10 ratios gets no row; with none anywhere nothing is stored and `reason` says "insufficient history". Stored as change-only issues of `solar_kwh_p10/_p50/_p90` / `core_solar_cases`. Not wired into the sync yet: the place is right after `recordForecast` in `sync.js` `syncSite` (it needs our own forecast, written after the provider steps); a provider step would need a `market_provider` role and row for something that fetches nothing.
+
+#### `site_heat_slot`
+
+| | |
+|---|---|
+| Purpose | Heating per slot of the home's own length, for a home with heating series: `indoor_temp_c`, `setpoint_c` (time-weighted means; a reading holds until the next, 3 h at most), `outdoor_temp_c` (a sensor at the home, else Open-Meteo), `flow_temp_c`, `return_temp_c`, `radiator_temp_c` (context), `heating_demand_kwh` and `heat_output_kwh` (as reported, never estimated), `heating_energy_kwh` (heat pump electricity + boiler gas) and `heating_fuel` (`electricity`, `gas`, `electricity+gas`), `cop` (heat ÷ electricity in the slot, else a reported COP), `degree_hours` (max(0, 15.5 °C − outdoor) × hours; base in lineage), `heating_on_fraction`, `cost_minor` and `currency` (energy × the unit price including tax from the home's import or gas agreement, `pricing.js` `priceOver`; no standing charge; electricity priced as if all from the grid), `state`, `quality`, `lineage` (series and sources used, outdoor source, tariffs, weakest price origin, `data_origin`, `incomplete` series), `method_version` (`heat-v1`), `built_at` |
+| Keys and constraints | PRIMARY KEY (`site_id`, `slot_start`), `WITHOUT ROWID`; CHECK `slot_start % 300 = 0`, `dur_s > 0 AND dur_s % 300 = 0` (ready for a 5-minute grid, B8); CHECK `state IN ('provisional','final','missing')` and on `heating_fuel`; index **`site_heat_slot_day`** (`site_id`, `local_date`); `site_id` → `site` ON DELETE CASCADE |
+| Written by | `heat.js` `buildHeat(siteId, fromDate, toDate, { asOf, dryRun })`: delete the window, insert the rebuilt rows; never before the home's first heating fact. Called by `build.js` `processQueue` after `buildSite`, only when `hasHeatingSeries` finds a series of a `heating` metric on the home or one of its devices (one indexed query, 0.02 ms on the GB home, which has none) |
+| Read by | Nothing yet (a heating planner; no endpoint serves it) |
+| States | `missing`: no heating series has data in the slot; `provisional`: today, or a series the home has does not cover the slot (`QUALITY.PARTIAL`); `final` otherwise. `QUALITY.CHECK_FAILED` when energy is known and an agreement exists without a unit price for the slot |
+| Rows now | 0: no home has heating series |
+| Growth | Per heating home, one row per slot: 96, 48 or 24 a day (100 / 50 / 25 and 92 / 46 / 23 on clock-change days) |
+
+**PredHeat.** The requirements catalogue (`docs/predbat-predheat-requirements.md`, sourced) replaces the earlier description from memory for what PredHeat reads: outside, inside and set-point temperature, heating energy, heating on, flow set-point and radiator water temperature (PH-SEN-01 to 07) are metrics here, and the price it uses (PH-RATE-01) is the tariff the heating cost is priced with. Still **unverified (from memory)**: that a heating planner would read `site_heat_slot` per slot as laid out here (PredHeat itself reads 5-minute sensor history), and the 15.5 °C degree-hour base (a UK convention; PredHeat has no degree days). `degree_hours`, `cop`, `heat_output_kwh` and the flow and return columns are ours, not PredHeat inputs.
+
+### Coverage matrix: what it added (plan item B11, 26 Oct 2026)
+
+`docs/coverage-matrix.json` maps every item of the requirements catalogue to where it is kept (built by `scripts/build-coverage-matrix.js` from the hand review in `scripts/coverage-review.js`; checked by `test/coverage-matrix.test.js`; report in `docs/predbat-predheat-coverage.md`). The items that had no home got one, registry rows first:
+
+- **`attribute_def` (+21):** the rest of the capability profile and write path (`control_interfaces`, `control_immediate`, `current_decimal_places`, `opposite_rate_zero_required`, `charge_schedule_enable_supported`, `export_schedule_enable_supported`, `target_soc_sets_export_floor`, `schedule_commit_required`, `work_modes`, `idle_window_supported`, `window_time_format`, `clock_time_format`, `write_retry_max`, `write_backoff_s`, `api_delay_s`, `schedule_step_min`, `apply_delay_s`); `manual_soc_entry` (a car whose charge level is typed in); `pv_calibration`; the planning design's `deployment_mode` and `service_active` (Appendix A, our own design).
+- **`setting_def` (+22):** manual overrides (`manual_charge`, `manual_export`, `manual_demand`, `manual_freeze_charge`, `manual_freeze_export`, `manual_soc_min`, `manual_soc_max`, `manual_import_rates`, `manual_export_rates`, `manual_load_adjust`), `rates_import_override`, `rates_export_override`, `future_rate_estimate`, `compare_list`, `octopus_slot_low_rate`, `octopus_slot_max`, `intelligent_dispatch_billing`, `saving_session_rate`, `axle_reward_per_kwh`, `axle_control`, `solar_forecast_sources`, `replan_triggers`.
+- **`metric` (+7):** `saving_session_reward`, `saving_session_joined`, `free_session`, `vpp_export_event`, `vpp_import_event` (domain `flex`), `weather_alert_keep_pct`, `extra_load_kwh`. An announced event is a forecast issue, a past one an interval fact; its id and text stay in the raw payload. **`source` (+3):** `axle_vpp`, `weather_alerts` (no adapter yet), `manual_entry` (values typed in by a person).
+- **Delta 060:** `plan_slot.import_rate_minor`, `export_rate_minor`, `import_rate_adjusted_minor`, `export_rate_adjusted_minor` (the prices a plan used, minor units per kWh incl. tax, PB-RATE-40, 41), `import_rate_adjust`, `export_rate_adjust` (`future_offset`, `future_estimate`, `override`, `increment`, `event`, `previous_day`), `clipped_kwh` (PB-PV-23); tables `tenant` (`id`, `code`, `name`, `plan_tier`, `created_at`) and `tenant_site` (`site_id` PRIMARY KEY, `tenant_id`, `recorded_at`; index `tenant_site_tenant`): the planning design's owner record (PD-01), no authentication or access rules.
+
+**Documented JSON keys** (the coverage test checks every `json_key` target against these lists):
+
+- JSON keys of `plan_run.summary`: `total_cost_minor`, `total_pv_kwh`, `total_load_kwh`, `total_clipped_kwh`, `total_extra_load_kwh`, `total_car_kwh`, `total_iboost_kwh`, `total_carbon_g`, `end_soc_pct`, `soc_kwh_h1`, `soc_kwh_h8`, `soc_kwh_h12`, `soc_min_kwh`, `soc_min_at`, `battery_hours_left`, `battery_cycle_kwh`, `import_battery_kwh`, `import_house_kwh`, `marginal_costs`, `marginal_flags`, `import_cost_threshold`, `export_cost_threshold`, `export_triggers`
+- JSON keys of `plan_run.carry_state`: `water_temp_c`, `baseline_soc_kwh`, `inday_adjustment`, `car_soc_tracked`, `dispatch_cancelled`, `iboost_today_kwh`
+- JSON keys of `command_log.detail`: `attempt`, `register_writes`
 
 ## 5. How the tables relate in practice
 
@@ -1261,7 +1519,7 @@ They assume:
 - the 10-minute schedule;
 - the code and retention as they are now (nothing is deleted).
 
-Shared tariff and region rows are left out; they are a few kilobytes per region per day (6.3).
+Shared tariff and region rows are left out. They are not small: on the 26 October copy the tariff catalogue (`tariff`, `rate_interval`, `register_window` and their indexes) took 10.1 MB of the 16.9 MB file, 60% (`dbstat`; 8,511 tariffs and 30,677 rate rows, mostly the Tariffscanner catalogue). (Corrected 26 Oct 2026: this said "a few kilobytes per region per day".)
 
 | | 1 home × 1 year | 1,000 homes × 1 year | 100,000 homes × 1 year |
 |---|---|---|---|
@@ -1307,7 +1565,7 @@ The shared data is small (6.3). The cost is in fetching and storing it per home:
 
 ### 7.3 Indexes the read paths rely on
 
-From `EXPLAIN QUERY PLAN` on the copy (A5). Statistics have not been gathered (`ANALYZE` has not been run; there is no `sqlite_stat1` table), so the planner's choices could change after it is.
+From `EXPLAIN QUERY PLAN` on the 16 October copy (A5). (Corrected 26 Oct 2026: this said there was no `sqlite_stat1` table. The 26 October copy has one with 5 stale rows from a manual `ANALYZE`; since then `db.js` `optimizeDb()` runs `PRAGMA optimize` after every rebuild and when the connection closes, and the reads whose result order depended on the plan state their order (section 10.4). The plans after the delta 013 indexes are in section 10.4 and in `docs/database-review.md`, *Fixed in Phase A*.)
 
 | Read path | Index used |
 |---|---|
@@ -1352,7 +1610,7 @@ The sync log shows the same work inside the scheduled syncs: 193–238 ms for 69
 
 From 8 to 15 days, the half-hours grow 1.94 times and the time 4.40 times, so the cost grows faster than the window. The code shows a likely reason. For every half-hour, `slotSum` (`build.js`) loops over all the window's interval facts for that input (meters, carbon, EV), and the solar forecast list is filtered again. The work therefore grows with half-hours × facts in the window.
 
-**Every sync rebuilds the whole history.** `processQueue` starts from the earliest built day (`MIN(local_date)` in `site_day`), not from the queued `from_ts`, because the battery's first-in, first-out stock is carried forward from the first day.
+**A sync rebuilds from the earliest changed day, not the whole history** (corrected 26 Oct 2026: this said every sync rebuilt the whole history, which was true only before 16 October). `processQueue` (`build.js`) starts at the local day of the earliest queued `from_ts`, continuing from the battery stock saved on the day before (`site_day.battery_stock`). It falls back to the first built day only when that saved stock is missing, or when rows of another slot length exist (a slot length change rebuilds everything). It never starts before the home's first energy data.
 
 **Projection, as a lower bound:** 0.2511 ms per half-hour (174 ms ÷ 693) × 17,520 half-hours (one year) = **4.4 s per rebuild per home after one year**. The measurements above show the cost per half-hour rising with the window, so the real figure would be higher unless the per-half-hour scans change. At 144 syncs a day that is 633 s of build per home per day. For 1,000 homes it is 1,000 × 4.4 s = 4,399 s of build in every 10-minute (600 s) cycle.
 
@@ -1395,25 +1653,25 @@ The design relies on these features:
 | Data | Safe to delete? | Notes |
 |---|---|---|
 | `site_hh`, `site_day`, `check_result` | Yes; rebuilt by the next sync or `/rebuild` | The "revised" marks (quality bit 128) come from comparing with the previous `site_hh` rows, so they are lost (1.2). |
-| `rebuild_queue` rows with `done_at` set | Yes | `processQueue` reads only rows with `done_at IS NULL`. |
-| Old `sync_run` rows | Yes, if the history is not needed | `/everything` shows syncs in the chosen period as events, and `/health` shows the last 8. |
-| Old forecast issues | Only with care | The build reads, for each half-hour, the latest issue before it starts. Accuracy scoring reads the latest issue at least 12 hours before. Thinning to those issues would keep today's results, but removes the forecast history. |
+| `rebuild_queue` rows with `done_at` set | Yes; retention deletes them (section 10.5) | `processQueue` reads only rows with `done_at IS NULL`, and deletes what it processed. |
+| Old `sync_run` rows | Thinned by retention to one a day after 90 days (section 10.5) | `/everything` shows syncs in the chosen period as events, and `/health` shows the last 8. |
+| Old forecast issues | Thinned by retention to the issues a read can pick (section 10.5) | The build reads, for each half-hour, the latest issue before it starts. Accuracy scoring reads the latest issue at least 12 hours before, over the last 7 days. Thinning keeps those and the latest issue of all, so today's results stay identical; the forecast history between them is removed. |
 | Raw files that duplicate another file's body | Possible, not done | Their rows and `raw_id` links stay. The hash includes the request, so duplicates have different rows (6.4). |
 | Facts or files made from invented inputs | Done deliberately | Quartz forecasts made with invented panel angles were deleted (timeline document, section 6.3). |
 
 ### 8.3 What cannot be deleted
 
 - **Current facts.** The serving tables cannot be rebuilt without them. Several providers do not keep history (source contracts in `registry.js`): Sunsynk deletes 5-minute data after 90 days, Kraken's dispatch history is short, and Open-Meteo's forecast API goes back at most 92 days. After that, the database and `data/raw` hold the only copy.
-- **Raw payload rows that facts refer to.** `raw_id` is an enforced foreign key with no delete action, so the delete fails through the app's connection. Removing only the file breaks `/api/raw` and re-normalisation.
+- **Raw payload rows that facts refer to.** `raw_id` is an enforced foreign key with no delete action, so the delete fails through the app's connection. Removing only the file breaks `/api/raw` and re-normalisation. Retention (section 10.5) deletes only payloads that no fact (any version), no saved state and no quarantine refers to.
 - **Superseded versions.** They are the record of what was shown before a correction.
 - **`series` rows.** Every fact refers to them by id.
 - **Rate rows of tariffs no longer in force.** `learnIogWindow` reads the time-stamped prices of any Intelligent Octopus tariff in the region to learn the off-peak window. Here those are the rows of `E-1R-INTELLI-FIX-12M-25-07-30-G` (tariff 1), which ended on 15 Aug 2026. They were fetched in the first syncs through the `.env` tariff codes. The Octopus path fetches rates only for tariffs in force in its window, so they would not be fetched again.
-- **The Octopus account payloads.** `tariff_agreement` is replaced on every sync without versions, so the raw account payloads are the only record of agreements as they were.
+- **The Octopus account payloads, as far as they are evidence.** (Corrected 26 Oct 2026: this said `tariff_agreement` is replaced on every sync without versions. Agreements have been versioned since 16 October, so the agreements as they were are in the table.) The latest account payload is kept by retention as the newest answer of its endpoint.
 
 ### 8.4 Backup and consistency
 
 - A consistent copy of the database is taken with `.backup`, as for this document. Copying `core.db` alone would miss whatever is still in `core.db-wal`.
-- The database and `data/raw` must be backed up together. `landRaw` writes the file first and inserts the row afterwards, outside one transaction. At the copy there were 755 files and 754 rows: `raw/open_meteo/2026-10-16/a99ebf949d5d0b76.json`, written at 08:21:54 UTC, has no row. Possible causes are a failure between the two writes, or a process using another `DB_FILE`: `dataDir` is always `<project>/data`, whatever `DB_FILE` is set to.
+- The database and `data/raw` must be backed up together. `landRaw` inserts the row first and then writes the file, and deletes the row again if the file cannot be written, so a file never exists without its row (corrected 26 Oct 2026: this said the file was written first, which was the code before 16 October). Raw files live next to `DB_FILE` (`dataDir`). At the 16 October copy there were 755 files and 754 rows: `raw/open_meteo/2026-10-16/a99ebf949d5d0b76.json`, written at 08:21:54 UTC by the earlier code, has no row; retention removes such an orphan file once it is older than the raw window (section 10.5).
 - A file without a row is harmless. A row without a file breaks its evidence link.
 
 ---
@@ -1704,3 +1962,98 @@ FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
 WHERE r.tariff_id IN (8, 14) AND r.valid_from <= 1791829800 AND IFNULL(r.valid_to, 9000000000) > 1791829800;
 SELECT * FROM vat_rate WHERE valid_from <= 1791829800 AND IFNULL(valid_to, 9000000000) > 1791829800;
 ```
+
+---
+
+## 10. Hardening, 26 October 2026 (Phase A)
+
+Phase A of `docs/hardening-and-planning-plan.md`, from the findings of `docs/database-review.md`. Measured on a `VACUUM INTO` copy of `data/core.db` taken at 05:38 UTC on 26 October (one home, 8,511 tariffs, 30,677 rate rows, 56,166 forecast rows, 3,907 raw payloads). Rule throughout: the GB timeline does not change. A dry-run build of every day of the home (now and "as known at" three earlier moments), `loadPricing`, `readIntervals`, `readForecastOfRecord`, `forecastSite` (with its accuracy score) and 35 GET endpoint calls (1,000 outputs) were captured at a fixed clock before any change and after all of them, with and without planner statistics. Every output of this phase's changes is identical; the only differences come from the Phase B work done at the same time (`/api/catalog` source contracts in `registry.js`, and an `origin` field added to `/trust` and `/revisions` attributes). `test/golden-gb.test.js` is unchanged and passes.
+
+### 10.1 Opening the database (review H1)
+
+- `PRAGMA busy_timeout = 5000` is the first statement on the connection (`db.js` `BUSY_TIMEOUT_MS`), and `tx()` begins with `BEGIN IMMEDIATE`: a writer waits up to 5 s for another connection's write instead of failing with "database is locked". A deferred `BEGIN` would read first and fail at once, without waiting, if another connection had committed in between.
+- **Each delta runs once.** Every delta records its name in `schema_delta` as its last statement; `applyDeltas` skips a recorded one. A recorded delta runs again only when an object it creates is missing (a table, index or trigger named in a `CREATE … IF NOT EXISTS`, or the column of an `ADD COLUMN`), as after a table rebuild; the deltas stay safe to run again. A schema change is therefore a new delta file, and a later delta never drops an object an earlier one creates.
+- **Delta 010 is conditional.** `market_provider` is rebuilt only while it has the old owner CHECK; on a current table the delta is only recorded.
+- **An up-to-date open writes nothing.** Every write at open is checked first with a read (the registry, the `recorded_at` backfill, the `reading_current` drop, the seeds), so an up-to-date open takes no write lock. Measured on the 26 October copy: a second open changes 0 rows (`total_changes()`) and leaves `PRAGMA schema_version` as it was (the review measured 163 changes and three schema changes per open). With another connection holding a write, an up-to-date open succeeds at once, and an open that must write waits for the lock and then succeeds (`test/db-open.test.js`).
+
+### 10.2 Seeds: only what is missing
+
+`seed/markets.js`, `seed/regions-gb.js` and `seed/providers.js` insert the rows that are missing and never change a row that exists: a market's intervals and notes, a region's name, the region an alias points to, and a provider's `priority`, `enabled` and `licence_confirmed` stay as an operator set them. A changed seed value reaches an existing database only through a delta. The exceptions are rows the code owns, written only where they differ from the code:
+
+| Rows | Columns kept in line with the code | Why the code relies on it |
+|---|---|---|
+| `source` | `name`, `contract` | `/api/catalog` serves the contracts from the table; `registry.js` is their definition |
+| `metric` | `label`, `unit`, `time_role`, `aggregation`, `domain` | `registry.js` defines each metric (review H5 proposes making them immutable, Phase C) |
+| `vat_rate` | every column | `VAT_RATES` is the one source of GB VAT; `syncGbVat` versions `tax_rule` from it (it supersedes, never overwrites) |
+| `market_provider` | `owner`, `scope`, `needs_credentials`, `origin`, `note` | the adapter code defines them and the plan reads them (tounify moved from shared to home scope this way; `test/providers.test.js`, `test/tounify.test.js`) |
+
+Delta 005's labelling of unlabelled rows (GB VAT rules, the GB market, the GB regions) used to run on every open; it now runs once. No code relied on running it again: every writer labels its own rows.
+
+### 10.3 Integrity triggers (review M1, M4; delta `012-integrity.sql`)
+
+| Trigger | Refuses |
+|---|---|
+| `rate_no_overlap_update` | an UPDATE (validity, tariff, home, component, register, charge period, payment method, or `superseded_at` back to NULL) that makes two current rate rows overlap |
+| `agreement_no_overlap_update` | the same for a meter's current agreements |
+| `tax_rule_no_overlap_update` | the same tax charged twice on one charge at one moment, by UPDATE |
+| `register_window_no_overlap_insert`, `…_update` | two current windows of one window set (tariff, the meter's own or the tariff's, calendar, clock) with different registers covering the same wall-clock minute while both are valid; minutes are compared over the week (a window wraps past midnight and from Sunday into Monday). This is the error `tariff-expand.js` throws at expansion; the same register twice, two day types of one calendar, a calendar window over a plain one and a meter's windows over the tariff's are allowed, as the expander allows them |
+| `agreement_currency_implied_insert`, `…_update`, `site_currency_implied_matches_agreements`, `tariff_currency_implied_matches_agreements` | an agreement whose tariff and home currencies differ, where a NULL currency is read as the market's (home) or the country's market's (tariff), so a NULL can no longer bypass the check |
+| `site_country_matches_market_insert`, `…_update` | a home whose country differs from its market's country (both set) |
+| `agreement_device_same_site_insert`, `…_update` | an agreement whose home is not its meter's home |
+
+The INSERT triggers of `schema.sql`, 002 and 004 stay. The columns stay nullable: making `currency`, `country`, `market_code` and `tariff_agreement.recorded_at` NOT NULL needs a table rebuild (Phase C). The writers only set `superseded_at` to a time and then insert, which none of these refuses (`test/integrity.test.js`). All 1,955 current register windows of the 26 October copy pass the new check.
+
+### 10.4 Indexes, bounded reads and planner statistics (review H2, H3, M8, M10; delta `013-indexes.sql`)
+
+| Index | For | Size on the copy |
+|---|---|---|
+| `forecast_issued` (`forecast_fact` `series_id`, `issued_at`) | the latest own issue (`recordForecast`), issues in a period | 1,168 KB |
+| `rate_asof` (`rate_interval` `tariff_id`, `valid_from`, `recorded_at`) | `loadPricing` rates, current and "as known at" (no more full scan); child index of `tariff_id` | 668 KB |
+| `agreement_site_asof`, `agreement_device_asof` (`tariff_agreement` `site_id` / `device_id`, `valid_from`, `recorded_at`), `agreement_tariff` | "as known at" agreements; child indexes | 12 KB |
+| `tariff_structure_region` (`tariff` `structure`, `region`) | `learnIogWindow` | 128 KB |
+| `sync_run_site_started`, `raw_payload_site_status` (`site_id`, `status`, `fetched_at`) | timeline sync events, quarantined payloads | 100 KB |
+| `reading_raw`, `interval_fact_raw`, `forecast_fact_raw`, `rate_interval_raw` (`raw_id`) | whether a payload is still referenced (retention), foreign-key checks | 2,856 KB |
+| `rate_interval_site` (partial, `site_id` set), `rebuild_queue_site`, `site_region_region`, `site_market` | foreign-key child indexes | 16 KB |
+
+The 16 indexes take 5.1 MB, about 30% of the 16.9 MB file. Left without a child index on purpose: references to code-owned registry rows that are never deleted (`series.source_id` / `metric_id`, `raw_payload.source_id`, every `currency`), `fact_correction`, and `register_window` (`tariff_id`, `device_id`, `calendar`), which the partial `register_window_tariff` serves for every read.
+
+**Bounded reads.** `series.max_span_s` holds the longest `end_ts - start_ts` of any interval or forecast fact of the series (every version), kept by four triggers and never shrinking. A read of facts that overlap `[from, to)` adds `start_ts >= from - max_span_s`: no fact is longer, so no row can be left out, and the primary key is searched as a range instead of the series' whole history. It is used by `readIntervals`, `scoreAccuracy`, the `/now` carbon read and the `loadPricing` dispatches; `readForecastOfRecord` bounds its outer read to the inner one's `[from, to)`. A series without a recorded span is read without the bound.
+
+**Stated order.** The new indexes changed the order of rows the old reads returned without an `ORDER BY` covering them, so the order is now stated: agreements by meter, then start (`loadPricing`); rate rows starting together in the order each mode always returned (current: tariff, component, register, id; "as known at": id; `loadPricing` and `learnIogWindow`); a home's connections by provider (`/everything`). Pricing picks within one tariff, component and register, where both orders are by id, so prices never depended on it; stating it keeps every returned list identical, with or without planner statistics.
+
+**Planner statistics.** `db.js` `optimizeDb()` runs `PRAGMA optimize` after a rebuild (`processQueue`, `POST /rebuild`), and `closeDb()` runs it before closing (the server's shutdown).
+
+Plans and timings, before (16.9 MB copy, old SQL) and after (same copy, new code; the same with statistics):
+
+| Read | Before | After |
+|---|---|---|
+| `readForecastOfRecord` (Quartz, 1 day) | outer `SEARCH f USING PRIMARY KEY (series_id=?)`, 1.03 ms | `(series_id=? AND start_ts>? AND start_ts<?)`, 0.21 ms |
+| `/now` carbon | `PRIMARY KEY (series_id=? AND start_ts<?)`, 0.26 ms | `(series_id=? AND start_ts>? AND start_ts<?)`, 0.004 ms |
+| `loadPricing` rates "as known at" | `SCAN rate_interval`, 1.66 ms | `INDEX rate_asof (tariff_id=? AND valid_from<?)`, 0.27 ms |
+| `learnIogWindow` | `SCAN r USING INDEX rate_current`, 2.96 ms | `INDEX tariff_structure_region`, then `rate_current (tariff_id=? AND component=? AND register=?)`, 0.017 ms |
+| timeline quarantined payloads | `SCAN p`, 0.16 ms | `INDEX raw_payload_site_status`, 0.001 ms |
+| payload still referenced (`reading.raw_id`) | `SCAN reading`, 0.98 ms | `COVERING INDEX reading_raw`, 0.001 ms |
+
+The full list is in `docs/database-review.md`, *Fixed in Phase A*. Tests: `test/bounded-reads.test.js`.
+
+### 10.5 Retention (review H4, L6)
+
+`src/core/maintenance.js` `runRetention`, run by the start-up hook (`runMaintenance`, `server.js`) and by hand (`npm run retention`, `-- --apply` to delete). A run is a dry run unless asked; its report gives counts and bytes only.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RETENTION` | `report` | what the start-up hook does: `report` (dry run, one log line), `apply`, or `off` |
+| `RAW_RETENTION_DAYS` | 14 | raw payloads fetched longer ago than this, and orphan raw files older than this, may go |
+| `SYNC_RUN_RETENTION_DAYS` | 90 | older sync runs are thinned to the last run of each UTC day per home |
+| `FORECAST_RETENTION_DAYS` | 14 (at least 8) | issues of forecast periods that ended longer ago than this are thinned |
+
+- **Raw payloads.** Deleted (row, then file) only when older than the window, `accepted` (never a quarantined one), referred to by no fact of any version (every foreign key into `raw_payload`, read from the schema), named in no saved state (a key containing `raw` in `connection.meta` or `provider_state.state`, such as tounify's `prices_raw`), and not the newest payload of its endpoint (source, home, URL host and path; `/system` reads the newest Sunsynk plant record). The delete checks the references again inside its transaction. A file left behind by a crash has no row and goes as an orphan.
+- **`sync_run`.** Thinned, not summarised: the kept row of a day is that day's last run with its own status and step log; a `running` row is never touched. The timeline shows one sync a day for those days and history reconstruction has one moment a day there.
+- **`forecast_fact`.** Per old period, per start and per (start, end), kept: the latest issue made at or before the period started (the build's and Quartz calibration's forecast of record), the latest made 12 hours before it (the scoring lead), and the latest of all (the final forecast; change-only storage compares with it). Scoring reads only the last 7 days, inside the window, so its result is identical by construction. Lost: an "as known at" view of an old period between its kept issues, and the timeline's per-issue totals for those periods.
+- **`rebuild_queue`.** Rows with `done_at` set (left by older code) are deleted.
+
+On the 26 October copy the default windows find only the 55 finished queue rows (the data is 12 days old). With windows of 3, 5 and 8 days, the dry run found 1,827 unreferenced payloads (18.0 MB of files; 1,501 kept as evidence of facts, 1 kept as saved state, 71 as the newest of their endpoint, 1 quarantined), 1 orphan file, 309 sync runs and 18,798 forecast rows. Applied to that copy: every build (now and as known at three moments), the forecast and its accuracy score, pricing and interval reads were identical before and after; what changed was `/health` storage counts, the 30-day timeline's sync and forecast events, and "as known at" forecast reads at moments before a thinned period. A second run found nothing (`test/retention.test.js`).
+
+### 10.6 Security status
+
+Not changed in Phase A, by the owner's decision (prototype): the server still listens on every interface (`app.listen(port)`), `GET /api/raw/:rawId` still returns any raw body without authentication, and raw payloads are stored and served unredacted (email, phone, address, MPAN/MPRN, account number, coordinates; review C1). Retention now bounds how long payloads that feed no fact are kept, which is the only change here that touches them.

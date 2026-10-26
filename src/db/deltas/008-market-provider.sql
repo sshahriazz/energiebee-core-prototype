@@ -1,4 +1,4 @@
--- Delta 008: market provider registry. Applied after 007 by db.js on every open. Same applying rules
+-- Delta 008: market provider registry. Applied after 007 by db.js, once. Same applying rules
 -- as 002-007: statements end with ';' at the end of a line, an ADD COLUMN whose column exists is
 -- skipped, and every other statement may be run again.
 --
@@ -27,9 +27,10 @@
 --   licence_confirmed  0 = the right to store and serve the provider's data is unconfirmed: skipped
 --   origin, note       provenance (src/core/provenance.js) of what the provider gives, and an
 --                      honest note ('adapter not built' where it is not)
--- Rows are seeded from src/db/seed/providers.js on every open. The seed refreshes the descriptive
--- columns of the rows it lists and inserts missing ones; it never flips enabled or
--- licence_confirmed on a row that exists, so those switches stay as an operator set them.
+-- Rows are seeded from src/db/seed/providers.js by db.js. The seed inserts missing rows and keeps
+-- owner, scope, needs_credentials, origin and note in line with the adapter code (written only where
+-- they differ); it never changes priority, enabled or licence_confirmed on a row that exists, so
+-- an operator's order of fallbacks and switches stay.
 
 CREATE TABLE IF NOT EXISTS schema_delta (
   name        TEXT PRIMARY KEY,

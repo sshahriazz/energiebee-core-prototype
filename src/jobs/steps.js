@@ -20,6 +20,7 @@ import { syncGasCv } from '../adapters/nationalgas.js';
 import { measureBatteryCapacity } from '../core/derive.js';
 import { retireDevice, supersedeAgreements } from '../core/devices.js';
 import { clientFor, credentialsFromEnv, sweepCatalogue, sweepDue, sweepStatus } from '../adapters/tariffscanner.js';
+import * as TU from '../adapters/tounify.js';
 
 const env = process.env;
 export const INITIAL_DAYS = Math.min(Number(env.INITIAL_DAYS) || 14, 60);
@@ -272,6 +273,51 @@ registerAdapter('tariffscanner', {
         },
       }],
       status: () => sweepStatus(),
+    },
+  },
+});
+
+// ───────────── tounify v3 (FR, NL; an EU tariff source, not UK): per-home prices, shared catalogue ─────────────
+
+// Listed switched on but unlicensed (src/db/seed/providers.js), so the plan skips both roles with
+// 'unlicensed: ...' until the licence is confirmed; TOUNIFY_DEV=1 with a test token overrides that
+// for development (licenceOverride; the plan entry and every row it writes say so).
+// tariff_prices runs for a home with a tounify connection (registered by POST /api/sites/:id/connections,
+// one connection per home), at most once a UTC day and never before tounify's `next`; the catalogue
+// runs for the first home of a market each cycle, once a week per market. The core's own token from
+// .env (TOUNIFY_API_KEY), with the allowance guard of src/adapters/tounify.js.
+const tounifyCatalogueKey = (ctx) => `tariff_catalogue:tounify:${ctx.site.market_code ?? ctx.site.country}`;
+
+registerAdapter('tounify', {
+  connection: 'tounify',
+  label: TU.LABEL,
+  registers: 'POST /api/sites/:id/connections with { provider: "tounify", postal_code, consumption_tariff, feedin_tariff?, capacity?, metering?, grid_operator? }',
+  credentials: () => TU.credentialsFromEnv(),
+  licenceOverride: (row, e) => (row.adapter === 'tounify' ? TU.devOverrideLabel(e) : null),
+  roles: {
+    tariff_prices: {
+      steps: [{
+        step: 'tounify', order: 70, connection: 'tounify',
+        applies: (ctx) => TU.priceReadDue(ctx.siteId).due,
+        run: async (ctx, a, creds) => {
+          const r = await TU.syncTounifyHome({ site: ctx.site, client: TU.clientFor(creds), dev: creds?.dev ?? null });
+          if (r.agreements_changed) ctx.agreementsChanged = true;
+          if (r.failed) throw new Error(r.error);   // soft: the step fails, the sync goes on
+          return r;
+        },
+      }],
+      status: (d, site) => TU.homeStatus(site),
+    },
+    tariff_catalogue: {
+      steps: [{
+        step: 'tounify_catalogue', order: 75, connection: null,
+        applies: (ctx) => !ctx.cycle.shared.has(tounifyCatalogueKey(ctx)) && TU.catalogueDue(ctx.site.market_code ?? ctx.site.country),
+        run: (ctx, a, creds) => {
+          ctx.cycle.shared.set(tounifyCatalogueKey(ctx), { siteId: ctx.siteId, from: Infinity, startedMs: Date.now() });
+          return TU.refreshCatalogue({ country: ctx.site.market_code ?? ctx.site.country, client: TU.clientFor(creds) });
+        },
+      }],
+      status: (d, site) => TU.catalogueStatus(site.market_code ?? site.country),
     },
   },
 });

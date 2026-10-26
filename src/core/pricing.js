@@ -17,6 +17,11 @@
 // so for GB vat is exactly the vat_rate figure and levy is 0: the numbers do not move. Without any
 // rule for a GB home, vat_rate is read as before.
 //
+// A tariff with taxes_in_price = 1 (delta 011; tounify v3) already holds the per-kWh levies and the
+// per-period credits in its own prices and fixed charges: only the PERCENT rules (VAT) are applied
+// on top, and the country's per_kwh and per_period rules are left out, so nothing is counted twice.
+// Every other tariff (taxes_in_price 0, the default) is taxed exactly as before.
+//
 // Capacity charges (component 'capacity', delta 007) are priced per kW (kVA) of the home's
 // contracted capacity (site.contracted_kva) per charge period, spread over slots like any other
 // fixed charge. Without a contracted capacity they are left out and the price says capacityUnknown.
@@ -27,32 +32,49 @@
 // priced with a cautious default) makes the price estimated: true.
 import { db } from '../db/db.js';
 import { zonedParts, localDate, addDays, floorTo, dayBounds } from './time.js';
-import { inForce } from './facts.js';
+import { inForce, spanColumn, knownAtMs } from './facts.js';
 import { rulesFor, applyTaxes } from './tax.js';
 import { fixedChargePerSlot, fixedChargeMicro, periodBounds } from './tariff-expand.js';
+import { tariffFlagsAt } from './versions.js';
 
 // The account API does not say how the customer pays, so a price is only used when
 // it does not depend on it: a row for any payment method, or rows that all agree.
 
-export function loadPricing(siteId, fromTs, toTs) {
+// Rate rows that start at the same moment, in the order the reads have always returned them: for
+// current rows the rate_current index order (tariff, component, register, id), "as known at" the
+// table order (id). Stated, so that an index or new planner statistics cannot reorder them. Every
+// price picks among the rows of one tariff, component and register, where both orders are by id,
+// so the two orders give the same prices; keeping each one keeps the returned lists identical too.
+const rateTies = (a = '') => (knownAtMs() == null ? `${a}tariff_id, ${a}component, ${a}register, ${a}id` : `${a}id`);
+
+// siteRow: the home as the caller reads it (build.js passes it as known at its asOf, H5); null reads
+// today's row. Inside withKnownAt, each tariff's pricing columns are read as known then (tariff_version).
+export function loadPricing(siteId, fromTs, toTs, siteRow = null) {
+  // In meter order, then by start: the order the reads always gave (device scan, then
+  // agreement_current), stated so that an index or new planner statistics cannot change it.
   const agreements = db.prepare(
-    `SELECT a.*, d.kind, t.tariff_code, t.fuel, t.direction, t.structure, t.name, t.currency, t.kind AS tariff_kind, t.origin AS tariff_origin
+    `SELECT a.*, d.kind, t.tariff_code, t.fuel, t.direction, t.structure, t.name, t.currency, t.kind AS tariff_kind, t.origin AS tariff_origin, t.taxes_in_price
      FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
-     WHERE a.site_id = ? AND ${inForce('a')} AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, toTs, fromTs);
+     WHERE a.site_id = ? AND ${inForce('a')} AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?
+     ORDER BY a.device_id, a.valid_from, a.id`).all(siteId, toTs, fromTs);
+  if (knownAtMs() != null) for (const a of agreements) Object.assign(a, tariffFlagsAt(a.tariff_id, knownAtMs()));
   const tariffIds = [...new Set(agreements.map((a) => a.tariff_id))];
   const rates = tariffIds.length ? db.prepare(
     `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})
        AND ${inForce()} AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
        AND (site_id IS NULL OR site_id = ?)
-     ORDER BY valid_from`).all(...tariffIds, toTs, fromTs - 86400 * 2, siteId) : [];
+     ORDER BY valid_from, ${rateTies()}`).all(...tariffIds, toTs, fromTs - 86400 * 2, siteId) : [];
   const vat = db.prepare('SELECT * FROM vat_rate').all();
   // Smart-charge dispatches, read from a day earlier so the daily allowance counts from its start.
+  // The lower bound on start_ts (the series' longest dispatch, series.max_span_s) leaves no row out;
+  // without a recorded span there is no bound.
   const dispatches = db.prepare(
     `SELECT f.start_ts, f.end_ts FROM interval_fact f JOIN series s ON s.id = f.series_id
      JOIN source src ON src.id = s.source_id JOIN metric m ON m.id = s.metric_id
      WHERE s.subject_kind = 'site' AND s.subject_id = ? AND src.code = 'octopus_kraken' AND m.code = 'ev_charge_kwh'
-       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ? ORDER BY f.start_ts`).all(String(siteId), fromTs - 86400, toTs);
-  const site = db.prepare('SELECT timezone, gsp_region, country, currency, is_demo, contracted_kva, contracted_kva_origin FROM site WHERE id = ?').get(siteId);
+       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ?${spanColumn() ? ' AND f.start_ts >= ? - IFNULL(s.max_span_s, 9000000000)' : ''} ORDER BY f.start_ts`)
+    .all(String(siteId), fromTs - 86400, toTs, ...(spanColumn() ? [fromTs - 86400] : []));
+  const site = siteRow ?? db.prepare('SELECT timezone, gsp_region, country, currency, is_demo, contracted_kva, contracted_kva_origin FROM site WHERE id = ?').get(siteId);
   const tz = site?.timezone || 'Europe/London';
   const country = site?.country ?? null;
   const currency = site?.currency ?? null;
@@ -106,7 +128,7 @@ export function learnIogWindow(region, tz) {
   if (!region) return null;
   const rows = db.prepare(`SELECT r.tariff_id, r.valid_from, r.valid_to, r.price_ex_vat, t.tariff_code FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
     WHERE t.structure = 'iog' AND t.region = ? AND r.component = 'unit' AND r.register = 'single'
-      AND ${inForce('r')} AND r.valid_to IS NOT NULL ORDER BY r.valid_from DESC LIMIT 500`).all(region);
+      AND ${inForce('r')} AND r.valid_to IS NOT NULL ORDER BY r.valid_from DESC, ${rateTies('r.')} LIMIT 500`).all(region);
   if (!rows.length) return null;
   const minByTariff = new Map();
   for (const r of rows) minByTariff.set(r.tariff_id, Math.min(minByTariff.get(r.tariff_id) ?? Infinity, r.price_ex_vat));
@@ -158,8 +180,11 @@ const VAT_RATE_INPUTS = Object.freeze([Object.freeze({ what: 'vat_rate GB', orig
 
 // Taxes on one fuel and direction at an instant: from tax_rule for the home's country; for a GB
 // home (or one with no country) with no rule, from vat_rate as before; otherwise none.
-export function taxesAt(p, fuel, direction, ts) {
-  const rules = p.taxRules?.length ? rulesFor(p.taxRules, { country: p.country, fuel, direction, ts }) : [];
+// inPrice (the tariff's taxes_in_price): the levies are already in the price, so only the percent
+// rules (VAT) are kept.
+export function taxesAt(p, fuel, direction, ts, { inPrice = false } = {}) {
+  let rules = p.taxRules?.length ? rulesFor(p.taxRules, { country: p.country, fuel, direction, ts }) : [];
+  if (inPrice) rules = rules.filter((r) => r.kind === 'percent');
   if (rules.length) {
     const key = rules.map((r) => r.id ?? `${r.code}/${r.valid_from}`).join(',');
     let shape = p.shapes?.get(key);
@@ -257,7 +282,7 @@ function inputsOf(p, a, tax, fixed, unit) {
 export function priceAt(p, kind, ts) {
   const a = agreementAt(p, kind, ts);
   if (!a) return null;
-  const tax = taxesAt(p, a.fuel, a.direction, ts);
+  const tax = taxesAt(p, a.fuel, a.direction, ts, { inPrice: a.taxes_in_price === 1 });
   const fixed = fixedAt(p, a.tariff_id, ts);
   const base = {
     tariffCode: a.tariff_code, structure: a.structure, currency: a.currency ?? p.currency ?? null,

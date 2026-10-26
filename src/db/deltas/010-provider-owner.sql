@@ -1,5 +1,5 @@
--- Delta 010: market_provider owner is 'core' or 'external'. Applied after 009 by db.js on every
--- open. Same applying rules as 002-009: statements end with ';' at the end of a line, an ADD COLUMN
+-- Delta 010: market_provider owner is 'core' or 'external'. Applied after 009 by db.js, once,
+-- and only while it is needed (below). Same applying rules as 002-009: statements end with ';' at the end of a line, an ADD COLUMN
 -- whose column exists is skipped, and every other statement may be run again.
 --
 -- owner names the ONE process allowed to call a provider (src/adapters/contract.js assertOwner):
@@ -11,8 +11,9 @@
 -- every owner other than 'core' becomes 'external'. Everything else is as delta 008 makes it: the
 -- same columns and defaults, the other CHECKs, PRIMARY KEY (market_code, role, adapter), WITHOUT
 -- ROWID and the index market_provider_role. No trigger, view or foreign key refers to the table.
--- SQLite cannot run DDL conditionally, so the rebuild runs on every open; the table holds a few
--- dozen rows and the result is the same each time (same rows, same values, same definition), and
+-- SQLite cannot run DDL conditionally, so db.js decides: the rebuild runs only while the table has
+-- an older owner CHECK; on a current table (every table today's 008 creates) the delta is only
+-- recorded (db.js applyDeltas). The result is the same rows, values and definition either way, and
 -- seed/providers.js runs after it as before.
 
 CREATE TABLE IF NOT EXISTS schema_delta (

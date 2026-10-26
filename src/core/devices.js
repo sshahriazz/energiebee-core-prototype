@@ -12,7 +12,31 @@ const atClause = (alias, ms, from = 'recorded_at', to = 'superseded_at') => {
   return `${a}${from} <= ${t} AND (${a}${to} IS NULL OR ${a}${to} > ${t})`;
 };
 
-// Record a device's details; writes a version only when they changed.
+// Device kinds (device_kind, delta 020, seeded from src/db/seed/attributes.js): battery, inverter,
+// meters, ev, ev_charger, immersion, heat_pump, boiler, thermostat, trv, temperature_sensor,
+// hot_water_tank, smart_plug ... each passive or controllable, with the attribute keys and action
+// codes it has. A new kind is one registry row. The database refuses a device of a kind with no
+// row (triggers device_kind_known_*); checkDeviceKind says so first, in words.
+// The action codes are those the kind row lists plus any device_action (delta 030, the authority
+// on actions) defines for the kind, so the two registries cannot drift apart.
+const hasActions = () => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_action'").get();
+const parseKind = (r) => {
+  if (!r) return r;
+  const listed = JSON.parse(r.action_codes);
+  const defined = hasActions() ? db.prepare('SELECT action FROM device_action WHERE device_kind = ? ORDER BY action').all(r.kind).map((a) => a.action) : [];
+  return { ...r, attribute_keys: JSON.parse(r.attribute_keys), action_codes: [...listed, ...defined.filter((a) => !listed.includes(a))] };
+};
+export const deviceKind = (kind) => parseKind(db.prepare('SELECT * FROM device_kind WHERE kind = ?').get(kind));
+export const deviceKinds = () => db.prepare('SELECT * FROM device_kind ORDER BY kind').all().map(parseKind);
+export function checkDeviceKind(kind) {
+  const k = deviceKind(kind);
+  if (!k) throw new RangeError(`unknown device kind ${kind}: one of ${deviceKinds().map((d) => d.kind).join(', ')} (a new kind is one device_kind row)`);
+  return k;
+}
+
+// Record a device's details; writes a version only when they changed. These are a provider's
+// free-form details; a planner's typed figures (rates, limits, curves) go through
+// setDeviceAttribute (src/core/attributes.js), checked against the attribute registry.
 export function setDeviceAttrs(deviceId, attrs) {
   const json = JSON.stringify(attrs ?? {});
   const cur = db.prepare('SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? AND superseded_at IS NULL').get(deviceId);

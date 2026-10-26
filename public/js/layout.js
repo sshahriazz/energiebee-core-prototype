@@ -4,6 +4,7 @@ import { api, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns, originBa
 const PAGES = [
   ['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
   ['grid', 'Grid', '/grid'], ['tariffs', 'Tariffs', '/tariffs'], ['ev', 'EV', '/ev'], ['data', 'Data & trust', '/data'],
+  ['connectors', 'Connectors', '/connectors'], ['compatibility', 'Compatibility', '/compatibility'], ['explorer', 'Data Explorer', '/explorer'],
 ];
 const PERIODS = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7d', '7 days'], ['30d', '30 days']];
 
@@ -17,7 +18,9 @@ const BEE = `<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
   <path d="M10 13h12M9.5 17h13M11 21h10" stroke="var(--text)" stroke-width="2.2" stroke-linecap="round"/>
 </svg>`;
 
-export async function init({ page, title, subtitle, periods = true, render }) {
+// homeScoped false: a page about the whole core, not one home (Connectors). It renders with or
+// without a home, and shows none of the selected home's banners (errors, provenance, basis).
+export async function init({ page, title, subtitle, periods = true, homeScoped = true, render }) {
   const params = new URLSearchParams(location.search);
   const state = {
     period: params.get('period') || store.get('eb.period') || 'today',
@@ -60,7 +63,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
     const q = new URLSearchParams(location.search);
     q.set('period', state.period);
     if (state.siteId) q.set('site', state.siteId);
-    history.replaceState(null, '', `${location.pathname}?${q}`);
+    history.replaceState(null, '', `${location.pathname}?${q}${location.hash}`);   // keep the hash: pages keep state in it
     document.querySelectorAll('.nav a').forEach((a) => {
       const href = a.getAttribute('href').split('?')[0];
       a.setAttribute('href', `${href}?site=${state.siteId || ''}&period=${state.period}`);
@@ -70,7 +73,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   const banner = () => {
     const s = state.site;
     const slot = document.getElementById('banner-slot');
-    if (!s) { slot.innerHTML = ''; return; }
+    if (!s || !homeScoped) { slot.innerHTML = ''; return; }
     const errors = s.connections.filter((c) => c.status === 'error');
     let html = '';
     if (errors.length) {
@@ -87,7 +90,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   function provenanceBanner(p) {
     const slot = document.getElementById('provenance-slot');
     const s = state.site;
-    if (!s) { slot.innerHTML = ''; return; }
+    if (!s || !homeScoped) { slot.innerHTML = ''; return; }
     const lines = [];
     if (s.is_demo || p?.demo) lines.push(`<b>Demo data: values below are synthetic.</b> This home's readings, tariffs and prices were generated for testing; none of it is real market data. ${originBadge('synthetic')}`);
     const unverified = (p?.placeholders || []).filter((x) => /\[placeholder\]$/.test(x));
@@ -119,7 +122,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   // final, provisional or missing, and how the checks went, with a link to the proof.
   async function basis() {
     const slot = document.getElementById('basis-slot');
-    if (!state.site) { slot.innerHTML = ''; return; }
+    if (!state.site || !homeScoped) { slot.innerHTML = ''; return; }
     try {
       // The summary also carries the period's provenance, shown in the banner on every page.
       const sum = await api(`/api/sites/${state.site.id}/summary?period=${state.period}`);
@@ -137,7 +140,7 @@ export async function init({ page, title, subtitle, periods = true, render }) {
 
   let rendering = false;
   async function rerender() {
-    if (rendering || !state.site) return;
+    if (rendering || (homeScoped && !state.site)) return;
     rendering = true;
     try { await Promise.all([render(state), basis()]); } catch (err) { console.error(err); } finally { rendering = false; }
   }
@@ -182,12 +185,12 @@ export async function init({ page, title, subtitle, periods = true, render }) {
   }));
 
   await loadSites();
-  if (!state.site) {
+  if (!state.site && homeScoped) {
     document.getElementById('content').innerHTML = `<div class="card empty"><h2>No home yet</h2><p>Put Sunsynk and Octopus details in <span class="mono">.env</span> and restart.</p></div>`;
     return state;
   }
   await rerender();
-  if (!state.site.is_demo && (state.site.syncing || !state.site.days?.n)) waitForSync();
+  if (state.site && !state.site.is_demo && (state.site.syncing || !state.site.days?.n)) waitForSync();
   // Keep "now" fresh without a manual reload.
   setInterval(async () => { await loadSites(); rerender(); }, 120000);
   return state;

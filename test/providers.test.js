@@ -52,13 +52,17 @@ test('registry seed: GB lists exactly the providers synced before, FR and NL the
   assert.deepEqual(rowsOf('*').map((r) => [r.role, r.adapter, r.scope, r.enabled, r.needs_credentials]), [['inverter', 'sunsynk', 'home', 1, 1]]);
   for (const [m, meter] of [['FR', 'linky'], ['NL', 'p1']]) {
     const by = Object.fromEntries(rowsOf(m).map((r) => [`${r.role}/${r.adapter}`, r]));
-    assert.deepEqual(Object.keys(by).sort(), ['meter/' + meter, 'tariff_prices/entsoe', 'tariff_prices/manual', 'tariff_prices/tounify', 'weather/open_meteo'].sort(), m);
+    assert.deepEqual(Object.keys(by).sort(), ['meter/' + meter, 'tariff_catalogue/tounify', 'tariff_prices/entsoe', 'tariff_prices/manual', 'tariff_prices/tounify', 'weather/open_meteo'].sort(), m);
     assert.equal(by['weather/open_meteo'].enabled, 1);
     assert.equal(by[`meter/${meter}`].enabled, 0);
     assert.match(by[`meter/${meter}`].note, /^adapter not built/);
     assert.equal(by[`meter/${meter}`].origin, 'placeholder');
-    assert.deepEqual([by['tariff_prices/tounify'].enabled, by['tariff_prices/tounify'].licence_confirmed], [0, 0]);
-    assert.match(by['tariff_prices/tounify'].note, /licence .* unconfirmed/);
+    // tounify v3 is built (src/adapters/tounify.js): switched on, its licence unconfirmed, prices per home, catalogue shared.
+    for (const [role, scope] of [['tariff_prices', 'home'], ['tariff_catalogue', 'shared']]) {
+      const t = by[`${role}/tounify`];
+      assert.deepEqual([t.enabled, t.licence_confirmed, t.needs_credentials, t.scope, t.origin], [1, 0, 1, scope, 'provider'], `${m} ${role}`);
+      assert.match(t.note, /licence not confirmed in writing/);
+    }
     assert.deepEqual([by['tariff_prices/entsoe'].enabled, by['tariff_prices/entsoe'].needs_credentials], [0, 1]);
     assert.match(by['tariff_prices/entsoe'].note, /token/);
     assert.deepEqual([by['tariff_prices/manual'].enabled, by['tariff_prices/manual'].origin], [1, 'user']);
@@ -108,16 +112,16 @@ test('a French home: weather only, with the unbuilt and unlicensed providers lis
   const p = P.plan(db, fr);
   assert.deepEqual(p.filter((e) => e.run).map((e) => e.step), ['weather']);
   const logged = Object.fromEntries(p.filter((e) => !e.run && e.log).map((e) => [e.step, e.skipped]));
-  assert.deepEqual(Object.keys(logged).sort(), ['meter:linky', 'tariff_prices:entsoe', 'tariff_prices:tounify']);
+  assert.deepEqual(Object.keys(logged).sort(), ['meter:linky', 'tariff_prices:entsoe', 'tounify', 'tounify_catalogue']);
   assert.match(logged['meter:linky'], /^disabled: adapter not built/);
-  assert.match(logged['tariff_prices:tounify'], /^disabled: adapter not built.*licence/);
+  // tounify is built and switched on, but its licence is unconfirmed: skipped, prices and catalogue alike.
+  assert.match(logged.tounify, /^unlicensed: tounify v3 \(preview API\)/);
+  assert.match(logged.tounify_catalogue, /^unlicensed: tounify v3 \(preview API\)/);
   assert.match(logged['tariff_prices:entsoe'], /^disabled: adapter not built.*token/);
   const quiet = p.filter((e) => !e.run && !e.log).map((e) => [e.step, e.skipped]);
   assert.deepEqual(quiet, [['sunsynk', 'not connected for this home'], ['tariff_prices:manual', 'typed in by the user or installer: nothing to fetch']]);
-  // A licence that is still unconfirmed skips the provider even once it is switched on.
-  db.prepare("UPDATE market_provider SET enabled = 1 WHERE market_code = 'FR' AND adapter = 'tounify'").run();
+  // A licence that is still unconfirmed skips the provider although it is switched on.
   assert.match(P.plan(db, fr).find((e) => e.adapter === 'tounify').skipped, /^unlicensed: /);
-  db.prepare("UPDATE market_provider SET enabled = 0 WHERE market_code = 'FR' AND adapter = 'tounify'").run();
 });
 
 test('a disabled provider is skipped with its reason and the next one by priority is used', () => {

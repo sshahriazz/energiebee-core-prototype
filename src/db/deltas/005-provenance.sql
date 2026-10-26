@@ -1,4 +1,4 @@
--- Delta 005: provenance. Applied after 004 by db.js on every open. Same applying rules as 002-004:
+-- Delta 005: provenance. Applied after 004 by db.js, once. Same applying rules as 002-004:
 -- statements end with ';' at the end of a line, a trigger ends with 'END;', an ADD COLUMN whose
 -- column exists is skipped, and every other statement may be run again.
 --
@@ -30,7 +30,7 @@ ALTER TABLE region ADD COLUMN origin TEXT CHECK (origin IS NULL OR origin IN ('s
 ALTER TABLE region ADD COLUMN origin_note TEXT;
 
 -- ───────────── Backfill ─────────────
--- Tax rules, on every application (only rows with no label): GB VAT is the registry's table; a rule
+-- Tax rules, when the delta is applied (only rows with no label): GB VAT is the registry's table; a rule
 -- marked unverified is a placeholder. The same notes as src/core/tax.js and db.js syncGbVat.
 UPDATE tax_rule SET origin = 'sourced', origin_note = 'src/db/registry.js VAT_RATES: GB domestic VAT 5 % (HMRC reduced rate for domestic fuel); electricity 0 % from 1 Oct 2026 as observed in Octopus published prices on 16 Oct 2026'
   WHERE origin IS NULL AND country = 'GB' AND code = 'vat' AND unverified = 0;

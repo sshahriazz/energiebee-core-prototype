@@ -1,4 +1,4 @@
--- Delta 007: contracted capacity. Applied after 006 by db.js on every open. Same applying rules as
+-- Delta 007: contracted capacity. Applied after 006 by db.js, once. Same applying rules as
 -- 002-006: statements end with ';' at the end of a line, an ADD COLUMN whose column exists is
 -- skipped, and every other statement may be run again.
 --

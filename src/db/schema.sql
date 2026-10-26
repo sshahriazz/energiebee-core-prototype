@@ -221,14 +221,18 @@ CREATE TABLE IF NOT EXISTS interval_fact (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS interval_current ON interval_fact (series_id, start_ts) WHERE superseded_at IS NULL;
 
+-- Bitemporal since delta 040: issued_at (s) is the provider's issue time, recorded_at (ms) when the
+-- core stored it; end_ts is in the key, so periods of two lengths from one start are both kept.
+-- A database from before 040 is rebuilt to this shape by the delta (every row copied).
 CREATE TABLE IF NOT EXISTS forecast_fact (
-  series_id   INTEGER NOT NULL REFERENCES series(id),
-  start_ts    INTEGER NOT NULL,
-  end_ts      INTEGER NOT NULL,
-  issued_at   INTEGER NOT NULL,
-  value       REAL,
-  raw_id      INTEGER REFERENCES raw_payload(id),
-  PRIMARY KEY (series_id, start_ts, issued_at),
+  series_id    INTEGER NOT NULL REFERENCES series(id),
+  start_ts     INTEGER NOT NULL,
+  end_ts       INTEGER NOT NULL,
+  issued_at    INTEGER NOT NULL,
+  value        REAL,
+  raw_id       INTEGER REFERENCES raw_payload(id),
+  recorded_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER) * 1000),   -- ms: when the core stored it
+  PRIMARY KEY (series_id, start_ts, end_ts, issued_at),
   CHECK (end_ts > start_ts)
 ) WITHOUT ROWID;
 

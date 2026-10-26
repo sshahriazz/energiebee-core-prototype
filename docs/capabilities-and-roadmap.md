@@ -39,14 +39,14 @@ Today one setup is proven with real data: a UK home with a Sunsynk inverter and 
 | UK suppliers other than Octopus | Meter and tariff data come through Octopus's API | Adapter per supplier, if it offers an API |
 | French Linky meter reader | Design only. Listed in the registry as the FR `meter` provider, switched off, with the note "adapter not built" | Local reader on an edge agent, cumulative index handling, consent per site |
 | Dutch P1 meter reader | Design only. Listed as the NL `meter` provider, switched off, "adapter not built" | Same pattern as Linky |
-| EU tariff and price source | No licensed source connected. tounify and ENTSO-E are listed for FR and NL, switched off | Choose and license one, then write its adapter |
+| EU tariff and price source | No licensed source connected. The tounify v3 adapter (an EU tariff source, not UK) is built and tested against captured FR and NL answers, but is off by default: its rows are switched on with the licence unconfirmed, so the plan skips it (`TOUNIFY_DEV=1` with a test token runs it for development). ENTSO-E is listed, switched off, not built | Get tounify's storage and reuse licence in writing (then set `licence_confirmed = 1`), or license another source |
 | UK carbon outside GB | NESO covers GB only. The `carbon` role is empty ("no provider for this market") outside GB | EU carbon source per country |
 
 ### What the provider registry does not do
 
 | Gap | Why | Work |
 |---|---|---|
-| No FR or NL adapters | The Linky, P1, tounify and ENTSO-E rows are placeholders (`origin = 'placeholder'`, `enabled = 0`). In FR and NL only weather fetches anything, and prices are typed in | Write the adapters (above), then switch the rows on |
+| No licensed FR or NL adapter | The Linky, P1 and ENTSO-E rows are placeholders (`origin = 'placeholder'`, `enabled = 0`). tounify v3 is built but unlicensed. In FR and NL only weather fetches anything, and prices are typed in | Write the meter adapters; confirm a price source's licence |
 | No secret store | Credentials stay in `.env` and are read for the `.env` home only. Any other home's account or inverter can be connected (its non-secret reference is stored) but its step is skipped with "no credentials" | A secret store, needed before a second real home |
 | No way to manage the registry from the app | Rows come from `src/db/seed/providers.js`. Switching a provider on or off is an SQL update. The only write endpoint is `POST /api/sites/:id/connections` | An admin endpoint or page, if operators need one |
 | No way to type in a tariff from the app | Manual prices exist as core functions (`createTariff`, `putRateRows` with origin `user`), used by the demos and tests. The Data & trust page says manual entry is allowed, but has no form | An endpoint and a form |
@@ -73,7 +73,7 @@ The core is built for one home at a time. Many homes need per-site scoping on th
 |---|---|---|---|
 | **Octopus public API** | UK prices and meter data | None | In use |
 | **Tariffscanner (Tariff Tribe)** | UK tariff catalogue only, 14 regions: single-rate, day/night and export rates (other rate types are skipped) | UK only. Called by the core with its own credential, within the 20-requests-a-minute limit, which every user of that credential shares. VAT basis not stated by the API | In use when the credential is set. Confirm with the Tariffscanner team the VAT basis of the prices and whether an EU product exists |
-| **tounify** | EU retail tariffs: supplier price, grid fees, taxes | Storage and reuse licence is unconfirmed. No standing, fixed or capacity charges. Serves only a few past days, so daily capture is mandatory | Get the licence terms in writing before building daily capture |
+| **tounify v3 (preview API)** | EU tariff source (not UK), FR and NL: per connection (one per home), the per-kWh series (energy, grid, fees, VAT apart) and the standing, capacity, metering and credit charges (`/components`) | **Built, off by default:** storage and reuse licence not confirmed in writing. v3 is a preview: fields may change without notice. Billed per registered connection on a production token. The free test token has tiny limits (100 requests a day, 20 companies and 20 tariffs in total, 25 connections), so the adapter guards a test token at 40 / 8 / 8 by default and stops the run on a 429. It serves only a few past days, so each day's series is captured and kept. Not verified without live calls: POST and PATCH bodies beyond the captured ones, Tempo, feed-in, real 304, 429 and 403 answers | Get the licence terms in writing; then switch `licence_confirmed` on and choose a production plan (the price per connection is not published while v3 is a preview) |
 | **ENTSO-E** | Wholesale day-ahead prices per bidding zone | Needs a registered token | Register for a token |
 | **Manual entry** | Any tariff typed by hand | No page or API yet: core functions only | Always available as a fallback. Listed for FR and NL as `manual` |
 
@@ -132,7 +132,7 @@ Predbat is an open-source battery planner. Every five minutes it predicts the ne
 ## 7. Suggested order
 
 1. **Verify before relying:** check the FR and NL tax values, the GB 0% VAT claim, the VAT basis of the Tariffscanner prices, the tounify licence and the PredHeat description.
-2. **Choose and license one EU price source,** then write its adapter.
+2. **License one EU price source.** The tounify v3 adapter is built and waits for its licence. Run it once on live data with `TOUNIFY_DEV=1` and a test token, within its allowance guard, to check what the captured answers could not show.
 3. **Write the first non-UK meter reader** (Linky or P1), with consent per site.
 4. **Add inverters on demand,** one adapter per vendor, driven by real customers.
 5. **Build the planner in shadow mode** and run it for at least two weeks on real data.

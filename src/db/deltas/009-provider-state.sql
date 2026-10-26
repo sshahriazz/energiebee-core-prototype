@@ -1,4 +1,4 @@
--- Delta 009: provider state. Applied after 008 by db.js on every open. Same applying rules as
+-- Delta 009: provider state. Applied after 008 by db.js, once. Same applying rules as
 -- 002-008: statements end with ';' at the end of a line, an ADD COLUMN whose column exists is
 -- skipped, and every other statement may be run again.
 --

@@ -6,9 +6,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOURCES, METRICS, VAT_RATES, GB_VAT_NOTE } from './registry.js';
 import { todMinute } from '../core/time.js';
-import { seedMarkets, seedBiddingZones } from './seed/markets.js';
-import { seedProviders } from './seed/providers.js';
-import { seedRegionsGb } from './seed/regions-gb.js';
+import { seedMarkets, seedBiddingZones, marketSeedPending } from './seed/markets.js';
+import { seedProviders, providerSeedPending } from './seed/providers.js';
+import { seedRegionsGb, regionSeedPending } from './seed/regions-gb.js';
+import { seedAttributeDefs, attributeSeedPending } from './seed/attributes.js';
+import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
 import { resolveRegion } from '../core/regions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +20,11 @@ export const dbFile = path.resolve(root, process.env.DB_FILE || 'data/core.db');
 fs.mkdirSync(path.dirname(dbFile), { recursive: true });
 
 export const db = new DatabaseSync(dbFile);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
+// busy_timeout first: a second process (a script, a test, a server started during a sync) waits up
+// to 5 s for another connection's write instead of failing at once with "database is locked".
+// An up-to-date database is opened without writing anything (below), so opening it never waits.
+export const BUSY_TIMEOUT_MS = 5000;
+db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`);
 // Tariff agreements became versioned (16 Oct 2026). The old table had UNIQUE (device_id, valid_from),
 // which a superseded version would break, so it is rebuilt once before the schema is applied.
 const agreementCols = db.prepare("SELECT name FROM pragma_table_info('tariff_agreement')").all().map((c) => c.name);
@@ -127,13 +133,16 @@ function upgradeServing() {
 
 // One transaction around fn. Re-entrant: a tx() inside another joins the outer one (a writer that
 // stores windows, calendar days and rate rows together commits or rolls back all of them).
+// BEGIN IMMEDIATE takes the write lock at the start, waiting up to busy_timeout for another
+// connection's write. A deferred BEGIN would read first and then fail at once (SQLITE_BUSY, no
+// wait) if another connection committed in between, when it tried to write.
 let txDepth = 0;
 export function tx(fn) {
   if (txDepth > 0) {
     txDepth++;
     try { return fn(); } finally { txDepth--; }
   }
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   txDepth++;
   try {
     const out = fn();
@@ -148,7 +157,20 @@ export function tx(fn) {
 }
 
 // Registry rows are data: adding a source or metric never changes the schema.
+// These rows are owned by the code (registry.js), not by an operator: a missing row is inserted and
+// a row that differs from the code is brought back in line. Only rows that differ are written, so
+// an open of an up-to-date database writes nothing (and takes no write lock).
 function seedRegistry() {
+  const src = new Map(db.prepare('SELECT code, name, contract FROM source').all().map((r) => [r.code, r]));
+  const met = new Map(db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric').all().map((r) => [r.code, r]));
+  const vat = new Map(db.prepare('SELECT fuel, direction, rate, valid_from, valid_to FROM vat_rate').all().map((r) => [`${r.fuel}|${r.direction}|${r.valid_from}`, r]));
+  const sources = SOURCES.filter((s) => { const r = src.get(s.code); return !r || r.name !== s.name || r.contract !== JSON.stringify(s.contract); });
+  const metrics = METRICS.filter((m) => {
+    const r = met.get(m.code);
+    return !r || r.label !== m.label || r.unit !== m.unit || r.time_role !== m.timeRole || r.aggregation !== m.aggregation || r.domain !== m.domain;
+  });
+  const rates = VAT_RATES.filter((v) => { const r = vat.get(`${v.fuel}|${v.direction}|${v.validFrom}`); return !r || r.rate !== v.rate || r.valid_to !== (v.validTo ?? null); });
+  if (!sources.length && !metrics.length && !rates.length) return;
   const upSource = db.prepare(
     `INSERT INTO source (code, name, contract) VALUES (?, ?, ?)
      ON CONFLICT(code) DO UPDATE SET name = excluded.name, contract = excluded.contract`);
@@ -159,9 +181,9 @@ function seedRegistry() {
   const upVat = db.prepare(
     `INSERT OR REPLACE INTO vat_rate (fuel, direction, rate, valid_from, valid_to) VALUES (?, ?, ?, ?, ?)`);
   tx(() => {
-    for (const s of SOURCES) upSource.run(s.code, s.name, JSON.stringify(s.contract));
-    for (const m of METRICS) upMetric.run(m.code, m.label, m.unit, m.timeRole, m.aggregation, m.domain);
-    for (const v of VAT_RATES) upVat.run(v.fuel, v.direction, v.rate, v.validFrom, v.validTo ?? null);
+    for (const s of sources) upSource.run(s.code, s.name, JSON.stringify(s.contract));
+    for (const m of metrics) upMetric.run(m.code, m.label, m.unit, m.timeRole, m.aggregation, m.domain);
+    for (const v of rates) upVat.run(v.fuel, v.direction, v.rate, v.validFrom, v.validTo ?? null);
   });
 }
 seedRegistry();
@@ -181,26 +203,56 @@ if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'slo
 }
 // Devices and agreements from before versioning: when each was first known is taken from the
 // sync log (the first sync whose step for that provider succeeded), else now. Never left empty,
-// so a rebuild "as known at" a moment always has an answer.
-db.exec(`UPDATE device SET recorded_at = COALESCE((SELECT MIN(r.finished_at) * 1000 FROM sync_run r, json_each(r.detail) j
+// so a rebuild "as known at" a moment always has an answer. Checked first, so an up-to-date open
+// runs no UPDATE (an UPDATE takes the write lock even when it changes no row).
+if (db.prepare('SELECT 1 FROM device WHERE recorded_at IS NULL UNION ALL SELECT 1 FROM tariff_agreement WHERE recorded_at IS NULL LIMIT 1').get()) db.exec(`UPDATE device SET recorded_at = COALESCE((SELECT MIN(r.finished_at) * 1000 FROM sync_run r, json_each(r.detail) j
     WHERE r.site_id = device.site_id AND json_valid(r.detail) AND json_extract(j.value, '$.step') = (CASE device.provider WHEN 'env' THEN 'tariff' ELSE 'octopus' END)
       AND json_extract(j.value, '$.ok') = 1), CAST(strftime('%s', 'now') AS INTEGER) * 1000) WHERE recorded_at IS NULL;
   UPDATE tariff_agreement SET recorded_at = COALESCE((SELECT recorded_at FROM device WHERE device.id = tariff_agreement.device_id), CAST(strftime('%s', 'now') AS INTEGER) * 1000)
     WHERE recorded_at IS NULL;`);
 // The primary key (series_id, ts, recorded_at) already serves every reading lookup; this index was never used.
-db.exec('DROP INDEX IF EXISTS reading_current');
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'reading_current'").get()) db.exec('DROP INDEX reading_current');
 
 // ───────────── Deltas: money and tax (002), markets and regions (003), tariff kind and ledger currency (004),
 // provenance labels (005), register windows and estimated rates (006), contracted capacity (007),
 // market provider registry (008), provider state: rate-limit cooldown and sweep progress (009),
-// provider owner 'core' or 'external' (010: market_provider rebuilt, same rows) ─────────────
-// Applied on every open, after schema.sql and after vat_rate is seeded (002 copies GB VAT from it
-// into tax_rule). The rules each delta states at its top: statements end with ';' at the end of a
-// line, a trigger ends with a line 'END;', and an ADD COLUMN whose column exists is skipped (SQLite
-// has no ADD COLUMN IF NOT EXISTS). Everything else in a delta is safe to run again, and its
-// backfills are guarded by schema_delta, so homes and tariffs that exist the first time a delta
-// runs become GB / GBP / market GB once, and later ones are written with their own values.
-export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff-ledger.sql', '005-provenance.sql', '006-register-window.sql', '007-capacity.sql', '008-market-provider.sql', '009-provider-state.sql', '010-provider-owner.sql'];
+// provider owner 'core' or 'external' (010: market_provider rebuilt, same rows), tounify v3:
+// tariff.taxes_in_price and the tounify rows switched on, unlicensed (011), overlap guards on UPDATE,
+// register-window overlap and consistency checks a NULL cannot bypass (012), indexes for the
+// history and "as known at" reads, foreign-key child indexes and series.max_span_s (013) ─────────────
+// Applied in order after schema.sql and after vat_rate is seeded (002 copies GB VAT from it into
+// tax_rule), each ONCE: a delta whose name is in schema_delta (every delta records itself as its
+// last statement) is skipped, so an open of an up-to-date database runs no delta and writes nothing.
+// A recorded delta is applied again only when an object it creates is missing (a table, index or
+// trigger named in a CREATE ... IF NOT EXISTS, or an ADD COLUMN's column; for example a trigger lost
+// with a table that db.js rebuilt): deltas stay safe to run again, so this only restores what is missing.
+// A change to the schema is therefore a NEW delta file, never an edit of an applied one.
+// 010 rebuilds market_provider only while the table still has an older owner CHECK (a table created
+// by today's 008 already has 'core'/'external'); otherwise it is recorded without the rebuild.
+// The rules each delta states at its top: statements end with ';' at the end of a line, a trigger
+// ends with a line 'END;', and an ADD COLUMN whose column exists is skipped (SQLite has no ADD
+// COLUMN IF NOT EXISTS). Backfills are also guarded by schema_delta, so homes and tariffs that exist
+// the first time a delta runs become GB / GBP / market GB once, and later ones keep their own values.
+export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff-ledger.sql', '005-provenance.sql', '006-register-window.sql', '007-capacity.sql', '008-market-provider.sql', '009-provider-state.sql', '010-provider-owner.sql', '011-tounify.sql', '012-integrity.sql', '013-indexes.sql',
+  // Phase B configuration (020-029): attribute_def, attribute_value, device_kind and site_attribute.origin (020);
+  // setting_def, site_setting (021); site_version, tariff_version and their triggers, "as known at" settings (022);
+  // refs (catalogue ids) on attribute_def and setting_def, and the first seed's unused rows replaced (023);
+  // 024 adds the site and tariff columns 022 copies to databases from an early schema, so it runs before 022.
+  '020-attribute-registry.sql', '021-site-setting.sql', '024-site-tariff-columns.sql', '022-site-version.sql', '023-registry-refs.sql',
+  // Phase B plans and commands (030-039), tables only, no planner yet: device_action, device_capability,
+  // plan_run, plan_run_device, plan_slot, plan_input_ref, plan_score and their views (030); command, command_log (031);
+  // the columns, 'auto' / 'release' actions and window views the requirements catalogue needs (032);
+  // those two actions added to the device_kind rows seeded before 032 (033).
+  '030-plan.sql', '031-command.sql', '032-plan-requirements.sql', '033-device-kind-actions.sql',
+  // Phase B data (040-049): forecast_fact bitemporal, its key with end_ts (040, a table rebuild that keeps
+  // every row, index and trigger); site_heat_slot, the heating serving table (041).
+  '040-forecast-bitemporal.sql', '041-heat-slot.sql',
+  // Phase B planner read layer (050-059): rate rows by tariff, component and register over every version,
+  // for "as known at" price reads (050).
+  '050-planner-read.sql',
+  // Phase B coverage matrix (060-069): the schema elements docs/coverage-matrix.json found missing that registry rows
+  // cannot hold: the prices and clipping a plan used per slot, and the planning design's tenant record (060).
+  '060-coverage.sql'];
 
 export function deltaStatements(sql) {
   const out = [];
@@ -226,10 +278,63 @@ export function applyDelta(sql) {
     }
   });
 }
-for (const f of DELTAS) applyDelta(fs.readFileSync(path.join(here, 'deltas', f), 'utf8'));
 
-// GB VAT has one source, VAT_RATES in registry.js: vat_rate is re-seeded from it on every open
-// (above) and delta 002 copies it into tax_rule once. When VAT_RATES changes later, the current GB
+// The tables, indexes and triggers a delta creates (CREATE ... IF NOT EXISTS) and the columns it adds.
+export function deltaObjects(sql) {
+  const code = sql.replace(/--.*$/gm, '');
+  const objects = [...code.matchAll(/CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(?:main\.)?(\w+)/gi)].map((m) => m[1]);
+  const columns = [...code.matchAll(/ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/gi)].map((m) => [m[1], m[2]]);
+  return { objects, columns };
+}
+
+// Whether a delta has to run on this open (see the note above DELTAS).
+export function deltaPending(name, sql) {
+  const recorded = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_delta'").get()
+    && db.prepare('SELECT 1 FROM schema_delta WHERE name = ?').get(name);
+  if (!recorded) return true;
+  const { objects, columns } = deltaObjects(sql);
+  const have = db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?');
+  const col = db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?');
+  return objects.some((o) => !have.get(o)) || columns.some(([t, c]) => !col.get(t, c));
+}
+
+// Delta 010's rebuild is needed only while market_provider still has an older owner CHECK.
+function marketProviderCurrent() {
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'market_provider'").get()?.sql;
+  return Boolean(sql && /CHECK \(owner IN \('core', 'external'\)\)/.test(sql));
+}
+
+export function applyDeltas() {
+  for (const f of DELTAS) {
+    const name = f.replace(/\.sql$/, '');
+    const sql = fs.readFileSync(path.join(here, 'deltas', f), 'utf8');
+    if (!deltaPending(name, sql)) continue;
+    if (name === '010-provider-owner' && marketProviderCurrent()) {
+      tx(() => db.exec(`CREATE INDEX IF NOT EXISTS market_provider_role ON market_provider (role, market_code, priority);
+        INSERT OR IGNORE INTO schema_delta (name, applied_at) VALUES ('${name}', CAST(strftime('%s', 'now') AS INTEGER) * 1000);`));
+      continue;
+    }
+    if (name === '040-forecast-bitemporal') { keepTableObjects('forecast_fact', () => applyDelta(sql)); continue; }
+    applyDelta(sql);
+  }
+}
+
+// A delta that rebuilds a table (a key or a CHECK cannot be altered) drops the indexes and triggers
+// other changes put on it (013's forecast_issued, forecast_fact_raw and max_span_s triggers on
+// forecast_fact): each is created again from its stored SQL in the same transaction, after the rows
+// are copied back, so the rebuild loses none and a later open has nothing to restore.
+function keepTableObjects(table, fn) {
+  tx(() => {
+    const kept = db.prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL").all(table);
+    fn();
+    const has = db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?');
+    for (const o of kept) if (!has.get(o.type, o.name)) db.exec(o.sql);
+  });
+}
+applyDeltas();
+
+// GB VAT has one source, VAT_RATES in registry.js: vat_rate is kept in line with it on every open
+// (seedRegistry, above; written only where it differs) and delta 002 copies it into tax_rule once. When VAT_RATES changes later, the current GB
 // VAT rules are superseded (kept, so an "as known at" rebuild still sees what was known then) and
 // the new set is recorded now. Returns true when it changed anything.
 export function syncGbVat(rates = VAT_RATES) {
@@ -249,8 +354,17 @@ export function syncGbVat(rates = VAT_RATES) {
 syncGbVat();
 // Reference rows: markets (FR, NL and the unverified stand-ins), one bidding-zone region per market,
 // the 14 GB distribution regions with their Octopus, Tariffscanner id and name aliases, and the
-// providers of each market's roles (seed/providers.js; their enabled and licence switches are kept). Upserts.
-tx(() => { seedMarkets(db); seedBiddingZones(db); seedRegionsGb(db); seedProviders(db); });
+// providers of each market's roles (seed/providers.js). Only missing rows are inserted, so an
+// operator's edit (a market's intervals, a region's name, an alias, a provider's priority or switches)
+// is never overwritten. The one exception: the descriptive columns of a provider row (owner, scope,
+// needs_credentials, origin, note) follow the adapter code, written only where they differ. The
+// transaction is opened only when something is missing, so an up-to-date open takes no write lock.
+if (marketSeedPending(db) || regionSeedPending(db) || providerSeedPending(db)) {
+  tx(() => { seedMarkets(db); seedBiddingZones(db); seedRegionsGb(db); seedProviders(db); });
+}
+// Planner configuration registries (attribute_def, device_kind, setting_def: seed/attributes.js,
+// seed/settings.js): only missing rows are inserted, and only when one is missing.
+if (attributeSeedPending(db) || settingSeedPending(db)) tx(() => { seedAttributeDefs(db); seedSettingDefs(db); });
 // A GB home's distribution region, from the Octopus GSP letter that geo.js stored on the site
 // (from the postcode lookup): recorded once in site_region when the home has no current gb_dno
 // row. A row already there (an installer's correction) is never overwritten.
@@ -278,3 +392,16 @@ export function metricId(code) {
 }
 // Raw payload files live next to the database file, wherever DB_FILE puts it.
 export const dataDir = path.dirname(dbFile);
+
+// Planner statistics (sqlite_stat1). PRAGMA optimize runs ANALYZE only on the tables whose
+// statistics are missing or out of date (cheap when none are), so the planner keeps choosing the
+// indexes as the tables grow. Run after a rebuild (build.js processQueue, the rebuild endpoint) and
+// when the connection is closed (closeDb). Best effort: a failure (a lock held past busy_timeout)
+// is left for the next run.
+export function optimizeDb() {
+  try { db.exec('PRAGMA optimize'); return true; } catch { return false; }
+}
+export function closeDb() {
+  optimizeDb();
+  db.close();
+}

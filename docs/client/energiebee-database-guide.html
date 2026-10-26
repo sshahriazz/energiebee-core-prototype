@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EnergieBee Database Guide</title>
+<meta name="description" content="A plain-language guide to the EnergieBee core database, prepared by Technext.">
+<style>/* Technext client-guide styles: shared by both EnergieBee client guides. A4, two pages each. */
+@page { size: A4; margin: 0; }
+:root {
+  --orange: #eb6126; --orange-dk: #be4815; --pale: #fff1e9; --pale2: #fff7f2;
+  --ink: #151515; --muted: #56636e; --line: #e3e6e9; --soft: #f5f6f7;
+  --solar: #e9a10f; --battery: #1fa67a; --grid: #2f74d0; --gas: #d9534f;
+}
+* { box-sizing: border-box; }
+html { background: #e9e9e9; }
+body { margin: 0; font-family: "Helvetica Neue", Arial, sans-serif; color: var(--ink); font-size: 8.7pt; line-height: 1.42;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.page { width: 210mm; height: 297mm; margin: 10mm auto; background: #fff; position: relative; overflow: hidden;
+  padding: 12mm 13mm 15mm; box-shadow: 0 2px 14px rgba(0,0,0,.12); }
+@media print { html { background: #fff; } .page { margin: 0; box-shadow: none; break-after: page; } .page:last-child { break-after: auto; } }
+
+/* Header */
+.mast { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: 6mm; }
+.mast img { height: 11mm; }
+.mast .tag { text-align: right; font-size: 7.6pt; color: var(--muted); line-height: 1.5; }
+.mast .tag b { color: var(--orange); letter-spacing: 1.6px; font-size: 7.4pt; }
+.hero { padding: 6mm 0 4mm; }
+.eyebrow { color: var(--orange); font-weight: 700; letter-spacing: 2px; font-size: 7.5pt; text-transform: uppercase; }
+h1 { font-size: 24pt; line-height: 1.08; letter-spacing: -.8px; margin: 2mm 0 2mm; }
+.sub { font-size: 11pt; color: var(--muted); max-width: 165mm; margin: 0; }
+.rule { width: 16mm; height: 1.4mm; background: var(--orange); margin-top: 4mm; }
+.mini-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 3mm; margin-bottom: 4mm; }
+.mini-head img { height: 7mm; }
+.mini-head span { font-size: 7.4pt; color: var(--muted); letter-spacing: 1.4px; text-transform: uppercase; }
+
+h2 { font-size: 12.5pt; margin: 3.6mm 0 1.8mm; letter-spacing: -.2px; display: flex; align-items: center; gap: 2.5mm; }
+h2 .n { display: inline-grid; place-items: center; width: 6mm; height: 6mm; border-radius: 50%; background: var(--orange); color: #fff; font-size: 8.5pt; flex: none; }
+h3 { font-size: 9.6pt; margin: 0 0 1mm; }
+p { margin: 0 0 2mm; }
+.lead { font-size: 9.6pt; }
+.muted { color: var(--muted); }
+code, .mono { font-family: Menlo, Consolas, monospace; font-size: 7.3pt; color: #3a4a57; }
+.callout { background: var(--pale2); border-left: 1.2mm solid var(--orange); padding: 3mm 4mm; border-radius: 0 2mm 2mm 0; }
+.callout p:last-child { margin: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2.6mm; }
+.card { border: 1px solid var(--line); border-radius: 2.2mm; padding: 2.2mm 2.8mm; background: #fff; }
+.card.tint { background: var(--soft); border-color: transparent; }
+.card .k { font-size: 7pt; color: var(--orange-dk); font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: .6mm; }
+.card p { margin: 0 0 1.2mm; }
+.card p:last-child { margin: 0; }
+.tables { font-size: 7pt; color: var(--muted); margin-top: 1mm; }
+table { width: 100%; border-collapse: collapse; font-size: 8pt; }
+th { background: var(--ink); color: #fff; text-align: left; font-weight: 600; padding: 1.6mm 2.2mm; }
+td { padding: 1.5mm 2.2mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr:nth-child(even) td { background: #fafafa; }
+.dot { display: inline-block; width: 2.2mm; height: 2.2mm; border-radius: 50%; margin-right: 1.4mm; vertical-align: 0; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2.4mm; }
+.stat { background: var(--ink); color: #fff; border-radius: 2mm; padding: 2.4mm 3mm; }
+.stat b { display: block; font-size: 13pt; color: #fff; letter-spacing: -.3px; }
+.stat span { font-size: 7pt; color: #c9ced2; }
+.pill { display: inline-block; font-size: 6.8pt; font-weight: 700; padding: .4mm 1.8mm; border-radius: 3mm; letter-spacing: .4px; }
+.pill.ok { background: #e2f4ea; color: #19744a; } .pill.wait { background: #fdf0d8; color: #8a5a00; } .pill.no { background: #f1f2f3; color: #5d6872; }
+svg text { font-family: "Helvetica Neue", Arial, sans-serif; }
+.foot { position: absolute; left: 13mm; right: 13mm; bottom: 7mm; display: flex; justify-content: space-between; font-size: 7pt; color: var(--muted); border-top: 1px solid var(--line); padding-top: 2mm; }
+.foot b { color: var(--orange); }
+</style>
+</head>
+<body>
+
+<!-- ═════════════ PAGE 1 ═════════════ -->
+<section class="page">
+  <div class="mast">
+    <img src="data:image/png;base64,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" alt="Technext">
+    <div class="tag"><b>CLIENT GUIDE 01</b><br>Prepared by Technext for EnergieBee<br>26 October 2026</div>
+  </div>
+
+  <div class="hero">
+    <div class="eyebrow">EnergieBee core · Database</div>
+    <h1>How the EnergieBee database works</h1>
+    <p class="sub">What it remembers, where the information comes from, how the pieces fit together, and how the website uses it. Explained in plain words, no technical background needed.</p>
+    <div class="rule"></div>
+  </div>
+
+  <div class="callout">
+    <p class="lead"><b>The big idea:</b> think of the database as a <b>home's energy diary</b>. Every few minutes, helpers outside the house (the solar inverter, the smart meter, the energy supplier, the weather service) send in news. The diary keeps every letter it receives, copies the important numbers into a neat notebook, and then writes a <b>report card for every half-hour</b>: how much sunshine power was made, how much was bought and sold, what it cost and what it saved. The website reads those report cards.</p>
+  </div>
+
+  <h2><span class="n">1</span>From the outside world to your screen</h2>
+  <svg viewBox="0 0 920 262" width="100%" role="img" aria-label="Information flows from providers into raw files, then facts, then half-hour report cards, then the website">
+    <defs>
+      <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#eb6126"/></marker>
+    </defs>
+    <!-- providers -->
+    <text x="0" y="14" font-size="12" font-weight="700" fill="#151515">The helpers</text>
+    <text x="0" y="29" font-size="10" fill="#56636e">who send in news</text>
+    <g font-size="10.5" fill="#151515">
+      <rect x="0" y="40"  width="150" height="22" rx="6" fill="#fff4dc"/><circle cx="12" cy="51" r="4" fill="#e9a10f"/><text x="22" y="55">Solar inverter · Sunsynk</text>
+      <rect x="0" y="66"  width="150" height="22" rx="6" fill="#e6f0fc"/><circle cx="12" cy="77" r="4" fill="#2f74d0"/><text x="22" y="81">Smart meter · Octopus</text>
+      <rect x="0" y="92"  width="150" height="22" rx="6" fill="#e6f0fc"/><circle cx="12" cy="103" r="4" fill="#2f74d0"/><text x="22" y="107">Prices · Octopus tariffs</text>
+      <rect x="0" y="118" width="150" height="22" rx="6" fill="#f1f2f3"/><circle cx="12" cy="129" r="4" fill="#56636e"/><text x="22" y="133">Weather · Open-Meteo</text>
+      <rect x="0" y="144" width="150" height="22" rx="6" fill="#fff4dc"/><circle cx="12" cy="155" r="4" fill="#e9a10f"/><text x="22" y="159">Solar forecast · Quartz</text>
+      <rect x="0" y="170" width="150" height="22" rx="6" fill="#e3f5ec"/><circle cx="12" cy="181" r="4" fill="#1fa67a"/><text x="22" y="185">Grid carbon · NESO</text>
+      <rect x="0" y="196" width="150" height="22" rx="6" fill="#fde9e8"/><circle cx="12" cy="207" r="4" fill="#d9534f"/><text x="22" y="211">Gas energy · National Gas</text>
+      <rect x="0" y="222" width="150" height="22" rx="6" fill="#f1f2f3"/><circle cx="12" cy="233" r="4" fill="#56636e"/><text x="22" y="237">Location · postcodes.io</text>
+    </g>
+    <path d="M156,140 H186" stroke="#eb6126" stroke-width="2.5" marker-end="url(#a)"/>
+
+    <!-- step boxes -->
+    <g>
+      <rect x="192" y="40" width="160" height="150" rx="10" fill="#fff" stroke="#eb6126" stroke-width="1.6"/>
+      <rect x="192" y="40" width="160" height="30" rx="10" fill="#eb6126"/><rect x="192" y="58" width="160" height="12" fill="#eb6126"/>
+      <text x="204" y="60" font-size="12" font-weight="700" fill="#fff">① The shoebox</text>
+      <text x="204" y="90" font-size="10.5" fill="#151515">Every reply is kept</text>
+      <text x="204" y="104" font-size="10.5" fill="#151515">exactly as it arrived,</text>
+      <text x="204" y="118" font-size="10.5" fill="#151515">like original letters.</text>
+      <text x="204" y="140" font-size="9.5" fill="#56636e">Proof we can always</text>
+      <text x="204" y="153" font-size="9.5" fill="#56636e">go back and look at.</text>
+      <text x="204" y="178" font-size="9" fill="#be4815" font-family="Menlo,monospace">raw_payload</text>
+    </g>
+    <path d="M356,115 H382" stroke="#eb6126" stroke-width="2.5" marker-end="url(#a)"/>
+    <g>
+      <rect x="388" y="40" width="160" height="150" rx="10" fill="#fff" stroke="#eb6126" stroke-width="1.6"/>
+      <rect x="388" y="40" width="160" height="30" rx="10" fill="#eb6126"/><rect x="388" y="58" width="160" height="12" fill="#eb6126"/>
+      <text x="400" y="60" font-size="12" font-weight="700" fill="#fff">② The notebook</text>
+      <text x="400" y="90" font-size="10.5" fill="#151515">Numbers copied out,</text>
+      <text x="400" y="104" font-size="10.5" fill="#151515">each with when it</text>
+      <text x="400" y="118" font-size="10.5" fill="#151515">happened and when we</text>
+      <text x="400" y="132" font-size="10.5" fill="#151515">learned it. Never erased.</text>
+      <text x="400" y="153" font-size="9.5" fill="#56636e">“The truth”</text>
+      <text x="400" y="178" font-size="9" fill="#be4815" font-family="Menlo,monospace">reading · interval_fact</text>
+    </g>
+    <path d="M552,115 H578" stroke="#eb6126" stroke-width="2.5" marker-end="url(#a)"/>
+    <g>
+      <rect x="584" y="40" width="160" height="150" rx="10" fill="#151515"/>
+      <text x="596" y="60" font-size="12" font-weight="700" fill="#fff">③ The report cards</text>
+      <text x="596" y="90" font-size="10.5" fill="#fff">One card per half-hour</text>
+      <text x="596" y="104" font-size="10.5" fill="#fff">and one per day: energy,</text>
+      <text x="596" y="118" font-size="10.5" fill="#fff">who fed whom, money,</text>
+      <text x="596" y="132" font-size="10.5" fill="#fff">carbon and a status.</text>
+      <text x="596" y="153" font-size="9.5" fill="#c9ced2">Rebuilt from ② any time.</text>
+      <text x="596" y="178" font-size="9" fill="#ffb48f" font-family="Menlo,monospace">site_hh · site_day</text>
+    </g>
+    <path d="M748,115 H774" stroke="#eb6126" stroke-width="2.5" marker-end="url(#a)"/>
+    <g>
+      <rect x="780" y="40" width="140" height="150" rx="10" fill="#fff1e9"/>
+      <text x="792" y="60" font-size="12" font-weight="700" fill="#151515">④ The website</text>
+      <rect x="792" y="72" width="116" height="10" rx="3" fill="#eb6126" opacity=".85"/>
+      <rect x="792" y="88" width="54" height="30" rx="3" fill="#2f74d0" opacity=".7"/><rect x="852" y="88" width="56" height="30" rx="3" fill="#1fa67a" opacity=".7"/>
+      <rect x="792" y="124" width="116" height="8" rx="3" fill="#e9a10f" opacity=".8"/>
+      <text x="792" y="152" font-size="10.5" fill="#151515">Reads the report</text>
+      <text x="792" y="166" font-size="10.5" fill="#151515">cards and shows</text>
+      <text x="792" y="180" font-size="10.5" fill="#151515">charts and bills.</text>
+    </g>
+
+    <!-- checker -->
+    <path d="M468,194 V214 H520" stroke="#1fa67a" stroke-width="1.6" fill="none" stroke-dasharray="4 3"/>
+    <path d="M664,194 V214 H620" stroke="#1fa67a" stroke-width="1.6" fill="none" stroke-dasharray="4 3"/>
+    <rect x="520" y="202" width="100" height="40" rx="8" fill="#e3f5ec"/>
+    <text x="531" y="218" font-size="10.5" font-weight="700" fill="#19744a">✓ The checker</text>
+    <text x="531" y="232" font-size="9" fill="#19744a">marks the homework</text>
+    <text x="192" y="222" font-size="9.5" fill="#56636e">New news arrives about every</text>
+    <text x="192" y="236" font-size="9.5" fill="#56636e">10 minutes; cards update by themselves.</text>
+  </svg>
+
+  <h2><span class="n">2</span>Where the information comes from</h2>
+  <table>
+    <thead><tr><th style="width:24%">Helper</th><th style="width:38%">What it tells us</th><th>A simple example</th></tr></thead>
+    <tbody>
+      <tr><td><span class="dot" style="background:var(--solar)"></span><b>Solar inverter</b> (Sunsynk)</td><td>Sunshine power made, battery in and out, battery charge level, every 5 minutes.</td><td>“At 12:05 the panels made 1.2 kW and the battery was 82% full.”</td></tr>
+      <tr><td><span class="dot" style="background:var(--grid)"></span><b>Smart meter</b> (Octopus)</td><td>Electricity bought and sold, and gas used, per half-hour. Arrives about a day late.</td><td>“Between 18:00 and 18:30 the house bought 0.9 kWh.”</td></tr>
+      <tr><td><span class="dot" style="background:var(--grid)"></span><b>Tariff prices</b> (Octopus)</td><td>The price of each unit, the daily standing charge and the export price, with dates.</td><td>“Night power costs 7.6p; daytime costs 32.1p.”</td></tr>
+      <tr><td><span class="dot" style="background:var(--solar)"></span><b>Forecasts</b> (Quartz, Open-Meteo)</td><td>How much sun to expect, and the weather and temperature outside.</td><td>“Tomorrow should bring about 4 kWh of solar.”</td></tr>
+      <tr><td><span class="dot" style="background:var(--battery)"></span><b>Grid carbon</b> (NESO)</td><td>How clean the grid's electricity is in the home's region.</td><td>“Right now each kWh from the grid made 14 g of CO₂.”</td></tr>
+      <tr><td><span class="dot" style="background:var(--gas)"></span><b>Gas energy</b> (National Gas)</td><td>How much energy is in a unit of gas, so meter readings can turn into kWh.</td><td>“One cubic metre of gas held about 11 kWh today.”</td></tr>
+      <tr><td><span class="dot" style="background:var(--muted)"></span><b>Location &amp; catalogue</b></td><td>postcodes.io finds the home's region; Tariffscanner lists tariffs on sale to compare.</td><td>“This postcode is in grid region G.”</td></tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:2mm">Each helper has a <b>“connector”</b> that knows how to talk to it. The home never calls a helper directly; the database records which helper fills which job for each country.</p>
+
+  <div class="foot"><span><b>Technext</b> · technext.it · +1 302 433 6002 · Wilmington, DE, US</span><span>EnergieBee database guide · 1 / 2</span></div>
+</section>
+
+<!-- ═════════════ PAGE 2 ═════════════ -->
+<section class="page">
+  <div class="mini-head"><img src="data:image/png;base64,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" alt="Technext"><span>EnergieBee core · Database guide</span></div>
+
+  <h2 style="margin-top:0"><span class="n">3</span>The six drawers: what the database stores</h2>
+  <p>The database has <b>53 tables</b> (a table is a labelled list, like a spreadsheet tab), kept in six drawers:</p>
+  <div class="grid3">
+    <div class="card"><div class="k">🏠 Who &amp; where</div><p>The home, its country, region, currency and time zone; its meters, inverter and car; and which helpers it is connected to.</p><div class="tables"><code>site · device · connection · market · region</code></div></div>
+    <div class="card"><div class="k">💷 Prices</div><p>Every tariff, its prices over time, taxes such as VAT, and which tariff each meter was on, on which dates.</p><div class="tables"><code>tariff · rate_interval · tariff_agreement · tax_rule</code></div></div>
+    <div class="card"><div class="k">📒 The truth</div><p>The shoebox of original replies, plus every number taken from them: readings, half-hour amounts and forecasts.</p><div class="tables"><code>raw_payload · reading · interval_fact · forecast_fact · series</code></div></div>
+    <div class="card"><div class="k">📊 Report cards</div><p>The ready-to-show results: one row per half-hour and one per day, with energy, money, carbon and status.</p><div class="tables"><code>site_hh · site_day</code></div></div>
+    <div class="card"><div class="k">✅ Checks &amp; history</div><p>Each day's cross-checks, every time a day's figures changed and why, corrections, and a log of each sync.</p><div class="tables"><code>check_result · site_day_revision · fact_correction · sync_run</code></div></div>
+    <div class="card tint"><div class="k">🔮 Ready for later</div><p>Space for future battery plans and device commands. The shelves are built; the planner that fills them is not built yet.</p><div class="tables"><code>plan_run · plan_slot · command</code></div></div>
+  </div>
+
+  <h2><span class="n">4</span>How the tables hold hands</h2>
+  <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:4mm;align-items:center">
+    <svg viewBox="0 0 540 300" width="100%" style="max-height:52mm" role="img" aria-label="The home sits in the middle, linked to its place, devices, tariff, facts, checks and report cards">
+      <g stroke="#cfd5da" stroke-width="2"><line x1="270" y1="150" x2="100" y2="43"/><line x1="270" y1="150" x2="440" y2="43"/><line x1="270" y1="150" x2="80" y2="150"/><line x1="270" y1="150" x2="460" y2="150"/><line x1="270" y1="150" x2="100" y2="257"/><line x1="270" y1="150" x2="440" y2="257"/></g>
+      <g font-size="11" fill="#56636e" font-style="italic" text-anchor="middle"><text x="188" y="96">lives in</text><text x="352" y="96">owns</text><text x="189" y="142">is on a</text><text x="351" y="142">stored as</text><text x="186" y="214">checked by</text><text x="354" y="214">summed into</text></g>
+      <circle cx="270" cy="150" r="52" fill="#eb6126"/>
+      <text x="270" y="147" text-anchor="middle" font-size="16" font-weight="700" fill="#fff">The home</text>
+      <text x="270" y="165" text-anchor="middle" font-size="10" fill="#fff" font-family="Menlo,monospace">site</text>
+      <g font-size="13.5" text-anchor="middle" fill="#151515"><rect x="20" y="18" width="160" height="50" rx="9" fill="#f1f2f3"/><text x="100" y="39" font-weight="700">Place</text><text x="100" y="56" font-size="11" fill="#56636e">country · region · currency</text><rect x="360" y="18" width="160" height="50" rx="9" fill="#f1f2f3"/><text x="440" y="39" font-weight="700">Devices</text><text x="440" y="56" font-size="11" fill="#56636e">meters · inverter · car</text><rect x="0" y="125" width="160" height="50" rx="9" fill="#e6f0fc"/><text x="80" y="146" font-weight="700">Tariff</text><text x="80" y="163" font-size="11" fill="#56636e">prices · taxes · dates</text><rect x="380" y="125" width="160" height="50" rx="9" fill="#fff4dc"/><text x="460" y="146" font-weight="700">Facts</text><text x="460" y="163" font-size="11" fill="#56636e">readings with a source</text><rect x="20" y="232" width="160" height="50" rx="9" fill="#e3f5ec"/><text x="100" y="253" font-weight="700">Checks</text><text x="100" y="270" font-size="11" fill="#56636e">pass · warn · fail</text><rect x="360" y="232" width="160" height="50" rx="9" fill="#151515"/><text x="440" y="253" font-weight="700" fill="#fff">Report cards</text><text x="440" y="270" font-size="11" fill="#c9ced2">half-hour · day</text></g>
+    </svg>
+    <div>
+      <p><b>Everything hangs off the home.</b> A home lives in a place, owns devices and is on a tariff. Each device's numbers are stored as facts, and every fact keeps a label saying which helper sent it.</p>
+      <p><b>Follow one number:</b> the smart meter says “0.9 kWh bought at 18:00”. That fact joins the tariff price for 18:00 (32.1p) to make the report card's cost: <b>about 29p</b>. The checker then compares the meter with the inverter's own clamp to make sure they agree.</p>
+    </div>
+  </div>
+
+  <h2><span class="n">5</span>Three golden rules</h2>
+  <div class="grid3">
+    <div class="card"><h3>✏️ Never rub out</h3><p>If a helper sends a correction, it is added as a new version; the old one is kept. We can always say “what did we know on Tuesday?”</p></div>
+    <div class="card"><h3>🏷️ Always say where from</h3><p>Every number points back to the original reply it came from, and unchecked or demo values are clearly labelled.</p></div>
+    <div class="card"><h3>🚫 Never make things up</h3><p>Missing data stays missing. A half-hour is <b>final</b>, <b>provisional</b> (meter data still on its way) or <b>missing</b>.</p></div>
+  </div>
+
+  <h2><span class="n">6</span>How the website uses it</h2>
+  <div class="grid2">
+    <div><p>The website <b>only reads the report cards and facts</b>; it never asks the helpers. The bill on <i>My energy</i> is the cards added up; <i>Solar</i>, <i>Battery</i> and <i>Grid</i> draw them as charts; <i>Data &amp; trust</i> and <i>Data Explorer</i> open the notebook and shoebox so anyone can check a number.</p></div>
+    <div><p>When late meter data or a new price arrives, the affected days go on a <b>to-do list</b> (<code>rebuild_queue</code>) and their cards are rebuilt from the notebook. Same facts, same answer; every change to a finished day is written into its history.</p></div>
+  </div>
+
+  <h2><span class="n">7</span>The diary today <span class="muted" style="font-size:8pt;font-weight:400">· live prototype, 26 Oct 2026: one home in Great Britain, data since 9 Oct</span></h2>
+  <div class="stats">
+    <div class="stat"><b>53</b><span>tables</span></div>
+    <div class="stat"><b>3,264</b><span>original replies kept</span></div>
+    <div class="stat"><b>80,000+</b><span>facts in the notebook</span></div>
+    <div class="stat"><b>837</b><span>half-hour report cards</span></div>
+    <div class="stat"><b>6</b><span>countries ready: GB FR NL DE BE ES</span></div>
+  </div>
+
+  <div class="foot"><span><b>Technext</b> · technext.it · +1 302 433 6002 · Wilmington, DE, US</span><span>EnergieBee database guide · 2 / 2</span></div>
+</section>
+</body>
+</html>

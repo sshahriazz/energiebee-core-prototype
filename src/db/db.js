@@ -166,7 +166,9 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   // A binding may name a device: two devices of one kind are added together (066).
   '066-binding-device.sql',
   // Stage 4 control read-back (067) and Stage 5 groups, grants, slot currency (070): reserved, filled by their own work.
-  '067-control.sql', '070-groups.sql'];
+  '067-control.sql', '070-groups.sql',
+  // channel.part 'abs' (a table rebuild) and no overlapping group membership (071).
+  '071-channel-abs-member-overlap.sql'];
 
 export function deltaStatements(sql) {
   const out = [];

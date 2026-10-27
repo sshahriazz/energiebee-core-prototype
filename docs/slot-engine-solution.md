@@ -9,7 +9,7 @@ Status: proposal of 27 October 2026, partly built since (see "What is built" bel
 
 ## What is built (updated after the first build round)
 
-The prototype has no backward-compatibility constraint, so the work went straight to the target design and the golden test was regenerated on purpose. Tests: 455 pass, one skipped.
+The prototype has no backward-compatibility constraint, so the work went straight to the target design and the golden test was regenerated on purpose. Tests: 460 pass, one skipped. `npm run test:slots` re-runs the switch, channel, two-device, ingest and control tests at 15- and 60-minute slots (31 pass at each).
 
 | Original stage | State | Where |
 |---|---|---|
@@ -22,7 +22,23 @@ The prototype has no backward-compatibility constraint, so the work went straigh
 | 4. Control read-back | Done, simulated device only | Delta 067. `state` and `ack` observation kinds (an ack is a receipt, never a fact), `channel.access`, per-device `control_limit`, enqueue gates (placeholder capability, stale inputs, limits, parameter ranges; refusals kept in `command_block`), `runControlCycle` driven by the device's own read-back, late acks kept as `applied_late`, a data-driven effect check (`verified` or `not_verified`), and `canControl` checked for a person acting. See `docs/control-readback.md`. No real vendor driver, no scheduler, no priority ingest lane. |
 | 5. Groups and grants | Done | Delta 070. `site_hh.currency`, a `column_class` table (aggregation class per column, as data), dated groups, group views over slot rows (two currency totals, missing is not zero, final only if every member is), `app_user` and `site_grant`, hidden members. See `docs/groups-and-access.md`. No sign-in, no database-level row security, no timing at scale. |
 
-Adapters on channels: Sunsynk (5-minute, daily, live), Octopus meter consumption, carbon, National Gas calorific value, Open-Meteo and Quartz (channels cover a home, a device or a region as the subject, and instants, periods and forecast issues). Not yet: Octopus dispatches and planned charges (they need an absolute-value part), tariff rates (a separate store), Tariffscanner and tounify.
+Adapters on channels: Sunsynk (5-minute, daily, live), Octopus (meter consumption, dispatches, planned charges), carbon, National Gas calorific value, Open-Meteo and Quartz. Channels cover a home, a device or a region as the subject, and instants, periods and forecast issues; `part` is all, positive, negative or abs.
+
+### Open items: closed, and what is deliberately left
+
+| Item | State |
+|---|---|
+| New tests only run at 30 minutes | Closed. `TEST_SLOT_S` runs them at 15 and 60 minutes. Two hard-coded 1800 s values in tests were the only failures |
+| Octopus dispatches and planned charges on channels | Closed (delta 071 adds the `abs` part) |
+| Overlapping group membership | Closed (delta 071 triggers on insert and update) |
+| A battery already at target read as `not_verified` | Closed: verified with the reason `already_at_target`; below target and no power is still `not_verified` |
+| Command in force in slot lineage | Closed: `lineage.control` lists acknowledged commands whose window overlaps the slot |
+| No control scheduler | Closed: `src/jobs/control.js` registers drivers and ticks only for homes with a command to act on. It is idle until a driver is registered |
+| Group views not timed | Measured (`scripts/bench-groups.mjs`): 20 homes by one year (394,200 slot rows) is 17 ms per day, 0.35 s for 30 days, 3.7 s for the year. Linear. A pre-aggregated table is the fix if it ever matters |
+| A real vendor control driver | **Open, needs input.** A driver must speak one vendor's real control API and be tested on a real device; the interface and a simulated device exist. Needs a chosen vendor, its API documentation and a test device or account |
+| Tariff rates, Tariffscanner, tounify | **Not slot inputs.** They fill the tariff catalogue and rate store (`rate_interval`), which the builder prices from. They are not part of the provider-to-slot path, so channels do not apply |
+| Sign-in and database-level row security | **Out of scope by decision** (prototype: "we don't care about auth"). The access check exists and is enforced when a person acts |
+| Rules as data (meter beats clamp, daily fit range) | **Deferred on purpose** until a second vendor needs a different rule. A general policy interpreter now would be guessing |
 
 Decisions taken: our own forecast before Quartz (`solar_forecast` priority); lineage records `meter` or `clamp` plus the actual source, not a vendor name.
 

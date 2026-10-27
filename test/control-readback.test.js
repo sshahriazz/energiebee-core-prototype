@@ -195,3 +195,44 @@ test('the database rules of the command tables are intact: final states, one ope
   assert.throws(() => cmd.setVerify(id, 'verified', {}), /only an acked command/);
   assert.throws(() => cmd.markAppliedLate(id, { reported: {} }), /only an expired, sent command/);
 });
+
+test('a battery already at the target draws no power: verified with the reason, not a false not_verified', { skip }, async () => {
+  const run = async (soc, offset) => {
+    const b = newBattery();
+    const w = BASE + offset;
+    const id = enqueue(b.id, charge({ windowStart: w, windowEnd: w + 1800 }), { validUntil: w + 4000 }).command.id;
+    await cycle(b.driver, BASE); await cycle(b.driver, BASE + 60);
+    putReadings(seriesId('site', SITE, 'battery_soc_pct', 'sunsynk_5min'), [{ ts: w - 600, value: soc }, { ts: w - 300, value: soc }]);
+    chargingTelemetry(w + 300, w + 600, 0);                       // nothing drawn in the check period
+    const out = await cycle(b.driver, w + 700);
+    return { out, id };
+  };
+  const full = await run(100, 21600);
+  assert.deepEqual(full.out.devices[0].did, [`verified ${full.id}`]);
+  const ev = cmd.commandLog(full.id).find((e) => e.detail?.state === 'verified').detail.evidence;
+  assert.deepEqual([ev.reason, ev.level, ev.target], ['already_at_target', 100, 100]);
+  const low = await run(40, 32400);
+  assert.deepEqual(low.out.devices[0].did, [`not_verified ${low.id}`], 'below the target and no power: the effect really is missing');
+});
+
+test('a slot inside an acknowledged command window names the command in its lineage; other slots do not', { skip }, async () => {
+  const { buildSite } = await import('../src/core/build.js');
+  const { dayBounds, localDate } = await import('../src/core/time.js');
+  const site = db.prepare('SELECT timezone FROM site WHERE id = ?').get(SITE);
+  const days = db.prepare('SELECT local_date d FROM site_day WHERE site_id = ? ORDER BY local_date').all(SITE).map((r) => r.d);
+  const day = days[days.length - 3];
+  const [ds] = dayBounds(site.timezone, day);
+  // A command in the past, acknowledged by hand through the helpers (a past window for the builder to see).
+  const b = newBattery();
+  const w = ds + 36000;
+  const t0 = ms(w - 3600);
+  const c = cmd.enqueueIfChanged({ deviceId: b.id, desired: charge({ windowStart: w, windowEnd: w + 7200 }), validFrom: w - 3600, validUntil: w + 10800, now: t0 }).command;
+  cmd.markSent(c.id, { now: t0 + 1000 }); cmd.markAcked(c.id, { reported: { action: 'charge', limit_pct: 100, window_start: w, window_end: w + 7200, mode: 'timed_charge' }, now: t0 + 2000, compare: ['action'] });
+  const rows = buildSite(SITE, day, day, { asOf: Math.ceil(Date.now() / 1000) + 1, dryRun: true }).hhRows;
+  const inside = rows.filter((r) => r.slot_start >= w && r.slot_start < w + 7200);
+  const outside = rows.filter((r) => r.slot_start < w - 3600 || r.slot_start >= w + 7200);
+  assert.ok(inside.length >= 2 && inside.every((r) => JSON.parse(r.lineage).control?.[0]?.id === c.id));
+  assert.ok(outside.every((r) => JSON.parse(r.lineage).control === undefined));
+  assert.equal(JSON.parse(inside[0].lineage).control[0].action, 'charge');
+  void localDate;
+});

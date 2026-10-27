@@ -17,6 +17,7 @@ const { retireDevice } = hasLive ? await import('../src/core/devices.js') : {};
 const { localDate, addDays, nowSec } = hasLive ? await import('../src/core/time.js') : {};
 
 const SITE = 1;
+const slotS = () => db.prepare('SELECT slot_s FROM site WHERE id = ?').get(SITE).slot_s ?? 1800;   // the home's own slot length (TEST_SLOT_S changes it)
 const round = (v) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v);
 
 function snapshot() {
@@ -171,12 +172,12 @@ test('build and planner read agree within 0.1% across a vendor switch', { skip }
   const asOfMs = Date.now() + 1000;
   const rows = buildSite(SITE, first, last, { asOf: Math.ceil(asOfMs / 1000), dryRun: true }).hhRows;
   const [from] = dayBounds(site.timezone, first); const [, to] = dayBounds(site.timezone, last);
-  const r = counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: 1800, asOf: asOfMs });
+  const r = counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: slotS(), asOf: asOfMs });
   const [dStart] = dayBounds(site.timezone, days[Math.floor(days.length / 2)]);
   assert.deepEqual(r.origin.power.sources.slice().sort(), ['acme_5min', 'sunsynk_5min'], 'the planner read uses both bound sources');
   let build = 0; let planner = 0; let worst = 0;
   for (const h of rows) {
-    const k = (h.slot_start - r.start) / 1800;
+    const k = (h.slot_start - r.start) / slotS();
     const p = r.values[k] ?? 0;
     build += h.solar || 0; planner += p;
     worst = Math.max(worst, Math.abs((h.solar || 0) - p));

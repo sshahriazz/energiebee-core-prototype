@@ -14,6 +14,7 @@ import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor
 import { seriesId, readReadings, spanColumn } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
+import { startControlScheduler, registeredDrivers } from './jobs/control.js';
 import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
 import { providerStatus, connectProvider } from './core/providers.js';
 import { connectors } from './core/connectors.js';
@@ -705,6 +706,8 @@ export function start() {
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, () => {
     const minutes = startScheduler();
+    // Control cycles run only for registered vendor drivers (jobs/control.js); none ship yet, so this is idle.
+    if (registeredDrivers().length) startControlScheduler(Number(process.env.CONTROL_EVERY_SECONDS) || 30);
     console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
     // Demo homes have no providers to sync: their data is generated. One cycle, home after home,
     // so shared steps (a region, a tariff, a location) run once.

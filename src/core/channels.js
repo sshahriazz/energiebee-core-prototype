@@ -98,6 +98,7 @@ export function ingestObservations(siteId, source, observations, rawId = null, {
       if (x != null) {
         if (c.part === 'positive') x = x > 0 ? x : 0;
         else if (c.part === 'negative') x = x < 0 ? -x : 0;
+        else if (c.part === 'abs') x = Math.abs(x);
         x = x * c.scale + c.shift;
         if ((c.min_value != null && x < c.min_value) || (c.max_value != null && x > c.max_value)) { reject(siteId, src, o.point, at, x, 'out_of_range'); rejected++; continue; }
         if (isState && c.enum_values && !(String(x) in JSON.parse(c.enum_values))) { reject(siteId, src, o.point, at, x, 'not_in_enum'); rejected++; continue; }

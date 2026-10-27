@@ -76,6 +76,8 @@ export const SOURCES = [
   },
   {
     code: 'octopus_kraken', name: 'Octopus Kraken GraphQL',
+    // A dispatch's delta is negative for import; the amount charged is its magnitude (part abs). A planned dispatch is a forecast issue.
+    channels: [{ point: 'dispatch', metric: 'ev_charge_kwh', part: 'abs' }, { point: 'planned', metric: 'ev_charge_kwh' }],
     contract: {
       timeZone: 'ISO with +00:00', timeRole: 'interval: dispatch window; forecast: planned dispatches',
       signs: 'completedDispatches.delta is negative for import; stored as a positive charge',

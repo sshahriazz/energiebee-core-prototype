@@ -37,3 +37,16 @@ test('a gas meter that turns out to read m3 replaces its channel, not adds a sec
   const history = db.prepare('SELECT COUNT(*) n FROM channel WHERE device_id = ?').get(dev).n;
   assert.equal(history, 2, 'the old channel is kept, superseded');
 });
+
+test('dispatches: the amount charged is the magnitude of the vendor delta; planned dispatches are a forecast issue', async () => {
+  const { normaliseDispatches, normalisePlanned } = await import('../src/adapters/octopus.js');
+  const n = normaliseDispatches(site, [
+    { start: '2026-06-10 01:00:00+00:00', end: '2026-06-10 01:30:00+00:00', delta: -1.5 },
+    { start: '2026-06-10 02:00:00+00:00', end: '2026-06-10 02:30:00+00:00', delta: 2 },      // either sign is stored as an amount
+    { start: '2026-06-10 03:00:00+00:00', end: '2026-06-10 03:00:00+00:00', delta: -9 }]);   // empty period: dropped
+  assert.equal(n, 2);
+  const rows = readIntervals([seriesId('site', site, 'ev_charge_kwh', 'octopus_kraken')], 0, 2e9);
+  assert.deepEqual(rows.map((r) => r.value), [1.5, 2]);
+  assert.equal(normalisePlanned(site, [{ start: '2026-06-11T01:00:00+00:00', end: '2026-06-11T01:30:00+00:00', energyAddedKwh: 3 }], 1781000000), 1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM forecast_fact WHERE series_id = ?').get(seriesId('site', site, 'ev_charge_kwh', 'octopus_kraken')).n, 1);
+});

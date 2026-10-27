@@ -269,6 +269,11 @@ function build(siteId, fromDate, toDate, opts) {
   const hasImportMeter = !!meterFacts.meter_import;
   // A configured supplier account means meter data is expected, even before its meters are known.
   const expectMeter = hasImportMeter || !!db.prepare("SELECT 1 FROM connection c JOIN market_provider mp ON mp.adapter = c.provider AND mp.role = 'meter' WHERE c.site_id = ?").get(siteId);
+  // Commands the devices of this home confirmed to run (acked by read-back, or found already running) during the
+  // window: each slot's lineage names those whose window overlaps it, so a slot shows what was acting on the home.
+  const controlCmds = db.prepare(`SELECT c.id, c.action, c.window_start, c.window_end, c.verify_status FROM command c JOIN device d ON d.id = c.device_id
+    WHERE d.site_id = ? AND c.status IN ('acked', 'skipped_unchanged') AND c.window_start IS NOT NULL AND c.window_end > ? AND c.window_start < ?${asOf != null ? ' AND c.acked_at <= ?' : ''}
+    ORDER BY c.id`).all(siteId, winStart, winEnd, ...(asOf != null ? [asOf * 1000] : []));
   const evFacts = intervalsFrom(evBound, (src) => sid('ev_charge_kwh', src), winStart, winEnd);
   const carbonFacts = site.carbon_region != null
     ? intervalsFrom(carbonBound, (src) => seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', src), winStart, winEnd) : [];
@@ -568,7 +573,7 @@ function build(siteId, fromDate, toDate, opts) {
         grid_only_cost: gridOnly, saving: gridOnly != null ? gridOnly - totalCost : null,
         carbon_intensity: ci, carbon_g: carbonG, carbon_saved_g: carbonSaved, outdoor_temp: temp, solar_forecast: solarForecast,
         meter_vs_ct: meterVsCt, rate_found: impInc != null ? 1 : 0,
-        lineage: JSON.stringify({ import: impSrc, export: expSrc, ...(impSrc === 'meter' || expSrc === 'meter' ? { meter: meterSource(slot) } : {}), solar: hasInverter ? sourceAt(bound5, slot) : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, ...(pi ? { tax: pi.tax.source, ...(pi.tax.unverified ? { taxUnverified: true } : {}), ...(pi.levy ? { levy: pi.levy } : {}) } : {}), carbon: ci != null ? sourceAt(carbonBound, slot) : null, coverage: Math.round(coverage * 100) / 100, ...(ct ? { ct } : {}), ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? sourceAt(cvBound, slot) : 'not published yet' } : {}),
+        lineage: JSON.stringify({ import: impSrc, export: expSrc, ...(controlCmds.some((c) => c.window_start < slot + slotS && c.window_end > slot) ? { control: controlCmds.filter((c) => c.window_start < slot + slotS && c.window_end > slot).map((c) => ({ id: c.id, action: c.action, verify: c.verify_status })) } : {}), ...(impSrc === 'meter' || expSrc === 'meter' ? { meter: meterSource(slot) } : {}), solar: hasInverter ? sourceAt(bound5, slot) : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, ...(pi ? { tax: pi.tax.source, ...(pi.tax.unverified ? { taxUnverified: true } : {}), ...(pi.levy ? { levy: pi.levy } : {}) } : {}), carbon: ci != null ? sourceAt(carbonBound, slot) : null, coverage: Math.round(coverage * 100) / 100, ...(ct ? { ct } : {}), ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? sourceAt(cvBound, slot) : 'not published yet' } : {}),
           ...(prov ? { origin: prov.origin, placeholder_inputs: prov.placeholder_inputs } : {}), data_origin: dataOrigin,
           ...(priceEstimated ? { estimated: true } : {}), ...(capacityUnknown ? { capacity_unknown: true } : {}) }),
         method_version: METHOD_VERSION, built_at: now,

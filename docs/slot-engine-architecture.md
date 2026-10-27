@@ -613,21 +613,21 @@ flowchart TB
     d4["Source traits: hold time, live, forecast-only, named-only"]
     d5["Writer guard, runtime registry reload"]
     d6["Crash-safe rebuild watermark, repeated timestamps, empty answers"]
-    d8["Control read-back: state and ack kinds, gates, limits,<br/>executor with device read-back, late ack, effect check"]
+    d8["Control read-back: state and ack kinds, gates, limits,<br/>executor and scheduler, late ack, effect check,<br/>command in slot lineage"]
     d9["Groups with dated membership, currency on slots,<br/>column classes, users and grants"]
-    d7["Sunsynk, Octopus meter, carbon, National Gas,<br/>Open-Meteo and Quartz on channels<br/>(subjects: home, device, region;<br/>instants, periods, forecast issues)"]
+    d7["Sunsynk, Octopus (meter, dispatches, planned),<br/>carbon, National Gas, Open-Meteo, Quartz on channels<br/>(subjects: home, device, region;<br/>instants, periods, forecast issues)"]
   end
 
   subgraph PART["Partly"]
     direction TB
     p1["One resampler: build and planner agree within 0.1%,<br/>but they are still two integrators"]
-    p2["Adapters not yet on channels:<br/>Octopus dispatches and planned charges,<br/>tariff rates, Tariffscanner, tounify"]
+    p2["Tariff rates, Tariffscanner, tounify:<br/>a tariff catalogue, not slot inputs,<br/>so channels do not apply"]
   end
 
   subgraph TODO["Not started"]
     direction TB
     t1["Rules as data (meter beats clamp,<br/>daily fit range): stay code until a second vendor needs another rule"]
-    t2["A real vendor control driver and a scheduler<br/>for the control cycle"]
+    t2["A real vendor control driver<br/>(needs a vendor, its API and a test device)"]
     t3["Sign-in, database-level row security,<br/>group views timed at scale"]
     t4["Health-based finality, dead-letter replay"]
   end

@@ -154,6 +154,16 @@ export function checkEffect(command, nowMs) {
   const row = db.prepare('SELECT effect_check FROM device_action WHERE device_kind = ? AND action = ?').get(dev.kind, command.action);
   if (!row?.effect_check || command.window_start == null) return { status: 'none', evidence: null };
   const chk = JSON.parse(row.effect_check);
+  // Already there: a charge whose target the battery had reached before the window draws no power, and that is correct.
+  // The evidence says so; there was nothing to verify (status stays verified, never a false not_verified).
+  if (chk.already && nowMs >= command.window_start * 1000) {
+    const target = chk.already.targetKeys.map((k) => command[k]).find((v) => v != null);
+    if (target != null) {
+      const before = series(dev.site_id, chk.already.metric, command.window_start - 900, command.window_start, { stepS: 300, asOf: nowMs }).values.filter((v) => v != null);
+      const level = before.length ? before[before.length - 1] : null;
+      if (level != null && level >= target) return { status: 'verified', evidence: { reason: 'already_at_target', metric: chk.already.metric, level, target } };
+    }
+  }
   const from = command.window_start + (chk.afterS ?? 0);
   const to = Math.min(from + (chk.windowS ?? 300), command.window_end ?? Infinity);
   if (nowMs < to * 1000) return { status: 'wait', evidence: { reason: 'the check period has not ended', until: to } };

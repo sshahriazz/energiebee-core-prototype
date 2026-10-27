@@ -15,6 +15,7 @@ const { counterDifferenceSeries } = hasLive ? await import('../src/core/planner-
 const { nowSec, dayBounds } = hasLive ? await import('../src/core/time.js') : {};
 
 const SITE = 1;
+const slotS = () => db.prepare('SELECT slot_s FROM site WHERE id = ?').get(SITE).slot_s ?? 1800;   // the home's own slot length (TEST_SLOT_S changes it)
 
 test('two inverters on one home are added: same slots as the single inverter, in the builder and the planner read', { skip }, () => {
   const site = db.prepare('SELECT timezone, battery_kwh FROM site WHERE id = ?').get(SITE);
@@ -71,9 +72,9 @@ test('two inverters on one home are added: same slots as the single inverter, in
 
   // The planner read adds the same devices.
   const [from] = dayBounds(site.timezone, first); const [, to] = dayBounds(site.timezone, last);
-  const pr = counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: 1800, asOf: Date.now() + 1000 });
+  const pr = counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: slotS(), asOf: Date.now() + 1000 });
   let sb = 0; let sp = 0;
-  for (const h of after) { sb += h.solar || 0; sp += pr.values[(h.slot_start - pr.start) / 1800] ?? 0; }
+  for (const h of after) { sb += h.solar || 0; sp += pr.values[(h.slot_start - pr.start) / slotS()] ?? 0; }
   assert.ok(Math.abs(sp - sb) / sb < 0.001, `planner ${sp} vs builder ${sb}`);
 
   // Control: with the second device unbound only the first one's 40% is left, so the sum above was real.

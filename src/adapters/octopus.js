@@ -3,7 +3,7 @@
 // (Intelligent Octopus dispatches and smart devices).
 import { db, tx } from '../db/db.js';
 import { fetchJson } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putIntervals, putForecasts, QUALITY } from '../core/facts.js';
+import { landRaw, quarantine, QUALITY } from '../core/facts.js';
 import { ingestObservations, setDeviceChannel } from '../core/channels.js';
 import { setDeviceAttrs, supersedeAgreements } from '../core/devices.js';
 import { isoUtc, nowSec, parseIso } from '../core/time.js';
@@ -271,19 +271,20 @@ export function normaliseConsumption(siteId, deviceId, metric, rows, rawId) {
   return ingestObservations(siteId, 'octopus_meter', obs, rawId, { deviceId }).written;
 }
 
-// Completed smart-charge dispatches. delta is negative for import; stored as a positive charge.
+// Completed smart-charge dispatches. delta is negative for import; the channel (part abs) stores the amount charged.
 export function normaliseDispatches(siteId, list, rawId) {
-  const evSeries = seriesId('site', siteId, 'ev_charge_kwh', 'octopus_kraken');
-  return putIntervals(evSeries, (list || [])
-    .map((d) => ({ start: parseIso(String(d.start).replace(' ', 'T')), end: parseIso(String(d.end).replace(' ', 'T')), value: d.delta == null ? null : Math.abs(Number(d.delta)) }))
-    .filter((d) => d.end > d.start), rawId);
+  const obs = (list || [])
+    .map((d) => ({ point: 'dispatch', start: parseIso(String(d.start).replace(' ', 'T')), end: parseIso(String(d.end).replace(' ', 'T')), value: d.delta == null ? null : Number(d.delta) }))
+    .filter((d) => d.end > d.start);
+  return ingestObservations(siteId, 'octopus_kraken', obs, rawId).written;
 }
 
+// Planned dispatches: a forecast issue made at issuedAt.
 export function normalisePlanned(siteId, list, issuedAt, rawId) {
-  const evSeries = seriesId('site', siteId, 'ev_charge_kwh', 'octopus_kraken');
-  return putForecasts(evSeries, issuedAt, (list || [])
-    .map((p) => ({ start: parseIso(p.start), end: parseIso(p.end), value: p.energyAddedKwh == null ? null : Number(p.energyAddedKwh) }))
-    .filter((p) => p.end > p.start), rawId);
+  const obs = (list || [])
+    .map((p) => ({ point: 'planned', start: parseIso(p.start), end: parseIso(p.end), issuedAt, value: p.energyAddedKwh == null ? null : Number(p.energyAddedKwh) }))
+    .filter((p) => p.end > p.start);
+  return ingestObservations(siteId, 'octopus_kraken', obs, rawId).forecasts;
 }
 
 // ───────────── Kraken GraphQL ─────────────

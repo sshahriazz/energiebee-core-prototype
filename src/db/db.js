@@ -9,6 +9,7 @@ import { seedMarkets, seedBiddingZones, marketSeedPending } from './seed/markets
 import { seedProviders, providerSeedPending } from './seed/providers.js';
 import { seedRegionsGb, regionSeedPending } from './seed/regions-gb.js';
 import { seedAttributeDefs, attributeSeedPending } from './seed/attributes.js';
+import { seedBindings, bindingSeedPending } from './seed/bindings.js';
 import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
 import { resolveRegion } from '../core/regions.js';
 
@@ -81,18 +82,22 @@ export function tx(fn) {
 // a row that differs from the code is brought back in line. Only rows that differ are written, so
 // an open of an up-to-date database writes nothing (and takes no write lock).
 function seedRegistry() {
-  const src = new Map(db.prepare('SELECT code, name, contract FROM source').all().map((r) => [r.code, r]));
+  // source.traits exists from delta 063; on an older database the first pass skips it and the pass after the deltas writes it.
+  const hasTraits = Boolean(db.prepare("SELECT 1 FROM pragma_table_info('source') WHERE name = 'traits'").get());
+  const src = new Map(db.prepare(`SELECT code, name, contract, ${hasTraits ? 'traits' : 'NULL AS traits'} FROM source`).all().map((r) => [r.code, r]));
   const met = new Map(db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric').all().map((r) => [r.code, r]));
   const vat = new Map(db.prepare('SELECT fuel, direction, rate, valid_from, valid_to FROM vat_rate').all().map((r) => [`${r.fuel}|${r.direction}|${r.valid_from}`, r]));
-  const sources = SOURCES.filter((s) => { const r = src.get(s.code); return !r || r.name !== s.name || r.contract !== JSON.stringify(s.contract); });
+  const sources = SOURCES.filter((s) => { const r = src.get(s.code); return !r || r.name !== s.name || r.contract !== JSON.stringify(s.contract) || (hasTraits && (r.traits ?? null) !== (s.traits ? JSON.stringify(s.traits) : null)); });
   const metrics = METRICS.filter((m) => {
     const r = met.get(m.code);
     return !r || r.label !== m.label || r.unit !== m.unit || r.time_role !== m.timeRole || r.aggregation !== m.aggregation || r.domain !== m.domain;
   });
   const rates = VAT_RATES.filter((v) => { const r = vat.get(`${v.fuel}|${v.direction}|${v.validFrom}`); return !r || r.rate !== v.rate || r.valid_to !== (v.validTo ?? null); });
   if (!sources.length && !metrics.length && !rates.length) return;
-  const upSource = db.prepare(
-    `INSERT INTO source (code, name, contract) VALUES (?, ?, ?)
+  const upSource = hasTraits ? db.prepare(
+    `INSERT INTO source (code, name, contract, traits) VALUES (?, ?, ?, ?)
+     ON CONFLICT(code) DO UPDATE SET name = excluded.name, contract = excluded.contract, traits = excluded.traits`)
+    : db.prepare(`INSERT INTO source (code, name, contract) VALUES (?, ?, ?)
      ON CONFLICT(code) DO UPDATE SET name = excluded.name, contract = excluded.contract`);
   const upMetric = db.prepare(
     `INSERT INTO metric (code, label, unit, time_role, aggregation, domain) VALUES (?, ?, ?, ?, ?, ?)
@@ -101,7 +106,7 @@ function seedRegistry() {
   const upVat = db.prepare(
     `INSERT OR REPLACE INTO vat_rate (fuel, direction, rate, valid_from, valid_to) VALUES (?, ?, ?, ?, ?)`);
   tx(() => {
-    for (const s of sources) upSource.run(s.code, s.name, JSON.stringify(s.contract));
+    for (const s of sources) upSource.run(...(hasTraits ? [s.code, s.name, JSON.stringify(s.contract), s.traits ? JSON.stringify(s.traits) : null] : [s.code, s.name, JSON.stringify(s.contract)]));
     for (const m of metrics) upMetric.run(m.code, m.label, m.unit, m.timeRole, m.aggregation, m.domain);
     for (const v of rates) upVat.run(v.fuel, v.direction, v.rate, v.validFrom, v.validTo ?? null);
   });
@@ -147,7 +152,21 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   '050-planner-read.sql',
   // Phase B coverage matrix (060-069): the schema elements docs/coverage-matrix.json found missing that registry rows
   // cannot hold: the prices and clipping a plan used per slot, and the planning design's tenant record (060).
-  '060-coverage.sql'];
+  '060-coverage.sql',
+  // Bindings (061): which source fills a role for a home, by period.
+  '061-binding.sql',
+  // Binding defaults (062): the sources a new home starts with, per role; no vendor fallback in code.
+  '062-binding-defaults.sql',
+  // Source traits (063): machine-read facts about a source, replacing vendor lists in the planner read.
+  '063-source-traits.sql',
+  // Channels (064): a vendor point -> canonical metric with scale, sign part and range.
+  '064-channel.sql',
+  // A channel may belong to one device (065).
+  '065-channel-device.sql',
+  // A binding may name a device: two devices of one kind are added together (066).
+  '066-binding-device.sql',
+  // Stage 4 control read-back (067) and Stage 5 groups, grants, slot currency (070): reserved, filled by their own work.
+  '067-control.sql', '070-groups.sql'];
 
 export function deltaStatements(sql) {
   const out = [];
@@ -227,6 +246,7 @@ function keepTableObjects(table, fn) {
   });
 }
 applyDeltas();
+seedRegistry();   // again: delta 063 added source.traits
 
 // GB VAT has one source, VAT_RATES in registry.js: vat_rate is kept in line with it on every open
 // (seedRegistry, above; written only where it differs) and delta 002 copies it into tax_rule once. When VAT_RATES changes later, the current GB
@@ -257,6 +277,8 @@ syncGbVat();
 if (marketSeedPending(db) || regionSeedPending(db) || providerSeedPending(db)) {
   tx(() => { seedMarkets(db); seedBiddingZones(db); seedRegionsGb(db); seedProviders(db); });
 }
+// Default bindings per role and a backfill for homes without them (seed/bindings.js, delta 062).
+if (bindingSeedPending(db)) tx(() => seedBindings(db));
 // Planner configuration registries (attribute_def, device_kind, setting_def: seed/attributes.js,
 // seed/settings.js): only missing rows are inserted, and only when one is missing.
 if (attributeSeedPending(db) || settingSeedPending(db)) tx(() => { seedAttributeDefs(db); seedSettingDefs(db); });
@@ -272,19 +294,21 @@ if (db.prepare("SELECT 1 FROM pragma_table_info('site') WHERE name = 'gsp_region
   }
 }
 
-const sourceIds = new Map(db.prepare('SELECT code, id FROM source').all().map((r) => [r.code, r.id]));
-const metricIds = new Map(db.prepare('SELECT code, id FROM metric').all().map((r) => [r.code, r.id]));
-
-export function sourceId(code) {
-  const id = sourceIds.get(code);
-  if (!id) throw new Error(`unknown source ${code}`);
+// Code to id maps. A code that is not cached is looked up again, so a source or metric row added
+// while the process runs works without a restart.
+const sourceIds = new Map();
+const metricIds = new Map();
+function lookup(cache, table, code, what) {
+  let id = cache.get(code);
+  if (!id) {
+    id = db.prepare(`SELECT id FROM ${table} WHERE code = ?`).get(code)?.id;
+    if (!id) throw new Error(`unknown ${what} ${code}`);
+    cache.set(code, id);
+  }
   return id;
 }
-export function metricId(code) {
-  const id = metricIds.get(code);
-  if (!id) throw new Error(`unknown metric ${code}`);
-  return id;
-}
+export const sourceId = (code) => lookup(sourceIds, 'source', code, 'source');
+export const metricId = (code) => lookup(metricIds, 'metric', code, 'metric');
 // Raw payload files live next to the database file, wherever DB_FILE puts it.
 export const dataDir = path.dirname(dbFile);
 

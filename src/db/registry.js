@@ -2,9 +2,20 @@
 // the dated VAT table. Everything the core knows about a provider's behaviour
 // lives in its contract here, not in the build engine.
 
+// channels (a source's default point -> metric rows, created for a home by ensureChannels in core/channels.js).
+// traits (machine-read by the planner read, stored in source.traits): holdS = seconds an instant sample holds;
+// live = a realtime feed; forecastOnly = only ever read as a forecast; namedOnly = read only when named (a daily total).
 export const SOURCES = [
   {
     code: 'sunsynk_5min', name: 'Sunsynk 5-minute day series',
+    traits: { holdS: 300 },
+    channels: [
+      // The vendor's points as it names them (signed W, % for charge); the sign split and the clamp to >= 0 are channel rows.
+      { point: 'PV', metric: 'solar_w', part: 'positive' }, { point: 'Load', metric: 'load_w', part: 'positive' },
+      { point: 'Grid', metric: 'grid_import_w', part: 'positive' }, { point: 'Grid', metric: 'grid_export_w', part: 'negative' },
+      { point: 'Battery', metric: 'battery_discharge_w', part: 'positive' }, { point: 'Battery', metric: 'battery_charge_w', part: 'negative' },
+      { point: 'SOC', metric: 'battery_soc_pct' },
+    ],
     contract: {
       timeZone: 'HH:mm on the plant clock; date from the request; zone from plant.timezone.code',
       timeRole: 'instant samples on a 5-minute grid, treated as holding until the next sample',
@@ -17,6 +28,12 @@ export const SOURCES = [
   },
   {
     code: 'sunsynk_daily', name: 'Sunsynk daily totals',
+    traits: { namedOnly: true },
+    channels: [
+      { point: 'PV Generation', metric: 'solar_kwh' }, { point: 'Load Power Consumption', metric: 'load_kwh' },
+      { point: 'Purchased electricity', metric: 'grid_import_kwh' }, { point: 'Sold electricity', metric: 'grid_export_kwh' },
+      { point: 'Charge Energy', metric: 'battery_charge_kwh' }, { point: 'Discharge Energy', metric: 'battery_discharge_kwh' },
+    ],
     contract: {
       timeZone: 'YYYY-MM-DD plant-local day', timeRole: 'interval: one local day',
       signs: 'Direction carried by the label (Purchased/Sold, Charge/Discharge)', units: 'kWh to 0.1',
@@ -25,6 +42,13 @@ export const SOURCES = [
   },
   {
     code: 'sunsynk_live', name: 'Sunsynk realtime flow',
+    traits: { holdS: 300, live: true },
+    channels: [
+      { point: 'pv_power', metric: 'solar_w', part: 'positive' }, { point: 'load_power', metric: 'load_w', part: 'positive' },
+      { point: 'grid_power', metric: 'grid_import_w', part: 'positive' }, { point: 'grid_power', metric: 'grid_export_w', part: 'negative' },
+      { point: 'battery_power', metric: 'battery_discharge_w', part: 'positive' }, { point: 'battery_power', metric: 'battery_charge_w', part: 'negative' },
+      { point: 'soc', metric: 'battery_soc_pct' }, { point: 'ev_power', metric: 'ev_w', part: 'positive' },
+    ],
     contract: {
       timeZone: 'No timestamp: fetch time floored to 5 minutes (UTC)', timeRole: 'instant',
       signs: 'gridOrMeterPower positive = import; battPower positive = discharging', units: 'W, %',
@@ -60,6 +84,7 @@ export const SOURCES = [
   },
   {
     code: 'carbon_regional', name: 'Carbon Intensity (regional)',
+    channels: [{ point: 'intensity', metric: 'carbon_intensity' }],
     contract: {
       timeZone: 'UTC minute precision (Z)', timeRole: "interval: the API's 30-minute periods (a home's slot takes the time-weighted mean of the periods it overlaps); forward periods are forecasts",
       signs: '-', units: 'gCO2/kWh', missing: 'null',
@@ -68,6 +93,12 @@ export const SOURCES = [
   },
   {
     code: 'open_meteo', name: 'Open-Meteo weather',
+    traits: { holdS: 3600 },
+    channels: [
+      { point: 'temperature_2m', metric: 'outdoor_temp_c' }, { point: 'cloud_cover', metric: 'cloud_pct' },
+      { point: 'global_tilted_irradiance', metric: 'gti_wm2' }, { point: 'shortwave_radiation', metric: 'ghi_wm2' },
+      { point: 'relative_humidity_2m', metric: 'humidity_pct' }, { point: 'dew_point_2m', metric: 'dew_point_c' }, { point: 'wind_speed_10m', metric: 'wind_speed_ms' },
+    ],
     contract: {
       timeZone: 'Requested as Unix time (UTC) to avoid the fixed-offset clock-change problem',
       timeRole: 'temperature, cloud, humidity, dew point and wind are instants; radiation is the mean of the preceding hour; past hours are facts, future hours one change-only forecast issue per sync',
@@ -77,6 +108,9 @@ export const SOURCES = [
   },
   {
     code: 'quartz', name: 'Open Climate Fix Quartz solar forecast',
+    traits: { forecastOnly: true },
+    // kW over a 15-minute step is kWh x 0.25
+    channels: [{ point: 'power_kw', metric: 'solar_kwh', scale: 0.25, part: 'positive' }],
     contract: {
       timeZone: 'Zone-less ISO keys, actually UTC; steps start at the request time, so they are snapped to the 15-minute grid', timeRole: 'forecast: 15-minute steps; value = mean kW over the next 15 min',
       signs: '-', units: 'kW, converted to kWh per 15 min (x 0.25 h)', missing: '-',
@@ -85,6 +119,7 @@ export const SOURCES = [
   },
   {
     code: 'core_forecast', name: 'EnergieBee forecast (our own)',
+    traits: { forecastOnly: true },
     contract: {
       timeZone: 'UTC epoch seconds', timeRole: "forecast: slots of the home's slot length (site.slot_s: 15, 30 or 60 minutes; 30 by default) for the next 48 hours",
       signs: '-', units: 'kWh per slot; house use includes planned EV charging, grid import includes battery charging',
@@ -95,6 +130,7 @@ export const SOURCES = [
   {
     // Written only by src/core/plans.js savePlan when asked (predictionsTo 'forecast' or 'both'); no planner exists yet.
     code: 'core_plan', name: 'EnergieBee plan predictions (planner output; no planner yet)',
+    traits: { forecastOnly: true },
     contract: {
       timeZone: 'UTC epoch seconds', timeRole: "forecast: the plan's own slots (plan_run.slot_s, any multiple of 5 minutes up to 60) over its horizon",
       signs: '-', units: 'kWh per slot (home import, export, solar, use; heat delivered); battery energy stored and indoor temperature at the end of the slot',
@@ -104,6 +140,7 @@ export const SOURCES = [
   },
   {
     code: 'national_gas_cv', name: 'National Gas calorific value',
+    channels: [{ point: 'calorific_value', metric: 'gas_cv_mjm3' }],
     contract: {
       timeZone: 'Applicable-for date = gas day, 05:00 to 05:00 GB local time (UNC Modification 0461)',
       timeRole: 'interval: one gas day per local distribution zone (LDZ)', signs: '-', units: 'MJ per standard m3',
@@ -141,6 +178,7 @@ export const SOURCES = [
   },
   {
     code: 'core_solar_cases', name: 'EnergieBee solar cases (pessimistic, median, optimistic; our own, derived)',
+    traits: { forecastOnly: true },
     contract: {
       timeZone: 'UTC epoch seconds', timeRole: "forecast: slots of the home's slot length for the next 48 hours; metrics solar_kwh_p10, solar_kwh_p50, solar_kwh_p90",
       signs: '-', units: 'kWh per slot: the central forecast of record (solar_kwh, core_forecast by default) x a quantile of this home\'s own actual / forecast ratios at that local time of day over the last 30 days, capped at the most it made in one slot',
@@ -158,6 +196,7 @@ export const SOURCES = [
   },
   {
     code: 'heating_telemetry', name: 'Heating device telemetry (generic: no vendor adapter yet)',
+    traits: { holdS: 10800, live: true },
     contract: {
       timeZone: 'UTC epoch seconds as the device adapter converts them',
       timeRole: 'temperatures, set-points, valve openings and on/off flags are instants that hold until the next reading (at most 3 hours); heat, heat pump electricity and boiler gas are intervals',

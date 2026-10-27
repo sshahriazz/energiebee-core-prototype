@@ -25,6 +25,7 @@ import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
+import * as onboardingCore from './core/onboarding.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
@@ -689,6 +690,31 @@ app.get('/api/connectors', (req, res) => res.json(connectors(db)));
 // they read data and where it lives here. No home needed; no credential and no home's data in it.
 app.get('/api/compatibility', (req, res) => res.json(compatibility(db)));
 app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
+
+// ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
+// What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,
+// unknown_source, unknown_metric, unknown_device, bad_part, bad_number, bad_date, missing_field, reason_required,
+// not_found) next to the plain message. Every write takes dryRun (in the body or ?dryRun=1): it returns what would
+// happen and keeps nothing. A start date is a local date (2026-10-12) in the home's zone, or epoch seconds.
+const onb = (fn, ok = 200) => (req, res) => {
+  try {
+    const out = fn(req);
+    res.status(out?.dryRun ? 200 : ok).json(out);
+  } catch (err) {
+    if (err instanceof onboardingCore.OnboardingError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });
+    throw err;
+  }
+};
+const dry = (req) => req.body?.dryRun === true || req.query.dryRun === '1' || req.query.dryRun === 'true';
+app.get('/api/sources', onb(() => onboardingCore.sourcesList()));
+app.get('/api/sites/:id/onboarding', onb((req) => onboardingCore.onboarding(req.params.id)));
+app.get('/api/sites/:id/channels', onb((req) => ({ siteId: Number(req.params.id), channels: onboardingCore.channelRows(onboardingCore.siteCheck(req.params.id).id, { source: req.query.source || null, all: req.query.all === '1' }) })));
+app.post('/api/sites/:id/channels', onb((req) => onboardingCore.applyChannel(req.params.id, req.body || {}, { dryRun: dry(req) }), 201));
+app.post('/api/sites/:id/channels/retire', onb((req) => onboardingCore.retireChannel(req.params.id, req.body || {}, { dryRun: dry(req) })));
+app.post('/api/sites/:id/bindings/preview', onb((req) => onboardingCore.previewBinding(req.params.id, req.body || {}, req.body?.action === 'unbind' ? 'unbind' : 'bind')));
+app.post('/api/sites/:id/bindings', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'bind', { dryRun: dry(req), rebuild: req.body?.rebuild === true }), 201));
+app.post('/api/sites/:id/bindings/unbind', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'unbind', { dryRun: dry(req), rebuild: req.body?.rebuild === true })));
+app.get('/api/sites/:id/rejects', onb((req) => onboardingCore.rejects(onboardingCore.siteCheck(req.params.id).id, { days: req.query.days, source: req.query.source || null })));
 
 app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message });

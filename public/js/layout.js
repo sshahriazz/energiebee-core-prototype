@@ -4,7 +4,7 @@ import { api, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns, originBa
 const PAGES = [
   ['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
   ['grid', 'Grid', '/grid'], ['tariffs', 'Tariffs', '/tariffs'], ['ev', 'EV', '/ev'], ['data', 'Data & trust', '/data'],
-  ['connectors', 'Connectors', '/connectors'], ['compatibility', 'Compatibility', '/compatibility'], ['explorer', 'Data Explorer', '/explorer'],
+  ['connectors', 'Connectors', '/connectors'], ['providers', 'Providers', '/providers'], ['compatibility', 'Compatibility', '/compatibility'], ['explorer', 'Data Explorer', '/explorer'],
 ];
 const PERIODS = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7d', '7 days'], ['30d', '30 days']];
 

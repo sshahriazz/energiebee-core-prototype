@@ -309,6 +309,20 @@ export const METRICS = [
   { code: 'free_session', label: 'Free electricity session', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'flex', description: '1 over an announced free-electricity period (Octopus Power Up, EDF free hours through Kraken).' },
   { code: 'vpp_export_event', label: 'VPP export event', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'flex', description: '1 over a virtual power plant event that asks the home to export (Axle).' },
   { code: 'vpp_import_event', label: 'VPP import event', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'flex', description: '1 over a virtual power plant event that asks the home to import (Axle).' },
+  // IoT devices (heat pump, EV charger, smart plug). A counter channel stores its raw cumulative reading under a *_counter_* metric
+  // (an instant, kept as it came) and the energy of each period under an interval metric, derived by difference (core/counters.js).
+  // An event is a 0/1 period (as the vpp events are): never integrated; the metric is the event's type.
+  { code: 'plug_counter_kwh', label: 'Smart plug energy counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'plug', description: 'The plug\'s cumulative energy reading, as it reported it; the energy of a period is derived from it (plug_kwh).' },
+  { code: 'plug_kwh', label: 'Smart plug energy', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'plug', description: 'Energy a smart plug passed over a period; already inside the home\'s use.' },
+  { code: 'plug_w', label: 'Smart plug power', unit: 'W', timeRole: 'instant', aggregation: 'integrate', domain: 'plug', description: 'Power through a smart plug.' },
+  { code: 'ev_delivered_counter_kwh', label: 'EV charger energy counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'ev', description: 'The charger\'s cumulative delivered-energy reading; the energy of a period is derived from it (ev_delivered_kwh).' },
+  { code: 'ev_delivered_kwh', label: 'EV charger energy delivered', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'ev', description: 'Energy a charger delivered to the car over a period (the charger\'s own measure; ev_charge_kwh is a supplier\'s dispatch).' },
+  { code: 'heatpump_elec_counter_kwh', label: 'Heat pump electricity counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'heating', description: 'The heat pump\'s cumulative electricity reading; the energy of a period is derived from it (heatpump_elec_kwh).' },
+  { code: 'heat_output_counter_kwh', label: 'Heat delivered counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'heating', description: 'A heat meter\'s cumulative reading; the energy of a period is derived from it (heat_output_kwh).' },
+  { code: 'event_defrost', label: 'Defrost cycle', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'heating', description: '1 over a defrost cycle of a heat pump. An event: never integrated.' },
+  { code: 'event_ev_plugged_in', label: 'Car plugged in event', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'ev', description: '1 at the moment a car is plugged into a charger (a short period). An event: never integrated.' },
+  { code: 'event_door_open', label: 'Door or window open event', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'home', description: '1 while a door or window sensor reports open. An event: never integrated.' },
+  { code: 'event_grid_signal', label: 'Grid signal event', unit: '0/1', timeRole: 'interval', aggregation: 'mean', domain: 'flex', description: '1 over a period in which the grid operator or a demand-response signal asks the home to act. An event: never integrated.' },
   { code: 'weather_alert_keep_pct', label: 'Weather alert keep level', unit: '%', timeRole: 'interval', aggregation: 'mean', domain: 'weather', description: 'Share of the battery to keep while a weather alert matching the home\'s filter is in force.' },
   { code: 'extra_load_kwh', label: 'Extra load forecast', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'home', description: 'Energy an outside model forecasts on top of the house load (a heating model\'s energy for a battery planner).' },
 ];
@@ -325,3 +339,18 @@ export const VAT_RATES = [
   { fuel: 'electricity', direction: 'export', rate: 0.0, validFrom: 0, validTo: null },
   { fuel: 'gas', direction: 'import', rate: 0.05, validFrom: 0, validTo: null },
 ];
+
+// What a device KIND brings with it: the standard channels (the points a vendor's processor maps its own readings to),
+// created for a device by ensureChannels (core/channels.js) whatever source feeds it. kind 'counter' channels store the
+// raw cumulative reading under `metric` and the derived energy under `derived`; kind 'event' channels store a 0/1 period.
+// futureToleranceS rejects a timestamp further ahead than that; maxGapS flags a counter period longer than that as estimated.
+const counter = (point, metric, derived, extra = {}) => ({ point, metric, kind: 'counter', derived, min: 0, maxGapS: 3600, futureToleranceS: 300, ...extra });
+const event = (point, metric) => ({ point, metric, kind: 'event', futureToleranceS: 300 });
+export const DEVICE_KIND_CHANNELS = {
+  smart_plug: [counter('energy_total', 'plug_counter_kwh', 'plug_kwh'), { point: 'power', metric: 'plug_w', part: 'positive', min: 0, futureToleranceS: 300 }],
+  ev_charger: [counter('energy_total', 'ev_delivered_counter_kwh', 'ev_delivered_kwh'), { point: 'power', metric: 'ev_w', part: 'positive', min: 0, futureToleranceS: 300 },
+    { point: 'connected', metric: 'ev_connected' }, event('plugged_in', 'event_ev_plugged_in')],
+  heat_pump: [counter('elec_total', 'heatpump_elec_counter_kwh', 'heatpump_elec_kwh'), counter('heat_total', 'heat_output_counter_kwh', 'heat_output_kwh'),
+    { point: 'flow_temp', metric: 'heatpump_flow_temp_c' }, { point: 'return_temp', metric: 'heatpump_return_temp_c' }, event('defrost', 'event_defrost')],
+  meter_heat: [counter('heat_total', 'heat_output_counter_kwh', 'heat_output_kwh')],
+};

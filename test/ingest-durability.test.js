@@ -43,5 +43,5 @@ test('an empty answer is an error when data is required', { skip }, () => {
   db.prepare("INSERT INTO source (code, name, contract) VALUES ('empty_vendor', 'Empty (test)', '{}')").run();
   defineChannel(SITE, 'empty_vendor', 'p', 'solar_w');
   assert.throws(() => ingestObservations(SITE, 'empty_vendor', [], null, { requireData: true }), /empty answer/);
-  assert.deepEqual(ingestObservations(SITE, 'empty_vendor', []), { written: 0, forecasts: 0, states: 0, acks: [], rejected: 0, unmapped: [] }, 'without the option an empty batch is quiet');
+  assert.deepEqual(ingestObservations(SITE, 'empty_vendor', []), { written: 0, forecasts: 0, states: 0, counters: 0, derived: 0, stuck: 0, acks: [], rejected: 0, unmapped: [] }, 'without the option an empty batch is quiet');
 });

@@ -10,7 +10,12 @@ import { nowSec } from './time.js';
 //   meter_energy    supplier meter energy per period     gas_cv          gas calorific value
 //   carbon          grid carbon intensity                weather_temp    outdoor temperature
 //   ev_dispatch     smart-charge dispatch periods        solar_forecast  solar forecast (priority order)
-export const ROLES = ['inverter_5min', 'inverter_daily', 'meter_energy', 'gas_cv', 'carbon', 'weather_temp', 'ev_dispatch', 'solar_forecast'];
+//   heat_pump_energy electricity into a heat pump   heat_output_energy heat delivered into the heating circuit
+//   heat_telemetry   heating temperatures, set-points, on/off, COP     ev_charger_energy energy delivered to a car by a charger
+//   plug_energy      a smart plug's energy (one binding per device)
+// The last five have no default source: a home that binds none behaves as before (heat.js reads any heating source).
+export const ROLES = ['inverter_5min', 'inverter_daily', 'meter_energy', 'gas_cv', 'carbon', 'weather_temp', 'ev_dispatch', 'solar_forecast',
+  'heat_pump_energy', 'heat_output_energy', 'heat_telemetry', 'ev_charger_energy', 'plug_energy'];
 
 // asOf: epoch seconds (a build "as known at"), or null for now. Returns [{ source, from, to }] in
 // order of start then priority; deviceId is the device a binding names, or null for the home itself; from and to are epoch seconds, -Infinity / Infinity when open. A role

@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
 useDb();
+const { db } = await import('../src/db/db.js');
 const { normaliseDay } = await import('../src/adapters/sunsynk.js');
+for (const id of [1, 2]) db.prepare("INSERT INTO site (id, name, created_at) VALUES (?, 'dst', 0)").run(id);   // channels belong to a home
 const { seriesId, readReadings } = await import('../src/core/facts.js');
 const { isoUtc } = await import('../src/core/time.js');
 

@@ -7,13 +7,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { useDb, hasLive, liveDb } from './helpers.js';
+import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
 if (hasLive) {
   const file = useDb({ snapshot: true });
-  const raw = path.join(path.dirname(liveDb), 'raw');
-  if (fs.existsSync(raw)) fs.symlinkSync(raw, path.join(path.dirname(file), 'raw'));
+  fs.symlinkSync(path.join(import.meta.dirname, 'fixtures', 'gb-home-raw', 'raw'), path.join(path.dirname(file), 'raw'));
 }
 const { db } = hasLive ? await import('../src/db/db.js') : {};
 const X = hasLive ? await import('../src/core/explorer.js') : {};

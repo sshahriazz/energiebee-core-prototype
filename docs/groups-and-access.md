@@ -15,6 +15,11 @@ Written for: engineers working on the slot engine who need to know what a "group
 
 The table is `site_grant` and not `grant` because `GRANT` is an SQL keyword.
 
+![Diagram 1: see the Mermaid source below if the image does not show](img/groups-and-access-1.png)
+
+<details>
+<summary>Mermaid source of diagram 1</summary>
+
 ```mermaid
 erDiagram
   app_user ||--o{ site_grant : "holds"
@@ -74,6 +79,8 @@ erDiagram
     text state "final, provisional, missing"
   }
 ```
+
+</details>
 
 ## The rules a group view follows
 

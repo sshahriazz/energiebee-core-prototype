@@ -8,6 +8,11 @@ Written for: engineers working on the control path.
 
 ## 1. One command, end to end
 
+![Diagram 1: see the Mermaid source below if the image does not show](img/control-readback-1.png)
+
+<details>
+<summary>Mermaid source of diagram 1</summary>
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -52,6 +57,8 @@ sequenceDiagram
   X->>X: verified, or not_verified with the evidence
   Note over X,D: A device that applies it after the command expired:<br/>applied_late is recorded, the status stays expired
 ```
+
+</details>
 
 ## 2. The pieces
 

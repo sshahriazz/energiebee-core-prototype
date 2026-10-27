@@ -17,6 +17,11 @@ A slot is a short, fixed period of a home's day (15, 30 or 60 minutes, chosen pe
 
 Every provider takes the same road to get there. Only the first part of the road is specific to the provider. The rest is shared.
 
+![Diagram 1: see the Mermaid source below if the image does not show](img/provider-to-slot-guide-1.png)
+
+<details>
+<summary>Mermaid source of diagram 1</summary>
+
 ```mermaid
 flowchart TB
   subgraph SPECIFIC["Part 1 - specific to each provider"]
@@ -24,7 +29,7 @@ flowchart TB
     B["Step 1 Ask for the data"]
     C["Step 2 Check it looks right"]
     D["Step 3 Keep the receipt"]
-    E["Step 4 Read it into the provider own points"]
+    E["Step 4 Read it into plain points"]
   end
 
   subgraph SHARED["Part 2 - shared by every provider"]
@@ -47,6 +52,8 @@ flowchart TB
   I --> J
   J --> K
 ```
+
+</details>
 
 Part 1 is written once per provider. Part 2 is the core and is never edited for a new provider. Step 5 translates units, signs and limits. Step 10 is dashboards, the planner, group views and device control.
 
@@ -194,6 +201,11 @@ The same slots feed everything downstream, and they read the same bindings, so t
 
 Three rules do the work.
 
+![Diagram 2: see the Mermaid source below if the image does not show](img/provider-to-slot-guide-2.png)
+
+<details>
+<summary>Mermaid source of diagram 2</summary>
+
 ```mermaid
 flowchart LR
   subgraph PROV["Any provider"]
@@ -215,6 +227,8 @@ flowchart LR
   BIND --> ENG
 ```
 
+</details>
+
 1. **Translate at the door.** Every provider's data is converted to the same standard measurements the moment it arrives, by channel rows. Past that door, nothing is provider-specific.
 2. **Ask for roles.** The engine asks for what it needs ("the inverter's 5-minute readings"), never for a named provider.
 3. **Decide by date, in data.** Which provider fills a role is a dated row. Switching, adding and removing are row changes that leave the past untouched.
@@ -226,6 +240,11 @@ The result for a client: **a new provider is a small reading step, some channel 
 ## 4. A worked example: a provider that reports in kW
 
 To show it works, a second inverter vendor, called "Acme" here, was set up as pure data. It reports power in **kilowatts**, with **one signed grid figure** and **one signed battery figure**, which is deliberately different from the original inverter (watts, with the sign convention described in step 0).
+
+![Diagram 3: see the Mermaid source below if the image does not show](img/provider-to-slot-guide-3.png)
+
+<details>
+<summary>Mermaid source of diagram 3</summary>
 
 ```mermaid
 flowchart TB
@@ -266,6 +285,8 @@ flowchart TB
   c5 --> f5
   a4 --> R
 ```
+
+</details>
 
 Then Acme was bound to the inverter role **from a chosen date** on a real home.
 

@@ -10,6 +10,11 @@ Contents: 1 Overview · 2 Data model · 3 Writing data in · 4 Reading data out 
 
 ## 1. Overview
 
+![Diagram 1: see the Mermaid source below if the image does not show](img/slot-engine-architecture-1.png)
+
+<details>
+<summary>Mermaid source of diagram 1</summary>
+
 ```mermaid
 flowchart TB
   subgraph SRC["1 Sources"]
@@ -73,6 +78,8 @@ flowchart TB
   PR --> PL
 ```
 
+</details>
+
 How to read it: data flows top to bottom. Vendors differ only in step 2. Steps 3 and 5 are rows in tables, not code, so adding, switching or removing a provider changes rows only. Both engine parts in step 6 read the same bindings, so the slot builder and the planner agree on which source a slot used (within 0.1 percent in the tests).
 
 ---
@@ -80,6 +87,11 @@ How to read it: data flows top to bottom. Vendors differ only in step 2. Steps 3
 ## 2. Data model
 
 Only the tables this design adds or relies on, with the control and access tables in brief (their full definitions are in `docs/control-readback.md` and `docs/groups-and-access.md`). `source.traits` is a new column; `channel`, `channel_reject`, `binding` and `binding_default` are new tables (deltas 061 to 066).
+
+![Diagram 2: see the Mermaid source below if the image does not show](img/slot-engine-architecture-2.png)
+
+<details>
+<summary>Mermaid source of diagram 2</summary>
 
 ```mermaid
 erDiagram
@@ -211,11 +223,18 @@ erDiagram
   }
 ```
 
+</details>
+
 ---
 
 ## 3. Writing data in
 
 Every vendor takes the same path. The processor knows the vendor's shape; the channels know the vendor's units and signs; the fact writer knows nothing about vendors and refuses writes outside the declared source.
+
+![Diagram 3: see the Mermaid source below if the image does not show](img/slot-engine-architecture-3.png)
+
+<details>
+<summary>Mermaid source of diagram 3</summary>
 
 ```mermaid
 sequenceDiagram
@@ -265,6 +284,8 @@ sequenceDiagram
   end
 ```
 
+</details>
+
 **What the channel row does, by example** (the same inverter reported two ways):
 
 | Vendor point | Vendor value | Channel (metric, part, scale) | Stored fact |
@@ -281,6 +302,11 @@ sequenceDiagram
 ## 4. Reading data out
 
 The builder and the planner read layer take their inputs from the same bindings, so they cannot disagree about which source a slot used.
+
+![Diagram 4: see the Mermaid source below if the image does not show](img/slot-engine-architecture-4.png)
+
+<details>
+<summary>Mermaid source of diagram 4</summary>
 
 ```mermaid
 flowchart TB
@@ -324,11 +350,18 @@ flowchart TB
   class START,R1,R2,R3,A1,A2,A3,A4,A5,MERGE,K1,K2,K3,K4,LIN,OUT built
 ```
 
+</details>
+
 ---
 
 ## 5. Roles
 
 A role is what the engine asks for. A source fills it. The defaults below are what a new home starts with (`binding_default`); a home can bind anything else.
+
+![Diagram 5: see the Mermaid source below if the image does not show](img/slot-engine-architecture-5.png)
+
+<details>
+<summary>Mermaid source of diagram 5</summary>
 
 ```mermaid
 flowchart LR
@@ -371,6 +404,8 @@ flowchart LR
   NEW -.->|"replaces or adds, from a date"| ROLES
 ```
 
+</details>
+
 | Role | What the builder uses it for | Stored as |
 |---|---|---|
 | `inverter_5min` | Solar, load, grid, battery power and charge level, integrated into slots | `reading`, site subject |
@@ -387,6 +422,11 @@ flowchart LR
 ## 6. Provider lifecycle
 
 Everything below is a row change, done while the system runs. Slots before a change never move.
+
+![Diagram 6: see the Mermaid source below if the image does not show](img/slot-engine-architecture-6.png)
+
+<details>
+<summary>Mermaid source of diagram 6</summary>
 
 ```mermaid
 stateDiagram-v2
@@ -418,6 +458,8 @@ stateDiagram-v2
   end note
 ```
 
+</details>
+
 Each inverter binding is a *unit*: a source, optionally a device, for a period. Units that follow one another take turns (a vendor switch). Units that overlap in time are two devices of one kind (two inverters, two batteries) and their figures are **added**: each is integrated on its own with its own hold, the slot energies are summed, a slot is covered only as far as its least covered unit, and a day's counter total is the sum of the units' totals (unknown if one is missing). Charge level is the average of the batteries weighted by size (the device's `battery_kwh`). `solar_forecast` is the one role that has several sources at once by priority instead of adding them.
 
 **Safety rules that go with it**
@@ -435,6 +477,11 @@ Each inverter binding is a *unit*: a source, optionally a device, for a period. 
 ## 7. A vendor switch, worked through
 
 Tested on the real home's data (`test/runtime-provider.test.js`, `test/channels.test.js`): a second inverter vendor reports in kW with one signed grid figure, is wired in as rows, and is bound from a date.
+
+![Diagram 7: see the Mermaid source below if the image does not show](img/slot-engine-architecture-7.png)
+
+<details>
+<summary>Mermaid source of diagram 7</summary>
 
 ```mermaid
 flowchart TB
@@ -470,6 +517,8 @@ flowchart TB
   AFTER -.-> REPLAY
 ```
 
+</details>
+
 **Result of that test:** slots from D equal the real inverter's within 1e-6 on solar, home use, import, export, battery charge and discharge, and total cost. The planner read agrees with the builder within 0.1% across the switch.
 
 ---
@@ -477,6 +526,11 @@ flowchart TB
 ## 8. Crash safety
 
 The old failure: a sync wrote corrected facts, stopped before its rebuild, and the next sync fetched the same window, found nothing changed, and never rebuilt the day.
+
+![Diagram 8: see the Mermaid source below if the image does not show](img/slot-engine-architecture-8.png)
+
+<details>
+<summary>Mermaid source of diagram 8</summary>
 
 ```mermaid
 sequenceDiagram
@@ -497,6 +551,8 @@ sequenceDiagram
   Note over S3,DB: Before the fix the watermark was S3's own start,<br/>so the corrected slot was never found.
 ```
 
+</details>
+
 Also in this stage: a batch with the same timestamp twice keeps the last value (it used to break the unique key and abort the whole batch), and `requireData` turns an empty answer into an error the sync log shows.
 
 ---
@@ -504,6 +560,11 @@ Also in this stage: a batch with the same timestamp twice keeps the last value (
 ## 9. Control: a command with read-back
 
 Writing to a device uses the same channels as reading from it. A device's settings come back as `state` observations through the same ingest path, a receipt is an `ack` that is never stored as a fact, and a command counts as done only when the **device** reports the desired state. Full detail: `docs/control-readback.md`.
+
+![Diagram 9: see the Mermaid source below if the image does not show](img/slot-engine-architecture-9.png)
+
+<details>
+<summary>Mermaid source of diagram 9</summary>
 
 ```mermaid
 sequenceDiagram
@@ -548,6 +609,8 @@ sequenceDiagram
   Note over X,D: A device that applies it after expiry:<br/>applied_late is recorded, status stays expired
 ```
 
+</details>
+
 | Gate or rule | What it stops | Kept where |
 |---|---|---|
 | Control right | A viewer, a stranger or a revoked user commanding a home | error `forbidden`, nothing written |
@@ -562,6 +625,11 @@ sequenceDiagram
 ## 10. Groups and access
 
 A group is a dated set of homes. Its views are built from the homes' slot rows, never from daily totals, and who may see or command a home is a grant, not a tenant. Full detail: `docs/groups-and-access.md`.
+
+![Diagram 10: see the Mermaid source below if the image does not show](img/slot-engine-architecture-10.png)
+
+<details>
+<summary>Mermaid source of diagram 10</summary>
 
 ```mermaid
 flowchart TB
@@ -590,6 +658,8 @@ flowchart TB
   V --> R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> OUT
 ```
 
+</details>
+
 | Question | Answer in this design |
 |---|---|
 | A group has GBP and EUR homes | Two money totals; no exchange rate exists |
@@ -602,6 +672,11 @@ flowchart TB
 ---
 
 ## 11. What is built and what is not
+
+![Diagram 11: see the Mermaid source below if the image does not show](img/slot-engine-architecture-11.png)
+
+<details>
+<summary>Mermaid source of diagram 11</summary>
 
 ```mermaid
 flowchart TB
@@ -639,6 +714,8 @@ flowchart TB
   class p1,p2 part
   class t1,t2,t3,t4 todo
 ```
+
+</details>
 
 ### Where each piece lives
 

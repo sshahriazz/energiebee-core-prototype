@@ -2,7 +2,8 @@
 // slots are stored as interval facts marked "estimated", and forward slots as
 // forecast facts with the fetch time as the issue time (the API gives none).
 import { fetchJson } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putIntervals, putForecasts, QUALITY } from '../core/facts.js';
+import { landRaw, quarantine, QUALITY } from '../core/facts.js';
+import { ingestObservations } from '../core/channels.js';
 import { isoUtc, nowSec, floorTo, parseIso } from '../core/time.js';
 
 // The API's own grid: half-hours on :00 and :30 UTC, whatever slot length a home uses. Facts
@@ -20,7 +21,7 @@ function slotsOf(json) {
 
 export async function syncCarbon(site, fromTs, toTs) {
   if (!site.outcode || site.carbon_region == null) return { skipped: 'no carbon region' };
-  const series = seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional');
+  const subject = { kind: 'region', id: `carbon:${site.carbon_region}` };
   let past = 0;
   // History in 7-day chunks (the API documents a 14-day limit per request).
   for (let a = fromTs; a < Math.min(toTs, nowSec()); a += 7 * 86400) {
@@ -30,9 +31,9 @@ export async function syncCarbon(site, fromTs, toTs) {
     const slots = slotsOf(json);
     if (!slots) { quarantine({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json, reason: 'unexpected shape' }); continue; }
     const { rawId } = landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
-    past += putIntervals(series, slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
-      start: parseIso(s.from), end: parseIso(s.to), value: s.intensity.forecast, quality: QUALITY.ESTIMATED,
-    })), rawId);
+    past += ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
+      point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), value: s.intensity.forecast, quality: QUALITY.ESTIMATED,
+    })), rawId, { subject }).written;
   }
   // Forward 48 hours as a new forecast issue.
   const now = floorTo(nowSec(), API_STEP);
@@ -40,8 +41,9 @@ export async function syncCarbon(site, fromTs, toTs) {
   const { json } = await fetchJson(url);
   const slots = slotsOf(json) || [];
   const { rawId } = landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
-  const fwd = putForecasts(series, nowSec(), slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
-    start: parseIso(s.from), end: parseIso(s.to), value: s.intensity.forecast,
-  })), rawId);
+  const issuedAt = nowSec();
+  const fwd = ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
+    point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), issuedAt, value: s.intensity.forecast,
+  })), rawId, { subject }).forecasts;
   return { past, forecast: fwd };
 }

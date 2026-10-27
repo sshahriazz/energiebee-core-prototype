@@ -295,8 +295,8 @@ export function explainSlot(siteId, slot, { asOfMs = null } = {}) {
   out.steps.push({
     id: 'reconcile', title: '', plain_explanation: '',
     formula: 'balance = solar + import + discharge - export - charge;  home = min(load, max(0, balance));  loss = balance - load;  meter_vs_ct = meter import - clamp import' + (T.gasM3 ? ';  gas kWh = m3 x 1.02264 x CV / 3.6' : ''),
-    inputs: [item('smart meter import', R.mImp, 'kWh', { source: 'octopus_meter' }), item('clamp import (fitted)', TS.nodes.imp.fitted, 'kWh', { source: 'sunsynk_5min' }),
-      item('smart meter export', R.mExp, 'kWh', { source: 'octopus_meter' }), item('clamp export (fitted)', TS.nodes.exp.fitted, 'kWh', { source: 'sunsynk_5min' }),
+    inputs: [item('smart meter import', R.mImp, 'kWh', { source: R.meterSource }), item('clamp import (fitted)', TS.nodes.imp.fitted, 'kWh', { source: 'sunsynk_5min' }),
+      item('smart meter export', R.mExp, 'kWh', { source: R.meterSource }), item('clamp export (fitted)', TS.nodes.exp.fitted, 'kWh', { source: 'sunsynk_5min' }),
       item('solar', R.solar, 'kWh'), item('battery charge', R.chg, 'kWh'), item('battery discharge', R.dis, 'kWh'), item('measured load', R.measuredLoad, 'kWh'),
       ...(T.gasM3 ? [item('gas volume', R.gasRaw, 'm3'), item('calorific value', R.cv, 'MJ/m3'), item('volume correction', TS.meter.volumeCorrection, 'factor')] : [])],
     intermediates: [item('import source', null, null, { note: R.impSrc ?? 'none' }), item('export source', null, null, { note: R.expSrc ?? 'none' }), item('balance', R.balance, 'kWh')],
@@ -420,10 +420,10 @@ function plainSteps(o) {
   // Which figure is used, and the house's use.
   const clampWord = 'the inverter\'s own sensor on the grid cable (its "clamp")';
   const impText = R.imp == null ? `No grid import was measured for this ${noun} (no meter reading and no inverter readings), so it is marked missing.`
-    : R.impSrc === 'octopus_meter' ? `The smart meter measured ${k(R.mImp)} bought from the grid this ${noun}; ${clampWord} measured ${k(nd.imp.fitted)}. We use the meter because it is the supplier's official reading.`
+    : R.impSrc === 'meter' ? `The smart meter measured ${k(R.mImp)} bought from the grid this ${noun}; ${clampWord} measured ${k(nd.imp.fitted)}. We use the meter because it is the supplier's official reading.`
       : T.hasImportMeter ? `No smart meter reading covers this ${noun} yet, so we use ${clampWord}: ${k(R.imp)} bought from the grid. The meter's reading replaces it when it arrives.`
         : `This home has no smart meter reading, so grid import is ${clampWord}: ${k(R.imp)}.`;
-  const expText = R.exp == null ? '' : nz(R.exp) ? ` ${k(R.exp)} was sent to the grid (${R.expSrc === 'octopus_meter' ? 'measured by the export meter' : 'measured by the clamp'}).` : ' Nothing was sent to the grid.';
+  const expText = R.exp == null ? '' : nz(R.exp) ? ` ${k(R.exp)} was sent to the grid (${R.expSrc === 'meter' ? 'measured by the export meter' : 'measured by the clamp'}).` : ' Nothing was sent to the grid.';
   const inSum = (R.solar ?? 0) + (R.imp ?? 0) + (R.dis ?? 0);
   const homeText = R.imp == null ? '' : ` Energy in (solar ${f(R.solar)} + grid ${f(R.imp)} + battery ${f(R.dis)} = ${k(inSum)}) minus energy out (export ${f(R.exp)} + battery charging ${f(R.chg)}) leaves ${k(R.balance)}. ${
     R.measuredLoad == null ? 'With no house reading from the inverter, that is what the house used.'
@@ -495,7 +495,7 @@ function whyBit(name, TS, T, noun) {
   const R = TS.reconcile;
   switch (name) {
     case 'MEASURED': return `the smart meter measured ${f(R.mImp)} kWh`;
-    case 'FALLBACK': return R.impSrc === 'sunsynk_ct' ? `no smart meter reading covers the whole ${noun} yet, so the inverter's clamp figure (${f(R.imp)} kWh) is used` : `the export meter did not cover the whole ${noun}, so the inverter's clamp figure (${f(R.exp)} kWh) is used`;
+    case 'FALLBACK': return R.impSrc === 'clamp' ? `no smart meter reading covers the whole ${noun} yet, so the inverter's clamp figure (${f(R.imp)} kWh) is used` : `the export meter did not cover the whole ${noun}, so the inverter's clamp figure (${f(R.exp)} kWh) is used`;
     case 'PARTIAL': return `the inverter's readings cover ${f(TS.coverage * 100, 0)}% of the ${noun}`;
     case 'SUSPECT': return `${f(-R.balance)} kWh more went out (export and battery charging) than came in`;
     case 'CHECK_FAILED': return `no import price covers this ${noun}`;

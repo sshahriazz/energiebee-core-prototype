@@ -279,7 +279,7 @@ function tipFor(r, lanes, d, tf) {
   if (on.has('solar')) out.push(line('Solar made', COLORS.solar, k(r.solar), r.solar_forecast != null && !fc ? `fc ${fmt.num(r.solar_forecast, 2)}` : ''));
   if (on.has('battery')) out.push(line('Battery out / in', COLORS.battery, `${fmt.num(r.battery_discharge, 2)} / ${fmt.num(r.battery_charge, 2)} kWh`));
   if (on.has('soc') && r.soc_end != null) out.push(line('Charge level', COLORS.battery, `${Math.round(r.soc_end)}%`));
-  if (on.has('grid')) out.push(line('Grid in / out', COLORS.grid, `${fmt.num(r.grid_import, 2)} / ${fmt.num(r.grid_export, 2)} kWh`, fc ? '' : r.import_source === 'octopus_meter' ? 'meter' : r.import_source === 'sunsynk_ct' ? 'clamp' : ''));
+  if (on.has('grid')) out.push(line('Grid in / out', COLORS.grid, `${fmt.num(r.grid_import, 2)} / ${fmt.num(r.grid_export, 2)} kWh`, fc ? '' : r.import_source === 'meter' ? 'meter' : r.import_source === 'clamp' ? 'clamp' : ''));
   if (on.has('home')) out.push(line('House used', 'var(--text-2)', k(r.home), r.home ? `solar ${fmt.num(r.solar_to_home, 2)} · battery ${fmt.num(r.battery_to_home, 2)} · grid ${fmt.num(r.grid_to_home, 2)}` : ''));
   if (on.has('home') && r.loss != null && Math.abs(r.loss) > 0.005) out.push(line(r.loss > 0 ? 'Inverter loss' : 'Unmeasured', 'var(--text-3)', k(Math.abs(r.loss))));
   if (on.has('ev') && r.ev) out.push(line('EV', COLORS.ev, k(r.ev)));

@@ -139,8 +139,8 @@ export function trustFor(siteId, fromDate, toDate) {
   const balance = days.map((d) => {
     const [a] = dayBounds(tz, d.local_date);
     const rows = hh.filter((r) => r.local_date === d.local_date);
-    const meterImp = rows.filter((r) => JSON.parse(r.lineage || '{}').import === 'octopus_meter');
-    const meterExp = rows.filter((r) => JSON.parse(r.lineage || '{}').export === 'octopus_meter');
+    const meterImp = rows.filter((r) => JSON.parse(r.lineage || '{}').import === 'meter');
+    const meterExp = rows.filter((r) => JSON.parse(r.lineage || '{}').export === 'meter');
     const ct = (rs, k) => rs.reduce((s, r) => s + (JSON.parse(r.lineage || '{}').ct?.[k] ?? 0), 0);
     const sum = (rs, k) => rs.reduce((s, r) => s + (r[k] || 0), 0);
     return {

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { db, tx, dataDir } from '../db/db.js';
 import { seriesId } from './facts.js';
 import { nowSec } from './time.js';
+import { bindingsFor } from './inputs.js';
 import { seedAttributes } from './attributes.js';
 import { seedDeviceHistory } from './devices.js';
 
@@ -18,7 +19,8 @@ export function withdrawDerivedGas(siteId) {
   let withdrawn = 0;
   for (const d of db.prepare("SELECT id, attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId)) {
     if (JSON.parse(d.attrs || '{}').gasUnit?.unit !== 'm3') continue;
-    const series = seriesId('device', d.id, 'gas_kwh', 'octopus_meter');
+    for (const bd of bindingsFor(siteId, 'meter_energy')) {
+    const series = seriesId('device', d.id, 'gas_kwh', bd.source);
     tx(() => {
       const n = db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(Date.now(), series).changes;
       if (n) {
@@ -28,6 +30,7 @@ export function withdrawDerivedGas(siteId) {
         withdrawn += n;
       }
     });
+    }
   }
   return withdrawn;
 }

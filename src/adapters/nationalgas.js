@@ -5,7 +5,8 @@
 // looked up by its published name, "Calorific Value, LDZ(xx)".
 import { db } from '../db/db.js';
 import { fetchJson, fetchText } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putIntervals, QUALITY } from '../core/facts.js';
+import { landRaw, quarantine, QUALITY } from '../core/facts.js';
+import { ingestObservations } from '../core/channels.js';
 import { localDate, localToUtc, addDays } from '../core/time.js';
 
 const BASE = 'https://data.nationalgas.com/api';
@@ -66,8 +67,8 @@ export async function syncGasCv(site, fromTs, toTs) {
     const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(applicableFor || '');
     if (!m || !Number.isFinite(v)) continue;
     const [a, b] = gasDayBounds(site.timezone, `${m[3]}-${m[2]}-${m[1]}`);
-    rows.push({ start: a, end: b, value: v, quality: QUALITY.MEASURED });
+    rows.push({ point: 'calorific_value', start: a, end: b, value: v, quality: QUALITY.MEASURED });
   }
-  const n = putIntervals(seriesId('region', `ldz:${ldz}`, 'gas_cv_mjm3', 'national_gas_cv'), rows, rawId);
+  const n = ingestObservations(site.id, 'national_gas_cv', rows, rawId, { subject: { kind: 'region', id: `ldz:${ldz}` } }).written;
   return { ldz, itemId: id, days: rows.length, facts: n };
 }

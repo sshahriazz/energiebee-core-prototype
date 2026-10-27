@@ -268,7 +268,7 @@ export function wireAsOf(state, t, tf) {
 }
 
 function strip(hh) {
-  return `<div class="hh-strip">${hh.map((x) => `<i class="${x.state}${x.import_source === 'sunsynk_ct' ? ' clamp' : ''}" title="${esc(`${x.state}${x.import_source ? ` · grid from the ${x.import_source === 'octopus_meter' ? 'smart meter' : 'inverter clamp'}` : ''}`)}"></i>`).join('')}</div>`;
+  return `<div class="hh-strip">${hh.map((x) => `<i class="${x.state}${x.import_source === 'clamp' ? ' clamp' : ''}" title="${esc(`${x.state}${x.import_source ? ` · grid from the ${x.import_source === 'octopus_meter' ? 'smart meter' : 'inverter clamp'}` : ''}`)}"></i>`).join('')}</div>`;
 }
 
 function asOfResult(r, tf) {
@@ -327,7 +327,7 @@ export function evidenceFlow(e) {
   const bySource = {};
   for (const f of e.facts) { const s = (bySource[f.source] ||= { current: 0, old: 0 }); if (f.superseded_at) s.old++; else s.current++; }
   const impInc = r.import_rate_ex != null ? r.import_rate_ex * (1 + (r.import_vat || 0)) : null;
-  const meterUsed = lin.import === 'octopus_meter';
+  const meterUsed = lin.import === 'meter';
   const step = (n, title, body) => `<div class="path-step"><div class="path-n">${n}</div><div class="path-body"><h4>${title}</h4>${body}</div></div>`;
   const checks = (e.checks || []).map((c) => `<div class="path-check" title="${esc(c.detail || '')}"><span class="xg-key ${c.status}">${ICON[c.status]}</span>${esc(checkName(c.check_code))}</div>`).join('');
   const raws = {};

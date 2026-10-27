@@ -6,7 +6,8 @@
 import crypto from 'node:crypto';
 import { db } from '../db/db.js';
 import { fetchJson } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putReadings, putIntervals, QUALITY } from '../core/facts.js';
+import { landRaw, quarantine } from '../core/facts.js';
+import { ingestObservations } from '../core/channels.js';
 import { localToUtcAll, dayBounds, floorTo, nowSec } from '../core/time.js';
 import { setAttribute } from '../core/attributes.js';
 
@@ -51,14 +52,15 @@ async function api(token, pathAndQuery, siteId) {
 const DAY_LABELS = { PV: 'solar', Battery: 'battery', SOC: 'soc', Load: 'load', Grid: 'grid' };
 
 // Day series: "HH:mm" on the plant clock; battery positive = discharging; grid positive = import.
-export function normaliseDay(siteId, tz, date, json, rawId) {
+// parseDay is pure: it returns the vendor's own points with their signed values (W, %). The sign split
+// and the clamp to >= 0 are the channel rows (registry.js SOURCES sunsynk_5min channels).
+export function parseDay(tz, date, json) {
   const infos = json?.data?.infos;
   if (!Array.isArray(infos)) return { error: 'infos missing' };
   const [y, m, d] = date.split('-').map(Number);
-  const out = { solar_w: [], load_w: [], grid_import_w: [], grid_export_w: [], battery_charge_w: [], battery_discharge_w: [], battery_soc_pct: [] };
+  const obs = [];
   for (const info of infos) {
-    const kind = DAY_LABELS[info.label];
-    if (!kind) continue;                       // e.g. "Micro Inverter" is not modelled yet
+    if (!DAY_LABELS[info.label]) continue;     // e.g. "Micro Inverter" is not modelled yet
     // Records come in time order on the plant's clock. When clocks go back, 01:00-01:59
     // appears twice: the first run is the earlier instant (BST), the repeat the later (GMT).
     // Each record takes the first instant after the previous record's.
@@ -70,59 +72,58 @@ export function normaliseDay(siteId, tz, date, json, rawId) {
       prev = ts;
       const v = rec.value === null || rec.value === '' ? null : Number(rec.value);
       if (v === null || Number.isNaN(v)) continue;
-      if (kind === 'solar') out.solar_w.push({ ts, value: Math.max(0, v) });
-      if (kind === 'load') out.load_w.push({ ts, value: Math.max(0, v) });
-      if (kind === 'soc') out.battery_soc_pct.push({ ts, value: v });
-      if (kind === 'grid') { out.grid_import_w.push({ ts, value: Math.max(0, v) }); out.grid_export_w.push({ ts, value: Math.max(0, -v) }); }
-      if (kind === 'battery') { out.battery_discharge_w.push({ ts, value: Math.max(0, v) }); out.battery_charge_w.push({ ts, value: Math.max(0, -v) }); }
+      obs.push({ point: info.label, ts, value: v });
     }
   }
-  let n = 0;
-  for (const [metric, rows] of Object.entries(out)) {
-    if (rows.length) n += putReadings(seriesId('site', siteId, metric, 'sunsynk_5min'), rows, rawId);
-  }
-  return { facts: n };
+  return { obs };
 }
 
-const MONTH_LABELS = {
-  'PV Generation': 'solar_kwh', 'Load Power Consumption': 'load_kwh', 'Purchased electricity': 'grid_import_kwh',
-  'Sold electricity': 'grid_export_kwh', 'Charge Energy': 'battery_charge_kwh', 'Discharge Energy': 'battery_discharge_kwh',
-};
+export function normaliseDay(siteId, tz, date, json, rawId) {
+  const { obs, error } = parseDay(tz, date, json);
+  if (error) return { error };
+  return { facts: ingestObservations(siteId, 'sunsynk_5min', obs, rawId).written };
+}
+
+const MONTH_LABELS = ['PV Generation', 'Load Power Consumption', 'Purchased electricity', 'Sold electricity', 'Charge Energy', 'Discharge Energy'];
 
 // Month series: one total per plant-local day; the label carries the direction.
-export function normaliseMonth(siteId, tz, json, rawId) {
+export function parseMonth(tz, json) {
   const infos = json?.data?.infos;
   if (!Array.isArray(infos)) return { error: 'infos missing' };
-  let n = 0;
+  const obs = [];
   for (const info of infos) {
-    const metric = MONTH_LABELS[info.label];
-    if (!metric) continue;
-    const rows = (info.records || []).map((rec) => {
+    if (!MONTH_LABELS.includes(info.label)) continue;
+    for (const rec of info.records || []) {
       const [a, b] = dayBounds(tz, rec.time);
-      return { start: a, end: b, value: Number(rec.value) };
-    }).filter((r) => !Number.isNaN(r.value));
-    n += putIntervals(seriesId('site', siteId, metric, 'sunsynk_daily'), rows, rawId);
+      const value = Number(rec.value);
+      if (!Number.isNaN(value)) obs.push({ point: info.label, start: a, end: b, value });
+    }
   }
-  return { facts: n };
+  return { obs };
+}
+
+export function normaliseMonth(siteId, tz, json, rawId) {
+  const { obs, error } = parseMonth(tz, json);
+  if (error) return { error };
+  return { facts: ingestObservations(siteId, 'sunsynk_daily', obs, rawId).written };
 }
 
 // Realtime flow has no timestamp: the contract stamps it with the fetch time floored to 5 minutes.
-export function normaliseFlow(siteId, json, rawId) {
+// A figure the plant did not send is absent, not 0.
+export function parseFlow(json, at = nowSec()) {
   const d = json?.data;
   if (!d) return { error: 'no data' };
-  const ts = floorTo(nowSec(), 300);
-  const pv = Array.isArray(d.pv) ? d.pv.reduce((s, x) => s + (Number(x.power) || 0), 0) : 0;
-  const grid = Number(d.gridOrMeterPower) || 0;
-  const batt = Number(d.battPower) || 0;
-  const rows = {
-    solar_w: pv, load_w: Math.max(0, Number(d.loadOrEpsPower) || 0),
-    grid_import_w: Math.max(0, grid), grid_export_w: Math.max(0, -grid),
-    battery_discharge_w: Math.max(0, batt), battery_charge_w: Math.max(0, -batt),
-    battery_soc_pct: Number(d.soc) || 0, ev_w: Math.max(0, Number(d.chargePilePower) || 0),
-  };
-  let n = 0;
-  for (const [metric, value] of Object.entries(rows)) n += putReadings(seriesId('site', siteId, metric, 'sunsynk_live'), [{ ts, value, quality: QUALITY.MEASURED }], rawId);
-  return { facts: n };
+  const ts = floorTo(at, 300);
+  const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const pv = Array.isArray(d.pv) ? d.pv.reduce((s, x) => s + (Number(x.power) || 0), 0) : null;
+  const points = { pv_power: pv, load_power: num(d.loadOrEpsPower), grid_power: num(d.gridOrMeterPower), battery_power: num(d.battPower), soc: num(d.soc), ev_power: num(d.chargePilePower) };
+  return { obs: Object.entries(points).filter(([, value]) => value !== null).map(([point, value]) => ({ point, ts, value })) };
+}
+
+export function normaliseFlow(siteId, json, rawId) {
+  const { obs, error } = parseFlow(json);
+  if (error) return { error };
+  return { facts: ingestObservations(siteId, 'sunsynk_live', obs, rawId).written };
 }
 
 // ───────────── Sync ─────────────

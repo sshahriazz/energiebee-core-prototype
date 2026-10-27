@@ -4,7 +4,8 @@
 // 6.25 kW peak for 5 kWp of panels (16 Oct 2026). The forecast is instead checked against
 // this home's actual output and scaled by the observed ratio (src/core/forecast.js).
 import { fetchJson } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putForecasts } from '../core/facts.js';
+import { landRaw, quarantine } from '../core/facts.js';
+import { ingestObservations } from '../core/channels.js';
 import { nowSec } from '../core/time.js';
 
 export async function syncQuartz(site) {
@@ -33,8 +34,8 @@ export async function syncQuartz(site) {
   // cleanly (otherwise issues never overlap and would be summed).
   const rows = Object.entries(power).map(([k, kw]) => {
     const t = Math.round(asUtc(k) / 900) * 900;
-    return { start: t, end: t + 900, value: Math.max(0, Number(kw) || 0) * 0.25 };
+    return { point: 'power_kw', start: t, end: t + 900, issuedAt: issued, value: kw };
   });
-  const n = putForecasts(seriesId('site', site.id, 'solar_kwh', 'quartz'), issued, rows, rawId);
+  const n = ingestObservations(site.id, 'quartz', rows, rawId).forecasts;
   return { forecasts: n };
 }

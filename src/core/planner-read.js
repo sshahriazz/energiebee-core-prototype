@@ -56,6 +56,7 @@ import { inputsProvenance } from './provenance.js';
 import { siteAt } from './versions.js';
 import { attributeAt, attributesAt } from './attributes.js';
 import { devicesAt } from './devices.js';
+import { bindingsFor, holdSOf } from './inputs.js';
 import { settingsAt } from './settings.js';
 import { localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, offsetSeconds } from './time.js';
 
@@ -69,23 +70,30 @@ export const STATE_LOOKBACK_S = 2 * 86400;       // state(): how far back a late
 // unverified: Predbat itself states none); a caller passes its own limits.
 export const DEFAULT_LIMITS = Object.freeze({ soc_pct: 3600, battery_w: 3600, grid_w: 3600, pv_w: 3600, load_w: 3600 });
 
-// How long an instant sample holds (s), by source (the source contracts in registry.js).
-const HOLD_S = { sunsynk_5min: 300, sunsynk_live: 300, open_meteo: 3600, heating_telemetry: 3 * 3600 };
+// What the planner read knows about a source comes from the source's traits (registry.js:
+// holdS, live, forecastOnly, namedOnly) and from the home's bindings (inputs.js), not from a list of
+// vendors here: a new source declares its hold time and kind in its own row.
 const DEFAULT_HOLD_S = 3600;
-// Sources tried first, per fact table. Sources that only issue forecasts are never read as facts;
-// a daily total (sunsynk_daily) is only read when named: splitting it evenly over a day's steps
-// would invent its shape (counterDifferenceSeries fits it to the 5-minute power instead).
-const READING_SOURCES = ['sunsynk_5min', 'heating_telemetry', 'open_meteo', 'sunsynk_live'];
-const INTERVAL_SOURCES = ['octopus_meter', 'carbon_regional', 'open_meteo', 'national_gas_cv', 'octopus_kraken', 'heating_telemetry'];
-const FORECAST_ONLY = new Set(['core_forecast', 'quartz', 'core_solar_cases', 'core_plan']);
-const NAMED_ONLY = new Set(['sunsynk_daily']);
+function sourceTraits() {
+  const t = new Map();
+  for (const r of db.prepare('SELECT code, traits FROM source').all()) {
+    let c = {}; try { c = JSON.parse(r.traits || '{}'); } catch { /* unreadable traits: no flags */ }
+    t.set(r.code, { holdS: c.holdS ?? null, live: Boolean(c.live), forecastOnly: Boolean(c.forecastOnly), namedOnly: Boolean(c.namedOnly) });
+  }
+  return t;
+}
+const withFlag = (traits, flags) => new Set([...traits].filter(([, v]) => flags.some((f) => v[f])).map(([k]) => k));
+// Sources the home has bound to the given roles, in role then priority order.
+const boundSources = (siteId, roles, asOfS = null) => [...new Set(roles.flatMap((r) => bindingsFor(siteId, r, asOfS).map((b) => b.source)))];
+const READING_ROLES = ['inverter_5min', 'weather_temp'];
+const INTERVAL_ROLES = ['meter_energy', 'carbon', 'weather_temp', 'gas_cv', 'ev_dispatch'];
 // Forecast sources per metric, in priority order. solar_kwh: our own calibrated forecast first (the
 // central the solar cases are derived from, solar-cases.js), Quartz for steps it does not cover.
 const FORECAST_SOURCES = {
-  solar_kwh: ['core_forecast', 'quartz'], solar_kwh_p10: ['core_solar_cases'], solar_kwh_p50: ['core_solar_cases'], solar_kwh_p90: ['core_solar_cases'],
+  solar_kwh: null /* the home's solar_forecast bindings */, solar_kwh_p10: ['core_solar_cases'], solar_kwh_p50: ['core_solar_cases'], solar_kwh_p90: ['core_solar_cases'],
   load_kwh: ['core_forecast'], grid_import_kwh: ['core_forecast'],
 };
-const FORECAST_PRIORITY = ['core_forecast', 'quartz', 'core_solar_cases', 'open_meteo', 'carbon_regional', 'octopus_kraken', 'heating_telemetry'];
+
 const CASES = { central: null, p10: 'p10', p50: 'p50', p90: 'p90', pessimistic: 'p10', median: 'p50', optimistic: 'p90' };
 // Inverter daily counters (Predbat's load_today, pv_today, import_today, export_today ...): the
 // daily total metric -> the 5-minute power metric integrated and fitted to it (build.js NODES).
@@ -344,8 +352,9 @@ export function series(siteId, metric, from, to, opts = {}) {
   const def = metricDef(metric);
   const kind = opts.kind ?? (def.time_role === 'instant' ? 'reading' : 'interval');
   if (kind !== 'reading' && kind !== 'interval') throw new RangeError(`kind must be 'reading' or 'interval', not ${kind}`);
-  const skip = new Set([...FORECAST_ONLY, ...NAMED_ONLY]);
-  const groups = groupsBySource(seriesFor(site, metric), opts.source, kind === 'reading' ? READING_SOURCES : INTERVAL_SOURCES, skip);
+  const traits = sourceTraits();
+  const skip = withFlag(traits, ['forecastOnly', 'namedOnly']);
+  const groups = groupsBySource(seriesFor(site, metric), opts.source, boundSources(siteId, kind === 'reading' ? READING_ROLES : INTERVAL_ROLES), skip);
   const sumLike = def.aggregation === 'sum' || def.aggregation === 'integrate';
   const rule = ruleOf(def, kind);
   const bounds = [];
@@ -353,7 +362,7 @@ export function series(siteId, metric, from, to, opts = {}) {
   const results = facts.withKnownAt(at.knownAt, () => groups.map(({ source, series: list }) => {
     const ids = list.map((s) => s.id);
     if (kind === 'reading') {
-      const holdS = opts.holdS ?? HOLD_S[source] ?? DEFAULT_HOLD_S;
+      const holdS = opts.holdS ?? traits.get(source)?.holdS ?? DEFAULT_HOLD_S;
       holds.push(holdS);
       bounds.push({ table: 'reading', seriesIds: ids, from: g.start - holdS, to: g.end });
       const bySeries = groupBySeries(facts.readReadings(ids, g.start - holdS, g.end));
@@ -390,14 +399,46 @@ function ruleOf(def, kind) {
 // the build's align step (build.js: fit = total / integrated when 0.05 < integrated, total > 0,
 // 0.6 < fit < 1.6 and the day is before today; otherwise 1). Re-implemented, not shared, so the
 // build is untouched; test/planner-read.test.js checks it against the build on the GB home.
-function fittedDays(siteId, tz, counter, dates, stepS, today, bounds) {
-  const powerId = siteSeries(siteId, COUNTERS[counter], 'sunsynk_5min');
-  const dailyId = siteSeries(siteId, counter, 'sunsynk_daily');
+function fittedDays(siteId, tz, counter, dates, stepS, today, bounds, knownAt) {
+  // The sources bound to the inverter roles (inputs.js), each for the period it applies: the same
+  // sources the build reads, so a vendor switch moves both together.
+  const asOfS = knownAt == null ? null : knownAt / 1000;
+  const bound5 = bindingsFor(siteId, 'inverter_5min', asOfS);
+  const boundDaily = bindingsFor(siteId, 'inverter_daily', asOfS);
   const [a] = dayBounds(tz, dates[0]); const [, b] = dayBounds(tz, dates[dates.length - 1]);
   const g = { start: a, stepS, n: (b - a) / stepS, end: b };
-  bounds.push({ table: 'reading', seriesIds: powerId ? [powerId] : [], from: a - 600, to: b });
-  const h = holdAccumulate(powerId ? facts.readReadings([powerId], a - 600, b) : [], g, 300);
-  const daily = dailyId ? intervalsOf(dailyId, a, b, bounds) : [];
+  // A unit is a binding: a source, optionally a device (two inverters are two units at once). Each is held and
+  // integrated on its own, then the energies are added; a step is covered as far as its least covered active unit is.
+  const seriesOf = (bd, metric) => (bd.deviceId == null ? siteSeries(siteId, metric, bd.source)
+    : db.prepare("SELECT se.id FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id WHERE se.subject_kind = 'device' AND se.subject_id = ? AND m.code = ? AND so.code = ?").get(String(bd.deviceId), metric, bd.source)?.id ?? null);
+  const powers = bound5.map((bd) => ({ bd, id: seriesOf(bd, COUNTERS[counter]) })).filter((x) => x.id != null);
+  const dailies = boundDaily.map((bd) => ({ bd, id: seriesOf(bd, counter) })).filter((x) => x.id != null);
+  const powerId = powers[0]?.id ?? null; const dailyId = dailies[0]?.id ?? null;
+  const parts = [];
+  for (const { bd, id } of powers) {
+    const from = Math.max(a - 600, bd.from); const to = Math.min(b, bd.to);
+    bounds.push({ table: 'reading', seriesIds: [id], from, to });
+    parts.push({ bd, h: holdAccumulate(to > from ? facts.readReadings([id], from, to) : [], g, holdSOf(bd.source)) });
+  }
+  let h;
+  if (parts.length === 1) h = parts[0].h;
+  else {
+    h = { energy: new Float64Array(g.n), cover: new Float64Array(g.n), q: new Int32Array(g.n) };
+    for (let k = 0; k < g.n; k++) {
+      const t = g.start + k * stepS;
+      const act = parts.filter(({ bd }) => t + stepS > bd.from && t < bd.to);
+      for (const { h: u } of act) { h.energy[k] += u.energy[k]; h.q[k] |= u.q[k]; }
+      h.cover[k] = act.length ? Math.min(...act.map(({ h: u }) => u.cover[k])) : 0;
+    }
+  }
+  const dailyParts = dailies.map(({ bd, id }) => ({ bd, rows: intervalsOf(id, Math.max(a, bd.from), Math.min(b, bd.to), bounds).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to) }));
+  // A day's total: the sum over the units active that day, unknown when one of them has none.
+  const dailyTotal = (ds) => {
+    const act = dailyParts.filter(({ bd }) => ds >= bd.from && ds < bd.to);
+    const hit = act.map(({ rows }) => rows.find((f) => f.start_ts === ds));
+    if (!act.length || hit.some((f) => !f)) return undefined;
+    return hit.length === 1 ? hit[0] : { ...hit[0], value: hit.reduce((t, f) => t + f.value, 0) };
+  };
   const values = new Array(g.n).fill(null);
   const days = [];
   for (const date of dates) {
@@ -405,7 +446,7 @@ function fittedDays(siteId, tz, counter, dates, stepS, today, bounds) {
     const k0 = (ds - a) / stepS; const k1 = (de - a) / stepS;
     let sum = 0;
     for (let k = k0; k < k1; k++) sum += h.energy[k];
-    const totalRow = daily.find((f) => f.start_ts === ds);
+    const totalRow = dailyTotal(ds);
     let fit = 1;
     if (totalRow && sum > 0.05 && totalRow.value > 0) {
       const f = totalRow.value / sum;
@@ -414,7 +455,7 @@ function fittedDays(siteId, tz, counter, dates, stepS, today, bounds) {
     for (let k = k0; k < k1; k++) if (h.cover[k] > 0) values[k] = h.energy[k] * fit;
     days.push({ date, start: ds, end: de, hours: (de - ds) / 3600, totalKwh: totalRow?.value ?? null, integratedKwh: sum, fit, fitted: fit !== 1, today: date >= today, k0, k1 });
   }
-  return { g, values, cover: h.cover, q: h.q, days, powerId, dailyId };
+  return { g, values, cover: h.cover, q: h.q, days, powerId, dailyId, powerSources: powers.map((x) => x.bd.source), dailySources: dailies.map((x) => x.bd.source) };
 }
 
 /**
@@ -442,7 +483,7 @@ export function counterDifferenceSeries(siteId, metric, from, to, opts = {}) {
   const dates = [];
   for (let d = localDate(tz, g.start); d <= localDate(tz, g.end - 1); d = addDays(d, 1)) dates.push(d);
   const bounds = [];
-  const f = facts.withKnownAt(at.knownAt, () => fittedDays(siteId, tz, counter, dates, stepS, today, bounds));
+  const f = facts.withKnownAt(at.knownAt, () => fittedDays(siteId, tz, counter, dates, stepS, today, bounds, at.knownAt));
   const off = (g.start - f.g.start) / stepS;
   const values = new Array(g.n).fill(null); const cover = new Array(g.n).fill(0); const quality = new Array(g.n).fill(0);
   const cumulative = new Array(g.n).fill(null); const resets = [];
@@ -463,7 +504,7 @@ export function counterDifferenceSeries(siteId, metric, from, to, opts = {}) {
   return {
     siteId, metric: counter, unit: 'kWh', start: g.start, stepS, n: g.n, values, cumulative, resets, cover, quality,
     days: f.days.map(({ k0, k1, ...d }) => d),
-    origin: { rule: 'power_integrated_fitted_to_daily_total', power: { metric: COUNTERS[counter], source: 'sunsynk_5min', seriesId: f.powerId }, daily: { metric: counter, source: 'sunsynk_daily', seriesId: f.dailyId }, today, asOf },
+    origin: { rule: 'power_integrated_fitted_to_daily_total', power: { metric: COUNTERS[counter], source: f.powerSources[0] ?? null, sources: f.powerSources, seriesId: f.powerId }, daily: { metric: counter, source: f.dailySources[0] ?? null, sources: f.dailySources, seriesId: f.dailyId }, today, asOf },
     bounds,
   };
 }
@@ -564,10 +605,13 @@ export function forecast(siteId, metric, from, to, opts = {}) {
   });
   if (!db.prepare('SELECT 1 FROM metric WHERE code = ?').get(target)) return empty(`no ${caseName} case is kept for ${metric}`);
   const def = metricDef(target);
-  const prefer = FORECAST_SOURCES[target] ?? FORECAST_PRIORITY;
+  const traits = sourceTraits();
+  // Priority: the solar forecast the home binds first, then every other forecast-only source, then the sources bound to the other roles.
+  const fixed = target === 'solar_kwh' ? boundSources(siteId, ['solar_forecast']) : FORECAST_SOURCES[target];
+  const prefer = fixed ?? [...boundSources(siteId, ['solar_forecast']), ...[...withFlag(traits, ['forecastOnly'])].sort(), ...boundSources(siteId, [...INTERVAL_ROLES, ...READING_ROLES])];
   const all = seriesFor(site, target);
   const groups = opts.source != null ? groupsBySource(all, opts.source, [], new Set())
-    : FORECAST_SOURCES[target] ? groupsBySource(all, prefer.filter((s) => all.some((r) => r.source === s)), [], new Set())
+    : fixed ? groupsBySource(all, prefer.filter((s) => all.some((r) => r.source === s)), [], new Set())
       : groupsBySource(all.filter((r) => r.source !== 'core_plan'), null, prefer, new Set(['core_plan']));
   if (!groups.length) return empty(`no forecast series of ${target} for this home`);
   const mode = def.aggregation === 'sum' ? 'sum' : def.aggregation === 'last' ? 'last' : 'mean';
@@ -713,11 +757,12 @@ function energyPerStep(site, metric, g, bounds) {
   const kind = def.time_role === 'instant' ? 'reading' : 'interval';
   if (kind === 'reading' && def.aggregation !== 'integrate') throw new RangeError(`excludeMetrics: ${metric} is not an energy or power metric`);
   if (kind === 'interval' && def.aggregation !== 'sum') throw new RangeError(`excludeMetrics: ${metric} is not an energy metric`);
-  const groups = groupsBySource(seriesFor(site, metric), null, kind === 'reading' ? READING_SOURCES : INTERVAL_SOURCES, new Set([...FORECAST_ONLY, ...NAMED_ONLY]));
+  const traits = sourceTraits();
+  const groups = groupsBySource(seriesFor(site, metric), null, boundSources(site.id, kind === 'reading' ? READING_ROLES : INTERVAL_ROLES), withFlag(traits, ['forecastOnly', 'namedOnly']));
   if (!groups.length) return e;
   for (const s of groups[0].series) {
     if (kind === 'reading') {
-      const holdS = HOLD_S[groups[0].source] ?? DEFAULT_HOLD_S;
+      const holdS = traits.get(groups[0].source)?.holdS ?? DEFAULT_HOLD_S;
       bounds.push({ table: 'reading', seriesIds: [s.id], from: g.start - holdS, to: g.end });
       const h = holdAccumulate(facts.readReadings([s.id], g.start - holdS, g.end), g, holdS);
       for (let k = 0; k < g.n; k++) e[k] += h.energy[k];
@@ -779,7 +824,8 @@ const LIVE = {
   flow_setpoint_c: ['flow_temp_setpoint_c', 'mean'], radiator_temp_c: ['radiator_temp_c', 'mean'],
   heating_on: ['heating_on', 'max'], immersion_on: ['immersion_on', 'max'], valve_position_pct: ['valve_position_pct', 'mean'],
 };
-const LIVE_ORDER = ['sunsynk_live', 'sunsynk_5min', 'heating_telemetry', 'open_meteo'];
+// Live order: realtime feeds first (contract flag live), then the sources the home binds for samples.
+const liveOrder = (siteId, traits, asOfS = null) => [...[...traits].filter(([, v]) => v.live).map(([k]) => k).sort(), ...boundSources(siteId, READING_ROLES, asOfS)];
 
 /**
  * The latest known live inputs of a home at asOf, each with the time of its reading so a planner can
@@ -800,12 +846,15 @@ export function state(siteId, asOf, { lookbackS = STATE_LOOKBACK_S } = {}) {
       ORDER BY ts DESC LIMIT 1`).get(id, at, at - lookbackS) ?? null;
   };
   const inputs = {};
+  const traits = sourceTraits();
+  const live = liveOrder(siteId, traits, moment.knownAt == null ? null : moment.knownAt / 1000);
+  const forecastOnly = withFlag(traits, ['forecastOnly']);
   facts.withKnownAt(moment.knownAt, () => {
     const cache = new Map();
     // The freshest source of a metric; within it every series' latest reading.
     const read = (metric, how = 'one') => {
       if (cache.has(metric)) return cache.get(metric);
-      const groups = groupsBySource(seriesFor(site, metric), null, LIVE_ORDER, FORECAST_ONLY);
+      const groups = groupsBySource(seriesFor(site, metric), null, live, forecastOnly);
       let best = null;
       for (const { source, series: list } of groups) {
         const got = list.map((s) => ({ id: s.id, r: latest(s.id) })).filter((x) => x.r);
@@ -829,7 +878,7 @@ export function state(siteId, asOf, { lookbackS = STATE_LOOKBACK_S } = {}) {
     // source where both have a reading); ts is the older of the two readings.
     const pair = (key, plus, minus) => {
       const ofPlus = seriesFor(site, plus); const ofMinus = seriesFor(site, minus);
-      const sources = groupsBySource([...ofPlus, ...ofMinus], null, LIVE_ORDER, FORECAST_ONLY).map((x) => x.source);
+      const sources = groupsBySource([...ofPlus, ...ofMinus], null, live, forecastOnly).map((x) => x.source);
       let best = null;
       for (const source of sources) {
         const a = ofPlus.find((s) => s.source === source); const b = ofMinus.find((s) => s.source === source);

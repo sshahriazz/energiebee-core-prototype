@@ -27,7 +27,9 @@ export function useDb({ snapshot = false } = {}) {
   // TEST_SLOT_S=900|3600 runs a snapshot test at another slot length (npm run test:slots). Stored slot rows stay as they are; dry-run builds follow the new length.
   if (snapshot && process.env.TEST_SLOT_S) {
     const c = new DatabaseSync(file);
+    // A build "as known at" a moment reads the home's settings from site_version, so both are changed.
     c.prepare('UPDATE site SET slot_s = ?').run(Number(process.env.TEST_SLOT_S));
+    c.prepare('UPDATE site_version SET slot_s = ?').run(Number(process.env.TEST_SLOT_S));
     c.close();
   }
   process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));

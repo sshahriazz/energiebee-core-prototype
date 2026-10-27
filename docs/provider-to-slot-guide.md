@@ -123,6 +123,8 @@ For each step: **what happens**, **what the provider side supplies**, and **what
 
 One signed point can feed two standard measurements. The same grid figure becomes *import* when positive and *export* when negative.
 
+*Beyond instant readings,* the same translation handles three more shapes: a **period** (an amount over a time span), a **counter** (a running total such as a smart plug's energy meter, where the core works out the energy for each period and copes with the counter resetting, wrapping or restarting) and an **event** (something that happened, such as a charger being plugged in). Devices that are not inverters or meters, such as heat pumps, EV chargers and plugs, have roles of their own.
+
 *What the core does with each value:*
 
 | Situation | What happens |
@@ -168,7 +170,7 @@ The roles today:
 | EV charge dispatch | Smart-charge periods |
 | Solar forecast | The forecast of record, with priorities between forecast sources |
 
-A binding is just a row: *role, provider, valid from, valid to*. Changing it is a data change, not a code change, and it takes effect **from a chosen date**. Slots before that date never change.
+A binding is just a row: *role, provider, valid from, valid to*. Changing it is a data change, not a code change (and it can be done on the **Providers** screen, which shows what would change before anything is kept), and it takes effect **from a chosen date**. Slots before that date never change.
 
 Two or more devices of one kind (two inverters, two batteries) are two bindings at the same time, and their figures are added.
 
@@ -362,6 +364,8 @@ Said plainly, so there are no surprises.
 
 | Not built | Detail |
 |---|---|
+| Push ingest | Everything is pulled today. A device or gateway cannot yet post its readings to the core (for example a smart plug's webhook or MQTT). This is the real entry door for IoT devices |
+| Real IoT device processors | Counters, events and the heating roles are built and tested on synthetic data. No real plug, heat pump or EV charger has been connected |
 | A real vendor control driver | The control path (command, device read-back, effect check, late acknowledgement) works against a simulated device. A real driver needs a chosen vendor, its API and a test device |
 | Tariff catalogues as providers | Tariff and price feeds fill the tariff store the builder prices from. They are not part of this journey |
 | Rules as data | Rules such as "the official meter beats the clamp" are still in the builder. They stay there until a provider needs a different rule |

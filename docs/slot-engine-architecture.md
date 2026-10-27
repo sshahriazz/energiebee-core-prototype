@@ -231,6 +231,8 @@ erDiagram
 
 Every vendor takes the same path. The processor knows the vendor's shape; the channels know the vendor's units and signs; the fact writer knows nothing about vendors and refuses writes outside the declared source.
 
+Observations come in six kinds: an instant, a period, a forecast issue, a **counter** (a cumulative total such as a plug's energy meter, turned into energy per period by difference, with resets, wraps and backwards steps handled), an **event** (a 0 or 1 period), and the control kinds **state** and **ack**. The kinds are described in `docs/counters-events-roles.md` and `docs/control-readback.md`.
+
 ![Diagram 3: see the Mermaid source below if the image does not show](img/slot-engine-architecture-3.png)
 
 <details>
@@ -375,6 +377,11 @@ flowchart LR
     r6["weather_temp"]
     r7["ev_dispatch"]
     r8["solar_forecast"]
+    r9["heat_pump_energy"]
+    r10["heat_output_energy"]
+    r11["heat_telemetry"]
+    r12["ev_charger_energy"]
+    r13["plug_energy"]
   end
 
   subgraph DEF["Default source"]
@@ -399,6 +406,11 @@ flowchart LR
   r7 --- d7
   r8 --- d8a
   r8 --- d8b
+  r9 --- NODEF["No default source bound per home"]
+  r10 --- NODEF
+  r11 --- NODEF
+  r12 --- NODEF
+  r13 --- NODEF
 
   NEW["Any new source:<br/>a source row, channel rows, a binding"]
   NEW -.->|"replaces or adds, from a date"| ROLES
@@ -416,7 +428,13 @@ flowchart LR
 | `weather_temp` | Outdoor temperature | `reading`, site subject |
 | `ev_dispatch` | Smart-charge dispatch periods (the daily allowance) | `interval_fact`, site subject |
 | `solar_forecast` | The forecast of record per slot, our own first, then Quartz | `forecast_fact`, site subject |
+| `heat_pump_energy` | Electricity into a heat pump (read by the heating build) | `reading` or counter, device subject |
+| `heat_output_energy` | Heat delivered by a heat pump or boiler (read by the heating build) | counter or `interval_fact`, device subject |
+| `heat_telemetry` | Heating temperatures and on or off states (read by the heating build) | `reading`, site or device subject |
+| `ev_charger_energy` | Energy delivered to an EV by a charger (defined, no consumer yet) | counter or `interval_fact`, device subject |
+| `plug_energy` | A smart plug's energy, per device (defined, no consumer yet) | counter, device subject |
 
+The five heating and IoT roles have no default source: a home binds one when it has the device. Roles are read from one list (`ROLES` in `src/core/inputs.js`), so the Providers screen shows new ones automatically.
 ---
 
 ## 6. Provider lifecycle
@@ -689,6 +707,8 @@ flowchart TB
     d5["Writer guard, runtime registry reload"]
     d6["Crash-safe rebuild watermark, repeated timestamps, empty answers"]
     d8["Control read-back: state and ack kinds, gates, limits,<br/>executor and scheduler, late ack, effect check,<br/>command in slot lineage"]
+    d10["Counter and event kinds, wider ingest checks,<br/>IoT roles and device-kind channel defaults"]
+    d11["Providers API and screen: roles timeline,<br/>channels, rejects, impact preview, add or remove flow"]
     d9["Groups with dated membership, currency on slots,<br/>column classes, users and grants"]
     d7["Sunsynk, Octopus (meter, dispatches, planned),<br/>carbon, National Gas, Open-Meteo, Quartz on channels<br/>(subjects: home, device, region;<br/>instants, periods, forecast issues)"]
   end
@@ -705,14 +725,15 @@ flowchart TB
     t2["A real vendor control driver<br/>(needs a vendor, its API and a test device)"]
     t3["Sign-in, database-level row security,<br/>group views timed at scale"]
     t4["Health-based finality, dead-letter replay"]
+    t5["Push ingest endpoint for devices and gateways,<br/>real IoT device processors"]
   end
 
   classDef built fill:#e6f4ea,stroke:#2e7d32,color:#12351a
   classDef part fill:#fff7e0,stroke:#b58900,color:#4a3a00
   classDef todo fill:#f3f3f3,stroke:#9e9e9e,color:#555,stroke-dasharray: 4 3
-  class d1,d2,d3,d4,d5,d6,d7,d8,d9 built
+  class d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11 built
   class p1,p2 part
-  class t1,t2,t3,t4 todo
+  class t1,t2,t3,t4,t5 todo
 ```
 
 </details>
@@ -733,6 +754,8 @@ flowchart TB
 | Schema | `src/db/deltas/061` to `066` |
 | Processor template | `src/adapters/_template.js` |
 | Control (stage 4) | `src/core/executor.js`, `src/core/control.js`, `src/core/commands.js`, `src/db/deltas/067-control.sql`; see `docs/control-readback.md` |
+| Counters, events and IoT roles | `src/core/counters.js`, `src/core/channels.js`, `src/core/heat.js`, `src/db/deltas/072-channel-kinds.sql`; see `docs/counters-events-roles.md` |
+| Providers API and screen | `src/core/onboarding.js`, routes in `src/server.js`, `public/providers.html`, `public/js/pages/providers.js`; see `docs/onboarding-api.md` |
 | Groups and access (stage 5) | `src/core/groups.js`, `src/core/access.js`, `src/db/deltas/070-groups.sql`; see `docs/groups-and-access.md` |
 | Tests | `test/runtime-provider.test.js`, `test/channels.test.js`, `test/ingest-durability.test.js`, `test/sunsynk-channels.test.js`, `test/octopus-channels.test.js`, `test/channels-subjects.test.js`, `test/multi-device.test.js` |
 

@@ -4,7 +4,7 @@ This page draws the provider-agnostic slot system as it is built today, in Merma
 
 **The idea in one line.** The slot builder never asks for a vendor. It asks for a *role* ("the inverter's 5-minute samples"), and a dated *binding* says which source fills that role for this home. A vendor's own units and signs are handled by *channel* rows when its data is written, so a new provider is rows, not engine code.
 
-Contents: 1 Overview · 2 Data model · 3 Writing data in · 4 Reading data out · 5 Roles · 6 Provider lifecycle · 7 A vendor switch, worked through · 8 Crash safety · 9 What is built and what is not
+Contents: 1 Overview · 2 Data model · 3 Writing data in · 4 Reading data out · 5 Roles · 6 Provider lifecycle · 7 A vendor switch, worked through · 8 Crash safety · 9 Control: a command with read-back · 10 Groups and access · 11 What is built and what is not
 
 ---
 
@@ -79,7 +79,7 @@ How to read it: data flows top to bottom. Vendors differ only in step 2. Steps 3
 
 ## 2. Data model
 
-Only the tables this design adds or relies on. `source.traits` is a new column; `channel`, `channel_reject`, `binding` and `binding_default` are new tables (deltas 061 to 066).
+Only the tables this design adds or relies on, with the control and access tables in brief (their full definitions are in `docs/control-readback.md` and `docs/groups-and-access.md`). `source.traits` is a new column; `channel`, `channel_reject`, `binding` and `binding_default` are new tables (deltas 061 to 066).
 
 ```mermaid
 erDiagram
@@ -97,6 +97,10 @@ erDiagram
   series ||--o{ forecast_fact : "predictions"
   source ||--o{ binding_default : "starting source"
   site ||--o{ channel_reject : "refused values"
+  device ||--o{ command : "is asked to"
+  device ||--o{ command_block : "refused for"
+  site ||--o{ site_grant : "is shared by"
+  site ||--o{ site_group_member : "counts in"
 
   source {
     int id PK
@@ -145,6 +149,35 @@ erDiagram
     int ts
     real value
     text reason "out_of_range, not_a_number, unmapped_point"
+  }
+  command {
+    int id PK
+    int device_id FK
+    text action
+    text status "pending, sent, acked, failed, expired, cancelled, skipped_unchanged"
+    text verify_status "verified, not_verified"
+    int applied_late_at "ms"
+    int valid_until "s"
+  }
+  command_block {
+    int id PK
+    int device_id FK
+    text gate "placeholder_capability, stale_inputs, limit, params"
+  }
+  site_grant {
+    int id PK
+    int site_id FK
+    int user_id FK
+    text role "owner, operator, viewer"
+    text scope "all, energy, control"
+    int revoked_at "ms"
+  }
+  site_group_member {
+    int id PK
+    int group_id FK
+    int site_id FK
+    int valid_from "s"
+    int valid_to "s"
   }
   series {
     int id PK
@@ -468,7 +501,107 @@ Also in this stage: a batch with the same timestamp twice keeps the last value (
 
 ---
 
-## 9. What is built and what is not
+## 9. Control: a command with read-back
+
+Writing to a device uses the same channels as reading from it. A device's settings come back as `state` observations through the same ingest path, a receipt is an `ack` that is never stored as a fact, and a command counts as done only when the **device** reports the desired state. Full detail: `docs/control-readback.md`.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Planner or a person
+  participant Q as enqueueIfChanged
+  participant X as Executor cycle
+  participant D as Device driver
+  participant CH as Channels and state facts
+  participant T as Telemetry
+
+  P->>Q: desired state, validity, plan run, actor
+  Q->>Q: a person needs a control right on the home
+  Q->>Q: gates: capability source, stale inputs, device limit, action range
+  alt refused
+    Q-->>P: forbidden, or blocked with reasons kept in command_block
+  else accepted
+    Q->>Q: same as the last confirmed state: write nothing
+    Q->>Q: otherwise a pending command, replacing any open one
+  end
+
+  loop each cycle
+    X->>X: expire commands past valid_until
+    X->>D: read the device
+    D-->>X: state observations and receipts
+    X->>CH: ingest state through the device's channels
+    alt device already runs the desired state
+      X->>X: skipped_unchanged, nothing sent
+    else pending
+      X->>D: send, never after valid_until
+      X->>X: sent
+    else sent and read-back matches
+      X->>X: acked
+    else sent and no match after the settle time
+      X->>X: retry, then failed
+    end
+  end
+
+  X->>T: once the check period has ended
+  T-->>X: effect metric over the period
+  X->>X: verified or not_verified, with the evidence
+  Note over X,D: A device that applies it after expiry:<br/>applied_late is recorded, status stays expired
+```
+
+| Gate or rule | What it stops | Kept where |
+|---|---|---|
+| Control right | A viewer, a stranger or a revoked user commanding a home | error `forbidden`, nothing written |
+| Placeholder capability | A command for an action whose support was only stated, not confirmed | `command_block` |
+| Stale inputs | A non-demand action planned on stale data | `command_block` |
+| Device limit | A value outside the installer's limit for that device | `command_block` |
+| Action range | A value outside the action's own parameter range | `command_block` |
+| Read-back decides | Marking a command done on the database's belief | `acked` only when the device reports it |
+
+---
+
+## 10. Groups and access
+
+A group is a dated set of homes. Its views are built from the homes' slot rows, never from daily totals, and who may see or command a home is a grant, not a tenant. Full detail: `docs/groups-and-access.md`.
+
+```mermaid
+flowchart TB
+  U["app_user"]
+  SG["site_grant: role, scope, period, revoked_at"]
+  G["site_group: one time zone"]
+  M["site_group_member: dated, recorded"]
+  HH[("site_hh slot rows, with currency")]
+  CC[("column_class: how each column is added")]
+
+  V["Group view for a viewer"]
+  R1["1. keep members dated in force at the time asked"]
+  R2["2. keep homes the viewer holds a grant on, for the periods granted"]
+  R3["3. bucket slots by slot start in the group zone"]
+  R4["4. add by column class: money per currency, energy sums, prices weighted, ratios recomputed"]
+  R5["5. a missing slot gives null, never 0"]
+  R6["6. final only when every member slot is final"]
+  OUT["Totals per currency, ratios, state: final, provisional or incomplete"]
+
+  U --> SG
+  G --> M
+  SG --> V
+  M --> V
+  HH --> V
+  CC --> V
+  V --> R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> OUT
+```
+
+| Question | Answer in this design |
+|---|---|
+| A group has GBP and EUR homes | Two money totals; no exchange rate exists |
+| A home leaves on day X | Counted before X and not after; an earlier report re-runs identically |
+| A member the viewer has no grant on | Left out completely: no count, no gap marker |
+| One member slot is missing | The column is null with a `partial` figure; never 0 |
+| Homes with different slot lengths | Default bucket is the longest slot; a shorter bucket is refused, not split |
+| A viewer with scope energy | Reads energy and cost; cannot command |
+
+---
+
+## 11. What is built and what is not
 
 ```mermaid
 flowchart TB

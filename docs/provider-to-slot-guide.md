@@ -20,20 +20,20 @@ Every provider takes the same road to get there. Only the first part of the road
 ```mermaid
 flowchart TB
   subgraph SPECIFIC["Part 1 - specific to each provider"]
-    A["0. Describe the source"]
-    B["1. Ask for the data"]
-    C["2. Check it looks right"]
-    D["3. Keep the receipt"]
-    E["4. Read it into the provider's own points"]
+    A["Step 0 Describe the source"]
+    B["Step 1 Ask for the data"]
+    C["Step 2 Check it looks right"]
+    D["Step 3 Keep the receipt"]
+    E["Step 4 Read it into the provider own points"]
   end
 
   subgraph SHARED["Part 2 - shared by every provider"]
-    F["5. Translate with channels"]
-    G["6. Store as facts"]
-    H["7. Tell the system what changed"]
-    I["8. Bind to a role from a date"]
-    J["9. Build the slot"]
-    K["10. Use it"]
+    F["Step 5 Translate with channels"]
+    G["Step 6 Store as facts"]
+    H["Step 7 Tell the system what changed"]
+    I["Step 8 Bind to a role from a date"]
+    J["Step 9 Build the slot"]
+    K["Step 10 Use it"]
   end
 
   A --> B

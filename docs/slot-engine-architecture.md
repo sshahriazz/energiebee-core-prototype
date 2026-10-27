@@ -447,11 +447,11 @@ flowchart TB
 
   subgraph STEPS["Add the vendor"]
     direction TB
-    s1["1. source row: acme_kw, traits holdS"]
-    s2["2. channel rows:<br/>pv_kw to solar_w (x1000)<br/>grid_kw to grid_import_w (positive, x1000)<br/>grid_kw to grid_export_w (negative, x1000)<br/>bat_kw to charge and discharge<br/>soc to battery_soc_pct"]
-    s3["3. ingest its data through the channels"]
-    s4["4. previewImpact(bind acme_kw from D)"]
-    s5["5. bind(acme_kw, from D, reason)"]
+    s1["Step 1 source row: acme_kw, traits holdS"]
+    s2["Step 2 channel rows:<br/>pv_kw to solar_w (x1000)<br/>grid_kw to grid_import_w (positive, x1000)<br/>grid_kw to grid_export_w (negative, x1000)<br/>bat_kw to charge and discharge<br/>soc to battery_soc_pct"]
+    s3["Step 3 ingest its data through the channels"]
+    s4["Step 4 previewImpact(bind acme_kw from D)"]
+    s5["Step 5 bind(acme_kw, from D, reason)"]
     s1 --> s2 --> s3 --> s4 --> s5
   end
 
@@ -573,12 +573,12 @@ flowchart TB
   CC[("column_class: how each column is added")]
 
   V["Group view for a viewer"]
-  R1["1. keep members dated in force at the time asked"]
-  R2["2. keep homes the viewer holds a grant on, for the periods granted"]
-  R3["3. bucket slots by slot start in the group zone"]
-  R4["4. add by column class: money per currency, energy sums, prices weighted, ratios recomputed"]
-  R5["5. a missing slot gives null, never 0"]
-  R6["6. final only when every member slot is final"]
+  R1["Step 1 keep members dated in force at the time asked"]
+  R2["Step 2 keep homes the viewer holds a grant on, for the periods granted"]
+  R3["Step 3 bucket slots by slot start in the group zone"]
+  R4["Step 4 add by column class: money per currency, energy sums, prices weighted, ratios recomputed"]
+  R5["Step 5 a missing slot gives null, never 0"]
+  R6["Step 6 final only when every member slot is final"]
   OUT["Totals per currency, ratios, state: final, provisional or incomplete"]
 
   U --> SG

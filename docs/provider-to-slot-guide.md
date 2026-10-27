@@ -365,7 +365,7 @@ Said plainly, so there are no surprises.
 | Not built | Detail |
 |---|---|
 | Push ingest | Everything is pulled today. A device or gateway cannot yet post its readings to the core (for example a smart plug's webhook or MQTT). This is the real entry door for IoT devices |
-| Real IoT device processors | Counters, events and the heating roles are built and tested on synthetic data. No real plug, heat pump or EV charger has been connected |
+| Real IoT device processors | Counters, events and the heating roles are built and tested on synthetic data. A **Devices page with a labelled synthetic IoT home** (a smart plug, heat pump, EV charger, battery and sensor) shows them working end to end, including a simulated period and a test command. No real plug, heat pump or EV charger has been connected |
 | A real vendor control driver | The control path (command, device read-back, effect check, late acknowledgement) works against a simulated device. A real driver needs a chosen vendor, its API and a test device |
 | Tariff catalogues as providers | Tariff and price feeds fill the tariff store the builder prices from. They are not part of this journey |
 | Rules as data | Rules such as "the official meter beats the clamp" are still in the builder. They stay there until a provider needs a different rule |

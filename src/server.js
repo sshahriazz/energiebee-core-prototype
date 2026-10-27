@@ -26,6 +26,8 @@ import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
 import * as onboardingCore from './core/onboarding.js';
+import * as devicesView from './core/devices-view.js';
+import { createSyntheticIotHome } from './core/synthetic-iot.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
@@ -639,11 +641,11 @@ app.get('/api/sites/:id/system', (req, res) => {
   });
 });
 
-// Devices the providers report for this home (meters, EV), with the attributes they gave.
+// Devices of this home (meters, EV, and any IoT device), each with the fields this route has always returned (kind, provider, label,
+// profileClass, annualKwh, gasUnit, state) plus id, status, channels, last values and roles (src/core/devices-view.js, the Devices page).
 app.get('/api/sites/:id/devices', (req, res) => {
   const s = site(req);
-  res.json(db.prepare('SELECT kind, provider, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id)
-    .map((d) => { const a = JSON.parse(d.attrs || '{}'); return { kind: d.kind, provider: d.provider, label: d.label, profileClass: a.profileClass ?? null, annualKwh: a.annualKwh ?? null, gasUnit: a.gasUnit ?? null, state: a.status?.currentState ?? null }; }));
+  res.json(devicesView.listDevices(s.id));
 });
 
 // The tariffs one provider holds (a catalogue such as tariffscanner), with the rate rows in force
@@ -715,6 +717,21 @@ app.post('/api/sites/:id/bindings/preview', onb((req) => onboardingCore.previewB
 app.post('/api/sites/:id/bindings', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'bind', { dryRun: dry(req), rebuild: req.body?.rebuild === true }), 201));
 app.post('/api/sites/:id/bindings/unbind', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'unbind', { dryRun: dry(req), rebuild: req.body?.rebuild === true })));
 app.get('/api/sites/:id/rejects', onb((req) => onboardingCore.rejects(onboardingCore.siteCheck(req.params.id).id, { days: req.query.days, source: req.query.source || null })));
+
+// ───────────── Devices page: devices and their data, and a synthetic IoT demo home (src/core/devices-view.js, synthetic-iot.js) ─────────────
+// GET /api/sites/:id/devices is above (it keeps its old fields). Errors are { error, code, field? }. simulate and commands only work on
+// SYNTHETIC demo devices (400 not_synthetic for any other); POST /api/demo/iot adds the synthetic demo home to THIS database, once.
+const dev = (fn, ok = 200) => async (req, res, next) => {
+  try { res.status(ok).json(await fn(req)); } catch (err) {
+    if (err instanceof devicesView.DevicesError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });
+    next(err);
+  }
+};
+app.get('/api/demo/iot', dev(() => devicesView.demoStatus()));
+app.post('/api/demo/iot', dev(async () => { const { site: s, created } = await createSyntheticIotHome(); return { siteId: s.id, name: s.name, created }; }));
+app.get('/api/sites/:id/devices/:deviceId', dev((req) => devicesView.deviceDetail(req.params.id, req.params.deviceId === 'site' ? 'site' : Number(req.params.deviceId), { hours: req.query.hours })));
+app.post('/api/sites/:id/devices/:deviceId/simulate', dev((req) => devicesView.simulate(req.params.id, Number(req.params.deviceId), req.body || {}), 201));
+app.post('/api/sites/:id/devices/:deviceId/commands', dev((req) => devicesView.sendCommand(req.params.id, Number(req.params.deviceId), req.body || {}), 201));
 
 app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message });

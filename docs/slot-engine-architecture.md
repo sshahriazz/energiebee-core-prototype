@@ -12,41 +12,41 @@ Contents: 1 Overview · 2 Data model · 3 Writing data in · 4 Reading data out 
 
 ```mermaid
 flowchart TB
-  subgraph SRC["1. Sources"]
+  subgraph SRC["1 Sources"]
     S1["Inverter cloud API"]
     S2["Supplier meter API"]
-    S3["Weather, carbon, forecast feeds"]
-    S4["New vendor, any shape"]
+    S3["Weather carbon and forecast feeds"]
+    S4["New vendor of any shape"]
   end
 
-  subgraph ING["2. Ingest, thin per vendor"]
-    P["Processor: fetch, check shape, parse"]
-    RAW[("Raw receipts and quarantine")]
+  subgraph ING["2 Ingest"]
+    P["Processor fetch check parse"]
+    RAW["Raw receipts and quarantine"]
   end
 
-  subgraph CH["3. Channels, shared data"]
-    C["channel rows: point to metric, scale, shift, sign part, range"]
-    REJ[("channel_reject: bad values and unmapped points")]
+  subgraph CH["3 Channels"]
+    C["Channel rows translate units signs and limits"]
+    REJ["Rejected values and unmapped points"]
   end
 
-  subgraph FACTS["4. Fact store, append only"]
-    F1[("reading")]
-    F2[("interval_fact")]
-    F3[("forecast_fact")]
+  subgraph FACTS["4 Fact store"]
+    F1["reading"]
+    F2["interval_fact"]
+    F3["forecast_fact"]
   end
 
-  subgraph BIND["5. Bindings, dated data"]
-    BD[("binding_default")]
-    B["binding rows: role, source, valid from, valid to, priority, reason"]
+  subgraph BIND["5 Bindings"]
+    BD["binding_default"]
+    B["binding rows role source dates"]
   end
 
-  subgraph ENG["6. Engine, no vendor names"]
+  subgraph ENG["6 Engine"]
     BLD["Slot builder"]
     PR["Planner read layer"]
   end
 
-  subgraph OUT["7. Outputs"]
-    HH[("site_hh and site_day")]
+  subgraph OUT["7 Outputs"]
+    HH["site_hh and site_day"]
     PL["Arrays for Predbat and PredHeat"]
   end
 
@@ -286,7 +286,7 @@ The builder and the planner read layer take their inputs from the same bindings,
 flowchart TB
   START["Build slots for a window,<br/>as known at time T"]
 
-  subgraph ROLES["Resolve every role (inputs.js)"]
+  subgraph ROLES["Resolve every role"]
     direction TB
     R1["bindingsFor(site, role, T)<br/>rows recorded by T and not superseded by T"]
     R2["Each row: source, valid_from, valid_to"]
@@ -306,7 +306,7 @@ flowchart TB
 
   MERGE["Merge by time.<br/>Rows outside a binding's period are dropped,<br/>so two vendors never count twice"]
 
-  subgraph CALC["Slot calculation (rules still in code)"]
+  subgraph CALC["Slot calculation"]
     direction TB
     K1["Integrate samples into slots<br/>(forward hold per source)"]
     K2["Fit each node to the daily total<br/>(0.6 to 1.6, past days)"]
@@ -332,7 +332,7 @@ A role is what the engine asks for. A source fills it. The defaults below are wh
 
 ```mermaid
 flowchart LR
-  subgraph ROLES["Roles (inputs.js ROLES)"]
+  subgraph ROLES["Roles"]
     direction TB
     r1["inverter_5min"]
     r2["inverter_daily"]
@@ -344,7 +344,7 @@ flowchart LR
     r8["solar_forecast"]
   end
 
-  subgraph DEF["Default source (editable data)"]
+  subgraph DEF["Default source"]
     direction TB
     d1["sunsynk_5min"]
     d2["sunsynk_daily"]
@@ -445,7 +445,7 @@ flowchart TB
     b1 --> b2
   end
 
-  subgraph STEPS["Add the vendor (no engine edit)"]
+  subgraph STEPS["Add the vendor"]
     direction TB
     s1["1. source row: acme_kw, traits holdS"]
     s2["2. channel rows:<br/>pv_kw to solar_w (x1000)<br/>grid_kw to grid_import_w (positive, x1000)<br/>grid_kw to grid_export_w (negative, x1000)<br/>bat_kw to charge and discharge<br/>soc to battery_soc_pct"]

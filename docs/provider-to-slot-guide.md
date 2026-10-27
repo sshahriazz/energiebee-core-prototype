@@ -19,7 +19,7 @@ Every provider takes the same road to get there. Only the first part of the road
 
 ```mermaid
 flowchart TB
-  subgraph SPECIFIC["Specific to each provider (small, written once)"]
+  subgraph SPECIFIC["Part 1 - specific to each provider"]
     A["0. Describe the source"]
     B["1. Ask for the data"]
     C["2. Check it looks right"]
@@ -27,17 +27,28 @@ flowchart TB
     E["4. Read it into the provider's own points"]
   end
 
-  subgraph SHARED["Shared by every provider (the core, never edited for a new provider)"]
-    F["5. Translate with channels: units, signs, limits"]
-    G["6. Store as facts, never overwriting"]
+  subgraph SHARED["Part 2 - shared by every provider"]
+    F["5. Translate with channels"]
+    G["6. Store as facts"]
     H["7. Tell the system what changed"]
-    I["8. Bind to a role, from a date"]
+    I["8. Bind to a role from a date"]
     J["9. Build the slot"]
-    K["10. Use it: dashboards, planner, groups, control"]
+    K["10. Use it"]
   end
 
-  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+  A --> B
+  B --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
 ```
+
+Part 1 is written once per provider. Part 2 is the core and is never edited for a new provider. Step 5 translates units, signs and limits. Step 10 is dashboards, the planner, group views and device control.
 
 ---
 
@@ -191,17 +202,17 @@ flowchart LR
     P3["Its own signs"]
   end
 
-  CH["Channels<br/>translate once, in data"]
-  STD["Standard measurements<br/>the same for everyone"]
-  BIND["Bindings<br/>which provider, from when"]
-  ENG["Slot builder and planner<br/>ask for roles, never providers"]
+  CH["Channels translate once, as data"]
+  STD["Standard measurements, the same for everyone"]
+  BIND["Bindings say which provider and from when"]
+  ENG["Slot builder and planner ask for roles, never providers"]
 
   P1 --> CH
   P2 --> CH
   P3 --> CH
   CH --> STD
-  BIND --> ENG
   STD --> ENG
+  BIND --> ENG
 ```
 
 1. **Translate at the door.** Every provider's data is converted to the same standard measurements the moment it arrives, by channel rows. Past that door, nothing is provider-specific.
@@ -225,12 +236,12 @@ flowchart TB
     a4["firmware_temp = 41"]
   end
 
-  subgraph CHAN["Channel rows (data)"]
-    c1["pv_kw to solar power: multiply by 1000"]
-    c2["grid_kw to grid import: positive part, times 1000"]
-    c3["grid_kw to grid export: negative part, times 1000"]
-    c4["bat_kw to battery charge: positive part, times 1000"]
-    c5["bat_kw to battery discharge: negative part, times 1000"]
+  subgraph CHAN["Channel rows"]
+    c1["pv_kw to solar power, times 1000"]
+    c2["grid_kw to grid import, positive part, times 1000"]
+    c3["grid_kw to grid export, negative part, times 1000"]
+    c4["bat_kw to battery charge, positive part, times 1000"]
+    c5["bat_kw to battery discharge, negative part, times 1000"]
   end
 
   subgraph FACTS["Stored facts"]
@@ -241,13 +252,18 @@ flowchart TB
     f5["battery discharge 0 W"]
   end
 
-  R["Reported as unmapped: nobody mapped firmware_temp"]
+  R["Reported as unmapped, nobody mapped firmware_temp"]
 
-  a1 --> c1 --> f1
-  a2 --> c2 --> f2
-  a2 --> c3 --> f3
-  a3 --> c4 --> f4
-  a3 --> c5 --> f5
+  a1 --> c1
+  c1 --> f1
+  a2 --> c2
+  c2 --> f2
+  a2 --> c3
+  c3 --> f3
+  a3 --> c4
+  c4 --> f4
+  a3 --> c5
+  c5 --> f5
   a4 --> R
 ```
 

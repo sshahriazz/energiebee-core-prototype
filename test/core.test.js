@@ -112,7 +112,9 @@ function quartzAt(ratio) {
   const qS = seriesId('site', SITE, 'solar_kwh', 'quartz');
   db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(qS);
   let made = 0;
-  for (const d of days().filter((x) => x < today()).slice(-2)) {
+  // Whole days that made solar: the fixture ends on a fixed day while the real clock moves on, and a rebuild up to
+  // today adds empty days after the data that would otherwise count as "the last two days".
+  for (const d of days().filter((x) => x < today() && hh(x).length >= 46 && hh(x).reduce((t, r) => t + (r.solar || 0), 0) > 1).slice(-2)) {
     const rows = hh(d);
     made += rows.reduce((a, r) => a + (r.solar || 0), 0);
     putForecasts(qS, rows[0].slot_start - 6 * 3600, rows.map((r) => ({ start: r.slot_start, end: r.slot_start + SLOT, value: (r.solar || 0) / ratio })));

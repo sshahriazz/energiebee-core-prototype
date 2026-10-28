@@ -67,7 +67,7 @@ const QUALITY = { MEASURED: 1, FALLBACK: 2, INTERPOLATED: 4, ESTIMATED: 8, PARTI
 export { QUALITY };
 
 const curReading = db.prepare(
-  'SELECT value FROM reading WHERE series_id = ? AND ts = ? AND superseded_at IS NULL');
+  'SELECT value, recorded_at FROM reading WHERE series_id = ? AND ts = ? AND superseded_at IS NULL');
 const supReading = db.prepare(
   'UPDATE reading SET superseded_at = ? WHERE series_id = ? AND ts = ? AND superseded_at IS NULL');
 const insReading = db.prepare(
@@ -105,8 +105,11 @@ export function putReadings(series, rows, rawId) {
       const value = r.value === undefined ? null : r.value;
       const cur = curReading.get(series, r.ts);
       if (cur && same(cur.value, value)) continue;
-      if (cur) supReading.run(recordedAt, series, r.ts);
-      insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, recordedAt, r.rawId ?? rawId ?? null);
+      // A correction in the same millisecond as the version it replaces would repeat (series, ts, recorded_at):
+      // the new version is stamped one millisecond after the old one instead of failing the batch.
+      const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;
+      if (cur) supReading.run(at, series, r.ts);
+      insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
       changed++;
     }
   });
@@ -114,7 +117,7 @@ export function putReadings(series, rows, rawId) {
 }
 
 const curInterval = db.prepare(
-  'SELECT value FROM interval_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
+  'SELECT value, recorded_at FROM interval_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
 const supInterval = db.prepare(
   'UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
 const insInterval = db.prepare(
@@ -129,8 +132,9 @@ export function putIntervals(series, rows, rawId) {
       const value = r.value === undefined ? null : r.value;
       const cur = curInterval.get(series, r.start, r.end);
       if (cur && same(cur.value, value)) continue;
-      if (cur) supInterval.run(recordedAt, series, r.start, r.end);
-      insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, recordedAt, r.rawId ?? rawId ?? null);
+      const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;   // see putReadings
+      if (cur) supInterval.run(at, series, r.start, r.end);
+      insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
       changed++;
     }
   });

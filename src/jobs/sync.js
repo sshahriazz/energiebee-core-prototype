@@ -93,9 +93,18 @@ function recordForecast(siteId) {
   return { forecasts };
 }
 
+// The moment from which facts count as not yet built (ms). Facts a sync wrote are rebuilt by that sync's own
+// build; one that stopped before its build (a crash, a restart, an error) leaves facts that no later sync
+// sees as new - it fetches the same window again and finds nothing to change - so the watermark is the
+// start of the last sync that did reach its build, never the start of this one.
+export function sinceWatermark(siteId, runId, syncStartMs) {
+  const t = db.prepare("SELECT MAX(started_at) AS t FROM sync_run WHERE site_id = ? AND status IN ('ok', 'partial') AND id <> ?").get(siteId, runId)?.t;
+  return t != null ? Math.min(t * 1000, syncStartMs) : syncStartMs;
+}
+
 // Earliest time touched by facts recorded since `sinceMs`: this home's readings and
 // intervals (its own, its meters' and its regions'), and prices of its tariffs.
-function earliestChange(siteId, site, sinceMs) {
+export function earliestChange(siteId, site, sinceMs) {
   const gas = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean);
   const regions = [site.carbon_region != null ? `carbon:${site.carbon_region}` : null, gas ? `ldz:${gas}` : null].filter(Boolean);
   const ours = `(se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
@@ -183,7 +192,7 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     const firstRun = !built;
     const fromDate = firstRun ? addDays(today, -INITIAL_DAYS) : addDays(today, -2);
     const [fromTs] = dayBounds(tz, fromDate);
-    const ctx = { siteId, site, conns, tz, today, firstRun, fromDate, fromTs, cycle, agreementsChanged: false, sinceMs: syncStartMs };
+    const ctx = { siteId, site, conns, tz, today, firstRun, fromDate, fromTs, cycle, agreementsChanged: false, sinceMs: sinceWatermark(siteId, runId, syncStartMs) };
 
     for (const e of plan(db, site, { conns })) await runEntry(ctx, e, log);
 

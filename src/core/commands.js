@@ -1,14 +1,17 @@
 // The control path as data: helpers around command and command_log (src/db/deltas/031-command.sql).
-// TABLES ONLY, NO EXECUTOR YET: nothing in the core sends anything to a device. An executor would:
-//   1. enqueueIfChanged(the desired state of the window it is in)   writes nothing when unchanged
+// The executor (src/core/executor.js) drives these helpers; nothing else sends anything to a device:
+//   1. enqueueIfChanged(the desired state of the window it is in)   writes nothing when unchanged, or when a gate refuses it
 //   2. expireStale()                                                 a late command is dropped
 //   3. read the device; markSkipped() if it already runs the state, else send and markSent()
 //   4. on the next cycle read back: markAcked() (acked only when it matches) or markFailed()
+//   5. markAppliedLate() when the device turns out to have run a command that had expired; setVerify() for the effect check
 // The rules the database enforces itself (triggers): a command needs device_capability supported = 1,
 // starts pending, is never sent after valid_until, never changes its desired state, has at most one
 // open (pending or sent) row per device, and its final states are final; command_log is append-only.
 import { db, tx } from '../db/db.js';
 import { canonical, hashOf, capability } from './plans.js';
+import { checkGates, recordBlocks } from './control.js';
+import { canControl } from './access.js';
 
 export const COMMAND_STATUSES = ['pending', 'sent', 'acked', 'failed', 'expired', 'cancelled', 'skipped_unchanged'];
 const OPEN = "('pending', 'sent')";
@@ -31,6 +34,9 @@ export function normaliseDesired(desired) {
   if (!out.action) throw new Error('a desired state needs an action');
   return JSON.parse(canonical(out));
 }
+
+// Compare only some keys of the desired state: the ones the device can report (the others are unverifiable, not mismatched).
+const only = (desired, keys) => (keys ? Object.fromEntries(Object.entries(desired).filter(([k]) => keys.includes(k))) : desired);
 
 const parse = (c) => (c ? { ...c, desired: JSON.parse(c.desired), reported: c.reported ? JSON.parse(c.reported) : null, diff: c.diff ? JSON.parse(c.diff) : null } : null);
 const byId = (id) => db.prepare('SELECT * FROM command WHERE id = ?').get(id);
@@ -69,11 +75,19 @@ function cancel(c, now, reason) {
  * ('expired'). Otherwise an open command is cancelled and the new one supersedes it (or the last
  * confirmed one). Throws when the device is not known to deliver the action (device_capability).
  * force: queue even when equal to the last confirmed state (the device drifted from it).
+ * Gates (control.js checkGates), checked before anything else is changed, so a refused command never cancels the open one:
+ * a placeholder capability, stale inputs for an action that is not plain demand, a per-device limit, an action's own range.
+ * Refused: written false, reason 'blocked', blocks [{ gate, detail }], each also kept in command_block.
+ * freshnessLimits: also require the home's live inputs to be fresh now (true = the default limits).
+ * actorUserId: the person asking; without a control right on the home the call throws (code 'forbidden') and writes nothing.
  */
-export function enqueueIfChanged({ deviceId, desired, planRunId = null, validFrom, validUntil, idempotencyKey = null, force = false, now = Date.now() }) {
+export function enqueueIfChanged({ deviceId, desired, planRunId = null, validFrom, validUntil, idempotencyKey = null, force = false, now = Date.now(), freshnessLimits = null, actorUserId = null }) {
   const d = normaliseDesired(desired);
-  const dev = db.prepare('SELECT id, kind FROM device WHERE id = ?').get(deviceId);
+  const dev = db.prepare('SELECT id, kind, site_id FROM device WHERE id = ?').get(deviceId);
   if (!dev) throw new Error(`no device ${deviceId}`);
+  // A person acting (actorUserId) needs a current control right on the home (access.js canControl): an owner or
+  // operator grant whose scope is all or control. A viewer never commands. The planner acts without a person.
+  if (actorUserId != null && !canControl(actorUserId, dev.site_id, now)) throw Object.assign(new Error(`user ${actorUserId} may not control home ${dev.site_id}`), { code: 'forbidden' });
   if (capability(deviceId, d.action) !== true) throw new Error(`device ${deviceId} (${dev.kind}) cannot deliver ${d.action}: no device_capability row with supported = 1`);
   if (!(Number.isInteger(validFrom) && Number.isInteger(validUntil) && validUntil > validFrom)) throw new RangeError('valid_from and valid_until are epoch seconds, valid_until after valid_from');
   const hash = hashOf(d);
@@ -82,6 +96,8 @@ export function enqueueIfChanged({ deviceId, desired, planRunId = null, validFro
     const dup = db.prepare('SELECT * FROM command WHERE idempotency_key = ?').get(key);
     if (dup) return { written: false, reason: 'duplicate', command: parse(dup) };
     if (validUntil * 1000 <= now) return { written: false, reason: 'expired', command: null };
+    const blocks = checkGates({ deviceId, desired: d, planRunId, now, freshnessLimits });
+    if (blocks.length) { recordBlocks(deviceId, planRunId, d.action, blocks, now); return { written: false, reason: 'blocked', blocks, command: null }; }
     const open = openCommand(deviceId);
     if (open && open.desired_hash === hash && !force) return { written: false, reason: 'pending_same', command: parse(open) };
     if (open) cancel(open, now, 'superseded by a changed desired state');
@@ -121,11 +137,11 @@ export function markSent(id, { now = Date.now(), registerWrites = null } = {}) {
 
 // The device's read-back. Acked only when it matches the desired state; otherwise the difference is
 // kept (diff, reported, the raw payload) and the command stays sent.
-export function markAcked(id, { reported, rawId = null, tolerance = 1e-6, now = Date.now() } = {}) {
+export function markAcked(id, { reported, rawId = null, tolerance = 1e-6, now = Date.now(), compare = null } = {}) {
   return tx(() => {
     const c = byId(id);
     mustBe(c, id, ['sent']);
-    const diff = diffState(JSON.parse(c.desired), reported, tolerance);
+    const diff = diffState(only(JSON.parse(c.desired), compare), reported, tolerance);
     const matched = Object.keys(diff).length === 0;
     db.prepare(`UPDATE command SET reported = ?, diff = ?, readback_raw_id = ?${matched ? ", status = 'acked', acked_at = ?" : ''} WHERE id = ?`)
       .run(canonical(reported ?? {}), canonical(diff), rawId, ...(matched ? [now] : []), id);
@@ -135,11 +151,11 @@ export function markAcked(id, { reported, rawId = null, tolerance = 1e-6, now = 
 }
 
 // Read before writing: the device already runs the desired state, so nothing is written to it.
-export function markSkipped(id, { reported, rawId = null, tolerance = 1e-6, now = Date.now() } = {}) {
+export function markSkipped(id, { reported, rawId = null, tolerance = 1e-6, now = Date.now(), compare = null } = {}) {
   return tx(() => {
     const c = byId(id);
     mustBe(c, id, ['pending']);
-    const diff = diffState(JSON.parse(c.desired), reported, tolerance);
+    const diff = diffState(only(JSON.parse(c.desired), compare), reported, tolerance);
     if (Object.keys(diff).length) throw new Error(`command ${id}: the device does not run the desired state (${Object.keys(diff).join(', ')})`);
     db.prepare("UPDATE command SET status = 'skipped_unchanged', acked_at = ?, reported = ?, diff = '{}', readback_raw_id = ? WHERE id = ?").run(now, canonical(reported), rawId, id);
     log(id, now, 'skipped_unchanged');
@@ -186,3 +202,44 @@ export function logObserved(id, state, { now = Date.now(), detail = {} } = {}) {
   if (!byId(id)) throw new Error(`no command ${id}`);
   log(id, now, 'observed', { state, ...detail });
 }
+
+// The device turned out to run a command that had already expired (its read-back, or an ack, arrived after valid_until).
+// The status stays expired (final); applied_late_at keeps the truth that the device DID run it, so the plan's view and the
+// device's state are not left disagreeing. Only a command that was actually sent can have been applied.
+export function markAppliedLate(id, { reported, rawId = null, now = Date.now(), compare = null } = {}) {
+  return tx(() => {
+    const c = byId(id);
+    if (!c) throw new Error(`no command ${id}`);
+    if (c.status !== 'expired' || c.sent_at == null) throw new Error(`command ${id} is ${c.status}${c.sent_at == null ? ' and was never sent' : ''}: only an expired, sent command can have been applied late`);
+    if (c.applied_late_at != null) return { appliedLate: false, reason: 'already recorded' };
+    const diff = diffState(only(JSON.parse(c.desired), compare), reported);
+    if (Object.keys(diff).length) return { appliedLate: false, reason: 'the device does not run the desired state', diff };
+    db.prepare('UPDATE command SET applied_late_at = ?, reported = ?, diff = ?, readback_raw_id = ? WHERE id = ?').run(now, canonical(reported ?? {}), '{}', rawId, id);
+    log(id, now, 'observed', { state: 'applied_late', valid_until: c.valid_until });
+    return { appliedLate: true };
+  });
+}
+
+// The vendor's receipt for the write: a reference, not proof (the read-back decides).
+export function recordAckRef(id, ref, { now = Date.now() } = {}) {
+  const c = byId(id);
+  if (!c) throw new Error(`no command ${id}`);
+  db.prepare('UPDATE command SET ack_ref = COALESCE(ack_ref, ?) WHERE id = ?').run(ref == null ? null : String(ref), id);
+  log(id, now, 'observed', { state: 'ack_received', ref: ref ?? null, after_expiry: c.status === 'expired' || undefined });
+}
+
+// The effect check result (verified | not_verified) with its evidence.
+export function setVerify(id, status, evidence, { now = Date.now() } = {}) {
+  if (!['verified', 'not_verified'].includes(status)) throw new Error(`verify status ${status}`);
+  return tx(() => {
+    const c = byId(id);
+    if (!c) throw new Error(`no command ${id}`);
+    if (!['acked'].includes(c.status)) throw new Error(`command ${id} is ${c.status}: only an acked command is checked for its effect`);
+    db.prepare('UPDATE command SET verify_status = ?, verified_at = ? WHERE id = ?').run(status, now, id);
+    log(id, now, 'observed', { state: status, evidence });
+    return { status };
+  });
+}
+
+export const findByAckRef = (ref) => parse(db.prepare('SELECT * FROM command WHERE ack_ref = ?').get(String(ref)));
+export const blocksOf = (deviceId) => db.prepare('SELECT gate, action, detail, at FROM command_block WHERE device_id = ? ORDER BY id').all(deviceId).map((r) => ({ ...r, detail: JSON.parse(r.detail) }));

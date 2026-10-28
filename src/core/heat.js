@@ -44,6 +44,7 @@
 // planner is built; the model parameters (PH-MOD-*) are configuration, not facts.
 import { db, tx } from '../db/db.js';
 import { readReadings, readIntervals, QUALITY, withKnownAt, inForce } from './facts.js';
+import { bindingsFor } from './inputs.js';
 import { loadPricing, priceOver } from './pricing.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, slotLength, slotFloor, todMinute, eachSlotOverlap } from './time.js';
@@ -106,6 +107,21 @@ function intervalBySlot(facts, slotS, phase) {
   return acc;
 }
 
+// The heating roles (inputs.js): heat_pump_energy (heatpump_elec_kwh), heat_output_energy (heat_output_kwh) and heat_telemetry (every other
+// heating metric). When a home has bound sources to a role, only those sources (and, for a binding that names a device, only that device)
+// are read for the role's metrics; with none ever bound the series of any source are read, as before. A binding counts when its period
+// overlaps the window built: heat.js chooses one series per metric, it does not switch source inside a day. A role that has bindings
+// but none in force in the window reads nothing (the home removed that provider).
+const HEAT_ROLE = (metric) => (metric === 'heatpump_elec_kwh' ? 'heat_pump_energy' : metric === 'heat_output_kwh' ? 'heat_output_energy' : 'heat_telemetry');
+function boundTo(siteId, asOf, winStart, winEnd) {
+  const roles = new Map();
+  const of = (role) => roles.get(role) ?? roles.set(role, bindingsFor(siteId, role, asOf)).get(role);
+  return (s) => {
+    const b = of(HEAT_ROLE(s.metric));
+    return !b.length || b.some((x) => x.from < winEnd && x.to > winStart && x.source === s.source && (x.deviceId == null || (s.subject_kind === 'device' && String(x.deviceId) === s.subject_id)));
+  };
+}
+
 function build(siteId, fromDate, toDate, opts) {
   const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
@@ -121,7 +137,8 @@ function build(siteId, fromDate, toDate, opts) {
   const series = db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.time_role, so.code AS source
       FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
       WHERE m.domain = 'heating' AND ${subjectSql} ORDER BY se.id`).all(String(siteId), siteId)
-    .filter((s) => USED[s.metric]);
+    .filter((s) => USED[s.metric])
+    .filter(boundTo(siteId, asOf, dayBounds(tz, fromDate)[0], dayBounds(tz, toDate)[1]));
   const empty = { days: 0, slots: 0, ...(opts.dryRun ? { rows: [] } : {}) };
   if (!series.length) return { ...empty, skipped: 'no heating series' };
   // Never before the home's first heating fact (as known at asOf).

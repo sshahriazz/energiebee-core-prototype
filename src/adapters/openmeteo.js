@@ -9,7 +9,8 @@
 // outdoor temperature forecast a planner reads is outdoor_temp_c / open_meteo in forecast_fact.
 // Note: the free host is for non-commercial use; production needs a paid plan.
 import { fetchJson } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putReadings, putIntervals, putForecasts } from '../core/facts.js';
+import { landRaw, quarantine } from '../core/facts.js';
+import { ingestObservations } from '../core/channels.js';
 import { nowSec } from '../core/time.js';
 
 export async function syncWeather(site, pastDays) {
@@ -34,37 +35,25 @@ export async function syncWeather(site, pastDays) {
   }
   const { rawId } = landRaw({ source: 'open_meteo', siteId: site.id, request: { url }, body: json });
   const now = nowSec();
-  const tempS = seriesId('site', site.id, 'outdoor_temp_c', 'open_meteo');
-  const cloudS = seriesId('site', site.id, 'cloud_pct', 'open_meteo');
-  const gtiS = seriesId('site', site.id, 'gti_wm2', 'open_meteo');
-  const ghiS = seriesId('site', site.id, 'ghi_wm2', 'open_meteo');
-  const past = { temp: [], cloud: [], gti: [], ghi: [] };
-  const fut = { temp: [], cloud: [], gti: [], ghi: [] };
+  // Points as Open-Meteo names them. Instant variables become readings (past) or forecast issues (future);
+  // the two irradiance means cover the hour before their timestamp, so they are periods.
+  const INSTANT = ['temperature_2m', 'cloud_cover', 'relative_humidity_2m', 'dew_point_2m', 'wind_speed_10m'];
+  const MEAN_BEFORE = ['global_tilted_irradiance', 'shortwave_radiation'];
+  const past = []; const fut = [];
   h.time.forEach((t, i) => {
-    const bucket = t <= now ? past : fut;
-    if (h.temperature_2m[i] != null) bucket.temp.push({ ts: t, start: t, end: t + 3600, value: h.temperature_2m[i] });
-    if (h.cloud_cover[i] != null) bucket.cloud.push({ ts: t, start: t, end: t + 3600, value: h.cloud_cover[i] });
-    // Preceding-hour mean: the value at t covers [t - 1h, t).
-    const g = h.global_tilted_irradiance?.[i];
-    if (g != null) (t <= now ? past : fut).gti.push({ start: t - 3600, end: t, value: g });
-    const s = h.shortwave_radiation?.[i];
-    if (s != null) (t <= now ? past : fut).ghi.push({ start: t - 3600, end: t, value: s });
+    for (const point of INSTANT) {
+      const v = h[point]?.[i];
+      if (v == null) continue;
+      if (t <= now) past.push({ point, ts: t, value: v }); else fut.push({ point, start: t, end: t + 3600, issuedAt: now, value: v });
+    }
+    for (const point of MEAN_BEFORE) {
+      const v = h[point]?.[i];
+      if (v == null) continue;
+      // Preceding-hour mean: the value at t covers [t - 1h, t).
+      if (t <= now) past.push({ point, start: t - 3600, end: t, value: v }); else fut.push({ point, start: t - 3600, end: t, issuedAt: now, value: v });
+    }
   });
-  let n = putReadings(tempS, past.temp, rawId) + putReadings(cloudS, past.cloud, rawId)
-    + putIntervals(gtiS, past.gti, rawId) + putIntervals(ghiS, past.ghi, rawId);
-  const issued = now;
-  let f = putForecasts(tempS, issued, fut.temp, rawId) + putForecasts(cloudS, issued, fut.cloud, rawId)
-    + putForecasts(gtiS, issued, fut.gti, rawId) + putForecasts(ghiS, issued, fut.ghi, rawId);
-  // Instants added for heating (Phase B); a variable the answer lacks stores nothing.
-  for (const [key, metric] of [['relative_humidity_2m', 'humidity_pct'], ['dew_point_2m', 'dew_point_c'], ['wind_speed_10m', 'wind_speed_ms']]) {
-    const vals = h[key];
-    if (!Array.isArray(vals)) continue;
-    const rows = { past: [], fut: [] };
-    h.time.forEach((t, i) => { if (vals[i] != null) rows[t <= now ? 'past' : 'fut'].push({ ts: t, start: t, end: t + 3600, value: vals[i] }); });
-    if (!rows.past.length && !rows.fut.length) continue;
-    const s = seriesId('site', site.id, metric, 'open_meteo');
-    n += putReadings(s, rows.past, rawId);
-    f += putForecasts(s, issued, rows.fut, rawId);
-  }
+  const out = ingestObservations(site.id, 'open_meteo', [...past, ...fut], rawId);
+  const n = out.written; const f = out.forecasts;
   return { facts: n, forecasts: f };
 }

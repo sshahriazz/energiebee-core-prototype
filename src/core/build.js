@@ -28,6 +28,7 @@ import { db, tx, optimizeDb } from '../db/db.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
 import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
+import { bindingsFor, sourceAt, holdSOf } from './inputs.js';
 import { siteAt } from './versions.js';
 import { loadPricing, priceOver, fixedOver } from './pricing.js';
 import { METRICS } from '../db/registry.js';
@@ -42,7 +43,7 @@ const NODES = {
   exp: ['grid_export_w', 'grid_export_kwh'], chg: ['battery_charge_w', 'battery_charge_kwh'], dis: ['battery_discharge_w', 'battery_discharge_kwh'],
 };
 
-// Forward-hold integration: each sample holds for up to 5 minutes. Energy is split at slot boundaries.
+// Forward-hold integration: each sample holds for up to its source's hold time (r.hold, default 5 minutes). Energy is split at slot boundaries.
 // `fl` maps an instant to the start of its slot (the home's grid), slotS is the slot length.
 function integrate(readings, slotS, fl) {
   const energy = new Map();
@@ -50,8 +51,9 @@ function integrate(readings, slotS, fl) {
   for (let i = 0; i < readings.length; i++) {
     const r = readings[i];
     if (r.value == null) continue;
-    const next = readings[i + 1]?.ts ?? r.ts + 300;
-    const end = r.ts + Math.min(next - r.ts, 300);
+    const hold = r.hold ?? 300;
+    const next = readings[i + 1]?.ts ?? r.ts + hold;
+    const end = r.ts + Math.min(next - r.ts, hold);
     for (let s = r.ts; s < end;) {
       const slot = fl(s);
       const e = Math.min(end, slot + slotS);
@@ -169,14 +171,61 @@ function build(siteId, fromDate, toDate, opts) {
   if (T) Object.assign(T, { slotS, tz, phase, now, asOf, winStart, winEnd, batteryKwh, batterySource, forecastSource: new Map() });
 
   // ── Facts for the whole window ──
-  const powerIds = Object.fromEntries(Object.entries(NODES).map(([k, [w]]) => [k, sid(w, 'sunsynk_5min')]));
-  const dailyIds = Object.fromEntries(Object.entries(NODES).map(([k, [, kwh]]) => [k, sid(kwh, 'sunsynk_daily')]));
-  const socId = sid('battery_soc_pct', 'sunsynk_5min');
-  const readings = groupBy(readReadings([...Object.values(powerIds), socId], winStart - 600, winEnd), 'series_id');
-  const aligned = Object.fromEntries(Object.entries(powerIds).map(([k, id]) => [k, integrate(readings.get(id) || [], slotS, fl)]));
+  // The inverter's sources come from bindings (inputs.js). Each binding is a UNIT: a source, optionally a
+  // device, for a period. Units that follow one another take turns; units that overlap in time are two
+  // devices (two inverters, two batteries) and their figures are added. Each unit is integrated on its own
+  // (its own samples and hold), then summed per slot, so interleaved samples never cut each other's hold.
+  const bound5 = bindingsFor(siteId, 'inverter_5min', asOf);
+  const boundDaily = bindingsFor(siteId, 'inverter_daily', asOf);
+  const powerIds = Object.fromEntries(Object.keys(NODES).map((k) => [k, `power:${k}`]));
+  const dailyIds = Object.fromEntries(Object.keys(NODES).map((k) => [k, `daily:${k}`]));
+  const socId = 'soc';
+  const unitSeries = (bd, metric) => (bd.deviceId == null ? sid(metric, bd.source) : seriesId('device', bd.deviceId, metric, bd.source));
+  const unitRows = (bd, metric) => { const hold = holdSOf(bd.source); return readReadings([unitSeries(bd, metric)], Math.max(winStart - 600, bd.from), Math.min(winEnd, bd.to)).map((r) => ({ ...r, hold })); };
+  const unitsAt = (units, t) => units.filter((bd) => t >= bd.from && t < bd.to);
+  // Sum the units' slot energies; a slot is covered as far as its least covered active unit is.
+  const sumUnits = (parts) => {
+    if (parts.length === 1) return parts[0].it;
+    const energy = new Map(); const cover = new Map();
+    for (const { it } of parts) for (const [slot, v] of it.energy) energy.set(slot, (energy.get(slot) || 0) + v);
+    for (const slot of new Set(parts.flatMap(({ it }) => [...it.cover.keys()]))) {
+      const active = parts.filter(({ bd }) => slot + slotS > bd.from && slot < bd.to);
+      cover.set(slot, active.length ? Math.min(...active.map(({ it }) => it.cover.get(slot) || 0)) : 0);
+    }
+    return { energy, cover };
+  };
+  const nodeRows = Object.fromEntries(Object.entries(NODES).map(([k, [w]]) => [k, bound5.map((bd) => ({ bd, rows: unitRows(bd, w) }))]));
+  const aligned = Object.fromEntries(Object.keys(NODES).map((k) => [k, sumUnits(nodeRows[k].map(({ bd, rows }) => ({ bd, it: integrate(rows, slotS, fl) })))]));
+  // Charge level: one unit as it is; several batteries at once as the average weighted by each one's size
+  // (device attribute battery_kwh, else the home's); a timestamp where a size or a reading is missing is left out.
+  const capOf = (bd) => { if (bd.deviceId == null) return batteryKwh ?? null; try { return JSON.parse(db.prepare('SELECT attrs FROM device WHERE id = ?').get(bd.deviceId)?.attrs || '{}').battery_kwh ?? null; } catch { return null; } };
+  const socUnits = bound5.map((bd) => ({ bd, cap: capOf(bd), byTs: new Map(unitRows(bd, 'battery_soc_pct').map((r) => [r.ts, r])) }));
+  const socRows = (() => {
+    if (socUnits.length === 1) return [...socUnits[0].byTs.values()];
+    const out = [];
+    for (const ts of [...new Set(socUnits.flatMap((u) => [...u.byTs.keys()]))].sort((x, y) => x - y)) {
+      const act = socUnits.filter((u) => ts >= u.bd.from && ts < u.bd.to);
+      if (!act.length || act.some((u) => !u.byTs.has(ts))) continue;
+      if (act.length === 1) { out.push(act[0].byTs.get(ts)); continue; }
+      if (act.some((u) => !u.cap)) continue;
+      const cap = act.reduce((t, u) => t + u.cap, 0);
+      out.push({ ...act[0].byTs.get(ts), value: act.reduce((t, u) => t + u.byTs.get(ts).value * u.cap, 0) / cap });
+    }
+    return out;
+  })();
+  const readings = new Map([...Object.keys(NODES).map((k) => [powerIds[k], nodeRows[k].flatMap((u) => u.rows).sort((x, y) => x.ts - y.ts)]), [socId, socRows]]);
   // Charge level at the end of each slot: the last reading inside it.
-  const socBySlot = new Map((readings.get(socId) || []).map((r) => [fl(r.ts), r.value]));
-  const daily = groupBy(readIntervals(Object.values(dailyIds), winStart, winEnd), 'series_id');
+  const socBySlot = new Map(socRows.map((r) => [fl(r.ts), r.value]));
+  // The inverters' daily totals, one list per unit; a day's total is the sum over the units active that day, and
+  // unknown when any of them has no total for it.
+  const dailyUnits = Object.fromEntries(Object.entries(NODES).map(([k, [, kwh]]) => [k, boundDaily.map((bd) => ({ bd,
+    rows: readIntervals([unitSeries(bd, kwh)], Math.max(winStart, bd.from), Math.min(winEnd, bd.to)).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to) }))]));
+  const dailyTotal = (k, dayStart) => {
+    const act = dailyUnits[k].filter(({ bd }) => dayStart >= bd.from && dayStart < bd.to);
+    const hit = act.map(({ rows }) => rows.find((f) => f.start_ts === dayStart));
+    if (!act.length || hit.some((f) => !f)) return undefined;
+    return hit.length === 1 ? hit[0] : { ...hit[0], value: hit.reduce((t, f) => t + f.value, 0) };
+  };
   const hasInverter = (readings.get(powerIds.solar) || []).length > 0 || (readings.get(powerIds.imp) || []).length > 0;
 
   // Meters in use, with their details (gas unit and zone), as known at the moment being built.
@@ -186,6 +235,16 @@ function build(siteId, fromDate, toDate, opts) {
   for (const m of meters) if (m.approximateAttrs) approximations.push(`${m.kind} details as first recorded at ${new Date(m.approximateAttrs).toISOString()}`);
   if (asOf != null && !battAttr) approximations.push('battery size: current value (no earlier record)');
   if (versioned && site.approximateSettings != null) approximations.push(`home settings as first recorded at ${new Date(site.approximateSettings).toISOString()}`);
+  // Every other input is a role too (inputs.js): the sources bound to it, each for the period it applies.
+  // Facts of all of them are merged by time; a home without a source for a role has no such input.
+  const meterBound = bindingsFor(siteId, 'meter_energy', asOf);
+  const cvBound = bindingsFor(siteId, 'gas_cv', asOf);
+  const carbonBound = bindingsFor(siteId, 'carbon', asOf);
+  const weatherBound = bindingsFor(siteId, 'weather_temp', asOf);
+  const evBound = bindingsFor(siteId, 'ev_dispatch', asOf);
+  const forecastBound = bindingsFor(siteId, 'solar_forecast', asOf);
+  const intervalsFrom = (bound, series, lo, hi) => bound.flatMap((bd) => readIntervals([series(bd.source)], Math.max(lo, bd.from), Math.min(hi, bd.to)).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to)).sort((a, b) => a.start_ts - b.start_ts);
+  const meterSource = (slot) => sourceAt(meterBound, slot) ?? meterBound[0]?.source ?? null;
   const meterFacts = {};
   // Gas in m3 is converted per gas day with National Gas's calorific value for the meter's zone:
   // kWh = m3 × 1.02264 (volume correction) × CV (MJ/m3) ÷ 3.6. Without a published CV the
@@ -195,31 +254,36 @@ function build(siteId, fromDate, toDate, opts) {
     if (m.kind === 'meter_gas') {
       const attrs = JSON.parse(m.attrs || '{}');
       if (attrs.gasUnit?.unit === 'm3') {
-        gasM3 = readIntervals([seriesId('device', m.id, 'gas_m3', 'octopus_meter')], winStart, winEnd);
+        gasM3 = intervalsFrom(meterBound, (src) => seriesId('device', m.id, 'gas_m3', src), winStart, winEnd);
         gasLdz = attrs.ldz || null;
-        gasCv = gasLdz ? readIntervals([seriesId('region', `ldz:${gasLdz}`, 'gas_cv_mjm3', 'national_gas_cv')], winStart - 86400, winEnd + 86400) : [];
+        gasCv = gasLdz ? intervalsFrom(cvBound, (src) => seriesId('region', `ldz:${gasLdz}`, 'gas_cv_mjm3', src), winStart - 86400, winEnd + 86400) : [];
         meterFacts.meter_gas = gasM3;
         continue;
       }
     }
     const metric = m.kind === 'meter_gas' ? 'gas_kwh' : m.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
-    meterFacts[m.kind] = readIntervals([seriesId('device', m.id, metric, 'octopus_meter')], winStart, winEnd);
+    meterFacts[m.kind] = intervalsFrom(meterBound, (src) => seriesId('device', m.id, metric, src), winStart, winEnd);
   }
   const cvAt = (slot) => gasCv.find((f) => f.start_ts <= slot && f.end_ts > slot)?.value ?? null;
   const VOLUME_CORRECTION = 1.02264;   // Gas (Calculation of Thermal Energy) Regulations 1996
   const hasImportMeter = !!meterFacts.meter_import;
   // A configured supplier account means meter data is expected, even before its meters are known.
-  const expectMeter = hasImportMeter || !!db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'octopus'").get(siteId);
-  const evFacts = readIntervals([sid('ev_charge_kwh', 'octopus_kraken')], winStart, winEnd);
+  const expectMeter = hasImportMeter || !!db.prepare("SELECT 1 FROM connection c JOIN market_provider mp ON mp.adapter = c.provider AND mp.role = 'meter' WHERE c.site_id = ?").get(siteId);
+  // Commands the devices of this home confirmed to run (acked by read-back, or found already running) during the
+  // window: each slot's lineage names those whose window overlaps it, so a slot shows what was acting on the home.
+  const controlCmds = db.prepare(`SELECT c.id, c.action, c.window_start, c.window_end, c.verify_status FROM command c JOIN device d ON d.id = c.device_id
+    WHERE d.site_id = ? AND c.status IN ('acked', 'skipped_unchanged') AND c.window_start IS NOT NULL AND c.window_end > ? AND c.window_start < ?${asOf != null ? ' AND c.acked_at <= ?' : ''}
+    ORDER BY c.id`).all(siteId, winStart, winEnd, ...(asOf != null ? [asOf * 1000] : []));
+  const evFacts = intervalsFrom(evBound, (src) => sid('ev_charge_kwh', src), winStart, winEnd);
   const carbonFacts = site.carbon_region != null
-    ? readIntervals([seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional')], winStart, winEnd) : [];
-  const tempByHour = new Map(readReadings([sid('outdoor_temp_c', 'open_meteo')], winStart - 3600, winEnd).map((r) => [r.ts, r.value]));
+    ? intervalsFrom(carbonBound, (src) => seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', src), winStart, winEnd) : [];
+  const tempByHour = new Map(weatherBound.flatMap((bd) => readReadings([sid('outdoor_temp_c', bd.source)], Math.max(winStart - 3600, bd.from), Math.min(winEnd, bd.to))).map((r) => [r.ts, r.value]));
   // Solar forecast of record: for each period, the latest issue made before it started,
   // so a past slot is compared only with what was known in advance. Quartz when it
   // was used (panel angles known), otherwise our own stored forecast. Each forecast period
   // goes to the slots it overlaps, split by overlap (a 30-minute forecast feeds two 15-minute slots).
   const solarFc = [];
-  for (const source of ['quartz', 'core_forecast']) {
+  for (const source of [...new Set(forecastBound.map((bd) => bd.source))]) {   // in priority order: the first source with a forecast for a slot wins
     const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts AND issued_at <= ?')
       .all(sid('solar_kwh', source), winStart, winEnd, now);
     const best = new Map();
@@ -260,12 +324,26 @@ function build(siteId, fromDate, toDate, opts) {
   // It depends only on facts up to that day, so a day gets the same value whether it is
   // rebuilt alone or as part of a full rebuild. Without enough data no loss is applied (1.0).
   const counterSum = db.prepare(`SELECT SUM(value) AS v FROM interval_fact WHERE series_id = ? AND ${inForce()} AND start_ts >= ? AND start_ts < ?`);
-  const firstSoc = db.prepare(`SELECT value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1`);
-  const lastSoc = db.prepare(`SELECT value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1`);
+  const firstSoc = db.prepare(`SELECT ts, value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1`);
+  const lastSoc = db.prepare(`SELECT ts, value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1`);
   const efficiencyFor = (date) => {
     const [a] = dayBounds(tz, addDays(date, -29)); const [, b] = dayBounds(tz, date);
-    const inKwh = counterSum.get(dailyIds.chg, a, b)?.v || 0; const outKwh = counterSum.get(dailyIds.dis, a, b)?.v || 0;
-    const s0 = firstSoc.get(socId, a, b)?.value; const s1 = lastSoc.get(socId, a, b)?.value;
+    const dailySum = (k) => boundDaily.reduce((t, bd) => (Math.min(b, bd.to) > Math.max(a, bd.from) ? t + (counterSum.get(unitSeries(bd, NODES[k][1]), Math.max(a, bd.from), Math.min(b, bd.to))?.v || 0) : t), 0);
+    const inKwh = dailySum('chg'); const outKwh = dailySum('dis');
+    // The charge level at an end of the window: the units reading within ten minutes of the earliest (or latest)
+    // reading are one moment; one unit as it is, several weighted by size.
+    const socAt = (stmt, first) => {
+      const got = socUnits.filter((u) => Math.min(b, u.bd.to) > Math.max(a, u.bd.from))
+        .map((u) => ({ u, r: stmt.get(unitSeries(u.bd, 'battery_soc_pct'), Math.max(a, u.bd.from), Math.min(b, u.bd.to)) })).filter((x) => x.r);
+      if (!got.length) return undefined;
+      const edge = first ? Math.min(...got.map((x) => x.r.ts)) : Math.max(...got.map((x) => x.r.ts));
+      const near = got.filter((x) => Math.abs(x.r.ts - edge) <= 600);
+      if (near.length === 1) return near[0].r.value;
+      if (near.some((x) => !x.u.cap)) return undefined;
+      const cap = near.reduce((t, x) => t + x.u.cap, 0);
+      return near.reduce((t, x) => t + x.r.value * x.u.cap, 0) / cap;
+    };
+    const s0 = socAt(firstSoc, true); const s1 = socAt(lastSoc, false);
     if (!batteryKwh || s0 == null || s1 == null || inKwh <= 5) return { eff: 1, note: 'not enough battery data to measure; no loss applied' };
     const stored = ((s1 - s0) / 100) * batteryKwh; const net = inKwh - stored; const r = net > 0 ? outKwh / net : null;
     if (r == null || r <= 0.5 || r > 1.02) return { eff: 1, note: `measured ${r?.toFixed(3) ?? '–'}, outside what is possible; no loss applied` };
@@ -305,7 +383,7 @@ function build(siteId, fromDate, toDate, opts) {
     // ── 1 Align: fit each node's slots to the inverter's daily total ──
     const fit = {};
     for (const k of Object.keys(NODES)) {
-      const totalRow = (daily.get(dailyIds[k]) || []).find((f) => f.start_ts === dayStart);
+      const totalRow = dailyTotal(k, dayStart);
       const sum = daySlots.reduce((s, sl) => s + (aligned[k].energy.get(sl) || 0), 0);
       fit[k] = 1;
       if (totalRow && sum > 0.05 && totalRow.value > 0) {
@@ -342,10 +420,10 @@ function build(siteId, fromDate, toDate, opts) {
       const mImp = hasImportMeter ? meterSum(meterFacts.meter_import, slot, slotS, ctShape('imp')) : null;
       const mExp = meterFacts.meter_export ? meterSum(meterFacts.meter_export, slot, slotS, ctShape('exp')) : null;
       let imp = null; let exp = null; let impSrc = null; let expSrc = null;
-      if (mImp != null) { imp = mImp; impSrc = 'octopus_meter'; q |= QUALITY.MEASURED; }
-      else if (hasInverter && coverage > 0) { imp = e('imp', slot); impSrc = 'sunsynk_ct'; q |= QUALITY.FALLBACK; }
-      if (mExp != null) { exp = mExp; expSrc = 'octopus_meter'; }
-      else if (hasInverter && coverage > 0) { exp = e('exp', slot); expSrc = 'sunsynk_ct'; if (meterFacts.meter_export) q |= QUALITY.FALLBACK; }
+      if (mImp != null) { imp = mImp; impSrc = 'meter'; q |= QUALITY.MEASURED; }
+      else if (hasInverter && coverage > 0) { imp = e('imp', slot); impSrc = 'clamp'; q |= QUALITY.FALLBACK; }
+      if (mExp != null) { exp = mExp; expSrc = 'meter'; }
+      else if (hasInverter && coverage > 0) { exp = e('exp', slot); expSrc = 'clamp'; if (meterFacts.meter_export) q |= QUALITY.FALLBACK; }
       const missing = imp == null;
       if (hasInverter && coverage < 0.8) q |= QUALITY.PARTIAL;
 
@@ -360,7 +438,7 @@ function build(siteId, fromDate, toDate, opts) {
       const meterVsCt = mImp != null && hasInverter && coverage > 0.5 ? mImp - e('imp', slot) : null;
       if (meterVsCt != null) { day.mImp += mImp; day.ctImpBoth += e('imp', slot); }
       if (mExp != null && hasInverter && coverage > 0.5) { day.mExp += mExp; day.ctExpBoth += e('exp', slot); }
-      if (impSrc === 'octopus_meter') day.meterSlots++; else if (impSrc === 'sunsynk_ct') day.clampSlots++;
+      if (impSrc === 'meter') day.meterSlots++; else if (impSrc === 'clamp') day.clampSlots++;
       // The clamp's own reading, kept when the meter replaced it, so both can be shown side by side.
       const ct = hasInverter && coverage > 0 ? { imp: Math.round(e('imp', slot) * 1e4) / 1e4, exp: Math.round(e('exp', slot) * 1e4) / 1e4 } : null;
       const gasRaw = meterFacts.meter_gas ? meterSum(meterFacts.meter_gas, slot, slotS) : null;
@@ -382,7 +460,7 @@ function build(siteId, fromDate, toDate, opts) {
         TS.nodes = Object.fromEntries(Object.keys(NODES).map((k) => [k, { integrated: aligned[k].energy.get(slot) ?? null, coverS: aligned[k].cover.get(slot) ?? 0, fit: fit[k], fitted: hasInverter ? e(k, slot) : null }]));
         TS.meter = { import: over(meterFacts.meter_import, 'imp'), export: over(meterFacts.meter_export, 'exp'), gas: over(meterFacts.meter_gas, null), ev: over(evFacts, null),
           gasCv: gasM3 ? gasCv.find((f) => f.start_ts <= slot && f.end_ts > slot) ?? null : null, volumeCorrection: gasM3 ? VOLUME_CORRECTION : null };
-        TS.reconcile = { solar, chg, dis, mImp, mExp, imp, exp, impSrc, expSrc, missing, balance, measuredLoad, home, loss, meterVsCt, ct, gasRaw, cv, gas, ev };
+        TS.reconcile = { meterSource: meterSource(slot), solar, chg, dis, mImp, mExp, imp, exp, impSrc, expSrc, missing, balance, measuredLoad, home, loss, meterVsCt, ct, gasRaw, cv, gas, ev };
       }
 
       // ── 3 Allocate (slot-level priority) ──
@@ -481,7 +559,7 @@ function build(siteId, fromDate, toDate, opts) {
       if (TS) TS.state = { state, date, today, expectMeter, prev: prev ?? null };
 
       const row = {
-        site_id: siteId, slot_start: slot, local_date: date, dur_s: slotS, tod_min: todMinute(tz, slot), state, quality: q,
+        site_id: siteId, slot_start: slot, local_date: date, dur_s: slotS, tod_min: todMinute(tz, slot), state, quality: q, currency: site.currency ?? null,
         solar, grid_import: imp, grid_export: exp, battery_charge: chg, battery_discharge: dis, home, loss, gas, ev,
         soc_end: socBySlot.get(slot) ?? null,
         solar_to_home: sToHome, solar_to_battery: sToBatt, solar_to_grid: sToGrid, battery_to_home: bToHome,
@@ -495,7 +573,7 @@ function build(siteId, fromDate, toDate, opts) {
         grid_only_cost: gridOnly, saving: gridOnly != null ? gridOnly - totalCost : null,
         carbon_intensity: ci, carbon_g: carbonG, carbon_saved_g: carbonSaved, outdoor_temp: temp, solar_forecast: solarForecast,
         meter_vs_ct: meterVsCt, rate_found: impInc != null ? 1 : 0,
-        lineage: JSON.stringify({ import: impSrc, export: expSrc, solar: hasInverter ? 'sunsynk_5min' : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, ...(pi ? { tax: pi.tax.source, ...(pi.tax.unverified ? { taxUnverified: true } : {}), ...(pi.levy ? { levy: pi.levy } : {}) } : {}), carbon: ci != null ? 'carbon_regional' : null, coverage: Math.round(coverage * 100) / 100, ...(ct ? { ct } : {}), ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? 'national_gas_cv' : 'not published yet' } : {}),
+        lineage: JSON.stringify({ import: impSrc, export: expSrc, ...(controlCmds.some((c) => c.window_start < slot + slotS && c.window_end > slot) ? { control: controlCmds.filter((c) => c.window_start < slot + slotS && c.window_end > slot).map((c) => ({ id: c.id, action: c.action, verify: c.verify_status })) } : {}), ...(impSrc === 'meter' || expSrc === 'meter' ? { meter: meterSource(slot) } : {}), solar: hasInverter ? sourceAt(bound5, slot) : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, ...(pi ? { tax: pi.tax.source, ...(pi.tax.unverified ? { taxUnverified: true } : {}), ...(pi.levy ? { levy: pi.levy } : {}) } : {}), carbon: ci != null ? sourceAt(carbonBound, slot) : null, coverage: Math.round(coverage * 100) / 100, ...(ct ? { ct } : {}), ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? sourceAt(cvBound, slot) : 'not published yet' } : {}),
           ...(prov ? { origin: prov.origin, placeholder_inputs: prov.placeholder_inputs } : {}), data_origin: dataOrigin,
           ...(priceEstimated ? { estimated: true } : {}), ...(capacityUnknown ? { capacity_unknown: true } : {}) }),
         method_version: METHOD_VERSION, built_at: now,
@@ -627,11 +705,12 @@ function build(siteId, fromDate, toDate, opts) {
 
 // The first and last instant of a home's own energy data (inverter samples or meter readings).
 export function factSpan(siteId) {
+  const sources = [...new Set(bindingsFor(siteId, 'inverter_5min').map((b) => b.source))];
   return db.prepare(`SELECT MIN(a) AS first, MAX(b) AS last FROM (
       SELECT MIN(r.ts) AS a, MAX(r.ts) AS b FROM reading r JOIN series se ON se.id = r.series_id JOIN source so ON so.id = se.source_id
-        WHERE se.subject_kind = 'site' AND se.subject_id = ? AND so.code = 'sunsynk_5min'
+        WHERE se.subject_kind = 'site' AND se.subject_id = ? AND so.code IN (${sources.map(() => '?').join(',') || "''"})
       UNION ALL SELECT MIN(f.start_ts), MAX(f.end_ts) - 1 FROM interval_fact f JOIN series se ON se.id = f.series_id
-        WHERE se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).get(String(siteId), siteId) ?? {};
+        WHERE se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).get(String(siteId), ...sources, siteId) ?? {};
 }
 
 // Rebuild from the earliest day a change touched to the latest day it asked for (the sync asks

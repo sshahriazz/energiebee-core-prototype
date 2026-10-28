@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { hasLive, liveDb } from './helpers.js';
+import { hasRealLive as hasLive, liveDb } from './helpers.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-open-'));

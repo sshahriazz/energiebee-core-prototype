@@ -708,6 +708,7 @@ flowchart TB
     d6["Crash-safe rebuild watermark, repeated timestamps, empty answers"]
     d8["Control read-back: state and ack kinds, gates, limits,<br/>executor and scheduler, late ack, effect check,<br/>command in slot lineage"]
     d10["Counter and event kinds, wider ingest checks,<br/>IoT roles and device-kind channel defaults"]
+    d13["Push endpoint for devices and gateways, vendor formats,<br/>push log, emulator, replay of stored receipts,<br/>source health and retention"]
     d12["Devices page and a labelled synthetic IoT demo home:<br/>counters, events, simulate a period, test a command"]
     d11["Providers API and screen: roles timeline,<br/>channels, rejects, impact preview, add or remove flow"]
     d9["Groups with dated membership, currency on slots,<br/>column classes, users and grants"]
@@ -726,13 +727,13 @@ flowchart TB
     t2["A real vendor control driver<br/>(needs a vendor, its API and a test device)"]
     t3["Sign-in, database-level row security,<br/>group views timed at scale"]
     t4["Health-based finality, dead-letter replay"]
-    t5["Push ingest endpoint for devices and gateways,<br/>real IoT device processors"]
+    t5["A real IoT device tried against the push endpoint,<br/>MQTT client, per-device keys"]
   end
 
   classDef built fill:#e6f4ea,stroke:#2e7d32,color:#12351a
   classDef part fill:#fff7e0,stroke:#b58900,color:#4a3a00
   classDef todo fill:#f3f3f3,stroke:#9e9e9e,color:#555,stroke-dasharray: 4 3
-  class d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12 built
+  class d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13 built
   class p1,p2 part
   class t1,t2,t3,t4,t5 todo
 ```
@@ -757,6 +758,8 @@ flowchart TB
 | Control (stage 4) | `src/core/executor.js`, `src/core/control.js`, `src/core/commands.js`, `src/db/deltas/067-control.sql`; see `docs/control-readback.md` |
 | Counters, events and IoT roles | `src/core/counters.js`, `src/core/channels.js`, `src/core/heat.js`, `src/db/deltas/072-channel-kinds.sql`; see `docs/counters-events-roles.md` |
 | Providers API and screen | `src/core/onboarding.js`, routes in `src/server.js`, `public/providers.html`, `public/js/pages/providers.js`; see `docs/onboarding-api.md` |
+| Push ingest | `src/core/push-ingest.js`, `src/core/push-formats.js`, `src/db/deltas/073-push-log.sql`, `scripts/push-emulator.mjs`; see `docs/push-ingest.md` |
+| Source health, replay, retention | `src/core/health.js`, `src/core/replay.js`, `src/db/deltas/075-replay-log.sql`; see `docs/provider-health-replay.md` |
 | Devices page and synthetic IoT demo | `src/core/devices-view.js`, `src/core/synthetic-iot.js`, `public/devices.html`, `public/js/pages/devices.js`, `npm run demo:iot`; see `docs/devices-page.md` |
 | Groups and access (stage 5) | `src/core/groups.js`, `src/core/access.js`, `src/db/deltas/070-groups.sql`; see `docs/groups-and-access.md` |
 | Tests | `test/runtime-provider.test.js`, `test/channels.test.js`, `test/ingest-durability.test.js`, `test/sunsynk-channels.test.js`, `test/octopus-channels.test.js`, `test/channels-subjects.test.js`, `test/multi-device.test.js` |

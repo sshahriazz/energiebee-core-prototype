@@ -161,9 +161,8 @@ States handled: loading, no provider for a role, no rejected values, no history,
 
 - **No sign-in.** Anyone who can reach the server can change bindings. That matches the prototype scope; the control-access check is not applied to these routes.
 - **A channel change is not in the impact preview.** A channel changes how data is read from now on and does not rewrite facts already stored, so only the binding has an impact to show. The screen says so.
-- **Adding a source that does not exist yet.** The screen binds sources that exist. Adding a new source row, and its description, is still done in code.
-- **Editing control points.** The API accepts `access` on a channel, but the screen does not offer it, and a mode's allowed values are not editable.
-- **Changing the priority of an existing binding.** Bind it again with the new priority.
+- **Added since this page was written:** a new source can be added from the screen, a binding's priority can be changed, and the mapping table has an Advanced section for `access`, allowed values and the counter options. See `docs/provider-health-replay.md`.
+- **A new source has no adapter.** Adding a source row only describes it; something still has to deliver its data (a processor or the push endpoint).
 - **Size.** A preview runs the whole home twice in memory. On the real home (722 built slots) that takes about 0.1 second; it grows with the number of built slots. A large home would need the preview limited to a period.
 - **History is the last 100 rows**, and the screen shows 15.
 - **No undo.** Ending a binding or binding another is itself a recorded change, so going back is another change with its own reason.

@@ -6,6 +6,7 @@ import { db } from '../db/db.js';
 import { bindingsFor, ROLES } from './inputs.js';
 import { commandLog, getCommand } from './commands.js';
 import { nowSec } from './time.js';
+import { lastPushAt, recentPushes } from './push-ingest.js';
 import { QUALITY } from './facts.js';
 import { DEVICES, SYNTHETIC_NOTE, isSyntheticDevice, isSyntheticSource, simulatePeriods, sendTestCommand, findSyntheticIotSite } from './synthetic-iot.js';
 
@@ -135,7 +136,7 @@ export function listDevices(siteId, { now = nowSec() } = {}) {
       kind: d.kind, provider: d.provider, label: d.label, profileClass: attrs.profileClass ?? null, annualKwh: attrs.annualKwh ?? null, gasUnit: attrs.gasUnit ?? null, state: attrs.status?.currentState ?? null,
       // the new ones
       id: d.id, icon: ICONS[d.kind] ?? 'device', synthetic: isSyntheticDevice(d) || chans.some((c) => isSyntheticSource(c.source)), status: statusOf(d.kind, newest, now), newestTs: newest,
-      channelCount: chans.length, controllable: isControllable(d),
+      channelCount: chans.length, controllable: isControllable(d), emulated: attrs.emulated === true, lastPushAt: lastPushAt(d.id),
       channels: chans.map((c) => ({ point: c.point, source: c.source, kind: c.kind, metric: c.metric.code, label: c.metric.label, unit: c.metric.unit, access: c.access, last: { ...c.last, word: wordOf(c, c.last.value) } })),
       roles: rolesOf(site, d, now),
     });
@@ -185,25 +186,37 @@ export function deviceDetail(siteId, deviceId, { hours = 36, now = nowSec() } = 
   const start = end - hours * 3600;
   const synthetic = isSyntheticDevice(device);
   const detail = [];
+  const listing = [];
   const settings = [];
   const markers = { resets: [], gaps: [], estimated: [] };
   for (const c of chans) {
     const base = { point: c.point, source: c.source, kind: c.kind, access: c.access, scale: c.scale, shift: c.shift, part: c.part, min: c.min, max: c.max, metric: c.metric.code, label: c.metric.label, unit: c.metric.unit, derivedMetric: c.derived?.code ?? null,
       derivedUnit: c.derived?.unit ?? null, last: { ...c.last, word: wordOf(c, c.last.value) }, rejected: c.rejected, hasChannel: c.hasChannel };
     if (c.access !== 'read') { settings.push({ point: c.point, label: c.metric.label, unit: c.metric.unit, value: c.last.value, word: wordOf(c, c.last.value), ts: c.last.ts, access: c.access }); continue; }
+    listing.push({ ...base });                                          // every readable channel, for the channel table
     base.data = dataOf(device, c, start, end, markers);
     detail.push(base);
+  }
+  // A device that pushed in two formats has the same point under two sources: when one of them has nothing in this window and its twin
+  // has data, drawing it too would only show an empty chart under the real one. It stays in channelList, which feeds the channel table.
+  const hasData = (c) => (c.kind === 'counter' ? c.data.raw.length || c.data.periods.length : c.kind === 'event' ? c.data.intervals.length : c.data.points?.length);
+  for (let i = detail.length - 1; i >= 0; i--) {
+    const c = detail[i];
+    if (!hasData(c) && detail.some((o, j) => j !== i && o.point === c.point && o.metric === c.metric && o.source !== c.source && hasData(o))) detail.splice(i, 1);
   }
   const rejects = db.prepare(`SELECT c.point, c.ts, c.value, c.reason, s.code AS source FROM channel_reject c JOIN source s ON s.id = c.source_id
     WHERE c.site_id = ? AND s.code IN (${[...new Set(chans.map((c) => c.source))].map(() => '?').join(',') || "''"}) AND (c.ts BETWEEN ? AND ? OR c.reason = 'unmapped_point') ORDER BY c.recorded_at DESC LIMIT 40`)
     .all(site.id, ...new Set(chans.map((c) => c.source)), start, end + 3600);
   const cmds = db.prepare('SELECT id FROM command WHERE device_id = ? ORDER BY id DESC LIMIT 8').all(device.id).map((r) => getCommand(r.id));
   return {
-    device: { id: device.id, kind: device.kind, label: device.label, provider: device.provider, icon: ICONS[device.kind] ?? 'device' },
+    device: { id: device.id, kind: device.kind, label: device.label, provider: device.provider, ref: device.external_ref, icon: ICONS[device.kind] ?? 'device' },
     synthetic, banner: synthetic ? SYNTHETIC_NOTE : null, controllable: isControllable(device),
+    // a device fed by the push emulator (scripts/push-emulator.mjs) is registered as emulated: real endpoint, synthetic data
+    emulated: (() => { try { return JSON.parse(device.attrs || '{}').emulated === true; } catch { return false; } })(),
+    lastPushAt: lastPushAt(device.id), pushes: recentPushes(site.id, { limit: 5, deviceId: device.id }),
     site: { id: site.id, name: site.name, timezone: site.timezone, demo: !!site.is_demo },
     window: { start, end, hours }, status: statusOf(device.kind, newest, now), newestTs: newest, roles: rolesOf(site, device, now),
-    channels: detail, settings, rejects, markers,
+    channels: detail, channelList: listing, settings, rejects, markers,
     commands: cmds.map((c) => ({ id: c.id, action: c.action, status: c.status, verifyStatus: c.verify_status, requestedAt: c.requested_at, sentAt: c.sent_at, ackedAt: c.acked_at, appliedLateAt: c.applied_late_at, desired: c.desired, reported: c.reported })),
     commandLog: cmds[0] ? commandLog(cmds[0].id) : [],
   };

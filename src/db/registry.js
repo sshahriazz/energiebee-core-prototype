@@ -8,7 +8,7 @@
 export const SOURCES = [
   {
     code: 'sunsynk_5min', name: 'Sunsynk 5-minute day series',
-    traits: { holdS: 300 },
+    traits: { holdS: 300, expectedEveryS: 300 },
     channels: [
       // The vendor's points as it names them (signed W, % for charge); the sign split and the clamp to >= 0 are channel rows.
       { point: 'PV', metric: 'solar_w', part: 'positive' }, { point: 'Load', metric: 'load_w', part: 'positive' },
@@ -28,7 +28,7 @@ export const SOURCES = [
   },
   {
     code: 'sunsynk_daily', name: 'Sunsynk daily totals',
-    traits: { namedOnly: true },
+    traits: { namedOnly: true, expectedEveryS: 3600 },
     channels: [
       { point: 'PV Generation', metric: 'solar_kwh' }, { point: 'Load Power Consumption', metric: 'load_kwh' },
       { point: 'Purchased electricity', metric: 'grid_import_kwh' }, { point: 'Sold electricity', metric: 'grid_export_kwh' },
@@ -42,7 +42,7 @@ export const SOURCES = [
   },
   {
     code: 'sunsynk_live', name: 'Sunsynk realtime flow',
-    traits: { holdS: 300, live: true },
+    traits: { holdS: 300, live: true, expectedEveryS: 600 },
     channels: [
       { point: 'pv_power', metric: 'solar_w', part: 'positive' }, { point: 'load_power', metric: 'load_w', part: 'positive' },
       { point: 'grid_power', metric: 'grid_import_w', part: 'positive' }, { point: 'grid_power', metric: 'grid_export_w', part: 'negative' },
@@ -57,6 +57,7 @@ export const SOURCES = [
   },
   {
     code: 'octopus_meter', name: 'Octopus smart meter',
+    traits: { expectedEveryS: 3600 },
     contract: {
       timeZone: 'interval_start with local offset (+01:00 in summer, Z in winter)', timeRole: 'interval: 30 minutes',
       signs: 'No sign: direction comes from the meter point (import or export MPAN)',
@@ -76,6 +77,7 @@ export const SOURCES = [
   },
   {
     code: 'octopus_kraken', name: 'Octopus Kraken GraphQL',
+    traits: { irregular: true },
     // A dispatch's delta is negative for import; the amount charged is its magnitude (part abs). A planned dispatch is a forecast issue.
     channels: [{ point: 'dispatch', metric: 'ev_charge_kwh', part: 'abs' }, { point: 'planned', metric: 'ev_charge_kwh' }],
     contract: {
@@ -86,6 +88,7 @@ export const SOURCES = [
   },
   {
     code: 'carbon_regional', name: 'Carbon Intensity (regional)',
+    traits: { expectedEveryS: 3600 },
     channels: [{ point: 'intensity', metric: 'carbon_intensity' }],
     contract: {
       timeZone: 'UTC minute precision (Z)', timeRole: "interval: the API's 30-minute periods (a home's slot takes the time-weighted mean of the periods it overlaps); forward periods are forecasts",
@@ -95,7 +98,7 @@ export const SOURCES = [
   },
   {
     code: 'open_meteo', name: 'Open-Meteo weather',
-    traits: { holdS: 3600 },
+    traits: { holdS: 3600, expectedEveryS: 3600 },
     channels: [
       { point: 'temperature_2m', metric: 'outdoor_temp_c' }, { point: 'cloud_cover', metric: 'cloud_pct' },
       { point: 'global_tilted_irradiance', metric: 'gti_wm2' }, { point: 'shortwave_radiation', metric: 'ghi_wm2' },
@@ -110,7 +113,7 @@ export const SOURCES = [
   },
   {
     code: 'quartz', name: 'Open Climate Fix Quartz solar forecast',
-    traits: { forecastOnly: true },
+    traits: { forecastOnly: true, expectedEveryS: 7200 },
     // kW over a 15-minute step is kWh x 0.25
     channels: [{ point: 'power_kw', metric: 'solar_kwh', scale: 0.25, part: 'positive' }],
     contract: {
@@ -121,7 +124,7 @@ export const SOURCES = [
   },
   {
     code: 'core_forecast', name: 'EnergieBee forecast (our own)',
-    traits: { forecastOnly: true },
+    traits: { forecastOnly: true, expectedEveryS: 7200 },
     contract: {
       timeZone: 'UTC epoch seconds', timeRole: "forecast: slots of the home's slot length (site.slot_s: 15, 30 or 60 minutes; 30 by default) for the next 48 hours",
       signs: '-', units: 'kWh per slot; house use includes planned EV charging, grid import includes battery charging',
@@ -142,6 +145,7 @@ export const SOURCES = [
   },
   {
     code: 'national_gas_cv', name: 'National Gas calorific value',
+    traits: { expectedEveryS: 86400 },
     channels: [{ point: 'calorific_value', metric: 'gas_cv_mjm3' }],
     contract: {
       timeZone: 'Applicable-for date = gas day, 05:00 to 05:00 GB local time (UNC Modification 0461)',
@@ -206,6 +210,25 @@ export const SOURCES = [
       revisions: 'Not defined until a vendor adapter exists', upstreamHistory: 'No vendor adapter is built: only synthetic test and demo data use this source',
     },
   },
+  // Pushed readings (core/push-ingest.js, POST /api/ingest): a device or gateway sends its readings to the core instead of the core
+  // asking for them. One source per body format, so the lineage shows how a reading arrived. The vendor formats follow the vendors'
+  // DOCUMENTED shapes and have not been verified against a real device.
+  ...[
+    ['push_native', 'Pushed readings, native format (a device or gateway posts points to /api/ingest)', 'W, kWh, degC, 0/1 as the sender states them in the channel units'],
+    ['push_shelly_gen2', 'Pushed Shelly Gen2 switch status (documented shape, not verified on a real device)', 'W, Wh (converted to kWh), 0/1'],
+    ['push_tasmota', 'Pushed Tasmota SENSOR telemetry (documented shape, not verified on a real device)', 'W, kWh, ON/OFF'],
+    ['push_homeassistant', 'Pushed Home Assistant state objects (documented shape, not verified on a real device)', 'W or kW, Wh or kWh, degC or degF, on/off'],
+  ].map(([code, name, units]) => ({
+    code, name, traits: { holdS: 300 },
+    contract: {
+      timeZone: 'UTC epoch seconds, or ISO 8601 with an offset; an ISO time with no offset is read as UTC and warned; Tasmota Time is the device local time and is read in the home time zone',
+      timeRole: 'instant readings, and cumulative counters that hold until the next reading; periods and events when the sender gives a start and an end',
+      signs: 'The sender decides; the channel row splits a signed point into directions',
+      units, missing: 'The sender omits the point; nothing is stored for it, never a zero',
+      revisions: 'A repeated reading is stored once; a changed value for the same time is a new version',
+      upstreamHistory: 'Only what the sender posts; the core never asks the device for older data',
+    },
+  })),
   // Added with the coverage matrix (docs/coverage-matrix.json, plan item B11): homes for catalogue items that had
   // none. Registry rows only; no adapter writes them yet.
   {
@@ -315,6 +338,7 @@ export const METRICS = [
   { code: 'plug_counter_kwh', label: 'Smart plug energy counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'plug', description: 'The plug\'s cumulative energy reading, as it reported it; the energy of a period is derived from it (plug_kwh).' },
   { code: 'plug_kwh', label: 'Smart plug energy', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'plug', description: 'Energy a smart plug passed over a period; already inside the home\'s use.' },
   { code: 'plug_w', label: 'Smart plug power', unit: 'W', timeRole: 'instant', aggregation: 'integrate', domain: 'plug', description: 'Power through a smart plug.' },
+  { code: 'plug_on', label: 'Smart plug relay on', unit: '0/1', timeRole: 'instant', aggregation: 'mean', domain: 'plug', description: 'Whether the relay of a smart plug is on (1) or off (0); a value holds until the next reading.' },
   { code: 'ev_delivered_counter_kwh', label: 'EV charger energy counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'ev', description: 'The charger\'s cumulative delivered-energy reading; the energy of a period is derived from it (ev_delivered_kwh).' },
   { code: 'ev_delivered_kwh', label: 'EV charger energy delivered', unit: 'kWh', timeRole: 'interval', aggregation: 'sum', domain: 'ev', description: 'Energy a charger delivered to the car over a period (the charger\'s own measure; ev_charge_kwh is a supplier\'s dispatch).' },
   { code: 'heatpump_elec_counter_kwh', label: 'Heat pump electricity counter', unit: 'kWh', timeRole: 'instant', aggregation: 'last', domain: 'heating', description: 'The heat pump\'s cumulative electricity reading; the energy of a period is derived from it (heatpump_elec_kwh).' },
@@ -347,7 +371,9 @@ export const VAT_RATES = [
 const counter = (point, metric, derived, extra = {}) => ({ point, metric, kind: 'counter', derived, min: 0, maxGapS: 3600, futureToleranceS: 300, ...extra });
 const event = (point, metric) => ({ point, metric, kind: 'event', futureToleranceS: 300 });
 export const DEVICE_KIND_CHANNELS = {
-  smart_plug: [counter('energy_total', 'plug_counter_kwh', 'plug_kwh'), { point: 'power', metric: 'plug_w', part: 'positive', min: 0, futureToleranceS: 300 }],
+  smart_plug: [counter('energy_total', 'plug_counter_kwh', 'plug_kwh'), { point: 'power', metric: 'plug_w', part: 'positive', min: 0, max: 50000, futureToleranceS: 300 },   // a plug passes at most a few kW: 50 kW refuses a unit mix-up
+    { point: 'relay', metric: 'plug_on', min: 0, max: 1, futureToleranceS: 300 }],
+  temperature_sensor: [{ point: 'temperature', metric: 'indoor_temp_c', min: -30, max: 60, futureToleranceS: 300 }],
   ev_charger: [counter('energy_total', 'ev_delivered_counter_kwh', 'ev_delivered_kwh'), { point: 'power', metric: 'ev_w', part: 'positive', min: 0, futureToleranceS: 300 },
     { point: 'connected', metric: 'ev_connected' }, event('plugged_in', 'event_ev_plugged_in')],
   heat_pump: [counter('elec_total', 'heatpump_elec_counter_kwh', 'heatpump_elec_kwh'), counter('heat_total', 'heat_output_counter_kwh', 'heat_output_kwh'),

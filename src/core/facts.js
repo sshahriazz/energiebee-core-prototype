@@ -50,6 +50,8 @@ const findSeries = db.prepare(
 const insertSeries = db.prepare(
   'INSERT INTO series (subject_kind, subject_id, metric_id, source_id) VALUES (?, ?, ?, ?)');
 const seriesCache = new Map();
+// Forget the cached series ids: a dry run or a failed transaction that created series rows and was rolled back leaves ids that no longer exist.
+export const forgetSeriesCache = () => seriesCache.clear();
 
 export function seriesId(subjectKind, subjectId, metric, source) {
   const key = `${subjectKind}|${subjectId}|${metric}|${source}`;

@@ -170,7 +170,11 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   // channel.part 'abs' (a table rebuild) and no overlapping group membership (071).
   '071-channel-abs-member-overlap.sql',
   // Channel kinds (counter, event) and optional checks (072).
-  '072-channel-kinds.sql'];
+  '072-channel-kinds.sql',
+  // The log of bodies received by POST /api/ingest (073).
+  '073-push-log.sql',
+  // The log of replays of stored raw receipts (075; 074 belongs to a later piece of work).
+  '075-replay-log.sql'];
 
 export function deltaStatements(sql) {
   const out = [];

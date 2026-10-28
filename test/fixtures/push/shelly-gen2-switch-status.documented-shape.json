@@ -1,0 +1,1 @@
+{"id":0,"source":"timer","output":true,"apower":1823.4,"voltage":231.2,"current":7.9,"freq":50.0,"aenergy":{"total":12345.678,"by_minute":[30420.5,30410.1,30399.9],"minute_ts":1782000000},"temperature":{"tC":41.2,"tF":106.2}}

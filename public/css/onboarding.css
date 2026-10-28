@@ -118,3 +118,29 @@
 /* an absolutely positioned screen-reader label inside a scrolling table must be clipped by it, not widen the page */
 .ob-roles .table-wrap, .ob-two .table-wrap, .ob-wizard .table-wrap { position: relative; }
 .ob-field textarea { font: inherit; }
+
+/* health chips on the role blocks and the bindings table */
+.ob-role-title .ob-health { font-size: 11.5px; padding: 2px 9px; align-self: center; }
+.ob-healthcell { min-width: 190px; max-width: 280px; white-space: normal; }
+.ob-healthcell .ob-tag { margin-top: 2px; line-height: 1.35; }
+
+/* the Advanced options of a mapping row */
+.ob-advrow > td { background: var(--surface-2); border-top: 0; padding: 10px 12px; }
+.ob-adv { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); align-items: start; }
+.ob-adv .ob-field input, .ob-adv .ob-field select, .ob-adv .ob-field textarea { height: 32px; }
+.ob-adv .ob-field textarea { height: 58px; padding: 6px 10px; font: inherit; }
+.ob-map-help + .ob-note, .ob-map .ob-actions { flex-wrap: nowrap; }
+
+/* a new source, the sub-heading of its form */
+.ob-sub { font-size: 13.5px; font-weight: 650; margin: 16px 0 6px; color: var(--text-2); }
+.ob-field input[aria-invalid="true"] { border-color: var(--bad); }
+.ob-field .row-err { color: var(--bad); font-size: 12px; }
+
+/* replay of saved receipts */
+.ob-replay { margin: 8px 0 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.ob-replay h3 { font-size: 14px; margin: 0 0 4px; }
+.ob-replay ul { margin: 6px 0 10px; padding-left: 18px; font-size: 13px; color: var(--text-2); }
+.ob-replay li { margin: 2px 0; }
+.ob-map .btn { white-space: nowrap; }
+.ob-rowerr > td { padding: 2px 12px 8px; border-top: 0; }
+.ob-rowerr .row-err { font-size: 12.5px; }

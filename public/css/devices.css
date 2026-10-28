@@ -85,3 +85,29 @@
 .dv-path li.hide { opacity: 0; }
 @media (prefers-reduced-motion: reduce) { .dv-st, .dv-path li { transition: none; } }
 @media (max-width: 640px) { .dv-grid { grid-template-columns: minmax(0, 1fr); } .dv-detail .card-head { flex-direction: column; align-items: stretch; } }
+
+/* connect a real device, and the push log */
+.dv-connect { margin: 6px 0 18px; }
+.dv-connect-grid { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); margin-top: 8px; }
+@media (min-width: 1100px) { .dv-connect-grid { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
+.dv-h3.first { margin-top: 0; }
+.dv-facts { display: grid; gap: 6px; margin: 8px 0 4px; }
+.dv-facts div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; font-size: 13px; align-items: baseline; }
+.dv-facts dt { color: var(--text-2); font-weight: 600; }
+.dv-facts dd { margin: 0; overflow-wrap: anywhere; }
+.dv-code-wrap { position: relative; }
+.dv-code { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; padding-right: 64px; margin: 4px 0; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: break-word; max-height: 260px; overflow: auto; }
+.dv-code:focus-visible { outline: 2px solid var(--grid); outline-offset: 2px; }
+.dv-code-wrap .btn { position: absolute; top: 10px; right: 8px; }
+.dv-copied { margin: 0; min-height: 18px; color: var(--good); }
+.dv-pushes { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.dv-push { padding: 9px 0 9px 10px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; }
+.dv-push.bad { border-left-color: var(--bad); }
+.dv-push.warn { border-left-color: var(--warn); }
+.dv-push-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.dv-who { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.dv-push-head .badge { flex: none; }
+.dv-when { color: var(--text-2); font-size: 12px; margin-top: 1px; }
+.dv-did { margin-top: 3px; font-size: 13px; overflow-wrap: break-word; }
+.dv-notes { margin: 3px 0 0; padding-left: 16px; color: var(--text-2); font-size: 12px; }

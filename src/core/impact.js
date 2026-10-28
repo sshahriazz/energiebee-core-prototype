@@ -5,7 +5,7 @@ import { db } from '../db/db.js';
 import { buildSite } from './build.js';
 import { nowSec, localDate, addDays } from './time.js';
 
-const FIELDS = ['solar', 'home', 'grid_import', 'grid_export', 'total_cost', 'state'];
+const FIELDS = ['solar', 'home', 'grid_import', 'grid_export', 'total_cost', 'state', 'solar_forecast'];   // solar_forecast: the forecast of record moves with the order of the forecast sources
 
 // apply: a function that makes the change (for example () => bind(...)). Returns
 // { slots, changed, byField: { field: { slots, sum } }, firstChanged, lastChanged, days }.

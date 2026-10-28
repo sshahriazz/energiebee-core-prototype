@@ -1,0 +1,8 @@
+[
+ {"entity_id":"sensor.heater_power","state":"1.82","attributes":{"unit_of_measurement":"kW","device_class":"power","friendly_name":"Heater power"},"last_updated":"2026-10-27T10:15:00+00:00"},
+ {"entity_id":"sensor.heater_energy_wh","state":"12345","attributes":{"unit_of_measurement":"Wh","device_class":"energy"},"last_updated":"2026-10-27T10:15:00+00:00"},
+ {"entity_id":"sensor.living_temp","state":"68.0","attributes":{"unit_of_measurement":"°F","device_class":"temperature"},"last_updated":"2026-10-27T10:15:00+00:00"},
+ {"entity_id":"switch.heater","state":"on","attributes":{"friendly_name":"Heater"},"last_updated":"2026-10-27T10:15:00+00:00"},
+ {"entity_id":"sensor.living_humidity","state":"45","attributes":{"unit_of_measurement":"%","device_class":"humidity"},"last_updated":"2026-10-27T10:15:00+00:00"},
+ {"entity_id":"sensor.garage_power","state":"unavailable","attributes":{"unit_of_measurement":"W","device_class":"power"},"last_updated":"2026-10-27T10:15:00+00:00"}
+]

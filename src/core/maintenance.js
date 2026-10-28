@@ -8,6 +8,7 @@ import { seriesId } from './facts.js';
 import { nowSec } from './time.js';
 import { bindingsFor } from './inputs.js';
 import { seedAttributes } from './attributes.js';
+import { replayableSources } from './replay.js';
 import { seedDeviceHistory } from './devices.js';
 
 // Earlier code (before 16 Oct 2026) converted this home's gas readings from m³ to kWh with a
@@ -97,8 +98,25 @@ export function runMaintenance({ retention = retentionSettings().mode } = {}) {
 //   of record and scores stay identical; what is lost is an "as known at" view of an old period
 //   between its kept issues, and the timeline's per-issue totals for those periods.
 // rebuild_queue: rows with done_at set (left by older code; the queue now deletes what it processed).
+// Receipts and refusals (Providers screen: rejected values and replay), window RECEIPT_RETENTION_DAYS (default 90):
+//   - channel_reject: refusal rows recorded longer ago than the window are deleted (counts only: the values live in the receipts);
+//   - push_log: the log of pushed bodies, rows older than the window (only where the table exists);
+//   - raw receipts of REPLAYABLE sources (core/replay.js): the 14-day raw rule above would delete a receipt that no fact refers to
+//     (a body whose values were all refused or unmapped), and that is exactly the receipt a replay recovers. Such receipts are kept
+//     until the receipt window instead (keptReplayable in the report). A receipt that a fact refers to is kept as before.
+//   No fact is ever deleted by these rules.
 export const RETENTION_DEFAULTS = Object.freeze({ rawDays: 14, syncRunDays: 90, forecastDays: 14 });
 export const MIN_FORECAST_DAYS = 8;
+export const RECEIPT_RETENTION_DEFAULT_DAYS = 90;
+
+// RECEIPT_RETENTION_DAYS: how long refusal rows, the push log and replayable raw receipts are kept (days, at least 1).
+export function receiptRetentionDays(env = process.env) {
+  const v = env.RECEIPT_RETENTION_DAYS;
+  if (v == null || v === '') return RECEIPT_RETENTION_DEFAULT_DAYS;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) throw new RangeError(`RECEIPT_RETENTION_DAYS must be a number of days >= 1, not ${JSON.stringify(v)}`);
+  return n;
+}
 const RETENTION_MODES = ['off', 'report', 'apply'];
 
 export function retentionSettings(env = process.env) {
@@ -163,15 +181,16 @@ function fileSize(rel) {
   try { return fs.statSync(path.join(dataDir, rel)).size; } catch { return null; }
 }
 
-function rawRetention(cutoff, dryRun, batch) {
+function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
   const inState = rawIdsInState();
   const refs = rawRefs();
   // In fetch order (then id), so the last one seen per endpoint is its newest answer.
   const rows = db.prepare("SELECT id, source_id, site_id, request, file, fetched_at FROM raw_payload WHERE status = 'accepted' ORDER BY fetched_at, id").all();
+  const replayable = new Set(db.prepare(`SELECT id FROM source WHERE code IN (${replayableSources().map(() => '?').join(',')})`).all(...replayableSources()).map((x) => x.id));
   const newest = new Map();
   for (const r of rows) newest.set(`${r.source_id}|${r.site_id ?? ''}|${endpointOf(r.request)}`, r.id);
   const referenced = db.prepare(`SELECT NOT (${notReferenced(refs, 'p')}) AS ref FROM (SELECT ? AS id) p`);
-  const out = { olderThanWindow: 0, keptReferenced: 0, keptInState: 0, keptNewestOfEndpoint: 0, quarantinedKept: 0, candidates: 0, bytes: 0, deleted: 0, filesDeleted: 0, filesMissing: 0 };
+  const out = { olderThanWindow: 0, keptReferenced: 0, keptInState: 0, keptNewestOfEndpoint: 0, keptReplayable: 0, quarantinedKept: 0, candidates: 0, bytes: 0, deleted: 0, filesDeleted: 0, filesMissing: 0 };
   out.quarantinedKept = db.prepare("SELECT COUNT(*) AS n FROM raw_payload WHERE status = 'quarantined' AND fetched_at < ?").get(cutoff).n;
   const doomed = [];
   for (const r of rows) {
@@ -180,6 +199,7 @@ function rawRetention(cutoff, dryRun, batch) {
     if (referenced.get(r.id).ref) { out.keptReferenced++; continue; }
     if (inState.has(r.id)) { out.keptInState++; continue; }
     if (newest.get(`${r.source_id}|${r.site_id ?? ''}|${endpointOf(r.request)}`) === r.id) { out.keptNewestOfEndpoint++; continue; }
+    if (keepReplayableCutoff != null && replayable.has(r.source_id) && r.fetched_at >= keepReplayableCutoff) { out.keptReplayable++; continue; }   // a replay could still recover from it
     doomed.push(r);
     const size = fileSize(r.file);
     if (size == null) out.filesMissing++; else out.bytes += size;
@@ -246,6 +266,20 @@ function forecastRetention(cutoff, dryRun) {
   return out;
 }
 
+// Refusal rows (channel_reject) and the push log older than the receipt window. No fact is touched.
+function receiptTables(cutoffS, dryRun) {
+  const cutMs = cutoffS * 1000;
+  const out = { channelReject: { candidates: 0, deleted: 0 }, pushLog: { present: false, candidates: 0, deleted: 0 } };
+  out.channelReject.candidates = db.prepare('SELECT COUNT(*) AS n FROM channel_reject WHERE recorded_at < ?').get(cutMs).n;
+  if (!dryRun && out.channelReject.candidates) out.channelReject.deleted = Number(tx(() => db.prepare('DELETE FROM channel_reject WHERE recorded_at < ?').run(cutMs).changes));
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'push_log'").get()) {
+    out.pushLog.present = true;
+    out.pushLog.candidates = db.prepare('SELECT COUNT(*) AS n FROM push_log WHERE received_at < ?').get(cutMs).n;
+    if (!dryRun && out.pushLog.candidates) out.pushLog.deleted = Number(tx(() => db.prepare('DELETE FROM push_log WHERE received_at < ?').run(cutMs).changes));
+  }
+  return out;
+}
+
 function rebuildQueueRetention(dryRun) {
   const out = { candidates: db.prepare('SELECT COUNT(*) AS n FROM rebuild_queue WHERE done_at IS NOT NULL').get().n, deleted: 0 };
   if (!dryRun && out.candidates) out.deleted = Number(tx(() => db.prepare('DELETE FROM rebuild_queue WHERE done_at IS NOT NULL').run().changes));
@@ -254,16 +288,17 @@ function rebuildQueueRetention(dryRun) {
 
 // One retention run. dryRun (the default): counts what would be deleted, deletes nothing.
 // The windows come from the environment (retentionSettings) unless given; now is in seconds.
-export function runRetention({ dryRun = true, now = nowSec(), rawDays, syncRunDays, forecastDays, batch = 500 } = {}) {
+export function runRetention({ dryRun = true, now = nowSec(), rawDays, syncRunDays, forecastDays, receiptDays, batch = 500 } = {}) {
   const env = retentionSettings();
-  const s = { rawDays: rawDays ?? env.rawDays, syncRunDays: syncRunDays ?? env.syncRunDays, forecastDays: Math.max(forecastDays ?? env.forecastDays, MIN_FORECAST_DAYS) };
+  const s = { rawDays: rawDays ?? env.rawDays, syncRunDays: syncRunDays ?? env.syncRunDays, forecastDays: Math.max(forecastDays ?? env.forecastDays, MIN_FORECAST_DAYS), receiptDays: receiptDays ?? receiptRetentionDays() };
   const cut = (d) => Math.floor(now - d * 86400);
   const report = { dryRun, at: now, settings: s };
-  report.raw = rawRetention(cut(s.rawDays), dryRun, batch);
+  report.raw = rawRetention(cut(s.rawDays), dryRun, batch, cut(s.receiptDays));
   report.orphanFiles = orphanFiles(cut(s.rawDays), dryRun);
   report.syncRun = syncRunRetention(cut(s.syncRunDays), dryRun);
   report.forecast = forecastRetention(cut(s.forecastDays), dryRun);
   report.rebuildQueue = rebuildQueueRetention(dryRun);
+  Object.assign(report, receiptTables(cut(s.receiptDays), dryRun));
   return report;
 }
 
@@ -274,5 +309,6 @@ export function retentionSummary(r) {
   const n = (o) => (r.dryRun ? o.candidates : o.deleted);
   return `retention (${r.dryRun ? 'dry run; RETENTION=apply to delete' : 'applied'}): ${verb} ${n(r.raw)} raw payloads (${(r.raw.bytes / 1e6).toFixed(1)} MB; `
     + `${r.raw.keptReferenced} kept as evidence of facts), ${r.dryRun ? r.orphanFiles.found : r.orphanFiles.deleted} orphan raw files, ${n(r.syncRun)} sync runs, `
-    + `${n(r.forecast)} superseded forecast issues, ${n(r.rebuildQueue)} finished queue rows`;
+    + `${n(r.forecast)} superseded forecast issues, ${n(r.rebuildQueue)} finished queue rows`
+    + (r.channelReject ? `, ${n(r.channelReject)} old refusal rows${r.pushLog?.present ? `, ${n(r.pushLog)} old push log rows` : ''}; ${r.raw.keptReplayable ?? 0} receipts kept for replay` : '');
 }

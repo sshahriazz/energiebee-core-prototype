@@ -12,6 +12,36 @@ export const REASON_WORDS = {
   out_of_range: 'outside the allowed range',
   not_a_number: 'not a number',
   unmapped_point: 'a point nobody mapped',
+  future_timestamp: 'a time in the future',
+  counter_backwards: 'a counter going backwards',
+  not_in_enum: 'not one of the allowed values',
+  kind_mismatch: 'the wrong kind of reading for the channel',
+};
+// Source health (GET /api/sites/:id/source-health): a status, a chip class and a word.
+export const HEALTH_WORDS = { ok: ['good', 'Delivering'], late: ['warn', 'Late'], silent: ['bad', 'Silent'], never: ['warn', 'No data yet'] };
+// Common unit conversions for the mapping table: value x times + plus.
+export const UNIT_PRESETS = [
+  ['', 'Common conversions…'],
+  ['1|0', 'No conversion (already in the standard unit)'],
+  ['1000|0', 'kW to W (times 1000)'],
+  ['0.001|0', 'W to kW, or Wh to kWh (times 0.001)'],
+  ['1000|0|', 'kWh to Wh (times 1000)'],
+  ['0.5556|-17.7778', 'Degrees F to degrees C (times 0.5556, plus -17.78)'],
+  ['0.25|0', 'kW over a 15-minute step to kWh (times 0.25)'],
+  ['100|0', 'A fraction (0 to 1) to a percent (times 100)'],
+];
+// What each Advanced option means, in plain words (shown next to the field).
+export const ADV_HINTS = {
+  kind: 'A plain value is a reading at a moment. A counter is a running total (a meter): the energy of each period is worked out from it. An event is something that happened (0 or 1).',
+  derived: 'Counters only: the measurement the energy of each period is stored under, for example plug_kwh.',
+  counterWrap: 'Counters only: the number at which the meter rolls over to zero. Leave empty if it never does.',
+  counterResetBelow: 'Counters only: a drop to this value or lower is a restart, not a fault. Leave empty to use a tenth of the previous reading.',
+  maxGapS: 'Counters only: a period longer than this many seconds is marked as estimated.',
+  maxStuckSamples: 'Plain values only: this many identical readings in a row are marked suspect (a stuck sensor).',
+  clockOffsetS: 'Seconds added to every time the device sends, for a device whose clock is wrong.',
+  futureToleranceS: 'A time further ahead than this many seconds is refused. Leave empty for no check.',
+  access: 'Read: the device only reports it. Write: it can be sent a command. Both: it can be set and read back.',
+  enumValues: 'For a setting that takes only certain words (for example eco, comfort, boost): one per line or separated by commas. Anything else is refused.',
 };
 const COLORS = ['', 'c1', 'c2', 'c3', 'c4'];
 
@@ -28,6 +58,23 @@ export function explainerHtml() {
     <div><b>Binding</b>Which provider fills a role for this home, and from when. Changing it takes effect from a date you choose; slots before that date stay as they were.</div>
     <div><b>Channel</b>How one point a provider sends (for example <span class="mono">grid_kw</span>) becomes a standard measurement, with its unit, sign and allowed range.</div>
   </div>`;
+}
+
+// ───────────── Source health ─────────────
+export const healthOf = (model, role, bindingId) => model.health?.roles?.find((r) => r.role === role)?.bindings?.find((b) => b.bindingId === bindingId) ?? null;
+export function healthChip(h, label = null) {
+  if (!h) return '';
+  const [cls, word] = HEALTH_WORDS[h.status] ?? ['', h.status];
+  return `<span class="badge ${cls} ob-health" title="${esc(h.reason ?? '')}">${esc(label ?? word)}</span>`;
+}
+// The cell of the bindings table: the chip, the plain-language reason, what was refused in the last day, the last push.
+export function healthCell(h, tz) {
+  if (!h) return '<span class="faint">not in force now</span>';
+  const f = dateFmt(tz);
+  const refused = h.rejected24h?.total
+    ? `<div class="ob-tag">${h.rejected24h.total} refused in 24 h: ${h.rejected24h.top.map((x) => `${esc(x.text)} (${x.count})`).join(', ')}</div>` : '';
+  const push = h.lastPushAt != null ? `<div class="ob-tag">last push ${esc(f.dt(h.lastPushAt))}</div>` : '';
+  return `${healthChip(h)}<div class="ob-tag">${esc(h.reason)}</div>${refused}${push}`;
 }
 
 // ───────────── Timeline of one role ─────────────
@@ -88,11 +135,11 @@ export function timelineHtml(role, tz, now, sourceColors) {
 }
 
 // ───────────── Bindings table of one role ─────────────
-export function bindingsTable(role, tz) {
+export function bindingsTable(role, tz, model = {}) {
   const f = dateFmt(tz);
   if (!role.bindings.length) return '';
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Provider</th><th>Device</th><th>From</th><th>Until</th><th class="r">Priority</th><th>Data held</th><th><span class="sr-only">Actions</span></th></tr></thead>
+    <thead><tr><th>Provider</th><th>Device</th><th>From</th><th>Until</th><th class="r">Priority</th><th>Data held</th><th>Health</th><th><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>${role.bindings.map((b) => `<tr>
       <td><b>${esc(b.source)}</b><div class="ob-tag">${esc(b.sourceName ?? '')}</div></td>
       <td>${b.deviceId != null ? `device ${b.deviceId}` : '<span class="faint">the home itself</span>'}</td>
@@ -100,7 +147,9 @@ export function bindingsTable(role, tz) {
       <td>${b.toDate ? esc(b.toDate) : '<span class="badge good">open</span>'}</td>
       <td class="r">${b.priority}</td>
       <td>${b.data?.first != null ? `${esc(f.date(b.data.first))} to ${esc(f.date(b.data.last))}` : '<span class="faint">none yet</span>'}</td>
+      <td class="ob-healthcell">${b.toDate ? '<span class="faint">ended</span>' : healthCell(healthOf(model, role.role, b.id), tz)}</td>
       <td><div class="ob-actions">
+        ${role.bindings.length > 1 ? `<button class="btn btn-sm" data-act="priority" data-binding="${b.id}" aria-label="Change the priority of ${esc(b.source)}">Priority</button>` : ''}
         <button class="btn btn-sm" data-act="map" data-role="${esc(role.role)}" data-source="${esc(b.source)}" data-device="${b.deviceId ?? ''}">Edit mapping</button>
         ${b.toDate ? '' : `<button class="btn btn-sm" data-act="end" data-role="${esc(role.role)}" data-binding="${b.id}">End</button>`}
       </div></td></tr>`).join('')}</tbody></table></div>`;
@@ -128,16 +177,41 @@ export function channelsBlock(role, model) {
   }).join('');
 }
 
+// The role's overall health: the worst of its providers in force now, with that provider's reason as the hover text.
+function roleChip(model, role) {
+  const r = model.health?.roles?.find((x) => x.role === role.role);
+  if (!r) return '';
+  const worst = r.bindings.find((b) => b.status === r.status) ?? r.bindings[0];
+  return healthChip(worst);
+}
+
 export function roleCard(role, model, tz, sourceColors) {
   return `<section class="card" aria-labelledby="role-${esc(role.role)}">
     <div class="card-head">
-      <div><div class="ob-role-title"><h2 id="role-${esc(role.role)}">${esc(role.label)}</h2>${role.label !== role.role ? `<code>${esc(role.role)}</code>` : ''}</div>${role.help ? `<p>${esc(role.help)}</p>` : ''}</div>
+      <div><div class="ob-role-title"><h2 id="role-${esc(role.role)}">${esc(role.label)}</h2>${role.label !== role.role ? `<code>${esc(role.role)}</code>` : ''}${roleChip(model, role)}</div>${role.help ? `<p>${esc(role.help)}</p>` : ''}</div>
       <div class="ob-actions"><button class="btn btn-sm" data-act="add" data-role="${esc(role.role)}">${role.bindings.length ? 'Change provider' : 'Add a provider'}</button></div>
     </div>
     ${timelineHtml(role, tz, model.now, sourceColors)}
-    ${bindingsTable(role, tz)}
+    ${bindingsTable(role, tz, model)}
     ${channelsBlock(role, model)}
   </section>`;
+}
+
+// ───────────── Replay ─────────────
+// What a replay could recover (GET /api/sites/:id/replay): per source with refusals, how many saved receipts can be read again,
+// or why they cannot. The button opens the dry run.
+export function replayBlock(model, tz) {
+  const c = model.replay;
+  if (!c || !c.sources.length) return '';
+  const f = dateFmt(tz);
+  const rows = c.sources.map((s) => `<li><b>${esc(s.source)}</b>: ${s.canReplay
+    ? `${s.receipts} saved receipt${s.receipts === 1 ? '' : 's'} can be read again (${s.refused} refused, ${s.unmapped} unmapped)`
+    : `cannot be replayed. ${esc(s.why)}`}</li>`).join('');
+  const last = c.lastRuns?.[0] ? `<p class="ob-tag">Last replay ${esc(f.dt(c.lastRuns[0].startedAt))}: ${c.lastRuns[0].receipts} receipts read, ${c.lastRuns[0].written} facts recovered.</p>` : '';
+  return `<div class="ob-replay"><h3>Recover refused values</h3>
+    <p class="ob-note">Fix the mapping first (Edit mapping). Then a replay reads the saved receipts again through the corrected channels, so values refused before are stored with the receipt they came from. It shows what it would do before it keeps anything.</p>
+    <ul>${rows}</ul>
+    <div class="ob-actions"><button class="btn btn-sm" data-act="replay" ${c.total ? '' : 'disabled'}>Replay ${c.total} receipt${c.total === 1 ? '' : 's'}…</button></div>${last}</div>`;
 }
 
 // ───────────── Rejected values ─────────────
@@ -149,9 +223,10 @@ export function rejectsCard(model, tz) {
   const kpis = Object.entries(r.byReason).map(([k, n]) => `<span class="badge ${k === 'unmapped_point' ? 'warn' : 'bad'}">${n} ${esc(REASON_WORDS[k] ?? k)}</span>`).join('');
   const rows = r.byPoint.map((x) => `<tr><td>${esc(x.source)}</td><td class="mono">${esc(x.point)}</td><td>${esc(REASON_WORDS[x.reason] ?? x.reason)}</td><td class="r">${x.count}</td>
     <td>${x.minValue != null ? `${x.minValue}${x.maxValue !== x.minValue ? ` to ${x.maxValue}` : ''}` : ''}</td><td>${esc(f.dt(x.lastAt))}</td>
-    <td>${x.reason === 'unmapped_point' ? `<button class="btn btn-sm" data-act="mappoint" data-source="${esc(x.source)}" data-point="${esc(x.point)}">Map this point</button>` : ''}</td></tr>`).join('');
+    <td>${x.reason === 'unmapped_point' ? `<button class="btn btn-sm" data-act="mappoint" data-source="${esc(x.source)}" data-point="${esc(x.point)}">Map this point</button>` : `<button class="btn btn-sm" data-act="mapsrc" data-source="${esc(x.source)}">Edit mapping</button>`}</td></tr>`).join('');
   return `<section class="card"><div class="card-head"><div><h2>Rejected values</h2><p>Values a provider sent that the channels refused, last ${r.days} days. Nothing here was stored as data.</p></div></div>
     <div class="ob-kpis">${kpis}</div>
+    ${replayBlock(model, tz)}
     <div class="table-wrap"><table><thead><tr><th>Provider</th><th>Point</th><th>Why</th><th class="r">Times</th><th>Values</th><th>Last seen</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 

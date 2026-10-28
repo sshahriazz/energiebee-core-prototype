@@ -3,7 +3,7 @@
 // (GET /api/sites/:id/onboarding, POST /api/sites/:id/bindings/preview, ...). Nothing is kept until the last step.
 import { api, esc, fmt } from '../api.js';
 import { init } from '../layout.js';
-import { explainerHtml, roleCard, rejectsCard, historyCard, PART_WORDS, dateFmt } from '../onboarding-view.js';
+import { explainerHtml, roleCard, rejectsCard, historyCard, PART_WORDS, dateFmt, UNIT_PRESETS, ADV_HINTS } from '../onboarding-view.js';
 
 let ctx = null;        // the page shell's state (the selected home)
 let model = null;      // GET /api/sites/:id/onboarding
@@ -21,7 +21,7 @@ const STEP = {
   reason: { label: 'Reason', title: 'Why are you making this change?', help: 'The reason is kept with the change. It is required when the change alters slots that are already built.' },
   confirm: { label: 'Confirm', title: 'Check and confirm', help: 'This is the last step. Confirming saves the mapping and the binding, then queues the affected days for a rebuild.' },
 };
-const FIELD_LABELS = { solar: ['Solar', 'kWh'], home: ['Home use', 'kWh'], grid_import: ['Grid import', 'kWh'], grid_export: ['Grid export', 'kWh'], total_cost: ['Cost', 'money'], state: ['Slot status (final, waiting, missing)', ''] };
+const FIELD_LABELS = { solar: ['Solar', 'kWh'], home: ['Home use', 'kWh'], grid_import: ['Grid import', 'kWh'], grid_export: ['Grid export', 'kWh'], total_cost: ['Cost', 'money'], state: ['Slot status (final, waiting, missing)', ''], solar_forecast: ['Solar forecast', 'kWh'] };
 
 // ───────────── Small helpers ─────────────
 async function call(path, body) {
@@ -38,8 +38,10 @@ const hasDevices = () => model.devices.some((d) => !d.retiredAt);
 
 // ───────────── The page ─────────────
 async function load() {
-  const [m, c] = await Promise.all([api(`/api/sites/${ctx.siteId}/onboarding`), catalog ? Promise.resolve(catalog) : api('/api/sources')]);
-  model = m; catalog = c;
+  // Health and replay are extras: a failure of either must not take the page down.
+  const soft = (path) => api(path).catch(() => null);
+  const [m, c, health, replay] = await Promise.all([api(`/api/sites/${ctx.siteId}/onboarding`), api('/api/sources'), soft(`/api/sites/${ctx.siteId}/source-health`), soft(`/api/sites/${ctx.siteId}/replay?days=30`)]);
+  model = m; catalog = c; model.health = health; model.replay = replay;
 }
 
 function drawPage() {
@@ -51,6 +53,7 @@ function drawPage() {
     ${explainerHtml()}
     <div class="ob-top">
       <button class="btn btn-primary" id="ob-add">Add a provider</button>
+      <button class="btn" id="ob-newsource">New source</button>
       <span class="muted">${model.roles.length} roles for <b>${esc(model.site.name)}</b>${unfilled ? `, ${unfilled} with no provider` : ''}.</span>
       <span class="spacer"></span>
       <button class="btn" id="ob-reload" title="Read the current state again">↻ Refresh</button>
@@ -60,6 +63,7 @@ function drawPage() {
     <div class="ob-roles">${model.roles.map((r) => roleCard(r, model, tz, colors)).join('')}</div>
     <div class="ob-two">${rejectsCard(model, tz)}${historyCard(model, tz)}</div>`;
   document.getElementById('ob-add').addEventListener('click', () => openFlow({ mode: 'bind' }));
+  document.getElementById('ob-newsource').addEventListener('click', () => openSource(null));
   document.getElementById('ob-reload').addEventListener('click', refresh);
   content.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => onAction(b)));
   if (wz) drawWizard();
@@ -87,7 +91,12 @@ function onAction(b) {
   } else if (a === 'mappoint') {
     const role = model.roles.find((r) => r.bindings.some((x) => x.source === b.dataset.source));
     openFlow({ mode: 'bind', role: role?.role, source: b.dataset.source, pendingPoint: b.dataset.point, startAt: 'map' });
-  } else if (a === 'retire') retire(Number(b.dataset.channel));
+  } else if (a === 'mapsrc') {
+    const role = model.roles.find((r) => r.bindings.some((x) => x.source === b.dataset.source));
+    openFlow({ mode: 'bind', role: role?.role, source: b.dataset.source, startAt: 'map' });
+  } else if (a === 'priority') openPriority(Number(b.dataset.binding));
+  else if (a === 'replay') openReplay();
+  else if (a === 'retire') retire(Number(b.dataset.channel));
 }
 
 async function retire(id) {
@@ -118,6 +127,9 @@ function suggestSource(role) {
   return s?.code ?? catalog.sources.find((x) => x.suggestedRoles.includes(role))?.code ?? catalog.sources[0]?.code ?? null;
 }
 
+// The flows that are one screen, not a stepper: a new source, a binding's priority, a replay of saved receipts.
+const SPECIAL = new Set(['source', 'priority', 'replay']);
+const SPECIAL_TITLES = { source: 'Add a new source', priority: 'Change a priority', replay: 'Recover refused values' };
 const stepsOf = () => FLOWS[wz.mode];
 const stepIndex = () => stepsOf().indexOf(wz.step);
 
@@ -130,6 +142,7 @@ function drawWizard(focus = false) {
   const host = document.getElementById('wizard');
   if (!host) return;
   if (!wz) { host.innerHTML = ''; return; }
+  if (SPECIAL.has(wz.mode)) { host.innerHTML = `<section class="card ob-wizard" aria-label="${esc(SPECIAL_TITLES[wz.mode])}">${specialHtml()}</section>`; wireWizard(); if (focus) host.querySelector('.ob-step-title')?.focus(); return; }
   const title = wz.mode === 'bind' ? 'Add or change a provider' : 'End a provider';
   if (wz.done) { host.innerHTML = `<section class="card ob-wizard" aria-label="${title}">${doneHtml()}</section>`; wireWizard(); host.querySelector('.ob-step-title')?.focus(); return; }
   const s = STEP[wz.step];
@@ -198,6 +211,7 @@ function pickStep() {
       <label class="ob-field"><span>Provider (source)</span><select data-f="source">${srcOpts}</select><small>★ marks providers whose built-in mapping fits this role. Any listed provider can be bound.</small></label>
       ${hasDevices() ? `<label class="ob-field"><span>Device</span><select data-f="device">${devOpts}</select><small>Pick a device when the home has several of one kind (two inverters): each is its own binding and their figures are added.</small></label>` : ''}
     </div>
+    <p class="ob-note">The provider is not listed? <button class="btn-link" data-w="newsource">Add a new source</button> and come back here.</p>
     ${src && facts.length ? `<div class="ob-note" style="margin-top:10px"><b>${esc(src.name)}</b><br>${facts.map(([k, v]) => `${esc(k)}: ${esc(v)}`).join('<br>')}</div>` : ''}
     ${existing.length ? msg('', `Currently bound: ${existing.map((b) => esc(b.source)).join(', ')}. Binding another provider ends ${existing.length > 1 ? 'these' : 'this one'} on the start date you choose, unless you add it beside them below.`) : ''}
     <details class="ob-details"><summary>More options</summary>
@@ -208,6 +222,17 @@ function pickStep() {
     </details>`;
 }
 
+// A mapping row. The first columns are the everyday ones; the rest are the Advanced options (delta 072 and the access of 067).
+const advDefaults = () => ({ kind: 'value', derived: '', counterWrap: '', counterResetBelow: '', maxGapS: '', maxStuckSamples: '', clockOffsetS: 0, futureToleranceS: '', access: 'read', enumValues: '' });
+const rowFrom = (o) => ({
+  id: o.id ?? null, ...(o.id ? { orig: { point: o.point, metric: o.metric } } : {}), point: o.point ?? '', metric: o.metric, scale: o.scale ?? 1, shift: o.shift ?? 0, part: o.part ?? 'all', min: o.min ?? '', max: o.max ?? '',
+  ...advDefaults(), kind: o.kind ?? 'value', derived: o.derived ?? '', counterWrap: o.counterWrap ?? '', counterResetBelow: o.counterResetBelow ?? '', maxGapS: o.maxGapS ?? '',
+  maxStuckSamples: o.maxStuckSamples ?? '', clockOffsetS: o.clockOffsetS ?? 0, futureToleranceS: o.futureToleranceS ?? '', access: o.access ?? 'read',
+  enumValues: Array.isArray(o.enumValues) ? o.enumValues.join('\n') : (o.enumValues ?? ''), adv: false,
+});
+const ADV_FIELDS = new Set(['kind', 'derived', 'counterWrap', 'counterResetBelow', 'maxGapS', 'maxStuckSamples', 'clockOffsetS', 'futureToleranceS', 'access', 'enumValues']);
+const advIsSet = (r) => r.kind !== 'value' || r.access !== 'read' || Number(r.clockOffsetS) !== 0 || ['derived', 'counterWrap', 'counterResetBelow', 'maxGapS', 'maxStuckSamples', 'futureToleranceS', 'enumValues'].some((k) => String(r[k] ?? '') !== '');
+
 function initRows() {
   const key = `${wz.source}|${wz.deviceId ?? ''}`;
   if (wz.rowsKey === key && wz.rows) return;
@@ -215,10 +240,10 @@ function initRows() {
   const def = srcOf(wz.source)?.defaultChannels ?? [];
   const role = catalog.roles.find((r) => r.role === wz.role);
   let rows;
-  if (existing.length) rows = existing.map((c) => ({ id: c.id, orig: { point: c.point, metric: c.metric }, point: c.point, metric: c.metric, scale: c.scale, shift: c.shift, part: c.part, min: c.min ?? '', max: c.max ?? '' }));
-  else if (def.length) rows = def.map((d) => ({ id: null, point: d.point, metric: d.metric, scale: d.scale, shift: d.shift, part: d.part, min: d.min ?? '', max: d.max ?? '' }));
-  else rows = (role?.metrics ?? []).map((m) => ({ id: null, point: '', metric: m, scale: 1, shift: 0, part: 'all', min: '', max: '' }));
-  if (wz.pendingPoint) { rows.push({ id: null, point: wz.pendingPoint, metric: role?.metrics?.[0] ?? catalog.metrics[0]?.code, scale: 1, shift: 0, part: 'all', min: '', max: '' }); wz.pendingPoint = null; }
+  if (existing.length) rows = existing.map(rowFrom);
+  else if (def.length) rows = def.map((d) => rowFrom({ ...d, id: null }));
+  else rows = (role?.metrics ?? []).map((m) => rowFrom({ point: '', metric: m }));
+  if (wz.pendingPoint) { rows.push(rowFrom({ point: wz.pendingPoint, metric: role?.metrics?.[0] ?? catalog.metrics[0]?.code })); wz.pendingPoint = null; }
   wz.rows = rows; wz.rowsKey = key; wz.removed = [];
 }
 
@@ -231,6 +256,27 @@ function metricOptions(selected) {
   return `${fit.length ? `<optgroup label="Fits this role">${fit.map(opt).join('')}</optgroup>` : ''}<optgroup label="All measurements">${rest.map(opt).join('')}</optgroup>`;
 }
 
+function advPanel(r, i) {
+  const field = (key, label, input) => `<label class="ob-field"><span>${label}</span>${input}<small>${esc(ADV_HINTS[key])}</small></label>`;
+  const n = (key, ph = '') => `<input type="number" step="any" data-row="${i}" data-f="${key}" value="${esc(r[key])}" placeholder="${esc(ph)}">`;
+  const counter = r.kind === 'counter';
+  const plain = r.kind === 'value';
+  const intervals = catalog.metrics.filter((m) => m.timeRole === 'interval');
+  return `<tr class="ob-advrow"><td colspan="8"><div class="ob-adv" role="group" aria-label="Advanced options for row ${i + 1}">
+    <label class="ob-field"><span>Common conversions</span><select data-row="${i}" data-f="preset">${UNIT_PRESETS.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}</select><small>Fills in Times and Plus for you. The value is converted as: value × Times + Plus.</small></label>
+    ${field('kind', 'What kind of point', `<select data-row="${i}" data-f="kind"><option value="value" ${r.kind === 'value' ? 'selected' : ''}>A plain value</option><option value="counter" ${counter ? 'selected' : ''}>A running total (counter)</option><option value="event" ${r.kind === 'event' ? 'selected' : ''}>An event</option></select>`)}
+    ${counter ? field('derived', 'Energy per period is stored as', `<select data-row="${i}" data-f="derived"><option value="">Choose…</option>${intervals.map((m) => `<option value="${esc(m.code)}" ${m.code === r.derived ? 'selected' : ''}>${esc(m.code)} (${esc(m.unit ?? '')})</option>`).join('')}</select>`) : ''}
+    ${counter ? field('counterWrap', 'Rolls over to zero at', n('counterWrap', 'never')) : ''}
+    ${counter ? field('counterResetBelow', 'A drop to this is a restart', n('counterResetBelow', 'a tenth of the last reading')) : ''}
+    ${counter ? field('maxGapS', 'A period longer than this is estimated (seconds)', n('maxGapS', 'no limit')) : ''}
+    ${plain ? field('maxStuckSamples', 'Identical readings in a row that look stuck', n('maxStuckSamples', 'off')) : ''}
+    ${field('clockOffsetS', 'Device clock is off by (seconds)', n('clockOffsetS', '0'))}
+    ${field('futureToleranceS', 'Refuse times further ahead than (seconds)', n('futureToleranceS', 'no check'))}
+    ${field('access', 'Who can use it', `<select data-row="${i}" data-f="access"><option value="read" ${r.access === 'read' ? 'selected' : ''}>Read only</option><option value="write" ${r.access === 'write' ? 'selected' : ''}>Write only</option><option value="readwrite" ${r.access === 'readwrite' ? 'selected' : ''}>Read and write</option></select>`)}
+    ${plain ? field('enumValues', 'Allowed values (a setting)', `<textarea data-row="${i}" data-f="enumValues" rows="2" placeholder="any value">${esc(r.enumValues)}</textarea>`) : ''}
+  </div></td></tr>`;
+}
+
 function mapStep() {
   initRows();
   const rows = wz.rows.map((r, i) => `<tr>
@@ -241,16 +287,17 @@ function mapStep() {
     <td><select aria-label="Sign, row ${i + 1}" data-row="${i}" data-f="part">${Object.entries(PART_WORDS).map(([k, v]) => `<option value="${k}" ${k === r.part ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></td>
     <td><input type="number" step="any" aria-label="Lowest allowed, row ${i + 1}" data-row="${i}" data-f="min" value="${esc(r.min)}" placeholder="any"></td>
     <td><input type="number" step="any" aria-label="Highest allowed, row ${i + 1}" data-row="${i}" data-f="max" value="${esc(r.max)}" placeholder="any"></td>
-    <td><button class="btn btn-sm" data-w="delrow" data-i="${i}" aria-label="Remove row ${i + 1}">✕</button>${wz.rowErrors[i] ? `<div class="row-err" role="alert">${esc(wz.rowErrors[i])}</div>` : ''}</td></tr>`).join('');
+    <td><div class="ob-actions"><button class="btn btn-sm" data-w="adv" data-i="${i}" aria-expanded="${r.adv ? 'true' : 'false'}" aria-label="Advanced options for row ${i + 1}">Advanced${advIsSet(r) ? ' •' : ''}</button><button class="btn btn-sm" data-w="delrow" data-i="${i}" aria-label="Remove row ${i + 1}">✕</button></div></td></tr>${wz.rowErrors[i] ? `<tr class="ob-rowerr"><td colspan="8"><div class="row-err" role="alert">Row ${i + 1}: ${esc(wz.rowErrors[i])}</div></td></tr>` : ''}${r.adv ? advPanel(r, i) : ''}`).join('');
   return `<div class="table-wrap"><table class="ob-map"><thead><tr><th>Point it sends</th><th>Becomes</th><th>Times</th><th>Plus</th><th>Sign</th><th>Lowest</th><th>Highest</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="faint">No rows yet. Add one.</td></tr>'}</tbody></table></div>
     <div class="ob-actions" style="margin-top:8px"><button class="btn btn-sm" data-w="addrow">+ Add a row</button></div>
     <details class="ob-details"><summary>What do these columns mean?</summary><dl class="ob-map-help">
       <dt>Point it sends</dt><dd>The provider's own name for the measurement, exactly as it sends it.</dd>
       <dt>Becomes</dt><dd>The standard measurement it turns into. These are the same for every provider.</dd>
-      <dt>Times and Plus</dt><dd>The unit conversion: value × times + plus. Kilowatts to watts is times 1000.</dd>
+      <dt>Times and Plus</dt><dd>The unit conversion: value × times + plus. Kilowatts to watts is times 1000. Advanced has a list of common conversions.</dd>
       <dt>Sign</dt><dd>For one number that goes both ways (grid: positive is import, negative is export) make two rows for the same point: one with "only the positive part" and one with "only the negative part".</dd>
-      <dt>Lowest and Highest</dt><dd>The believable range after conversion. A value outside it is refused and listed under Rejected values, never stored.</dd></dl></details>
-    ${msg('', 'Saving a mapping changes how data is read from now on. It does not change facts already stored, so it does not appear in the preview of the next step.')}`;
+      <dt>Lowest and Highest</dt><dd>The believable range after conversion. A value outside it is refused and listed under Rejected values, never stored.</dd>
+      <dt>Advanced</dt><dd>For counters (a running total, such as a smart plug's energy meter), events, settings you can write, and checks for stuck sensors, wrong clocks and times in the future. A dot marks a row where something is set.</dd></dl></details>
+    ${msg('', 'Saving a mapping changes how data is read from now on. It does not change facts already stored, so it does not appear in the preview of the next step. To recover values that were already refused, use Replay under Rejected values.')}`;
 }
 
 function whenStep() {
@@ -323,12 +370,21 @@ function doneHtml() {
 
 // ── mapping rows ──
 const num = (v) => (v === '' || v == null ? null : Number(v));
-const rowBody = (r) => ({ source: wz.source, point: r.point.trim(), metric: r.metric, scale: num(r.scale) ?? 1, shift: num(r.shift) ?? 0, part: r.part, min: num(r.min), max: num(r.max), ...(wz.deviceId != null ? { deviceId: wz.deviceId } : {}) });
+const rowBody = (r) => ({
+  source: wz.source, point: r.point.trim(), metric: r.metric, scale: num(r.scale) ?? 1, shift: num(r.shift) ?? 0, part: r.part, min: num(r.min), max: num(r.max), ...(wz.deviceId != null ? { deviceId: wz.deviceId } : {}),
+  kind: r.kind, access: r.access, clockOffsetS: num(r.clockOffsetS) ?? 0, futureToleranceS: num(r.futureToleranceS),
+  ...(r.kind === 'counter' ? { derived: r.derived || null, counterWrap: num(r.counterWrap), counterResetBelow: num(r.counterResetBelow), maxGapS: num(r.maxGapS) } : {}),
+  ...(r.kind === 'value' ? { maxStuckSamples: num(r.maxStuckSamples), enumValues: String(r.enumValues ?? '').trim() || null } : {}),
+});
+// What makes two mapping rows the same channel: compared as the API would store them.
+const sigOf = (r) => JSON.stringify([r.scale === '' ? 1 : Number(r.scale), r.shift === '' ? 0 : Number(r.shift), r.part, num(r.min), num(r.max), r.kind ?? 'value', r.kind === 'counter' ? (r.derived || null) : null,
+  r.kind === 'counter' ? num(r.counterWrap) : null, r.kind === 'counter' ? num(r.counterResetBelow) : null, r.kind === 'counter' ? num(r.maxGapS) : null, r.kind === 'value' ? num(r.maxStuckSamples) : null,
+  num(r.clockOffsetS) ?? 0, num(r.futureToleranceS), r.access ?? 'read', r.kind === 'value' ? String(r.enumValues ?? '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean).join('|') : '']);
 function changedRows() {
   const cur = model.channels.filter((c) => c.source === wz.source && (c.deviceId ?? null) === (wz.deviceId ?? null));
   return (wz.rows ?? []).filter((r) => r.point.trim()).filter((r) => {
     const o = cur.find((c) => c.point === r.point.trim() && c.metric === r.metric);
-    return !o || o.scale !== (num(r.scale) ?? 1) || o.shift !== (num(r.shift) ?? 0) || o.part !== r.part || (o.min ?? null) !== num(r.min) || (o.max ?? null) !== num(r.max);
+    return !o || sigOf(rowFrom(o)) !== sigOf(r);
   });
 }
 
@@ -338,7 +394,7 @@ async function checkMapping() {
   for (const [i, r] of wz.rows.entries()) {
     if (!r.point.trim()) continue;
     const res = await call(`/api/sites/${ctx.siteId}/channels`, { ...rowBody(r), dryRun: true });
-    if (!res.ok) { wz.rowErrors[i] = res.data.error ?? 'Not accepted'; bad++; }
+    if (!res.ok) { wz.rowErrors[i] = res.data.error ?? 'Not accepted'; if (ADV_FIELDS.has(res.data.field)) r.adv = true; bad++; }   // an error about an advanced option opens that row's Advanced panel
   }
   wz.busy = false;
   if (bad) { wz.error = `${bad} row${bad === 1 ? '' : 's'} not accepted. Fix them and continue.`; drawWizard(); return false; }
@@ -373,6 +429,189 @@ function paintPreview() {
   if (next) { const need = nextBlocked(); next.disabled = !!need || wz.busy || wz.loading; if (need) next.title = need; else next.removeAttribute('title'); }
 }
 
+// ───────────── New source ─────────────
+function openSource(back) {
+  wz = { mode: 'source', step: 'source', back, errors: {}, error: null, info: null, busy: false,
+    f: { code: '', name: '', contract: Object.fromEntries(catalog.contractFields.map(([k]) => [k, ''])), traits: { holdS: '', expectedEveryS: '', live: false, forecastOnly: false, namedOnly: false, irregular: false } } };
+  flash('');
+  drawWizard(true);
+  document.getElementById('wizard')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+function sourceBody() {
+  const t = wz.f.traits;
+  const traits = {};
+  for (const k of ['holdS', 'expectedEveryS']) if (String(t[k]).trim() !== '') traits[k] = Number(t[k]);
+  for (const k of ['live', 'forecastOnly', 'namedOnly', 'irregular']) if (t[k]) traits[k] = true;
+  return { code: wz.f.code.trim(), name: wz.f.name.trim(), contract: { ...wz.f.contract }, traits };
+}
+
+function onSourceField(el) {
+  const k = el.dataset.sf;
+  const v = el.type === 'checkbox' ? el.checked : el.value;
+  if (k.startsWith('contract.')) wz.f.contract[k.slice(9)] = v;
+  else if (k.startsWith('traits.')) wz.f.traits[k.slice(7)] = v;
+  else wz.f[k] = v;
+  wz.info = null; delete wz.errors[k];
+}
+
+async function submitSource(create) {
+  wz.busy = true; wz.error = null; wz.info = null; wz.errors = {}; drawWizard();
+  const res = await call(`/api/sources${create ? '' : '?dryRun=1'}`, sourceBody());
+  wz.busy = false;
+  if (!res.ok) {
+    if (res.data.field) wz.errors[res.data.field] = res.data.error; else wz.error = res.data.error ?? `HTTP ${res.status}`;
+    wz.error = res.data.field ? 'Something needs fixing: see the marked field.' : wz.error;
+    drawWizard(); document.querySelector('[aria-invalid="true"]')?.focus(); return;
+  }
+  if (!create) { wz.info = 'This looks right. Nothing has been created yet.'; drawWizard(); return; }
+  catalog = await api('/api/sources');
+  const made = res.data.source.code;
+  if (wz.back) { wz = wz.back; wz.source = made; wz.rowsKey = null; drawWizard(true); flash(msg('good', `The source ${esc(made)} was created and is selected below.`)); return; }
+  wz = null; drawWizard();
+  flash(msg('good', `The source <b>${esc(made)}</b> was created. Use "Add a provider" to bind it to a role, then map its points.`));
+}
+
+function sourceHtml() {
+  const f = wz.f; const e = wz.errors;
+  const err = (k) => (e[k] ? `<div class="row-err" role="alert">${esc(e[k])}</div>` : '');
+  const field = (k, label, help, value, ph = '', type = 'text') => `<label class="ob-field"><span>${esc(label)}</span><input type="${type}" data-sf="${esc(k)}" value="${esc(value)}" placeholder="${esc(ph)}" ${e[k] ? 'aria-invalid="true"' : ''}><small>${esc(help)}</small>${err(k)}</label>`;
+  const box = (k, label, help) => `<label class="ob-radio"><input type="checkbox" data-sf="traits.${k}" ${f.traits[k] ? 'checked' : ''}><div><b>${esc(label)}</b><span>${esc(help)}</span></div></label>`;
+  return `<h3 class="ob-step-title" tabindex="-1">Add a new source</h3>
+    <p class="ob-step-help">A source describes where data comes from, in words. This only describes it. How its data arrives (a device pushing it, an adapter, another route) is separate. Once it exists you can bind it to a role and map its points like any other.</p>
+    <div class="ob-form">
+      ${field('code', 'Code', 'Lower-case letters, digits and underscores, starting with a letter, 2 to 40 characters. For example acme_inverter.', f.code, 'acme_inverter')}
+      ${field('name', 'Name', 'What people call it.', f.name, 'Acme inverter cloud')}
+    </div>
+    <h4 class="ob-sub">How its data behaves</h4>
+    <div class="ob-form">${catalog.contractFields.map(([k, label, help]) => field(`contract.${k}`, label, help, f.contract[k])).join('')}</div>
+    <details class="ob-details" ${Object.values(f.traits).some((x) => x !== '' && x !== false) || e['traits.holdS'] || e['traits.expectedEveryS'] || e['traits.forecastOnly'] || e['traits.irregular'] ? 'open' : ''}><summary>Advanced: how it is read and watched</summary>
+      <div class="ob-form" style="margin-top:8px">
+        ${field('traits.holdS', 'How long a reading holds (seconds)', 'Between two readings the last one is held for at most this long. For readings every 5 minutes, 300.', f.traits.holdS, '300', 'number')}
+        ${field('traits.expectedEveryS', 'How often new data should arrive (seconds)', 'Used by the health chip: later than twice this is "late". Leave empty to use the standard for its kind.', f.traits.expectedEveryS, '300', 'number')}
+        ${box('live', 'A realtime feed', 'Its latest reading is the current state of the device.')}
+        ${box('forecastOnly', 'Forecast only', 'It only ever sends predictions, never measured values.')}
+        ${box('namedOnly', 'Daily totals', 'Read only when named, for example the inverter\'s own daily counters.')}
+        ${box('irregular', 'Reports only when something happens', 'For example smart-charge dispatches. It is never shown as late.')}
+      </div>${err('traits.forecastOnly')}${err('traits.irregular')}
+    </details>
+    ${wz.error ? msg('bad', esc(wz.error)) : ''}${wz.info ? msg('good', esc(wz.info)) : ''}
+    <div class="ob-foot"><button class="btn" data-w="cancel">${wz.back ? 'Back' : 'Cancel'}</button><div class="right">
+      <button class="btn" data-w="src-check" ${wz.busy ? 'disabled' : ''}>Check only</button>
+      <button class="btn btn-primary" data-w="src-create" ${wz.busy ? 'disabled' : ''}>${wz.busy ? 'Working…' : 'Create the source'}</button></div></div>`;
+}
+
+// ───────────── A binding's priority ─────────────
+function openPriority(bindingId) {
+  const role = model.roles.find((r) => r.bindings.some((b) => b.id === bindingId));
+  const b = role?.bindings.find((x) => x.id === bindingId);
+  if (!b) return;
+  wz = { mode: 'priority', step: 'priority', role: role.role, binding: b, value: b.priority, reason: '', rebuild: true, preview: null, previewErr: null, loading: false, busy: false, error: null, done: null };
+  flash(''); drawWizard(true);
+  document.getElementById('wizard')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+let priorityTimer = null;
+function onPriorityField(el, commit) {
+  const k = el.dataset.pf;
+  if (k === 'reason') { wz.reason = el.value; paintPriority(); return; }
+  if (k === 'rebuild') { wz.rebuild = el.checked; return; }
+  if (k === 'value') {
+    wz.value = el.value;
+    // a change event on leaving the field repeats the last input: do not preview the same number twice (it would blank the reason box under the user's hands)
+    if (commit && wz.preview && String(el.value) === String(wz.previewFor)) return;
+    clearTimeout(priorityTimer); priorityTimer = setTimeout(runPriorityPreview, commit ? 0 : 350);
+  }
+}
+async function runPriorityPreview() {
+  if (!wz || wz.mode !== 'priority') return;
+  const n = Number(wz.value);
+  wz.previewErr = null;
+  if (wz.value === '' || !Number.isInteger(n) || n < 0 || n > 99) { wz.preview = null; wz.previewFor = null; wz.previewErr = 'The priority is a whole number from 0 to 99.'; paintPriority(); return; }
+  if (n === wz.binding.priority) { wz.preview = null; wz.previewFor = null; wz.previewErr = `It is already ${n}.`; paintPriority(); return; }
+  wz.loading = true; paintPriority();   // the previous preview stays on screen (and the reason box with it) while the new one loads
+  const asked = String(wz.value);
+  const res = await call(`/api/sites/${ctx.siteId}/bindings/priority`, { bindingId: wz.binding.id, priority: n, dryRun: true });
+  if (!wz || wz.mode !== 'priority' || String(wz.value) !== asked) return;   // the user moved on: a newer preview is on its way
+  wz.loading = false;
+  if (res.ok) { wz.preview = res.data; wz.previewFor = asked; } else { wz.preview = null; wz.previewFor = null; wz.previewErr = res.data.error ?? `HTTP ${res.status}`; }
+  paintPriority();
+}
+const priorityBlocked = () => (wz.loading || !wz.preview ? 'The preview must work first' : wz.preview.needsReason && !wz.reason.trim() ? 'A reason is required: this changes slots that are already built' : '');
+function paintPriority() {
+  const el = document.getElementById('pri-preview'); if (el) el.innerHTML = priorityPreview();
+  const need = document.getElementById('pri-reason'); if (need) need.style.display = wz.preview?.needsReason ? '' : 'none';
+  const b = document.querySelector('[data-w="pri-confirm"]'); if (b) { const x = priorityBlocked(); b.disabled = !!x || wz.busy; if (x) b.title = x; else b.removeAttribute('title'); }
+}
+function priorityPreview() {
+  if (wz.loading && !wz.preview) return '<p class="ob-loading">Working out what would change…</p>';
+  if (wz.previewErr) return msg('bad', esc(wz.previewErr));
+  const p = wz.preview;
+  if (!p) return '<p class="ob-note">Change the number to see what it would do.</p>';
+  const im = p.impact;
+  const fields = Object.entries(im.byField).map(([k, v]) => `${esc(FIELD_LABELS[k]?.[0] ?? k)}: ${v.slots} slots`).join(', ');
+  return `${im.changed ? `<div class="ob-big"><b>${im.changed}</b><span>of ${im.slots} built slots would change${fields ? ` (${fields})` : ''}.</span></div>${msg('warn', 'This changes slots that are already built, so a reason is required.')}`
+    : '<div class="ob-big"><b>0</b><span>built slots would change. The order only matters where two providers both have a value.</span></div>'}
+    ${msg('good', 'Nothing has been kept. This is a preview.')}`;
+}
+function priorityHtml() {
+  const role = roleOf(wz.role); const b = wz.binding;
+  if (wz.done) return `<h3 class="ob-step-title" tabindex="-1">Done</h3>${msg('good', `The priority of ${esc(b.source)} on ${esc(role.label)} is now ${esc(wz.done.to)} (it was ${esc(wz.done.from)}). ${wz.done.rebuilt?.length ? `${wz.done.rebuilt.reduce((t, x) => t + (x.days ?? 0), 0)} days rebuilt.` : wz.done.queued ? `Queued for a rebuild from ${esc(wz.done.queued.fromDate)}.` : 'No built slot is affected.'}`)}
+    <div class="ob-foot"><div class="right"><button class="btn btn-primary" data-w="close">Close</button></div></div>`;
+  return `<h3 class="ob-step-title" tabindex="-1">Change the priority of ${esc(b.source)}</h3>
+    <p class="ob-step-help">When several providers fill one role at once (the solar forecast), the one with the lowest number is used first, and a higher one fills in where it has nothing. The old row is kept; this records a new one.</p>
+    <p class="ob-note">${esc(role.label)}: ${role.bindings.map((x) => `${esc(x.source)} (priority ${x.priority})`).join(', ')}.</p>
+    <label class="ob-field" style="max-width:220px"><span>New priority</span><input type="number" min="0" max="99" step="1" data-pf="value" value="${esc(wz.value)}"><small>A whole number from 0 to 99. Lowest first.</small></label>
+    <div id="pri-preview" style="margin-top:12px" aria-live="polite">${priorityPreview()}</div>
+    <label class="ob-field" id="pri-reason" style="max-width:640px;margin-top:10px;${wz.preview?.needsReason ? '' : 'display:none'}"><span>Reason (required)</span><textarea data-pf="reason" aria-required="true" placeholder="For example: prefer Quartz this month">${esc(wz.reason)}</textarea></label>
+    <label class="ob-radio" style="margin-top:10px"><input type="checkbox" data-pf="rebuild" ${wz.rebuild ? 'checked' : ''}><div><b>Rebuild the affected days now</b><span>Otherwise they are queued and rebuilt at the next sync.</span></div></label>
+    ${wz.error ? msg('bad', esc(wz.error)) : ''}
+    <div class="ob-foot"><button class="btn" data-w="cancel">Cancel</button><div class="right"><button class="btn btn-primary" data-w="pri-confirm" disabled title="The preview must work first">Confirm</button></div></div>`;
+}
+async function confirmPriority() {
+  wz.busy = true; wz.error = null; paintPriority();
+  const res = await call(`/api/sites/${ctx.siteId}/bindings/priority`, { bindingId: wz.binding.id, priority: Number(wz.value), reason: wz.reason.trim() || null, rebuild: wz.rebuild });
+  wz.busy = false;
+  if (!res.ok) { wz.error = res.data.code === 'reason_required' ? 'The system needs a reason for this change. Write one above.' : res.data.error ?? `HTTP ${res.status}`; drawWizard(); return; }
+  wz.done = res.data; await load(); drawPage();
+}
+
+// ───────────── Replay of saved receipts ─────────────
+async function openReplay() {
+  wz = { mode: 'replay', step: 'replay', loading: true, result: null, error: null, real: null, busy: false };
+  flash(''); drawWizard(true);
+  document.getElementById('wizard')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  await runReplay(true);
+}
+async function runReplay(dry) {
+  if (!wz || wz.mode !== 'replay') return;
+  wz.busy = true; wz.error = null; drawWizard();
+  const res = await call(`/api/sites/${ctx.siteId}/replay`, { days: 30, dryRun: dry });
+  if (!wz) return;
+  wz.busy = false; wz.loading = false;
+  if (!res.ok) { wz.error = res.data.error ?? `HTTP ${res.status}`; drawWizard(); return; }
+  if (dry) wz.result = res.data; else { wz.real = res.data; await load(); drawPage(); }
+  drawWizard(true);
+}
+function replayTable(r) {
+  const rows = Object.entries(r.bySource).map(([src, x]) => `<tr><td>${esc(src)}</td><td class="r">${x.receipts}</td><td class="r">${x.observations}</td><td class="r">${x.written}</td><td class="r">${x.rejected}</td></tr>`).join('');
+  return `<div class="table-wrap"><table><thead><tr><th>Source</th><th class="r">Receipts read</th><th class="r">Points in them</th><th class="r">Facts ${r.dryRun ? 'it would write' : 'written'}</th><th class="r">Still refused</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="faint">No receipt to read.</td></tr>'}</tbody></table></div>
+    <div class="ob-kpis" style="margin-top:8px"><span class="badge">${r.receipts} receipts</span><span class="badge ${r.written ? 'good' : ''}">${r.written} facts ${r.dryRun ? 'would be recovered' : 'recovered'}</span>${r.rejected ? `<span class="badge bad">${r.rejected} still refused</span>` : ''}${r.unmapped.length ? `<span class="badge warn">${r.unmapped.length} points still unmapped</span>` : ''}${r.parseErrors ? `<span class="badge warn">${r.parseErrors} receipts could not be read</span>` : ''}${r.missingFiles ? `<span class="badge warn">${r.missingFiles} saved files are gone</span>` : ''}</div>
+    ${r.stillRejected.length ? `<p class="ob-note">Still refused: ${r.stillRejected.map((x) => `${esc(x.point)} (${esc(REASONS[x.reason] ?? x.reason)}, ${x.count})`).join(', ')}. Fix the mapping and replay again.</p>` : ''}
+    ${r.unmapped.length ? `<p class="ob-note">Still unmapped: ${r.unmapped.map((x) => `${esc(x.point)} on ${esc(x.source)}`).join(', ')}. Map them first.</p>` : ''}`;
+}
+const REASONS = { out_of_range: 'outside the allowed range', not_a_number: 'not a number', future_timestamp: 'a time in the future', counter_backwards: 'a counter going backwards', not_in_enum: 'not an allowed value' };
+function replayHtml() {
+  if (wz.real) return `<h3 class="ob-step-title" tabindex="-1">Done</h3>${msg('good', `${wz.real.written} facts were recovered from ${wz.real.receipts} saved receipts. The affected days are queued for a rebuild. Nothing already stored was changed: a recovered value is added with the receipt it came from.`)}${replayTable(wz.real)}
+    <div class="ob-foot"><div class="right"><button class="btn btn-primary" data-w="close">Close</button></div></div>`;
+  const r = wz.result;
+  return `<h3 class="ob-step-title" tabindex="-1">Recover refused values from saved receipts</h3>
+    <p class="ob-step-help">This reads the saved receipts of the last 30 days again, through the channels as they are now. Values that were refused before the mapping was fixed are stored with the receipt they came from; nothing already stored is changed. Receipts of a shape nobody knew are never read again.</p>
+    ${wz.loading ? '<p class="ob-loading">Reading the receipts… nothing is kept yet.</p>' : r ? `${replayTable(r)}${msg('good', 'Nothing has been kept. This is a preview.')}${r.capped ? msg('warn', 'There are more receipts than one replay reads. Run it again after this one.') : ''}` : ''}
+    ${wz.error ? msg('bad', esc(wz.error)) : ''}
+    <div class="ob-foot"><button class="btn" data-w="cancel">Cancel</button><div class="right"><button class="btn btn-primary" data-w="rep-real" ${wz.busy || !r || !r.written ? 'disabled' : ''} ${r && !r.written ? 'title="A replay would recover nothing: fix the mapping first"' : ''}>${wz.busy ? 'Working…' : r ? `Replay for real (${r.written} facts)` : 'Replay for real'}</button></div></div>`;
+}
+const specialHtml = () => (wz.mode === 'source' ? sourceHtml() : wz.mode === 'priority' ? priorityHtml() : replayHtml());
+
 // ── events ──
 function wireWizard() {
   const host = document.getElementById('wizard');
@@ -383,9 +622,17 @@ function wireWizard() {
 }
 
 function onField(el, commit) {
+  if (el.dataset.sf) return onSourceField(el);
+  if (el.dataset.pf) return onPriorityField(el, commit);
   const f = el.dataset.f;
   if (!f) return;
-  if (el.dataset.row !== undefined) { wz.rows[Number(el.dataset.row)][f] = el.value; return; }
+  if (el.dataset.row !== undefined) {
+    const r = wz.rows[Number(el.dataset.row)];
+    if (f === 'preset') { if (commit && el.value) { const [t, sh] = el.value.split('|'); r.scale = Number(t); r.shift = Number(sh); drawWizard(); } return; }
+    r[f] = el.value;
+    if (commit && f === 'kind') drawWizard();   // the options that apply change with the kind
+    return;
+  }
   if (f === 'reason') { wz.reason = el.value; paintNext(); return; }
   if (f === 'priority') { wz.priority = Number(el.value) || 0; return; }
   if (f === 'keep') { wz.keep = el.checked; return; }
@@ -406,6 +653,12 @@ function paintNext() { const n = document.querySelector('[data-w="next"]'); if (
 
 async function onWizardClick(b) {
   const a = b.dataset.w;
+  if (a === 'cancel' && wz.mode === 'source' && wz.back) { wz = wz.back; drawWizard(true); return; }   // back to the flow that asked for a new source
+  if (a === 'newsource') { openSource(wz); return; }
+  if (a === 'adv') { const r = wz.rows[Number(b.dataset.i)]; r.adv = !r.adv; drawWizard(); return; }
+  if (a === 'src-check' || a === 'src-create') { await submitSource(a === 'src-create'); return; }
+  if (a === 'pri-confirm') { await confirmPriority(); return; }
+  if (a === 'rep-real') { await runReplay(false); return; }
   if (a === 'cancel' || a === 'close') { const was = a === 'close'; wz = null; drawWizard(); if (was) await refresh(); return; }
   if (a === 'addrow') { wz.rows.push({ id: null, point: '', metric: catalog.roles.find((r) => r.role === wz.role)?.metrics?.[0] ?? catalog.metrics[0].code, scale: 1, shift: 0, part: 'all', min: '', max: '' }); drawWizard(); return; }
   if (a === 'delrow') { const [r] = wz.rows.splice(Number(b.dataset.i), 1); if (r.id) wz.removed.push(r.id); wz.rowErrors = {}; drawWizard(); return; }

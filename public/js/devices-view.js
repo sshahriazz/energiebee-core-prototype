@@ -69,12 +69,12 @@ export function cardHtml(d, tz, selected = false) {
   return `<button type="button" class="dv-card ${selected ? 'on' : ''}" data-device="${esc(d.id)}" aria-pressed="${selected}" aria-label="${esc(d.label)}: ${esc(STATUS_WORDS[d.status.status])}">
     <span class="dv-card-top"><span class="dv-icon" aria-hidden="true">${KIND_ICON[d.icon] ?? KIND_ICON.device}</span>
       <span class="dv-kind">${esc(KIND_WORDS[d.kind] ?? d.kind)}</span>
-      ${d.synthetic ? '<span class="badge origin origin-synthetic">Synthetic</span>' : '<span class="badge good">Real</span>'}</span>
+      ${d.synthetic ? '<span class="badge origin origin-synthetic">Synthetic</span>' : d.emulated ? '<span class="badge origin origin-synthetic" title="Fed through the real push endpoint by the emulator, with generated data">Emulated</span>' : '<span class="badge good">Real</span>'}</span>
     <span class="dv-name">${esc(d.label)}</span>
     <span class="dv-status ${esc(d.status.status)}"><i aria-hidden="true"></i>${esc(d.status.words)}${d.newestTs ? `, last data ${esc(ageWords(d.status.ageS))}` : ''}</span>
     <span class="dv-vals">${kv.length ? kv.map((c) => `<span><b>${esc(num(c.last.value, c.unit))}</b><small>${esc(c.label)}${c.kind === 'period' ? ', last period' : ''}${c.kind === 'counter' && c.last.period ? `, last period ${esc(num(c.last.period.value, c.last.period.unit))}${c.last.period.partial ? ' (after a restart)' : ''}` : ''}</small></span>`).join('') : '<span><small>No values yet</small></span>'}</span>
     <span class="dv-roles">${d.roles.length ? d.roles.map((r) => `<span class="dv-chip" title="${esc(r.role)}">${esc(roleWord(r.role))}</span>`).join('') : '<span class="faint">No role bound</span>'}</span>
-    <span class="dv-foot faint">${d.channelCount} channel${d.channelCount === 1 ? '' : 's'}${d.controllable ? ' · can be controlled' : ''}${d.newestTs ? ` · newest ${esc(f.dayTime(d.newestTs))}` : ''}</span>
+    <span class="dv-foot faint">${d.channelCount} channel${d.channelCount === 1 ? '' : 's'}${d.controllable ? ' · can be controlled' : ''}${d.newestTs ? ` · newest ${esc(f.dayTime(d.newestTs))}` : ''}${d.lastPushAt ? ` · last push ${esc(ageWords(Math.max(0, Math.floor(Date.now() / 1000) - Math.floor(d.lastPushAt / 1000))))}` : ''}</span>
   </button>`;
 }
 
@@ -193,11 +193,12 @@ export function explanationsHtml(detail, tz) {
 // ───────────── Detail panels ─────────────
 export function channelsTable(detail, tz) {
   const f = clock(tz);
-  const rows = [...detail.channels, ...detail.settings.map((s) => ({ ...s, kind: 'value', metric: '', label: s.label, unit: s.unit, last: { value: s.value, ts: s.ts, word: s.word }, rejected: 0, source: '', setting: true }))];
+  const rows = [...(detail.channelList ?? detail.channels), ...detail.settings.map((s) => ({ ...s, kind: 'value', metric: '', label: s.label, unit: s.unit, last: { value: s.value, ts: s.ts, word: s.word }, rejected: 0, source: '', setting: true }))];
   if (!rows.length) return '<p class="ob-note">This device has no channels yet.</p>';
+  const multi = new Set(rows.map((r) => r.source).filter(Boolean)).size > 1;   // the same point under two sources: say which is which
   return `<div class="table-wrap"><table><thead><tr><th>Point</th><th>Becomes</th><th>Kind</th><th>Last value</th><th>When</th><th class="r">Refused</th></tr></thead><tbody>${rows.map((c) => `<tr>
     <td class="mono">${c.point ? esc(c.point) : '<span class="faint">no channel</span>'}</td>
-    <td>${esc(c.label)}${c.derivedMetric ? ` <span class="faint">→ energy per period</span>` : ''}${c.part && c.part !== 'all' ? ` <span class="ob-tag">${esc(c.part)} part</span>` : ''}</td>
+    <td>${esc(c.label)}${multi && c.source ? ` <span class="faint">via ${esc(c.source)}</span>` : ''}${c.derivedMetric ? ` <span class="faint">→ energy per period</span>` : ''}${c.part && c.part !== 'all' ? ` <span class="ob-tag">${esc(c.part)} part</span>` : ''}</td>
     <td><span class="badge ${c.kind === 'counter' ? 'info' : c.kind === 'event' ? 'warn' : ''}">${esc(c.setting ? 'setting' : c.kind)}</span></td>
     <td>${c.last?.value == null && !c.last?.event ? '<span class="faint">none yet</span>' : esc(c.setting ? settingText({ ...c, value: c.last.value, word: c.last.word }) : (c.last.word ?? (c.kind === 'event' ? 'happened' : num(c.last.value, c.unit))))}</td>
     <td>${c.last?.ts ? esc(f.dayTime(c.last.ts)) : ''}</td>
@@ -267,4 +268,89 @@ export function commandsTable(detail, tz) {
   return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Action</th><th>Target</th><th>Sent</th><th>Status</th><th>Effect</th></tr></thead><tbody>${detail.commands.map((c) => `<tr><td>${c.id}</td><td>${esc(c.action)}</td><td>${c.desired?.limit_pct != null ? `${esc(c.desired.limit_pct)} %` : ''}</td><td>${c.sentAt ? esc(f.dayTime(Math.floor(c.sentAt / 1000))) : ''}</td>
     <td><span class="badge ${c.status === 'acked' ? 'good' : c.status === 'failed' || c.status === 'expired' ? 'bad' : ''}">${esc(c.status)}</span></td>
     <td>${c.verifyStatus ? `<span class="badge ${c.verifyStatus === 'verified' ? 'good' : 'warn'}">${esc(c.verifyStatus.replace('_', ' '))}</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+
+// ───────────── Pushes: connect a real device, and the log of what arrived ─────────────
+export const emulatedLine = () => `<p class="dv-synline"><span class="badge origin origin-synthetic">Emulated</span> This device is fed by the push emulator: its data is generated, but it reached the core through the real push endpoint, the same way a real plug's would.</p>`;
+
+const PUSH_ERRORS = {
+  unknown_device: 'No device with that reference. Send "register": true (and a "kind") to create it.',
+  unknown_kind: 'That kind of device does not exist.', kind_required: 'To register a device the push must say what it is ("kind").',
+  site_required: 'The push did not say which home it is for.', unknown_site: 'There is no such home.',
+  bad_value: 'A value was not a number.', bad_timestamp: 'A time could not be read.', bad_point: 'A point name was not valid.', bad_observation: 'An observation was malformed.',
+  malformed_json: 'The body was not valid JSON (it was kept as a quarantined receipt).', bad_body: 'The body was not a JSON object.', no_observations: 'The body held no observations.',
+  unrecognised_shape: 'The body did not look like the format it was sent as (kept as a quarantined receipt).', nothing_to_store: 'None of the readings could be stored.',
+  too_many_observations: 'More observations than one push may hold.', unknown_command: 'An acknowledgement named a command this home never sent.',
+  synthetic_device: 'That is a synthetic demo device: the demo generator feeds it, not pushes.', unknown_format: 'The format is not one this core reads.', unknown_source: 'The source is not described in this core.',
+  internal: 'The core failed to store this push.',
+};
+export const pushErrorWords = (code, fallback = '') => PUSH_ERRORS[code] ?? fallback;
+
+/** One log row in plain words: what was stored, what was repeated, what had no channel, what was refused. */
+export function pushSummary(p) {
+  if (p.status === 'rejected') return `Refused. ${pushErrorWords(p.errorCode, p.error ?? '')}`;
+  if (p.status === 'error') return `The core failed to store it. ${p.error ?? ''}`;
+  const parts = [];
+  if (p.written > 0) parts.push(`${p.written} stored${p.derived ? ` (${p.derived} energy period${p.derived === 1 ? '' : 's'} worked out)` : ''}`);
+  if (p.forecasts > 0) parts.push(`${p.forecasts} forecast${p.forecasts === 1 ? '' : 's'} stored`);
+  if (!p.written && !p.forecasts) parts.push(p.warnings?.some((w) => /received before/.test(w)) ? 'Nothing new: this exact body had already been received' : 'Nothing new stored');
+  if (p.unmapped > 0) parts.push(`${p.unmapped} point${p.unmapped === 1 ? '' : 's'} with no channel (reported, not stored)`);
+  if (p.rejected > 0) parts.push(`${p.rejected} reading${p.rejected === 1 ? '' : 's'} refused by the channel rules`);
+  return parts.join('; ');
+}
+
+/** The first curl a person can paste: filled in with this home and, for a selected device, its reference and its real points. */
+export function curlExample({ origin, connect, siteId, device = null, points = [], now = Math.floor(Date.now() / 1000) }) {
+  const sample = (pt) => (/energy|total|counter/.test(pt) ? 12.5 : /power/.test(pt) ? 120 : /relay|on$/.test(pt) ? 1 : /temp/.test(pt) ? 20.5 : 1);
+  const kind = device?.kind && device.kind !== 'inverter' ? device.kind : 'smart_plug';
+  const pts = (points.length ? points : ['power', 'energy_total']).slice(0, 4);
+  const body = { site: siteId, device: device?.ref ?? 'my-plug', register: true, kind, label: device?.label ?? 'My plug', observations: pts.map((pt) => ({ point: pt, ts: now, value: sample(pt) })) };
+  return `curl -X POST '${origin}${connect.endpoint}' \\
+  -H 'Content-Type: application/json' \\${connect.tokenRequired ? "\n  -H 'Authorization: Bearer YOUR_TOKEN' \\" : ''}
+  -d '${JSON.stringify(body).replace(/'/g, "'\\''")}'`;
+}
+
+export function connectHtml({ connect, origin, siteId, device = null, points = [], now }) {
+  const url = `${origin}${connect.endpoint}`;
+  const example = curlExample({ origin, connect, siteId, device, points, now });
+  const ref = device?.ref ?? '<device>';
+  return `<div class="dv-connect-body">
+    <p class="ob-note">A real device, a gateway, or a script sends its readings to this address. They go through the same channels, counters and rules as every other provider, and every push is listed in the log.</p>
+    <dl class="dv-facts">
+      <div><dt>Address</dt><dd><span class="mono" id="dv-url">${esc(url)}</span></dd></div>
+      <div><dt>Home</dt><dd>send <span class="mono">"site": ${esc(siteId)}</span> (or <span class="mono">?site=${esc(siteId)}</span>)</dd></div>
+      <div><dt>Token</dt><dd>${connect.tokenRequired
+        ? '<span class="badge good">Required</span> send <span class="mono">Authorization: Bearer &lt;token&gt;</span> or <span class="mono">X-Ingest-Token</span>'
+        : '<span class="badge warn">Not required</span> this address is <b>open</b>: anyone who can reach it can send data. Set the environment variable <span class="mono">INGEST_TOKEN</span> to require a token.'}</dd></div>
+      <div><dt>Limits</dt><dd>${esc(connect.maxObservations)} observations and ${esc(Math.round(connect.maxBytes / 1024 / 1024))} MB per push</dd></div>
+    </dl>
+    <h4 class="dv-h4">${device ? `Send readings as ${esc(device.label)}` : 'A first push to try'}</h4>
+    <div class="dv-code-wrap"><pre class="dv-code" id="dv-curl" tabindex="0" aria-label="A curl command to copy">${esc(example)}</pre>
+      <button class="btn btn-sm" id="dv-copy" type="button">Copy</button><span class="ob-note dv-copied" id="dv-copied" role="status"></span></div>
+    <p class="ob-note">A device that is not known yet is created by its first push because of <span class="mono">"register": true</span> (it needs a <span class="mono">kind</span> such as smart_plug). Times are epoch seconds or ISO 8601; a number above 1e11 is read as milliseconds and the push says so.</p>
+    <details class="ob-details"><summary>Formats the core reads (${connect.formats.length})</summary>
+      <div class="table-wrap"><table><thead><tr><th>Format</th><th>What it is</th><th>Points</th></tr></thead><tbody>${connect.formats.map((f) => `<tr><td class="mono">${esc(f.id)}</td><td>${esc(f.about)}${f.id === 'native' ? '' : ` <span class="faint">Add <span class="mono">?format=${esc(f.id)}&amp;device=${esc(ref)}&amp;register=1&amp;kind=smart_plug</span> to the address.</span>`}</td><td class="mono">${f.points.map(esc).join(', ')}</td></tr>`).join('')}</tbody></table></div>
+      <p class="ob-note">The Shelly, Tasmota and Home Assistant shapes follow those products' documentation. They have <b>not</b> been tried on a real device.</p></details>
+    <details class="ob-details"><summary>Have an MQTT broker?</summary>
+      <p class="ob-note">The core has no MQTT client. Put one in front of it: a Node-RED flow, a Home Assistant automation, or <span class="mono">mosquitto_sub</span> piped to <span class="mono">curl</span> can post each message to the address above.</p></details>
+  </div>`;
+}
+
+export function pushLogHtml(pushes, tz) {
+  const f = clock(tz);
+  if (!pushes.length) return '<p class="ob-note">Nothing has been pushed to this core yet. Paste the command on the left, or run <span class="mono">npm run demo:push</span> to send readings from the emulator.</p>';
+  // a list, not a table, so each push wraps to the width of a phone: who and when, the result, what the core did
+  return `<ul class="dv-pushes" aria-label="Pushes received, newest first">${pushes.map((p) => {
+    const cls = p.status !== 'ok' ? 'bad' : (p.unmapped || p.rejected) ? 'warn' : '';
+    const label = p.status === 'ok' ? ((p.unmapped || p.rejected) ? 'stored, with notes' : 'stored') : p.status === 'rejected' ? 'refused' : 'error';
+    const notes = (p.warnings ?? []).filter((w) => !/^registered a new/.test(w)).slice(0, 2);
+    // a refused push has no device row: the name the sender used is in the error text
+    const named = p.errorCode === 'unknown_device' ? /No device "([^"]+)"/.exec(p.error ?? '')?.[1] : null;
+    const who = p.device ? esc(p.device) : p.deviceRef ? esc(p.deviceRef) : named ? `${esc(named)} <span class="faint">(not found)</span>` : p.unassigned ? '<span class="faint">no home</span>' : '<span class="faint">the home</span>';
+    return `<li class="dv-push ${cls}"><div class="dv-push-head"><b class="dv-who">${who}</b><span class="badge ${p.status === 'ok' ? (cls === 'warn' ? 'warn' : 'good') : 'bad'}">${esc(label)}</span></div>
+      <div class="dv-when">${esc(f.dayTime(Math.floor(p.at / 1000)))}${p.format ? ` · <span class="mono">${esc(p.format)}</span>` : ''}</div>
+      <div class="dv-did">${esc(pushSummary(p))}${(p.warnings ?? []).some((w) => /^registered a new/.test(w)) ? ' <span class="badge info">device registered</span>' : ''}</div>
+      ${notes.length ? `<ul class="dv-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}</li>`;
+  }).join('')}</ul>`;
 }

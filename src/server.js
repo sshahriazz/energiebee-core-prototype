@@ -26,14 +26,20 @@ import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
 import * as onboardingCore from './core/onboarding.js';
+import * as healthCore from './core/health.js';
+import * as replayCore from './core/replay.js';
 import * as devicesView from './core/devices-view.js';
 import { createSyntheticIotHome } from './core/synthetic-iot.js';
+import * as pushIngest from './core/push-ingest.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
 // the program being run (npm start, the supervisor), never when imported.
 export const app = express();
-app.use(express.json());
+// POST /api/ingest reads its own body (text, up to 1 MB, parsed by core/push-ingest.js so a malformed body can be quarantined and logged);
+// the 100 KB JSON parser applies to every other route.
+const jsonBody = express.json();
+app.use((req, res, next) => (req.path === pushIngest.ENDPOINT ? next() : jsonBody(req, res, next)));
 app.use(express.static(path.join(here, '..', 'public'), { extensions: ['html'] }));
 
 const IMP = 'import_rate_ex * (1 + import_vat)';
@@ -718,6 +724,26 @@ app.post('/api/sites/:id/bindings', onb((req) => onboardingCore.applyBinding(req
 app.post('/api/sites/:id/bindings/unbind', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'unbind', { dryRun: dry(req), rebuild: req.body?.rebuild === true })));
 app.get('/api/sites/:id/rejects', onb((req) => onboardingCore.rejects(onboardingCore.siteCheck(req.params.id).id, { days: req.query.days, source: req.query.source || null })));
 
+// ───────────── Providers, completed: new source, binding priority, source health, replay (core/onboarding.js, health.js, replay.js) ─────────────
+// POST /api/sources adds a source row (dryRun supported); POST /api/sites/:id/bindings/priority re-records a binding with a new priority
+// (409 reason_required when built slots would change); GET /api/sites/:id/source-health says per role whether its provider still delivers;
+// GET /api/sites/:id/replay lists what a replay could recover, POST /api/sites/:id/replay reads stored receipts again through the
+// channels: it is a DRY RUN unless the body says dryRun: false. Errors are { error, code, field? } as above (replay adds not_replayable).
+const onbAsync = (fn, ok = 200) => async (req, res, next) => {
+  try { const out = await fn(req); res.status(out?.dryRun ? 200 : ok).json(out); } catch (err) {
+    if (err instanceof onboardingCore.OnboardingError || err instanceof replayCore.ReplayError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });
+    next(err);
+  }
+};
+app.post('/api/sources', onb((req) => onboardingCore.createSource(req.body || {}, { dryRun: dry(req) }), 201));
+app.post('/api/sites/:id/bindings/priority', onb((req) => onboardingCore.changeBindingPriority(req.params.id, req.body || {}, { dryRun: dry(req), rebuild: req.body?.rebuild === true })));
+app.get('/api/sites/:id/source-health', onb((req) => healthCore.health(onboardingCore.siteCheck(req.params.id).id)));   // (/api/sites/:id/health is the Data & trust page's)
+app.get('/api/sites/:id/replay', onb((req) => replayCore.replayCandidates(onboardingCore.siteCheck(req.params.id).id, { days: Number(req.query.days) || 30 })));
+app.post('/api/sites/:id/replay', onbAsync((req) => {
+  const b = req.body || {};
+  return replayCore.replay(onboardingCore.siteCheck(req.params.id).id, { source: b.source || null, days: b.days ?? 30, ids: Array.isArray(b.receiptIds) ? b.receiptIds.map(Number).filter(Number.isInteger) : null, dryRun: b.dryRun !== false });
+}));
+
 // ───────────── Devices page: devices and their data, and a synthetic IoT demo home (src/core/devices-view.js, synthetic-iot.js) ─────────────
 // GET /api/sites/:id/devices is above (it keeps its old fields). Errors are { error, code, field? }. simulate and commands only work on
 // SYNTHETIC demo devices (400 not_synthetic for any other); POST /api/demo/iot adds the synthetic demo home to THIS database, once.
@@ -732,6 +758,34 @@ app.post('/api/demo/iot', dev(async () => { const { site: s, created } = await c
 app.get('/api/sites/:id/devices/:deviceId', dev((req) => devicesView.deviceDetail(req.params.id, req.params.deviceId === 'site' ? 'site' : Number(req.params.deviceId), { hours: req.query.hours })));
 app.post('/api/sites/:id/devices/:deviceId/simulate', dev((req) => devicesView.simulate(req.params.id, Number(req.params.deviceId), req.body || {}), 201));
 app.post('/api/sites/:id/devices/:deviceId/commands', dev((req) => devicesView.sendCommand(req.params.id, Number(req.params.deviceId), req.body || {}), 201));
+
+// ───────────── Push ingest: a device or gateway posts its readings (src/core/push-ingest.js, push-formats.js; docs/push-ingest.md) ─────────────
+// POST /api/ingest takes the native body or a vendor format (query ?format=&site=&device=&register=1&kind=&label=). An optional shared secret
+// (env INGEST_TOKEN) is checked when set. Errors are { error, code, field?, logId? }; every body, accepted or refused, leaves a push_log row.
+// GET /api/sites/:id/pushes is the log plus what a sender needs to connect (endpoint, token or not, formats).
+const pushText = express.text({ type: () => true, limit: pushIngest.MAX_BODY_BYTES });
+const pushError = (res, err) => res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}), ...(err.logId ? { logId: err.logId } : {}) });
+app.post(pushIngest.ENDPOINT, (req, res, next) => pushText(req, res, (err) => {
+  if (!err) return next();
+  const big = err.status === 413 || err.type === 'entity.too.large';
+  res.status(big ? 413 : 400).json({ error: big ? `The body is larger than ${pushIngest.MAX_BODY_BYTES} bytes: split it into several pushes` : `The body could not be read: ${err.message}`, code: big ? 'too_large' : 'bad_body' });
+}), (req, res, next) => {
+  try {
+    const out = pushIngest.handlePush(typeof req.body === 'string' ? req.body : '', { query: req.query, headers: req.headers });
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    if (err instanceof pushIngest.PushError) { if (err.cause) console.error('push ingest:', err.cause); return pushError(res, err); }
+    next(err);
+  }
+});
+app.get('/api/sites/:id/pushes', dev((req) => {
+  const site = devicesView.siteOf(req.params.id);
+  return {
+    connect: { endpoint: pushIngest.ENDPOINT, tokenRequired: pushIngest.tokenRequired(), maxObservations: pushIngest.MAX_OBSERVATIONS, maxBytes: pushIngest.MAX_BODY_BYTES, siteId: site.id, timezone: site.timezone,
+      formats: Object.entries(pushIngest.FORMATS).map(([id, f]) => ({ id, label: f.label, about: f.about, points: f.points, source: f.source })) },
+    pushes: pushIngest.recentPushes(site.id, { limit: req.query.limit, deviceId: req.query.device ? Number(req.query.device) : null }),
+  };
+}));
 
 app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message });

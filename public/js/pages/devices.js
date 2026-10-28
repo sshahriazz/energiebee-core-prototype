@@ -15,6 +15,8 @@ let hours = 36;
 let sim = null;          // the last simulate result
 let cmd = null;          // the last command result
 let asking = false;      // the create-demo confirmation is open
+let push = { connect: null, pushes: [], error: null };   // GET /api/sites/:id/pushes: how to connect, and the log of what arrived
+let pollTimer = null;
 
 const reduce = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 const msg = (kind, html) => `<div class="ob-msg ${kind}" role="${kind === 'bad' ? 'alert' : 'status'}"><div>${html}</div></div>`;
@@ -25,8 +27,12 @@ async function call(path, body) {
 }
 
 // ───────────── Loading ─────────────
+async function loadPush() {
+  const r = await call(`/api/sites/${ctx.siteId}/pushes?limit=20`);
+  push = r.ok ? { connect: r.data.connect, pushes: r.data.pushes, error: null } : { connect: push.connect, pushes: push.pushes, error: r.data.error ?? `HTTP ${r.status}` };
+}
 async function loadList() {
-  const [l, d] = await Promise.all([call(`/api/sites/${ctx.siteId}/devices`), call('/api/demo/iot')]);
+  const [l, d] = await Promise.all([call(`/api/sites/${ctx.siteId}/devices`), call('/api/demo/iot'), loadPush()]);
   if (!l.ok) throw new Error(l.data.error ?? `HTTP ${l.status}`);
   list = l.data; demo = d.ok ? d.data : { exists: false };
 }
@@ -70,8 +76,26 @@ function drawPage() {
     ${demoCard()}
     <div class="ob-top"><span class="muted">${list.length} device${list.length === 1 ? '' : 's'} in <b>${esc(ctx.site?.name ?? 'this home')}</b>${isSynth ? ' (synthetic)' : unsyn ? ' (real)' : ''}.</span><span class="spacer"></span><button class="btn" id="dv-reload">↻ Refresh</button></div>
     ${list.length ? `<div class="dv-grid" role="list">${list.map((d) => `<div role="listitem">${V.cardHtml(d, tz, String(d.id) === String(selected))}</div>`).join('')}</div>` : '<section class="card empty"><h2>No devices in this home</h2><p>The home has no devices yet. Create the synthetic demo home above to see how devices look.</p></section>'}
+    ${connectCard(tz)}
     <div id="dv-detail">${detailHtml(tz)}</div>`;
   wire();
+}
+
+// ───────────── Connect a real device, and the log of pushes ─────────────
+function connectCard(tz) {
+  if (push.error && !push.connect) return `<section class="card dv-connect">${msg('bad', `How to connect a device could not be loaded: ${esc(push.error)}`)}</section>`;
+  if (!push.connect) return '<section class="card dv-connect"><div class="skeleton">Loading how to connect a device…</div></section>';
+  // the example names the selected device only when it is one that pushes (registered through the endpoint): a meter or an inverter is read by the core, not pushed
+  const dev = detail && !detail.error && detail.device && selected !== 'site' && detail.device.provider === 'push' ? detail.device : null;
+  const points = dev ? [...new Set((detail.channels ?? []).filter((c) => c.point && c.access === 'read').map((c) => c.point))] : [];
+  return `<section class="card dv-connect" id="dv-connect" aria-labelledby="dv-connect-t">
+    <div class="card-head"><div><h2 id="dv-connect-t">Connect a real device</h2><p>Plugs, heat pumps, chargers, sensors and gateways can push their readings to this core. They are read exactly like every other provider.</p></div>
+      <button class="btn" id="dv-push-reload" type="button">↻ Refresh log</button></div>
+    <div id="dv-push-msg" aria-live="polite">${push.error ? msg('bad', `The push log could not be refreshed: ${esc(push.error)}`) : ''}</div>
+    <div class="dv-connect-grid">
+      <div>${V.connectHtml({ connect: push.connect, origin: location.origin, siteId: ctx.siteId, device: dev, points })}</div>
+      <div><h3 class="dv-h3 first">Pushes received</h3><div id="dv-pushlog" aria-live="polite">${V.pushLogHtml(push.pushes, tz)}</div></div>
+    </div></section>`;
 }
 
 function detailHtml(tz) {
@@ -85,8 +109,9 @@ function detailHtml(tz) {
       <p><span class="dv-status ${esc(st.status)}"><i aria-hidden="true"></i>${esc(st.words)}${d.newestTs ? `, last data ${esc(V.ageWords(st.ageS))}` : ''}</span>
       ${d.roles.length ? ` · fills: ${d.roles.map((r) => esc(V.roleWord(r.role))).join(', ')}` : ' · fills no role'}</p></div>
       <div class="segmented" role="group" aria-label="How much history">${[[12, '12 h'], [36, '36 h'], [72, '3 days']].map(([h, l]) => `<button data-hours="${h}" aria-pressed="${h === hours}">${l}</button>`).join('')}</div></div>
-    ${d.synthetic ? V.syntheticLine() : ''}
+    ${d.synthetic ? V.syntheticLine() : d.emulated ? V.emulatedLine() : ''}
     ${d.synthetic ? actionPanels(d, tz) : realNote(d)}
+    ${d.pushes?.length ? `<h3 class="dv-h3">Recent pushes from this device</h3>${V.pushLogHtml(d.pushes, tz)}` : ''}
     <h3 class="dv-h3">What the device sent</h3>
     ${V.chartsHtml(d, tz)}
     <h3 class="dv-h3">What happened in this window, in words</h3>
@@ -100,6 +125,7 @@ function detailHtml(tz) {
 }
 
 function realNote(d) {
+  if (d.emulated) return `<div class="ob-msg" role="note"><div>Nothing on this page can simulate more data for it or send it a command. To send more readings run <span class="mono">npm run demo:push -- --site ${esc(ctx.siteId)} --device ${esc(d.device.ref ?? 'emu-plug-1')}</span>.</div></div>`;
   return `<div class="ob-msg" role="note"><div>This is a real device of this home. This page only shows what it sent: nothing here can simulate data or send it a command.</div></div>`;
 }
 
@@ -133,6 +159,42 @@ function wire() {
   $('dv-sim1')?.addEventListener('click', () => simulate(1));
   $('dv-sim12')?.addEventListener('click', () => simulate(12));
   $('dv-cmd')?.addEventListener('click', sendCommand);
+  $('dv-push-reload')?.addEventListener('click', reloadLog);
+  $('dv-copy')?.addEventListener('click', copyCurl);
+}
+
+async function reloadLog() {
+  await loadPush();
+  const tz = ctx.site?.timezone ?? 'Europe/London';
+  const el = document.getElementById('dv-pushlog');
+  if (el) el.innerHTML = V.pushLogHtml(push.pushes, tz);
+  const m = document.getElementById('dv-push-msg');
+  if (m) m.innerHTML = push.error ? msg('bad', `The push log could not be refreshed: ${esc(push.error)}. The rows below are the last ones that loaded.`) : '';
+}
+
+async function copyCurl() {
+  const text = document.getElementById('dv-curl')?.textContent ?? '';
+  const out = document.getElementById('dv-copied');
+  try { await navigator.clipboard.writeText(text); if (out) out.textContent = 'Copied'; }
+  catch {
+    const range = document.createRange(); range.selectNodeContents(document.getElementById('dv-curl'));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    if (out) out.textContent = 'Selected: press Ctrl+C or ⌘C to copy';
+  }
+}
+
+// While the page is open the log follows the pushes: every few seconds it asks for the newest rows, and when a new push has arrived the devices
+// and the open device are read again too, so a device that starts pushing appears and its charts move. Paused when the tab is hidden.
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (document.hidden || !ctx) return;
+    const newest = push.pushes[0]?.id ?? 0;
+    try {
+      await loadPush();
+      if ((push.pushes[0]?.id ?? 0) !== newest) { await loadList(); pickInitial(); await loadDetail(); drawPage(); } else await reloadLog();
+    } catch { /* the next tick tries again */ }
+  }, 5000);
 }
 
 function go(siteId) {
@@ -207,8 +269,9 @@ window.addEventListener('resize', () => {
 async function render(state) {
   ctx = state;
   document.getElementById('content').innerHTML = '<div class="skeleton">Loading the devices of this home…</div>';
-  list = []; detail = null; sim = null; cmd = null; asking = false;
+  list = []; detail = null; sim = null; cmd = null; asking = false; push = { connect: null, pushes: [], error: null };
   await refresh();
+  startPolling();
 }
 
 init({

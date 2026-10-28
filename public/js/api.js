@@ -1,6 +1,11 @@
 // Fetch helpers and number formats shared by every page.
+// The prototype user being viewed as (src/core/users.js), sent on every call; layout.js sets it.
+// None = no header = every home, as before users existed.
+let userId = null;
+export function setUser(id) { userId = id ?? null; }
 export async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts });
+  const headers = { 'content-type': 'application/json', ...(userId != null ? { 'x-user-id': String(userId) } : {}) };
+  const res = await fetch(path, { headers, ...opts });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;

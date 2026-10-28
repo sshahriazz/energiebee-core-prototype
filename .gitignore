@@ -3,3 +3,4 @@ node_modules/
 data/core.db*
 data/raw/
 data/logs/
+data/demo/

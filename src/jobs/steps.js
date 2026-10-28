@@ -6,7 +6,8 @@
 // ctx (one per home per sync, from syncSite): siteId, site (refreshed by some steps), conns, tz,
 // today, firstRun, fromDate, fromTs, cycle (newCycle), agreementsChanged, sinceMs.
 import { db } from '../db/db.js';
-import { registerAdapter, envCredentials } from '../core/providers.js';
+import { registerAdapter } from '../core/providers.js';
+import { siteCredentials } from '../core/secrets.js';
 import { nowSec, localDate, addDays, dayBounds, daysBetween } from '../core/time.js';
 import { resolveSiteGeo } from '../adapters/geo.js';
 import { syncCarbon } from '../adapters/carbon.js';
@@ -63,15 +64,17 @@ export async function tariffRates(ctx, tariff, fromTs, toTs) {
 
 registerAdapter('sunsynk', {
   connection: 'sunsynk',
-  credentials: (site) => envCredentials(site, { username: 'SUNSYNK_USERNAME', password: 'SUNSYNK_PASSWORD' }, { plantId: 'SUNSYNK_PLANT_ID' }),
+  // The home's stored login (src/core/secrets.js) when it has one, else .env for the .env home.
+  credentials: (site) => siteCredentials(site, 'sunsynk', { username: 'SUNSYNK_USERNAME', password: 'SUNSYNK_PASSWORD' }, { plantId: 'SUNSYNK_PLANT_ID' }),
   externalRef: (c) => c.plantId ?? null,
   publicFields: ['plantId'],
   roles: {
     inverter: [{
       // Sunsynk first: its plant record gives the home's coordinates when no postcode is set.
       step: 'sunsynk', order: 10, connection: 'sunsynk',
-      // The 5-minute history is kept upstream for 90 days only.
-      prepare: (ctx) => ({ dates: daysBetween(ctx.firstRun ? addDays(ctx.today, -Math.min(INITIAL_DAYS, 89)) : resumeDate(ctx.siteId, 'sunsynk', ctx.tz, ctx.today, addDays(ctx.today, -1), 1, 89), ctx.today) }),
+      // The 5-minute history is kept upstream for 90 days only. An inverter connected after the home
+      // was first built (a home added from its postcode, then connected) still needs the full initial window.
+      prepare: (ctx) => ({ dates: daysBetween(ctx.firstRun || !lastSuccess(ctx.siteId, 'sunsynk') ? addDays(ctx.today, -Math.min(INITIAL_DAYS, 89)) : resumeDate(ctx.siteId, 'sunsynk', ctx.tz, ctx.today, addDays(ctx.today, -1), 1, 89), ctx.today) }),
       run: (ctx, a, creds) => syncSunsynk(ctx.site, creds, a.dates),
       after: (ctx) => {
         try { measureBatteryCapacity(ctx.siteId); } catch (err) { console.error('battery capacity:', err.message); }
@@ -191,7 +194,7 @@ async function syncOctopusMeters(ctx, a, creds) {
 
 registerAdapter('octopus', {
   connection: 'octopus',
-  credentials: (site) => envCredentials(site, { apiKey: 'OCTOPUS_API_KEY', accountNumber: 'OCTOPUS_ACCOUNT_NUMBER' }),
+  credentials: (site) => siteCredentials(site, 'octopus', { apiKey: 'OCTOPUS_API_KEY', accountNumber: 'OCTOPUS_ACCOUNT_NUMBER' }),
   externalRef: (c) => c.accountNumber ?? null,
   publicFields: ['accountNumber'],
   roles: {

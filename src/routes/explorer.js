@@ -4,6 +4,7 @@
 // As a last guard, no value of a credential held in the environment can leave in an answer.
 import express from 'express';
 import * as X from '../core/explorer.js';
+import { canSee } from '../core/users.js';
 
 const router = express.Router();
 
@@ -19,9 +20,14 @@ function redactEnv(text) {
   return out;
 }
 
+// A home the picked user (req.user, set in src/server.js) may not see is an unknown home: checked on the
+// home asked for, and on the home an answer turns out to be about (a payload or series asked by its id).
+const hidden = (user, id) => id != null && /^\d+$/.test(String(id)) && !canSee(user, Number(id));
 const handle = (fn) => (req, res) => {
   try {
+    if (hidden(req.user, req.query?.site)) return res.status(404).json({ error: `no home ${req.query.site}` });
     const body = fn(req.query ?? {}, req.params ?? {});
+    if (hidden(req.user, body?.site)) return res.status(404).json({ error: 'not found' });
     res.type('application/json').send(redactEnv(JSON.stringify(body)));
   } catch (err) {
     const status = err.status ?? (err instanceof RangeError || err instanceof TypeError ? 400 : 500);

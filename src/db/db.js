@@ -252,7 +252,10 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   '050-planner-read.sql',
   // Phase B coverage matrix (060-069): the schema elements docs/coverage-matrix.json found missing that registry rows
   // cannot hold: the prices and clipping a plan used per slot, and the planning design's tenant record (060).
-  '060-coverage.sql'];
+  '060-coverage.sql',
+  // Prototype users (070): who is looking, and which homes each one may see (src/core/users.js);
+  // sign-up, sessions and each home's encrypted provider logins (071).
+  '070-users.sql', '071-auth.sql'];
 
 export function deltaStatements(sql) {
   const out = [];

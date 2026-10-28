@@ -69,10 +69,18 @@ export function ensureEnvSite() {
   if (hasSunsynk && listed('inverter', 'sunsynk')) ensureConnection(site.id, 'sunsynk');
   if (hasOctopus && listed('meter', 'octopus')) ensureConnection(site.id, 'octopus', env.OCTOPUS_ACCOUNT_NUMBER);
   if ((env.IMPORT_TARIFF_CODE || env.EXPORT_TARIFF_CODE) && listed('tariff_prices', 'octopus')) ensureConnection(site.id, 'tariff');
+  ensureSharedConnections(site);
+  return site.id;
+}
+
+// The connection rows of every shared step that always runs (weather, carbon, comparison, solar
+// forecast in GB), so their status is kept for the home. Steps that run only once they apply (gas
+// calorific value, once a gas meter is known) create their row then. Used for the .env home and for
+// a home added at sign-up (src/core/onboarding.js).
+export function ensureSharedConnections(site) {
   for (const e of plan(db, site)) {
     if (e.run && e.scope === 'shared' && e.connection && !e.def.when && !e.def.applies) ensureConnection(site.id, e.connection);
   }
-  return site.id;
 }
 
 // Our own forecast is stored as an issue like any provider's, so it can later be
@@ -188,8 +196,12 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     for (const e of plan(db, site, { conns })) await runEntry(ctx, e, log);
 
     // Rebuild only from the earliest slot whose facts changed in this sync (always including
-    // today, which is still being filled in). A changed tariff history rebuilds all.
-    const dirtyFrom = firstRun || ctx.agreementsChanged ? fromTs : Math.min(dayBounds(tz, today)[0], earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
+    // today, which is still being filled in). A changed tariff history rebuilds all the days built,
+    // e.g. a meter connected to a home that already has inverter days: its prices and meter
+    // readings reach back past the usual two-day window.
+    const firstBuilt = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId).d;
+    const allFrom = ctx.agreementsChanged && firstBuilt ? dayBounds(tz, firstBuilt)[0] : Infinity;
+    const dirtyFrom = firstRun ? fromTs : Math.min(dayBounds(tz, today)[0], allFrom, earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
     markDirty(siteId, dirtyFrom, nowSec(), firstRun ? 'initial load' : ctx.agreementsChanged ? 'tariff agreements changed' : 'facts changed');
     const t0 = Date.now();
     const rebuilt = processQueue();

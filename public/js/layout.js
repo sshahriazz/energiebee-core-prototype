@@ -1,5 +1,5 @@
 // Page shell: top bar, navigation, home and period pickers, sync button, footer.
-import { api, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns, originBadge, originLegend, minorSymbol } from './api.js';
+import { api, setUser, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns, originBadge, originLegend, minorSymbol } from './api.js';
 
 const PAGES = [
   ['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
@@ -26,6 +26,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
     period: params.get('period') || store.get('eb.period') || 'today',
     siteId: Number(params.get('site') || store.get('eb.site')) || null,
     sites: [], site: null,
+    users: [], user: null,
   };
 
   const theme = store.get('eb.theme');
@@ -36,6 +37,8 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
       <a class="brand" href="/">${BEE}<span>EnergieBee <small>core prototype</small></span></a>
       <nav class="nav">${PAGES.map(([k, l, h]) => `<a href="${h}" data-page="${k}" ${k === page ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
       <div class="controls">
+        <span id="account-slot" class="account"></span>
+        <select id="user-select" aria-label="Viewing as" title="Viewing as: the prototype user whose homes are shown (no login)" hidden></select>
         <select id="site-select" aria-label="Home"></select>
         <button class="btn" id="sync-btn" title="Fetch new data from every provider and rebuild">↻ Sync</button>
         <button class="btn icon-btn" id="theme-btn" title="Light or dark">◐</button>
@@ -110,6 +113,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
     setSlot(state.site?.slot_s);
     provenanceBanner(state.provenance);
     select.innerHTML = state.sites.map((s) => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}${s.is_demo ? ' (demo, synthetic)' : ''}</option>`).join('');
+    select.hidden = !state.sites.length;
     syncBtn.disabled = !!state.site?.syncing || !!state.site?.is_demo;
     syncBtn.innerHTML = state.site?.syncing ? '<span class="spin">↻</span> Syncing' : '↻ Sync';
     syncBtn.title = state.site?.is_demo ? 'Demo home: its data is synthetic, there is nothing to sync'
@@ -154,6 +158,58 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
     await rerender();
   }
 
+  // The prototype's users (no login): a database with none shows no switcher and every home, as
+  // before. The pick is kept per browser; ?user= in a link picks one too.
+  async function loadUsers() {
+    state.me = await api('/api/auth/me').catch(() => ({ user: null, switcher: false }));
+    accountArea();
+    // The main app: the session says who. The demo server (switch on): the dropdown does.
+    if (!state.me.switcher) { setUser(null); return; }
+    state.users = await api('/api/users').catch(() => []);
+    const userSelect = document.getElementById('user-select');
+    if (!state.users.length) { setUser(null); return; }
+    const wanted = Number(params.get('user') || store.get('eb.user'));
+    state.user = state.users.find((u) => u.id === wanted) || state.users[0];
+    setUser(state.user.id);
+    store.set('eb.user', String(state.user.id));
+    userSelect.innerHTML = state.users.map((u) => `<option value="${u.id}" ${u.id === state.user.id ? 'selected' : ''}>${esc(u.name)} · ${esc(u.role)}${u.role === 'admin' ? '' : ` (${u.homes} ${u.homes === 1 ? 'home' : 'homes'})`}</option>`).join('');
+    userSelect.title = `Viewing as ${state.user.name}${state.user.note ? `: ${state.user.note}` : ''} (prototype switch, no login)`;
+    userSelect.hidden = false;
+    // Another user: the page starts again with that user's first home (every page builds itself once).
+    userSelect.addEventListener('change', () => {
+      store.set('eb.user', userSelect.value);
+      try { localStorage.removeItem('eb.site'); } catch { /* private mode */ }
+      const q = new URLSearchParams(location.search);
+      q.delete('site'); q.delete('user');
+      location.href = `${location.pathname}?${q}`;
+    });
+  }
+
+  // Demo server: sign up a new user (then picked in the dropdown). Main app, signed in: who, add a
+  // home, sign out; signed out: sign in or sign up.
+  function accountArea() {
+    const slot = document.getElementById('account-slot');
+    const u = state.me?.user;
+    // The home's provider logins: see which account is connected, disconnect it or use another.
+    const logins = `<a class="btn" id="logins-btn" href="/onboarding" title="The Sunsynk and Octopus accounts connected to this home"><span aria-hidden="true">🔌</span> Manage providers</a>`;
+    if (state.me?.switcher) {
+      slot.innerHTML = `<a class="btn btn-primary" href="/signup" title="Create a new user, add their home and connect their providers">+ Sign up</a>${logins}`;
+    } else if (u) {
+      slot.innerHTML = `<span class="account-who" title="Signed in">${esc(u.email || u.name)}</span>
+        <a class="btn" href="/onboarding">+ Home</a>${logins}<button class="btn" id="logout-btn">Sign out</button>`;
+      document.getElementById('logout-btn').addEventListener('click', async () => {
+        await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+        try { localStorage.removeItem('eb.site'); } catch { /* private mode */ }
+        location.href = '/login';
+      });
+    } else {
+      slot.innerHTML = `<a class="btn" href="/login">Sign in</a><a class="btn btn-primary" href="/signup">Sign up</a>`;
+    }
+    document.getElementById('logins-btn')?.addEventListener('click', (e) => {
+      if (state.siteId) e.currentTarget.href = `/onboarding?home=${state.siteId}`;
+    });
+  }
+
   select.addEventListener('change', async () => {
     state.siteId = Number(select.value);
     state.provenance = null;
@@ -184,9 +240,14 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
     rerender();
   }));
 
+  await loadUsers();
   await loadSites();
   if (!state.site && homeScoped) {
-    document.getElementById('content').innerHTML = `<div class="card empty"><h2>No home yet</h2><p>Put Sunsynk and Octopus details in <span class="mono">.env</span> and restart.</p></div>`;
+    document.getElementById('content').innerHTML = state.user
+      ? `<div class="card empty"><h2>No home yet</h2><p>${esc(state.user.name)} has no home to show yet. Add one, or pick another user above to see theirs.</p><p><a class="btn btn-primary" href="/onboarding">Add a home for ${esc(state.user.name)}</a></p></div>`
+      : state.me?.user
+      ? `<div class="card empty"><h2>No home yet</h2><p>Add your home: your postcode, then connect your inverter and meter.</p><p><a class="btn btn-primary" href="/onboarding">Add my home</a></p></div>`
+      : `<div class="card empty"><h2>No home yet</h2><p>Put Sunsynk and Octopus details in <span class="mono">.env</span> and restart.</p></div>`;
     return state;
   }
   await rerender();

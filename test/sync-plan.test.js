@@ -175,3 +175,31 @@ test('a failing adapter fails only its own step: the home\'s other steps and the
   assert.equal(lastLog(y).find((l) => l.step === 'carbon').past, 1);
   assert.deepEqual(unexpected, []);
 });
+
+test('changed tariff agreements on a home already built rebuild every day built, not the last two', async () => {
+  // A meter connected after the inverter: its account brings tariff agreements and meter days
+  // reaching back past the usual window, so all of them must be priced again.
+  const id = gbHome('Meter later');
+  const first = entry((await syncSite(id)).log, 'build').rebuilt.find((b) => b.siteId === id);
+  assert.ok(first.days > 3, JSON.stringify(first));
+  let r = await syncSite(id);
+  assert.ok(entry(r.log, 'build').rebuilt.find((b) => b.siteId === id).days <= 3, 'no change: only the recent days');
+  const restore = P.registerAdapter('neso', { roles: { carbon: [{ step: 'carbon', order: 40, connection: 'carbon', run: async (ctx) => { ctx.agreementsChanged = true; return {}; } }] } });
+  r = await syncSite(id);
+  restore();
+  const again = entry(r.log, 'build').rebuilt.find((b) => b.siteId === id);
+  assert.equal(again.from, first.from, JSON.stringify(again));
+  assert.equal(again.days, first.days);
+});
+
+test('an inverter connected after the home was first built fetches the full initial window, then only the recent days', async () => {
+  const { INITIAL_DAYS } = await import('../src/jobs/steps.js');
+  const id = gbHome('Postcode first');
+  await syncSite(id);   // built from the postcode alone
+  conn(id, 'sunsynk');
+  const prep = P.adapterFor('sunsynk').roles.inverter.steps[0].prepare;
+  const ctx = { siteId: id, tz: 'Europe/London', today: '2026-10-28', firstRun: false };
+  assert.equal(prep(ctx).dates.length, INITIAL_DAYS + 1, 'never synced: the full window');
+  db.prepare("UPDATE connection SET last_success_at = ? WHERE site_id = ? AND provider = 'sunsynk'").run(Date.UTC(2026, 9, 28, 9) / 1000, id);
+  assert.deepEqual(prep(ctx).dates, ['2026-10-27', '2026-10-28'], 'synced before: yesterday and today');
+});

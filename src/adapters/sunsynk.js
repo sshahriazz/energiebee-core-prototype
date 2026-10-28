@@ -12,11 +12,16 @@ import { setAttribute } from '../core/attributes.js';
 
 const BASE = 'https://api.sunsynk.net';
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
-let cachedToken = null;
+// Tokens by login (a hash of username and password): every home has its own Sunsynk account, so one
+// home's token is never used for another's, and a changed password is a new login.
+const tokens = new Map();
+const loginKey = (username, password) => crypto.createHash('sha256').update(`${username}\0${password}`).digest('hex');
 
 // Connect login: per-request RSA key, MD5-signed nonce, RSA-encrypted password.
 async function login(username, password) {
-  if (cachedToken && cachedToken.until > Date.now()) return cachedToken.token;
+  const key = loginKey(username, password);
+  const cached = tokens.get(key);
+  if (cached && cached.until > Date.now()) return cached.token;
   const nonce = Date.now();
   const infix = `nonce=${nonce}&source=sunsynk`;
   const pk = await fetchJson(`${BASE}/anonymous/publicKey?nonce=${nonce}&source=sunsynk&sign=${md5(`${infix}POWER_VIEW`)}`);
@@ -31,7 +36,7 @@ async function login(username, password) {
   const token = json?.data?.access_token ?? json?.access_token;
   if (!token) throw new Error(`Sunsynk login failed: ${json?.msg || 'no token'}`);
   const ttl = (json?.data?.expires_in ?? json?.expires_in ?? 3600) * 1000;
-  cachedToken = { token, until: Date.now() + ttl - 60000 };
+  tokens.set(key, { token, until: Date.now() + ttl - 60000 });
   return token;
 }
 
@@ -44,6 +49,30 @@ async function api(token, pathAndQuery, siteId) {
     throw new Error(`Sunsynk ${pathAndQuery.split('?')[0]}: code ${json?.code} ${json?.msg || ''}`);
   }
   return { json, url };
+}
+
+// A login checked before it is stored (src/core/onboarding.js): signs in and lists the plants it sees,
+// landing nothing. Returns the plant to use: the one asked for, or the only one; several and none
+// asked for, or none at all, is an error naming them.
+// The plants a Sunsynk login sees: [{ id, name, address }], for the user to pick theirs. Throws when
+// the login is refused or sees none.
+export async function listSunsynkPlants({ username, password }) {
+  const token = await login(username, password);
+  const { json } = await fetchJson(`${BASE}/api/v1/plants?page=1&limit=50`, { headers: { authorization: `Bearer ${token}` } });
+  if (json?.code !== 0) throw new Error(`Sunsynk plants: code ${json?.code} ${json?.msg || ''}`.trim());
+  const plants = (json.data?.infos || []).map((p) => ({ id: String(p.id), name: String(p.name || '').trim(), address: typeof p.address === 'string' ? p.address.trim() || null : null }));
+  if (!plants.length) throw new Error('This Sunsynk login has no plant');
+  return plants;
+}
+
+export async function checkSunsynkLogin({ username, password, plantId = null }) {
+  const plants = await listSunsynkPlants({ username, password });
+  const hit = plantId ? plants.find((p) => p.id === String(plantId)) : plants.length === 1 ? plants[0] : null;
+  if (!hit) {
+    const names = plants.map((p) => `${p.id} "${p.name}"`).join(', ');
+    throw new Error(plantId ? `Plant ${plantId} is not on this Sunsynk login (found ${names})` : `This login sees several plants: pick yours (${names})`);
+  }
+  return { plantId: hit.id, plantName: hit.name, plants: plants.length };
 }
 
 // ───────────── Normalisers ─────────────

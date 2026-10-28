@@ -182,6 +182,19 @@ function replaceAgreements(siteId, deviceId, agreements, direction) {
   return { kept, changed: true };
 }
 
+// A login checked before it is stored (src/core/onboarding.js): reads the account, landing nothing.
+export async function checkOctopusAccount({ apiKey, accountNumber }) {
+  let json;
+  try { ({ json } = await fetchJson(`${BASE}/accounts/${encodeURIComponent(accountNumber)}/`, { headers: auth(apiKey) })); } catch (err) {
+    if (/HTTP 40[134]/.test(err.message)) throw new Error('Octopus did not accept this API key and account number');
+    throw err;
+  }
+  if (!json?.properties?.length) throw new Error('This Octopus account has no property');
+  const prop = json.properties.find((p) => !p.moved_out_at) || json.properties[0];
+  return { accountNumber: json.number ?? accountNumber, properties: json.properties.length, postcode: prop.postcode ?? null,
+    meters: (prop.electricity_meter_points || []).length + (prop.gas_meter_points || []).length };
+}
+
 export async function syncOctopusAccount(site, { apiKey, accountNumber }) {
   const url = `${BASE}/accounts/${accountNumber}/`;
   const { json } = await fetchJson(url, { headers: auth(apiKey) });

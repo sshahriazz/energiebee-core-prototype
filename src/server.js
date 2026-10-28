@@ -24,6 +24,8 @@ import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
+import { userOf, canSee, visibleSiteIds, listUsers, giveHome, publicUser, switcherOn, signUp, signIn, startSession, endSession, cookieOf, sessionCookie } from './core/users.js';
+import { addHome, homeProviders, connectHome, disconnectHome, findPlants, COUNTRIES } from './core/onboarding.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
@@ -31,11 +33,19 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 app.use(express.json());
 app.use(express.static(path.join(here, '..', 'public'), { extensions: ['html'] }));
+// Who is looking (src/core/users.js): the user the X-User-Id header names, or null (every home).
+// API answers are never cached by the browser: they change with every sync and every user switch.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  try { req.user = userOf(req); } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  next();
+});
 
 const IMP = 'import_rate_ex * (1 + import_vat)';
 const site = (req) => {
   const s = db.prepare('SELECT * FROM site WHERE id = ?').get(Number(req.params.id));
-  if (!s) { const e = new Error('No such home'); e.status = 404; throw e; }
+  // A home the user may not see answers as one that does not exist, so its id gives nothing away.
+  if (!s || !canSee(req.user, s.id)) { const e = new Error('No such home'); e.status = 404; throw e; }
   return s;
 };
 // The home's slot length (s) and the start of the slot holding an instant, on its own grid.
@@ -69,8 +79,58 @@ app.get('/api/status', (req, res) => {
   res.json({ ok: true, uptimeS: nowSec() - startedAt, method: METHOD_VERSION, lastSync: last ?? null });
 });
 
+// ───────────── Accounts (src/core/users.js) and the steps after sign-up (src/core/onboarding.js) ─────────────
+
+// The prototype's users to switch between ("Viewing as", no password): only where USER_SWITCHER=1 (the
+// demo server); elsewhere none are listed, so the switcher stays hidden and nobody's email is shown.
+app.get('/api/users', (req, res) => res.json(switcherOn() ? listUsers() : []));
+
+// Who is signed in (null when nobody is), whether the demo switch is on, and the countries a home can be added in.
+app.get('/api/auth/me', (req, res) => {
+  res.json({ user: publicUser(req.user), switcher: switcherOn(), homes: req.user ? (visibleSiteIds(req.user)?.size ?? null) : null,
+    countries: Object.entries(COUNTRIES).map(([code, c]) => ({ code, name: c.name, example: c.example })) });
+});
+// { email, password, name? }: a new account, signed in at once (the session cookie). On the demo
+// server (the switch on) the dropdown picks the new user instead: no cookie, since cookies on
+// localhost are shared between ports and one would sign the main app's browser out.
+app.post('/api/auth/signup', (req, res) => {
+  const u = signUp(req.body || {});
+  if (!switcherOn()) res.setHeader('set-cookie', sessionCookie(startSession(u.id)));
+  res.status(201).json({ user: publicUser(u) });
+});
+app.post('/api/auth/login', (req, res) => {
+  const u = signIn(req.body || {});
+  res.setHeader('set-cookie', sessionCookie(startSession(u.id)));
+  res.json({ user: publicUser(u) });
+});
+app.post('/api/auth/logout', (req, res) => {
+  endSession(cookieOf(req));
+  res.setHeader('set-cookie', sessionCookie(null));
+  res.json({ ok: true });
+});
+// Step 1 after sign-up: { country, postcode, name? } -> the signed-in user's new home.
+app.post('/api/onboarding/home', async (req, res) => {
+  const { site: s, geoError } = await addHome(req.user, req.body || {});
+  const pick = ({ id, name, postcode, outcode, country, market_code, currency, timezone, gsp_region, carbon_region }) => ({ id, name, postcode, outcode, country, market_code, currency, timezone, gsp_region, carbon_region });
+  res.status(201).json({ site: pick(s), geoError });
+});
+// Step 2: the providers this home can connect (with the login each asks for) and the automatic ones.
+app.get('/api/sites/:id/providers', (req, res) => res.json(homeProviders(site(req))));
+// Connect one with the user's own login: { credentials: {...} }. Checked with the provider, stored
+// encrypted, never sent back; the first sync starts.
+app.post('/api/sites/:id/providers/:provider', async (req, res) => {
+  res.status(201).json(await connectHome(req.user, site(req), { provider: req.params.provider, credentials: req.body?.credentials }));
+});
+// The plants a login sees, to pick one before connecting (Sunsynk). Nothing is stored.
+app.post('/api/sites/:id/providers/:provider/plants', async (req, res) => {
+  res.json(await findPlants(req.user, site(req), { provider: req.params.provider, credentials: req.body?.credentials }));
+});
+// Disconnect it (a wrong login, another account): the login is forgotten and its data withdrawn.
+app.delete('/api/sites/:id/providers/:provider', (req, res) => res.json(disconnectHome(req.user, site(req), req.params.provider)));
+
 app.get('/api/sites', (req, res) => {
-  const sites = db.prepare('SELECT * FROM site ORDER BY is_demo, id').all();
+  const visible = visibleSiteIds(req.user);
+  const sites = db.prepare('SELECT * FROM site ORDER BY is_demo, id').all().filter((s) => !visible || visible.has(s.id));
   res.json(sites.map((s) => {
     const connections = db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? ORDER BY provider').all(s.id);
     return {
@@ -100,6 +160,8 @@ app.post('/api/sites', (req, res) => {
     s = createSite({ name: b.name, postcode: b.postcode ?? null, country: b.country ?? null, market: b.market ?? null, currency: b.currency ?? null,
       timezone: b.timezone ?? null, slotS: b.slot_s ?? null });
   } catch (err) { throw badRequest(err.message); }
+  // A home added while a user is picked is theirs (an admin already sees every home).
+  if (req.user && req.user.role !== 'admin') giveHome(req.user.id, s.id);
   res.status(201).json(s);
 });
 
@@ -579,7 +641,8 @@ app.get('/api/sites/:id/evidence', (req, res) => {
 
 app.get('/api/raw/:rawId', (req, res) => {
   const r = db.prepare('SELECT p.*, src.code AS source FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.id = ?').get(Number(req.params.rawId));
-  if (!r) return res.status(404).json({ error: 'not found' });
+  // A payload of a home the user may not see is not found; shared ones (no home) are for everyone.
+  if (!r || (r.site_id != null && !canSee(req.user, r.site_id))) return res.status(404).json({ error: 'not found' });
   let body = fs.readFileSync(path.join(dataDir, r.file), 'utf8');
   const size = body.length;
   if (body.length > 200000) body = `${body.slice(0, 200000)}…`;

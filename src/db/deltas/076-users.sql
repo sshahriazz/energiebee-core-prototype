@@ -1,4 +1,4 @@
--- Delta 070: prototype users and the homes each one may see (src/core/users.js). A SWITCH, NOT A LOGIN:
+-- Delta 076: prototype users and the homes each one may see (src/core/users.js). A SWITCH, NOT A LOGIN:
 -- no password, no session. The browser names the user in an X-User-Id header and the API shows that
 -- user only their own homes; a request without the header sees every home, as before this delta.
 -- Nothing in the build engine reads these tables (site_hh and site_day are not touched). Same applying
@@ -23,4 +23,12 @@ CREATE TABLE IF NOT EXISTS user_site (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS user_site_site ON user_site (site_id);
 
-INSERT OR IGNORE INTO schema_delta (name, applied_at) VALUES ('070-users', CAST(strftime('%s', 'now') AS INTEGER) * 1000);
+-- Delta 070 (groups and grants) may have created app_user first with only id, name and created_at; then the
+-- CREATE above is skipped and these add the rest (each is skipped where the column is already there).
+-- SQLite cannot add a UNIQUE column, so the email is kept unique by an index.
+ALTER TABLE app_user ADD COLUMN email TEXT;
+ALTER TABLE app_user ADD COLUMN role TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner', 'installer', 'admin'));
+ALTER TABLE app_user ADD COLUMN note TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS app_user_email ON app_user (email);
+
+INSERT OR IGNORE INTO schema_delta (name, applied_at) VALUES ('076-users', CAST(strftime('%s', 'now') AS INTEGER) * 1000);

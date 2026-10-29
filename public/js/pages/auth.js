@@ -1,6 +1,6 @@
 // Sign up, sign in, and add a home (/signup, /login, /onboarding): the account (src/core/users.js),
 // then the home from a postcode and its providers connected with the user's own logins
-// (src/core/onboarding.js). Logins go to the server once and are never shown again.
+// (src/core/signup.js). Logins go to the server once and are never shown again.
 import { api, esc } from '../api.js';
 import { init } from '../layout.js';
 

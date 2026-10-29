@@ -5,11 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOURCES, METRICS, VAT_RATES, GB_VAT_NOTE } from './registry.js';
-import { todMinute } from '../core/time.js';
 import { seedMarkets, seedBiddingZones, marketSeedPending } from './seed/markets.js';
 import { seedProviders, providerSeedPending } from './seed/providers.js';
 import { seedRegionsGb, regionSeedPending } from './seed/regions-gb.js';
 import { seedAttributeDefs, attributeSeedPending } from './seed/attributes.js';
+import { seedBindings, bindingSeedPending } from './seed/bindings.js';
 import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
 import { resolveRegion } from '../core/regions.js';
 
@@ -25,109 +25,30 @@ export const db = new DatabaseSync(dbFile);
 // An up-to-date database is opened without writing anything (below), so opening it never waits.
 export const BUSY_TIMEOUT_MS = 5000;
 db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;`);
-// Tariff agreements became versioned (16 Oct 2026). The old table had UNIQUE (device_id, valid_from),
-// which a superseded version would break, so it is rebuilt once before the schema is applied.
-const agreementCols = db.prepare("SELECT name FROM pragma_table_info('tariff_agreement')").all().map((c) => c.name);
-if (agreementCols.length && !agreementCols.includes('recorded_at')) {
-  // SQLite's table-rebuild procedure: foreign-key checks off while rows are copied (it cannot be changed inside a transaction).
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec(`BEGIN;
-    DROP TRIGGER IF EXISTS agreement_no_overlap;
-    ALTER TABLE tariff_agreement RENAME TO tariff_agreement_v1;
-    CREATE TABLE tariff_agreement (
-      id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES site(id) ON DELETE CASCADE,
-      device_id INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE, tariff_id INTEGER NOT NULL REFERENCES tariff(id),
-      valid_from INTEGER NOT NULL, valid_to INTEGER, recorded_at INTEGER, superseded_at INTEGER,
-      CHECK (valid_to IS NULL OR valid_to > valid_from));
-    INSERT INTO tariff_agreement (id, site_id, device_id, tariff_id, valid_from, valid_to) SELECT id, site_id, device_id, tariff_id, valid_from, valid_to FROM tariff_agreement_v1;
-    DROP TABLE tariff_agreement_v1;
-    COMMIT;`);
-  db.exec('PRAGMA foreign_keys = ON');
-}
-// Device columns added with versioning; must exist before the schema's statements run.
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'device'").get()) {
-  const devCols = new Set(db.prepare("SELECT name FROM pragma_table_info('device')").all().map((c) => c.name));
-  for (const c of ['recorded_at', 'retired_at']) if (!devCols.has(c)) db.exec(`ALTER TABLE device ADD COLUMN ${c} INTEGER`);
-}
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'site_day_revision'").get()
-  && !db.prepare("SELECT 1 FROM pragma_table_info('site_day_revision') WHERE name = 'kind'").get()) {
-  db.exec("ALTER TABLE site_day_revision ADD COLUMN kind TEXT NOT NULL DEFAULT 'recorded'");
-}
-// Slot length per home (slot plumbing, Oct 2026): site.slot_s, and serving rows that carry their
-// own length and local time of day. The old site_hh only allowed half-hours (CHECK slot_start % 1800);
-// a CHECK cannot be altered, so that table is set aside here and recreated by the schema below.
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'site'").get()
-  && !db.prepare("SELECT 1 FROM pragma_table_info('site') WHERE name = 'slot_s'").get()) {
-  db.exec('ALTER TABLE site ADD COLUMN slot_s INTEGER NOT NULL DEFAULT 1800 CHECK (slot_s IN (900, 1800, 3600))');
-}
-const oldServing = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'site_hh'").get()
-  && !db.prepare("SELECT 1 FROM pragma_table_info('site_hh') WHERE name = 'dur_s'").get();
-if (oldServing) {
-  db.exec('DROP TABLE IF EXISTS site_hh_v1; DROP INDEX IF EXISTS site_hh_day; ALTER TABLE site_hh RENAME TO site_hh_v1;');
-}
+// A database is created by schema.sql and from then on changed only by the deltas (below). One from
+// before the deltas is not upgraded: it is refused before anything is written (see predatesSchema).
 const SCHEMA = fs.readFileSync(path.join(here, 'schema.sql'), 'utf8');
-upgradeRates();
-db.exec(SCHEMA);
-if (oldServing) upgradeServing();
-
-// Rate rows for more than GB (Oct 2026): components fixed and capacity with a charge_period, and
-// registers beyond single/day/night (hp, hc, blue_hc ...). The old table's CHECKs refuse those and a
-// CHECK cannot be altered, so the table is rebuilt once with SQLite's procedure: in one transaction
-// with foreign-key checks off, renamed, recreated by schema.sql, every row copied with its id, the
-// old table dropped. Rate rows are facts (the only copy), so a failure rolls everything back.
-// The overlap trigger is left off while copying (the rows already passed it) and put back by
-// schema.sql right after, so the index and trigger are the new ones.
-function upgradeRates() {
-  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rate_interval'").get()?.sql;
-  if (!sql || sql.includes("'capacity'")) return;
-  db.exec('PRAGMA foreign_keys = OFF');
-  db.exec('BEGIN');
-  try {
-    db.exec('DROP TRIGGER IF EXISTS rate_no_overlap; DROP INDEX IF EXISTS rate_current; ALTER TABLE rate_interval RENAME TO rate_interval_v1;');
-    db.exec(SCHEMA);
-    db.exec('DROP TRIGGER rate_no_overlap');
-    const newCols = new Set(db.prepare("SELECT name FROM pragma_table_info('rate_interval')").all().map((c) => c.name));
-    const cols = db.prepare("SELECT name FROM pragma_table_info('rate_interval_v1')").all().map((c) => c.name).filter((c) => newCols.has(c)).join(', ');
-    db.exec(`INSERT INTO rate_interval (${cols}) SELECT ${cols} FROM rate_interval_v1; DROP TABLE rate_interval_v1;`);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  } finally {
-    db.exec('PRAGMA foreign_keys = ON');
-  }
+if (predatesSchema()) {
+  db.close();
+  throw new Error('This database predates the current schema; delete data/core.db and start fresh (npm run reset)');
 }
+db.exec(SCHEMA);
 
-// Serving tables are rebuilt from facts, so they are disposable. Old rows are all half-hours
-// (the old CHECK made sure), so they are carried over as 1800 s slots with their local time of
-// day, which keeps the "restated" marks and needs no rebuild. If that copy fails for any reason
-// the rows are dropped and a full rebuild is queued for every home; facts are never touched.
-function upgradeServing() {
-  const newCols = new Set(db.prepare("SELECT name FROM pragma_table_info('site_hh')").all().map((c) => c.name));
-  const cols = db.prepare("SELECT name FROM pragma_table_info('site_hh_v1')").all().map((c) => c.name).filter((c) => newCols.has(c) && c !== 'dur_s' && c !== 'tod_min');
-  const hasTz = db.prepare("SELECT 1 FROM pragma_table_info('site') WHERE name = 'timezone'").get();
-  const tzOf = new Map(db.prepare(`SELECT id, ${hasTz ? 'timezone' : 'NULL AS timezone'} FROM site`).all().map((s) => [s.id, s.timezone || 'Europe/London']));
-  db.exec('BEGIN');
+// A database from before the deltas: no schema_delta table, and a table schema.sql defines is there
+// without every column schema.sql gives it (for example a tariff_agreement without recorded_at, or
+// a site_hh without dur_s). A new, empty file is not, nor is one whose first open stopped after
+// schema.sql and before the first delta (its tables already have today's shape).
+function predatesSchema() {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_delta'").get()) return false;
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((t) => t.name);
+  if (!tables.length) return false;
+  const fresh = new DatabaseSync(':memory:');
   try {
-    const ins = db.prepare(`INSERT INTO site_hh (${cols.join(',')}, dur_s, tod_min) VALUES (${cols.map(() => '?').join(',')}, 1800, ?)`);
-    for (const r of db.prepare(`SELECT ${cols.join(',')} FROM site_hh_v1`).all()) {
-      ins.run(...cols.map((c) => r[c]), todMinute(tzOf.get(r.site_id) || 'Europe/London', r.slot_start));
-    }
-    db.exec('DROP TABLE site_hh_v1');
-    db.exec('COMMIT');
-  } catch {
-    db.exec('ROLLBACK');
-    const now = Math.floor(Date.now() / 1000);
-    db.exec('BEGIN');
-    try {
-      db.exec('DROP TABLE IF EXISTS site_hh_v1; DELETE FROM site_hh; DELETE FROM site_day;');
-      const q = db.prepare('INSERT INTO rebuild_queue (site_id, from_ts, to_ts, reason, enqueued_at) VALUES (?, 0, ?, ?, ?)');
-      for (const id of tzOf.keys()) q.run(id, now, 'serving tables recreated for per-home slot length', now);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
+    fresh.exec(SCHEMA);
+    const cols = (c, t) => c.prepare('SELECT name FROM pragma_table_info(?)').all(t).map((r) => r.name);
+    return tables.some((t) => { const have = new Set(cols(db, t)); return cols(fresh, t).some((c) => !have.has(c)); });
+  } finally {
+    fresh.close();
   }
 }
 
@@ -161,18 +82,22 @@ export function tx(fn) {
 // a row that differs from the code is brought back in line. Only rows that differ are written, so
 // an open of an up-to-date database writes nothing (and takes no write lock).
 function seedRegistry() {
-  const src = new Map(db.prepare('SELECT code, name, contract FROM source').all().map((r) => [r.code, r]));
+  // source.traits exists from delta 063; on an older database the first pass skips it and the pass after the deltas writes it.
+  const hasTraits = Boolean(db.prepare("SELECT 1 FROM pragma_table_info('source') WHERE name = 'traits'").get());
+  const src = new Map(db.prepare(`SELECT code, name, contract, ${hasTraits ? 'traits' : 'NULL AS traits'} FROM source`).all().map((r) => [r.code, r]));
   const met = new Map(db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric').all().map((r) => [r.code, r]));
   const vat = new Map(db.prepare('SELECT fuel, direction, rate, valid_from, valid_to FROM vat_rate').all().map((r) => [`${r.fuel}|${r.direction}|${r.valid_from}`, r]));
-  const sources = SOURCES.filter((s) => { const r = src.get(s.code); return !r || r.name !== s.name || r.contract !== JSON.stringify(s.contract); });
+  const sources = SOURCES.filter((s) => { const r = src.get(s.code); return !r || r.name !== s.name || r.contract !== JSON.stringify(s.contract) || (hasTraits && (r.traits ?? null) !== (s.traits ? JSON.stringify(s.traits) : null)); });
   const metrics = METRICS.filter((m) => {
     const r = met.get(m.code);
     return !r || r.label !== m.label || r.unit !== m.unit || r.time_role !== m.timeRole || r.aggregation !== m.aggregation || r.domain !== m.domain;
   });
   const rates = VAT_RATES.filter((v) => { const r = vat.get(`${v.fuel}|${v.direction}|${v.validFrom}`); return !r || r.rate !== v.rate || r.valid_to !== (v.validTo ?? null); });
   if (!sources.length && !metrics.length && !rates.length) return;
-  const upSource = db.prepare(
-    `INSERT INTO source (code, name, contract) VALUES (?, ?, ?)
+  const upSource = hasTraits ? db.prepare(
+    `INSERT INTO source (code, name, contract, traits) VALUES (?, ?, ?, ?)
+     ON CONFLICT(code) DO UPDATE SET name = excluded.name, contract = excluded.contract, traits = excluded.traits`)
+    : db.prepare(`INSERT INTO source (code, name, contract) VALUES (?, ?, ?)
      ON CONFLICT(code) DO UPDATE SET name = excluded.name, contract = excluded.contract`);
   const upMetric = db.prepare(
     `INSERT INTO metric (code, label, unit, time_role, aggregation, domain) VALUES (?, ?, ?, ?, ?, ?)
@@ -181,37 +106,12 @@ function seedRegistry() {
   const upVat = db.prepare(
     `INSERT OR REPLACE INTO vat_rate (fuel, direction, rate, valid_from, valid_to) VALUES (?, ?, ?, ?, ?)`);
   tx(() => {
-    for (const s of sources) upSource.run(s.code, s.name, JSON.stringify(s.contract));
+    for (const s of sources) upSource.run(...(hasTraits ? [s.code, s.name, JSON.stringify(s.contract), s.traits ? JSON.stringify(s.traits) : null] : [s.code, s.name, JSON.stringify(s.contract)]));
     for (const m of metrics) upMetric.run(m.code, m.label, m.unit, m.timeRole, m.aggregation, m.domain);
     for (const v of rates) upVat.run(v.fuel, v.direction, v.rate, v.validFrom, v.validTo ?? null);
   });
 }
 seedRegistry();
-
-// Columns added after a database was created. Serving tables are rebuilt from facts, so adding is safe.
-function addColumns(table, cols) {
-  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
-  for (const c of cols) if (!have.has(c)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} REAL`);
-}
-for (const t of ['site_hh', 'site_day']) addColumns(t, ['solar_to_loss', 'battery_to_loss', 'grid_to_loss', 'loss_cost']);
-// Battery stock carried from one day to the next, so a rebuild can start at any day.
-addColumns('site_day', ['battery_eff']);
-if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'battery_stock')) db.exec('ALTER TABLE site_day ADD COLUMN battery_stock TEXT');
-// The slot length each day was built with; days built before it was recorded were half-hours.
-if (!db.prepare('PRAGMA table_info(site_day)').all().some((c) => c.name === 'slot_s')) {
-  db.exec('ALTER TABLE site_day ADD COLUMN slot_s INTEGER; UPDATE site_day SET slot_s = 1800;');
-}
-// Devices and agreements from before versioning: when each was first known is taken from the
-// sync log (the first sync whose step for that provider succeeded), else now. Never left empty,
-// so a rebuild "as known at" a moment always has an answer. Checked first, so an up-to-date open
-// runs no UPDATE (an UPDATE takes the write lock even when it changes no row).
-if (db.prepare('SELECT 1 FROM device WHERE recorded_at IS NULL UNION ALL SELECT 1 FROM tariff_agreement WHERE recorded_at IS NULL LIMIT 1').get()) db.exec(`UPDATE device SET recorded_at = COALESCE((SELECT MIN(r.finished_at) * 1000 FROM sync_run r, json_each(r.detail) j
-    WHERE r.site_id = device.site_id AND json_valid(r.detail) AND json_extract(j.value, '$.step') = (CASE device.provider WHEN 'env' THEN 'tariff' ELSE 'octopus' END)
-      AND json_extract(j.value, '$.ok') = 1), CAST(strftime('%s', 'now') AS INTEGER) * 1000) WHERE recorded_at IS NULL;
-  UPDATE tariff_agreement SET recorded_at = COALESCE((SELECT recorded_at FROM device WHERE device.id = tariff_agreement.device_id), CAST(strftime('%s', 'now') AS INTEGER) * 1000)
-    WHERE recorded_at IS NULL;`);
-// The primary key (series_id, ts, recorded_at) already serves every reading lookup; this index was never used.
-if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'reading_current'").get()) db.exec('DROP INDEX reading_current');
 
 // ───────────── Deltas: money and tax (002), markets and regions (003), tariff kind and ledger currency (004),
 // provenance labels (005), register windows and estimated rates (006), contracted capacity (007),
@@ -225,7 +125,7 @@ if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'rea
 // last statement) is skipped, so an open of an up-to-date database runs no delta and writes nothing.
 // A recorded delta is applied again only when an object it creates is missing (a table, index or
 // trigger named in a CREATE ... IF NOT EXISTS, or an ADD COLUMN's column; for example a trigger lost
-// with a table that db.js rebuilt): deltas stay safe to run again, so this only restores what is missing.
+// with a table rebuilt by hand): deltas stay safe to run again, so this only restores what is missing.
 // A change to the schema is therefore a NEW delta file, never an edit of an applied one.
 // 010 rebuilds market_provider only while the table still has an older owner CHECK (a table created
 // by today's 008 already has 'core'/'external'); otherwise it is recorded without the rebuild.
@@ -253,9 +153,31 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   // Phase B coverage matrix (060-069): the schema elements docs/coverage-matrix.json found missing that registry rows
   // cannot hold: the prices and clipping a plan used per slot, and the planning design's tenant record (060).
   '060-coverage.sql',
-  // Prototype users (070): who is looking, and which homes each one may see (src/core/users.js);
-  // sign-up, sessions and each home's encrypted provider logins (071).
-  '070-users.sql', '071-auth.sql'];
+  // Bindings (061): which source fills a role for a home, by period.
+  '061-binding.sql',
+  // Binding defaults (062): the sources a new home starts with, per role; no vendor fallback in code.
+  '062-binding-defaults.sql',
+  // Source traits (063): machine-read facts about a source, replacing vendor lists in the planner read.
+  '063-source-traits.sql',
+  // Channels (064): a vendor point -> canonical metric with scale, sign part and range.
+  '064-channel.sql',
+  // A channel may belong to one device (065).
+  '065-channel-device.sql',
+  // A binding may name a device: two devices of one kind are added together (066).
+  '066-binding-device.sql',
+  // Stage 4 control read-back (067) and Stage 5 groups, grants, slot currency (070): reserved, filled by their own work.
+  '067-control.sql', '070-groups.sql',
+  // channel.part 'abs' (a table rebuild) and no overlapping group membership (071).
+  '071-channel-abs-member-overlap.sql',
+  // Channel kinds (counter, event) and optional checks (072).
+  '072-channel-kinds.sql',
+  // The log of bodies received by POST /api/ingest (073).
+  '073-push-log.sql',
+  // The log of replays of stored raw receipts (075; 074 belongs to a later piece of work).
+  '075-replay-log.sql',
+  // Prototype users (076): who is looking, and which homes each one may see (src/core/users.js); it widens the
+  // app_user of 070 with an email, a role and a note. Sign-up, sessions and each home's encrypted provider logins (077).
+  '076-users.sql', '077-auth.sql'];
 
 export function deltaStatements(sql) {
   const out = [];
@@ -335,6 +257,7 @@ function keepTableObjects(table, fn) {
   });
 }
 applyDeltas();
+seedRegistry();   // again: delta 063 added source.traits
 
 // GB VAT has one source, VAT_RATES in registry.js: vat_rate is kept in line with it on every open
 // (seedRegistry, above; written only where it differs) and delta 002 copies it into tax_rule once. When VAT_RATES changes later, the current GB
@@ -365,6 +288,8 @@ syncGbVat();
 if (marketSeedPending(db) || regionSeedPending(db) || providerSeedPending(db)) {
   tx(() => { seedMarkets(db); seedBiddingZones(db); seedRegionsGb(db); seedProviders(db); });
 }
+// Default bindings per role and a backfill for homes without them (seed/bindings.js, delta 062).
+if (bindingSeedPending(db)) tx(() => seedBindings(db));
 // Planner configuration registries (attribute_def, device_kind, setting_def: seed/attributes.js,
 // seed/settings.js): only missing rows are inserted, and only when one is missing.
 if (attributeSeedPending(db) || settingSeedPending(db)) tx(() => { seedAttributeDefs(db); seedSettingDefs(db); });
@@ -380,19 +305,21 @@ if (db.prepare("SELECT 1 FROM pragma_table_info('site') WHERE name = 'gsp_region
   }
 }
 
-const sourceIds = new Map(db.prepare('SELECT code, id FROM source').all().map((r) => [r.code, r.id]));
-const metricIds = new Map(db.prepare('SELECT code, id FROM metric').all().map((r) => [r.code, r.id]));
-
-export function sourceId(code) {
-  const id = sourceIds.get(code);
-  if (!id) throw new Error(`unknown source ${code}`);
+// Code to id maps. A code that is not cached is looked up again, so a source or metric row added
+// while the process runs works without a restart.
+const sourceIds = new Map();
+const metricIds = new Map();
+function lookup(cache, table, code, what) {
+  let id = cache.get(code);
+  if (!id) {
+    id = db.prepare(`SELECT id FROM ${table} WHERE code = ?`).get(code)?.id;
+    if (!id) throw new Error(`unknown ${what} ${code}`);
+    cache.set(code, id);
+  }
   return id;
 }
-export function metricId(code) {
-  const id = metricIds.get(code);
-  if (!id) throw new Error(`unknown metric ${code}`);
-  return id;
-}
+export const sourceId = (code) => lookup(sourceIds, 'source', code, 'source');
+export const metricId = (code) => lookup(metricIds, 'metric', code, 'metric');
 // Raw payload files live next to the database file, wherever DB_FILE puts it.
 export const dataDir = path.dirname(dbFile);
 

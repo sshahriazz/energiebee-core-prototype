@@ -1,4 +1,4 @@
-// Sign-up and the steps after it (src/core/users.js, src/core/onboarding.js, src/core/secrets.js) over
+// Sign-up and the steps after it (src/core/users.js, src/core/signup.js, src/core/secrets.js) over
 // HTTP in a temp database: an account from an email and a password (scrypt, a session cookie), a home
 // from a postcode, the providers its market lists, and connecting one with the user's own login:
 // checked first, stored encrypted and bound to its home, never sent back, read by the sync steps. The
@@ -14,7 +14,7 @@ process.env.SECRET_KEY = 'test-secret-key-0123456789abcdef-0123456789';
 delete process.env.USER_SWITCHER;
 const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');
-const { hooks } = await import('../src/core/onboarding.js');
+const { hooks } = await import('../src/core/signup.js');
 const { siteCredentials } = await import('../src/core/secrets.js');
 const { plan } = await import('../src/core/providers.js');
 const { checkSunsynkLogin } = await import('../src/adapters/sunsynk.js');
@@ -152,6 +152,7 @@ test('connect: a wrong or incomplete login is refused and nothing is stored', as
   // Nobody signed in may not connect even a home nobody owns.
   const loose = db.prepare("INSERT INTO site (name, created_at) VALUES ('loose', 0) RETURNING id").get().id;
   assert.equal((await browser()(`/api/sites/${loose}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: 'good', accountNumber: 'A-1234ABCD' } } })).status, 401);
+  db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
   db.prepare('DELETE FROM site WHERE id = ?').run(loose);
 });
 
@@ -205,6 +206,7 @@ test('a stored login is bound to its home and key: copied to another home, or re
   assert.match(siteCredentials(other, 'octopus', { apiKey: 'X', accountNumber: 'Y' }).missing, /cannot be read/);
   const k = process.env.SECRET_KEY; process.env.SECRET_KEY = 'a-different-key-that-is-long-enough-0000';
   try { assert.match(siteCredentials(site, 'octopus', { apiKey: 'X', accountNumber: 'Y' }).missing, /SECRET_KEY has changed/); } finally { process.env.SECRET_KEY = k; }
+  db.prepare('DELETE FROM binding WHERE site_id = ?').run(other.id);   // a home's bindings go with it
   db.prepare('DELETE FROM site WHERE id = ?').run(other.id);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ?').get(other.id).n, 0, 'deleting a home deletes its logins');
 });
@@ -242,7 +244,7 @@ test('Sunsynk: each login gets its own token and sees its own plant (no token sh
 });
 
 test('postcodes: spaces anywhere are ignored, then written the one way', async () => {
-  const { normalisePostcode } = await import('../src/core/onboarding.js');
+  const { normalisePostcode } = await import('../src/core/signup.js');
   for (const p of ['BB 12 9BY', 'bb129by', ' BB12  9BY ', 'B B12 9BY']) assert.equal(normalisePostcode('GB', p), 'BB12 9BY', p);
   assert.equal(normalisePostcode('NL', '1012ab'), '1012 AB');
   assert.equal(normalisePostcode('FR', '75 001'), '75001');

@@ -135,7 +135,7 @@ async function syncEnvTariffs(ctx) {
   const { site, fromTs } = ctx;
   if (db.prepare("SELECT 1 FROM device WHERE site_id = ? AND provider = 'octopus' AND retired_at IS NULL").get(site.id)) {
     // Retired, not deleted: the .env tariffs still priced the half-hours before the account was read.
-    for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'env' AND retired_at IS NULL").all(site.id)) retireDevice(d.id);
+    for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'env' AND retired_at IS NULL").all(site.id)) { retireDevice(d.id); supersedeAgreements(site.id, d.id, []); }
     return { skipped: 'using Octopus account agreements' };
   }
   let rates = 0;

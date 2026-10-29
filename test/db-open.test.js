@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { hasLive, liveDb } from './helpers.js';
+import { hasRealLive as hasLive, liveDb } from './helpers.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-open-'));
@@ -168,4 +168,48 @@ test('a second connection holding a write: an up-to-date open does not wait or f
   assert.ok(Date.now() - t0 >= 1400, 'it waited for the other connection');
   assert.equal(holder.prepare("SELECT COUNT(*) AS n FROM market WHERE code = 'ES'").get().n, 1);
   holder.close();
+});
+
+// A database from before the deltas is not upgraded (those one-time upgrades were removed): the open
+// is refused with a message to start fresh, before anything is written.
+test('a database from before the deltas is refused with a clear message, and nothing is written to it', async () => {
+  const shapes = {
+    // Tariff agreements not yet versioned: no recorded_at / superseded_at.
+    tariff_agreement: `CREATE TABLE tariff_agreement (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, device_id INTEGER NOT NULL, tariff_id INTEGER NOT NULL,
+        valid_from INTEGER NOT NULL, valid_to INTEGER, CHECK (valid_to IS NULL OR valid_to > valid_from), UNIQUE (device_id, valid_from));
+      INSERT INTO tariff_agreement VALUES (1, 1, 1, 7, 1000, NULL);`,
+    // Half-hour serving rows only: no dur_s / tod_min.
+    site_hh: `CREATE TABLE site_hh (site_id INTEGER NOT NULL, slot_start INTEGER NOT NULL CHECK (slot_start % 1800 = 0), local_date TEXT NOT NULL,
+        state TEXT NOT NULL, quality INTEGER NOT NULL, home REAL, method_version TEXT NOT NULL, built_at INTEGER NOT NULL, PRIMARY KEY (site_id, slot_start)) WITHOUT ROWID;
+      INSERT INTO site_hh VALUES (1, 1792479600, '2026-10-20', 'final', 0, 0.42, 'v3', 1);`,
+    // Rate rows for unit / standing and single / day / night only: no charge_period.
+    rate_interval: `CREATE TABLE rate_interval (id INTEGER PRIMARY KEY, tariff_id INTEGER NOT NULL, site_id INTEGER,
+        component TEXT NOT NULL CHECK (component IN ('unit', 'standing')), register TEXT NOT NULL DEFAULT 'single' CHECK (register IN ('single', 'day', 'night')),
+        payment_method TEXT NOT NULL DEFAULT 'ANY', valid_from INTEGER NOT NULL, valid_to INTEGER, price_ex_vat REAL NOT NULL, recorded_at INTEGER NOT NULL, superseded_at INTEGER, raw_id INTEGER);
+      INSERT INTO rate_interval (tariff_id, component, valid_from, price_ex_vat, recorded_at) VALUES (1, 'unit', 1000, 20.5, 1);`,
+  };
+  for (const [table, sql] of Object.entries(shapes)) {
+    const file = newFile();
+    withDb(file, (c) => c.exec(sql));
+    const v = schemaVersion(file);
+    const r = await openInChild(file);
+    assert.notEqual(r.status, 0, `${table}: refused`);
+    assert.ok(r.err.includes('This database predates the current schema; delete data/core.db and start fresh (npm run reset)'), `${table}: ${r.err}`);
+    withDb(file, (c) => {
+      assert.equal(c.prepare('PRAGMA schema_version').get().schema_version, v, `${table}: no table, index or trigger created`);
+      assert.deepEqual(c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((t) => t.name), [table]);
+      assert.equal(c.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 1, `${table}: its row is still there`);
+    });
+  }
+});
+
+test('not refused: a database whose first open stopped after schema.sql, before the first delta (today\'s shape, no schema_delta yet)', async () => {
+  const file = newFile();
+  withDb(file, (c) => c.exec(fs.readFileSync(path.join(root, 'src', 'db', 'schema.sql'), 'utf8')));
+  const r = await openInChild(file);
+  assert.equal(r.status, 0, r.err);
+  const names = withDb(file, (c) => c.prepare('SELECT name FROM schema_delta ORDER BY name').all().map((x) => x.name));
+  assert.deepEqual(names, r.deltas.map((f) => f.replace(/\.sql$/, '')).sort(), 'the deltas completed it');
+  const again = await openInChild(file);
+  assert.deepEqual([again.status, again.changes], [0, 0]);
 });

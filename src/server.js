@@ -14,6 +14,7 @@ import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor
 import { seriesId, readReadings, spanColumn } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
+import { startControlScheduler, registeredDrivers } from './jobs/control.js';
 import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
 import { providerStatus, connectProvider } from './core/providers.js';
 import { connectors } from './core/connectors.js';
@@ -25,19 +26,35 @@ import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
 import { userOf, canSee, visibleSiteIds, listUsers, giveHome, publicUser, switcherOn, signUp, signIn, startSession, endSession, cookieOf, sessionCookie } from './core/users.js';
-import { addHome, homeProviders, connectHome, disconnectHome, findPlants, COUNTRIES } from './core/onboarding.js';
+import { addHome, homeProviders, connectHome, disconnectHome, findPlants, COUNTRIES } from './core/signup.js';
+import * as onboardingCore from './core/onboarding.js';
+import * as healthCore from './core/health.js';
+import * as replayCore from './core/replay.js';
+import * as devicesView from './core/devices-view.js';
+import { createSyntheticIotHome } from './core/synthetic-iot.js';
+import * as pushIngest from './core/push-ingest.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
 // the program being run (npm start, the supervisor), never when imported.
 export const app = express();
-app.use(express.json());
+// POST /api/ingest reads its own body (text, up to 1 MB, parsed by core/push-ingest.js so a malformed body can be quarantined and logged);
+// the 100 KB JSON parser applies to every other route.
+const jsonBody = express.json();
+app.use((req, res, next) => (req.path === pushIngest.ENDPOINT ? next() : jsonBody(req, res, next)));
 app.use(express.static(path.join(here, '..', 'public'), { extensions: ['html'] }));
 // Who is looking (src/core/users.js): the user the X-User-Id header names, or null (every home).
 // API answers are never cached by the browser: they change with every sync and every user switch.
 app.use('/api', (req, res, next) => {
   res.set('Cache-Control', 'no-store');
   try { req.user = userOf(req); } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  next();
+});
+// Every route under one home checks here that the user may see it, including the routes that look the home up
+// themselves (Providers, Devices, source health, replay): one the user may not see answers as one that does not exist.
+app.use('/api/sites/:id', (req, res, next) => {
+  const id = Number(req.params.id);
+  if (Number.isInteger(id) && !canSee(req.user, id)) return res.status(404).json({ error: 'No such home' });
   next();
 });
 
@@ -79,7 +96,7 @@ app.get('/api/status', (req, res) => {
   res.json({ ok: true, uptimeS: nowSec() - startedAt, method: METHOD_VERSION, lastSync: last ?? null });
 });
 
-// ───────────── Accounts (src/core/users.js) and the steps after sign-up (src/core/onboarding.js) ─────────────
+// ───────────── Accounts (src/core/users.js) and the steps after sign-up (src/core/signup.js) ─────────────
 
 // The prototype's users to switch between ("Viewing as", no password): only where USER_SWITCHER=1 (the
 // demo server); elsewhere none are listed, so the switcher stays hidden and nobody's email is shown.
@@ -700,11 +717,11 @@ app.get('/api/sites/:id/system', (req, res) => {
   });
 });
 
-// Devices the providers report for this home (meters, EV), with the attributes they gave.
+// Devices of this home (meters, EV, and any IoT device), each with the fields this route has always returned (kind, provider, label,
+// profileClass, annualKwh, gasUnit, state) plus id, status, channels, last values and roles (src/core/devices-view.js, the Devices page).
 app.get('/api/sites/:id/devices', (req, res) => {
   const s = site(req);
-  res.json(db.prepare('SELECT kind, provider, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id)
-    .map((d) => { const a = JSON.parse(d.attrs || '{}'); return { kind: d.kind, provider: d.provider, label: d.label, profileClass: a.profileClass ?? null, annualKwh: a.annualKwh ?? null, gasUnit: a.gasUnit ?? null, state: a.status?.currentState ?? null }; }));
+  res.json(devicesView.listDevices(s.id));
 });
 
 // The tariffs one provider holds (a catalogue such as tariffscanner), with the rate rows in force
@@ -752,6 +769,94 @@ app.get('/api/connectors', (req, res) => res.json(connectors(db)));
 app.get('/api/compatibility', (req, res) => res.json(compatibility(db)));
 app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
 
+// ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
+// What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,
+// unknown_source, unknown_metric, unknown_device, bad_part, bad_number, bad_date, missing_field, reason_required,
+// not_found) next to the plain message. Every write takes dryRun (in the body or ?dryRun=1): it returns what would
+// happen and keeps nothing. A start date is a local date (2026-10-12) in the home's zone, or epoch seconds.
+const onb = (fn, ok = 200) => (req, res) => {
+  try {
+    const out = fn(req);
+    res.status(out?.dryRun ? 200 : ok).json(out);
+  } catch (err) {
+    if (err instanceof onboardingCore.OnboardingError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });
+    throw err;
+  }
+};
+const dry = (req) => req.body?.dryRun === true || req.query.dryRun === '1' || req.query.dryRun === 'true';
+app.get('/api/sources', onb(() => onboardingCore.sourcesList()));
+app.get('/api/sites/:id/onboarding', onb((req) => onboardingCore.onboarding(req.params.id)));
+app.get('/api/sites/:id/channels', onb((req) => ({ siteId: Number(req.params.id), channels: onboardingCore.channelRows(onboardingCore.siteCheck(req.params.id).id, { source: req.query.source || null, all: req.query.all === '1' }) })));
+app.post('/api/sites/:id/channels', onb((req) => onboardingCore.applyChannel(req.params.id, req.body || {}, { dryRun: dry(req) }), 201));
+app.post('/api/sites/:id/channels/retire', onb((req) => onboardingCore.retireChannel(req.params.id, req.body || {}, { dryRun: dry(req) })));
+app.post('/api/sites/:id/bindings/preview', onb((req) => onboardingCore.previewBinding(req.params.id, req.body || {}, req.body?.action === 'unbind' ? 'unbind' : 'bind')));
+app.post('/api/sites/:id/bindings', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'bind', { dryRun: dry(req), rebuild: req.body?.rebuild === true }), 201));
+app.post('/api/sites/:id/bindings/unbind', onb((req) => onboardingCore.applyBinding(req.params.id, req.body || {}, 'unbind', { dryRun: dry(req), rebuild: req.body?.rebuild === true })));
+app.get('/api/sites/:id/rejects', onb((req) => onboardingCore.rejects(onboardingCore.siteCheck(req.params.id).id, { days: req.query.days, source: req.query.source || null })));
+
+// ───────────── Providers, completed: new source, binding priority, source health, replay (core/onboarding.js, health.js, replay.js) ─────────────
+// POST /api/sources adds a source row (dryRun supported); POST /api/sites/:id/bindings/priority re-records a binding with a new priority
+// (409 reason_required when built slots would change); GET /api/sites/:id/source-health says per role whether its provider still delivers;
+// GET /api/sites/:id/replay lists what a replay could recover, POST /api/sites/:id/replay reads stored receipts again through the
+// channels: it is a DRY RUN unless the body says dryRun: false. Errors are { error, code, field? } as above (replay adds not_replayable).
+const onbAsync = (fn, ok = 200) => async (req, res, next) => {
+  try { const out = await fn(req); res.status(out?.dryRun ? 200 : ok).json(out); } catch (err) {
+    if (err instanceof onboardingCore.OnboardingError || err instanceof replayCore.ReplayError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });
+    next(err);
+  }
+};
+app.post('/api/sources', onb((req) => onboardingCore.createSource(req.body || {}, { dryRun: dry(req) }), 201));
+app.post('/api/sites/:id/bindings/priority', onb((req) => onboardingCore.changeBindingPriority(req.params.id, req.body || {}, { dryRun: dry(req), rebuild: req.body?.rebuild === true })));
+app.get('/api/sites/:id/source-health', onb((req) => healthCore.health(onboardingCore.siteCheck(req.params.id).id)));   // (/api/sites/:id/health is the Data & trust page's)
+app.get('/api/sites/:id/replay', onb((req) => replayCore.replayCandidates(onboardingCore.siteCheck(req.params.id).id, { days: Number(req.query.days) || 30 })));
+app.post('/api/sites/:id/replay', onbAsync((req) => {
+  const b = req.body || {};
+  return replayCore.replay(onboardingCore.siteCheck(req.params.id).id, { source: b.source || null, days: b.days ?? 30, ids: Array.isArray(b.receiptIds) ? b.receiptIds.map(Number).filter(Number.isInteger) : null, dryRun: b.dryRun !== false });
+}));
+
+// ───────────── Devices page: devices and their data, and a synthetic IoT demo home (src/core/devices-view.js, synthetic-iot.js) ─────────────
+// GET /api/sites/:id/devices is above (it keeps its old fields). Errors are { error, code, field? }. simulate and commands only work on
+// SYNTHETIC demo devices (400 not_synthetic for any other); POST /api/demo/iot adds the synthetic demo home to THIS database, once.
+const dev = (fn, ok = 200) => async (req, res, next) => {
+  try { res.status(ok).json(await fn(req)); } catch (err) {
+    if (err instanceof devicesView.DevicesError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });
+    next(err);
+  }
+};
+app.get('/api/demo/iot', dev(() => devicesView.demoStatus()));
+app.post('/api/demo/iot', dev(async () => { const { site: s, created } = await createSyntheticIotHome(); return { siteId: s.id, name: s.name, created }; }));
+app.get('/api/sites/:id/devices/:deviceId', dev((req) => devicesView.deviceDetail(req.params.id, req.params.deviceId === 'site' ? 'site' : Number(req.params.deviceId), { hours: req.query.hours })));
+app.post('/api/sites/:id/devices/:deviceId/simulate', dev((req) => devicesView.simulate(req.params.id, Number(req.params.deviceId), req.body || {}), 201));
+app.post('/api/sites/:id/devices/:deviceId/commands', dev((req) => devicesView.sendCommand(req.params.id, Number(req.params.deviceId), req.body || {}), 201));
+
+// ───────────── Push ingest: a device or gateway posts its readings (src/core/push-ingest.js, push-formats.js; docs/push-ingest.md) ─────────────
+// POST /api/ingest takes the native body or a vendor format (query ?format=&site=&device=&register=1&kind=&label=). An optional shared secret
+// (env INGEST_TOKEN) is checked when set. Errors are { error, code, field?, logId? }; every body, accepted or refused, leaves a push_log row.
+// GET /api/sites/:id/pushes is the log plus what a sender needs to connect (endpoint, token or not, formats).
+const pushText = express.text({ type: () => true, limit: pushIngest.MAX_BODY_BYTES });
+const pushError = (res, err) => res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}), ...(err.logId ? { logId: err.logId } : {}) });
+app.post(pushIngest.ENDPOINT, (req, res, next) => pushText(req, res, (err) => {
+  if (!err) return next();
+  const big = err.status === 413 || err.type === 'entity.too.large';
+  res.status(big ? 413 : 400).json({ error: big ? `The body is larger than ${pushIngest.MAX_BODY_BYTES} bytes: split it into several pushes` : `The body could not be read: ${err.message}`, code: big ? 'too_large' : 'bad_body' });
+}), (req, res, next) => {
+  try {
+    const out = pushIngest.handlePush(typeof req.body === 'string' ? req.body : '', { query: req.query, headers: req.headers });
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    if (err instanceof pushIngest.PushError) { if (err.cause) console.error('push ingest:', err.cause); return pushError(res, err); }
+    next(err);
+  }
+});
+app.get('/api/sites/:id/pushes', dev((req) => {
+  const site = devicesView.siteOf(req.params.id);
+  return {
+    connect: { endpoint: pushIngest.ENDPOINT, tokenRequired: pushIngest.tokenRequired(), maxObservations: pushIngest.MAX_OBSERVATIONS, maxBytes: pushIngest.MAX_BODY_BYTES, siteId: site.id, timezone: site.timezone,
+      formats: Object.entries(pushIngest.FORMATS).map(([id, f]) => ({ id, label: f.label, about: f.about, points: f.points, source: f.source })) },
+    pushes: pushIngest.recentPushes(site.id, { limit: req.query.limit, deviceId: req.query.device ? Number(req.query.device) : null }),
+  };
+}));
+
 app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message });
 });
@@ -768,6 +873,8 @@ export function start() {
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, () => {
     const minutes = startScheduler();
+    // Control cycles run only for registered vendor drivers (jobs/control.js); none ship yet, so this is idle.
+    if (registeredDrivers().length) startControlScheduler(Number(process.env.CONTROL_EVERY_SECONDS) || 30);
     console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
     // Demo homes have no providers to sync: their data is generated. One cycle, home after home,
     // so shared steps (a region, a tariff, a location) run once.

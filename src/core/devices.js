@@ -72,13 +72,10 @@ export function devicesAt(siteId, where = '1', atMs = null) {
   });
 }
 
-// Retire a device and supersede its agreements (both kept for earlier moments).
+// Retiring a device ends its use, not the supply contract: tariff agreements belong to the supply
+// point, so they stay in force and the home keeps its prices (replace them with supersedeAgreements).
 export function retireDevice(deviceId) {
-  const now = Date.now();
-  tx(() => {
-    db.prepare('UPDATE device SET retired_at = ? WHERE id = ? AND retired_at IS NULL').run(now, deviceId);
-    db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
-  });
+  db.prepare('UPDATE device SET retired_at = ? WHERE id = ? AND retired_at IS NULL').run(Date.now(), deviceId);
 }
 
 // Replace a meter's current agreements with a new list: the old ones are superseded, not deleted.

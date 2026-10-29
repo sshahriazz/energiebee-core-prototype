@@ -101,8 +101,6 @@ CREATE TABLE IF NOT EXISTS tariff (
 --   fixed     per charge_period (a subscription per month, a fee per year), spread over slots
 --             by real seconds (tariff-expand.js fixedChargePerSlot)
 --   capacity  per kW per charge_period (stored; not priced yet)
--- Databases from before Oct 2026 had CHECKs allowing only unit/standing and single/day/night;
--- db.js rebuilds that table once, copying every row.
 CREATE TABLE IF NOT EXISTS rate_interval (
   id              INTEGER PRIMARY KEY,
   tariff_id       INTEGER NOT NULL REFERENCES tariff(id),

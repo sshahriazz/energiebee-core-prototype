@@ -1,6 +1,7 @@
 // Delta 012: overlap guards that also hold for UPDATE (rate_interval, tariff_agreement, tax_rule),
 // an overlap check for register windows (INSERT and UPDATE), and consistency checks that a NULL can
-// no longer bypass. The ordinary writers' flows (supersede, then insert) still work.
+// no longer bypass. The ordinary writers' flows (supersede, then insert) still work. Also the
+// schema's own guards: the agreement overlap check on INSERT and the slot grid.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
@@ -143,4 +144,25 @@ test('consistency: a NULL currency, country or a foreign meter can no longer sli
   const bare = id(run("INSERT INTO site (name, created_at) VALUES ('Bare', 1)"));
   const m3 = id(run("INSERT INTO device (site_id, kind, provider, external_ref) VALUES (?, 'meter_import', 'x', 'M3')", bare));
   assert.doesNotThrow(() => agree.run(bare, m3, eur));
+});
+
+// The schema's own guards (schema.sql), on a new database.
+test('tariff_agreement INSERT: a superseded version may share its start with the current one; two current ones may not overlap', () => {
+  const m = id(run("INSERT INTO device (site_id, kind, provider, external_ref, recorded_at) VALUES (?, 'meter_import', 'octopus', 'M-INSERT', 1)", site));
+  const [A, B, C] = ['T-INS-A', 'T-INS-B', 'T-INS-C'].map((code) => tariffOf(code));
+  const agree = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?)');
+  const first = id(agree.run(site, m, A, 1000, 5));
+  run('UPDATE tariff_agreement SET superseded_at = 6 WHERE id = ?', first);
+  assert.doesNotThrow(() => agree.run(site, m, B, 1000, 6), 'same start as the superseded version');
+  assert.throws(() => agree.run(site, m, C, 2000, 7), /overlapping tariff agreement/);
+});
+
+test('slot grid: site_hh slots start on the 900 s grid, and site.slot_s is 900, 1800 or 3600', () => {
+  const slot = db.prepare(`INSERT INTO site_hh (site_id, slot_start, local_date, dur_s, tod_min, state, quality, method_version, built_at)
+    VALUES (?, ?, '2026-10-20', 900, ?, 'final', 0, 'v', 1)`);
+  // 1792479600 = 2026-10-20 07:00 UTC = 08:00 in London (BST): 15-minute starts are allowed, off-grid ones are not.
+  assert.doesNotThrow(() => slot.run(site, 1792479600 + 900, 495));
+  assert.throws(() => slot.run(site, 1792479600 + 300, 485), /CHECK/);
+  assert.throws(() => run('UPDATE site SET slot_s = 600 WHERE id = ?', site), /CHECK/);
+  run('DELETE FROM site_hh WHERE site_id = ?', site);
 });

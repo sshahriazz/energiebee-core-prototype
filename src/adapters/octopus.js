@@ -3,7 +3,8 @@
 // (Intelligent Octopus dispatches and smart devices).
 import { db, tx } from '../db/db.js';
 import { fetchJson } from '../core/http.js';
-import { landRaw, quarantine, seriesId, putIntervals, putForecasts, QUALITY } from '../core/facts.js';
+import { landRaw, quarantine, QUALITY } from '../core/facts.js';
+import { ingestObservations, setDeviceChannel } from '../core/channels.js';
 import { setDeviceAttrs, supersedeAgreements } from '../core/devices.js';
 import { isoUtc, nowSec, parseIso } from '../core/time.js';
 
@@ -182,7 +183,7 @@ function replaceAgreements(siteId, deviceId, agreements, direction) {
   return { kept, changed: true };
 }
 
-// A login checked before it is stored (src/core/onboarding.js): reads the account, landing nothing.
+// A login checked before it is stored (src/core/signup.js): reads the account, landing nothing.
 export async function checkOctopusAccount({ apiKey, accountNumber }) {
   let json;
   try { ({ json } = await fetchJson(`${BASE}/accounts/${encodeURIComponent(accountNumber)}/`, { headers: auth(apiKey) })); } catch (err) {
@@ -267,7 +268,7 @@ export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { g
         }
         metric = u.unit === 'm3' ? 'gas_m3' : 'gas_kwh';
       }
-      n += normaliseConsumption(seriesId('device', dev.id, metric, 'octopus_meter'), rows, 1, rows[0]._rawId);
+      n += normaliseConsumption(site.id, dev.id, metric, rows, rows[0]._rawId);
     }
   }
   return n;
@@ -275,25 +276,28 @@ export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { g
 
 // Half-hour meter rows. interval_start carries the local offset (+01:00 in
 // summer); Date.parse converts it to UTC.
-export function normaliseConsumption(series, rows, factor, rawId) {
-  return putIntervals(series, rows.map((r) => ({
-    start: parseIso(r.interval_start), end: parseIso(r.interval_end), value: r.consumption * factor, quality: QUALITY.MEASURED, rawId: r._rawId,
-  })), rawId);
+// The meter's one point, 'consumption', becomes the metric its kind (and, for gas, its unit) says; the
+// device channel records that choice, and the write goes through the same channel path as every vendor.
+export function normaliseConsumption(siteId, deviceId, metric, rows, rawId) {
+  setDeviceChannel(siteId, 'octopus_meter', deviceId, 'consumption', metric);
+  const obs = rows.map((r) => ({ point: 'consumption', start: parseIso(r.interval_start), end: parseIso(r.interval_end), value: r.consumption, quality: QUALITY.MEASURED, rawId: r._rawId }));
+  return ingestObservations(siteId, 'octopus_meter', obs, rawId, { deviceId }).written;
 }
 
-// Completed smart-charge dispatches. delta is negative for import; stored as a positive charge.
+// Completed smart-charge dispatches. delta is negative for import; the channel (part abs) stores the amount charged.
 export function normaliseDispatches(siteId, list, rawId) {
-  const evSeries = seriesId('site', siteId, 'ev_charge_kwh', 'octopus_kraken');
-  return putIntervals(evSeries, (list || [])
-    .map((d) => ({ start: parseIso(String(d.start).replace(' ', 'T')), end: parseIso(String(d.end).replace(' ', 'T')), value: d.delta == null ? null : Math.abs(Number(d.delta)) }))
-    .filter((d) => d.end > d.start), rawId);
+  const obs = (list || [])
+    .map((d) => ({ point: 'dispatch', start: parseIso(String(d.start).replace(' ', 'T')), end: parseIso(String(d.end).replace(' ', 'T')), value: d.delta == null ? null : Number(d.delta) }))
+    .filter((d) => d.end > d.start);
+  return ingestObservations(siteId, 'octopus_kraken', obs, rawId).written;
 }
 
+// Planned dispatches: a forecast issue made at issuedAt.
 export function normalisePlanned(siteId, list, issuedAt, rawId) {
-  const evSeries = seriesId('site', siteId, 'ev_charge_kwh', 'octopus_kraken');
-  return putForecasts(evSeries, issuedAt, (list || [])
-    .map((p) => ({ start: parseIso(p.start), end: parseIso(p.end), value: p.energyAddedKwh == null ? null : Number(p.energyAddedKwh) }))
-    .filter((p) => p.end > p.start), rawId);
+  const obs = (list || [])
+    .map((p) => ({ point: 'planned', start: parseIso(p.start), end: parseIso(p.end), issuedAt, value: p.energyAddedKwh == null ? null : Number(p.energyAddedKwh) }))
+    .filter((p) => p.end > p.start);
+  return ingestObservations(siteId, 'octopus_kraken', obs, rawId).forecasts;
 }
 
 // ───────────── Kraken GraphQL ─────────────

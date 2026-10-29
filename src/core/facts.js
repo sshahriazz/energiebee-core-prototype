@@ -50,6 +50,8 @@ const findSeries = db.prepare(
 const insertSeries = db.prepare(
   'INSERT INTO series (subject_kind, subject_id, metric_id, source_id) VALUES (?, ?, ?, ?)');
 const seriesCache = new Map();
+// Forget the cached series ids: a dry run or a failed transaction that created series rows and was rolled back leaves ids that no longer exist.
+export const forgetSeriesCache = () => seriesCache.clear();
 
 export function seriesId(subjectKind, subjectId, metric, source) {
   const key = `${subjectKind}|${subjectId}|${metric}|${source}`;
@@ -67,25 +69,49 @@ const QUALITY = { MEASURED: 1, FALLBACK: 2, INTERPOLATED: 4, ESTIMATED: 8, PARTI
 export { QUALITY };
 
 const curReading = db.prepare(
-  'SELECT value FROM reading WHERE series_id = ? AND ts = ? AND superseded_at IS NULL');
+  'SELECT value, recorded_at FROM reading WHERE series_id = ? AND ts = ? AND superseded_at IS NULL');
 const supReading = db.prepare(
   'UPDATE reading SET superseded_at = ? WHERE series_id = ? AND ts = ? AND superseded_at IS NULL');
 const insReading = db.prepare(
   'INSERT INTO reading (series_id, ts, value, quality, recorded_at, raw_id) VALUES (?, ?, ?, ?, ?, ?)');
 
+// A processor declares its source for the duration of its writes (asWriter); a series of any other
+// source is then refused, so a new vendor cannot overwrite another source's readings by filing
+// under its name. Outside asWriter nothing is checked.
+let writerSource = null;
+export function asWriter(source, fn) {
+  const prev = writerSource;
+  writerSource = sourceId(source);
+  try { return fn(); } finally { writerSource = prev; }
+}
+function checkWriter(series) {
+  if (writerSource == null) return;
+  const sid = db.prepare('SELECT source_id FROM series WHERE id = ?').get(series)?.source_id;
+  if (sid !== writerSource) throw new Error(`series ${series} belongs to another source than the one writing`);
+}
+
+// A batch may name the same period twice (a feed that repeats a row, an overlap between two pages). The
+// last one wins and the others are dropped before writing: two versions with one recorded_at would break
+// the unique key and abort the whole batch.
+const lastPerKey = (rows, key) => [...new Map(rows.map((r) => [key(r), r])).values()];
+
 const same = (a, b) => (a === null && b === null) || (a !== null && b !== null && Math.abs(a - b) < 1e-9);
 
 // Returns how many facts were new or changed, so callers know what to rebuild.
 export function putReadings(series, rows, rawId) {
+  checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
   tx(() => {
-    for (const r of rows) {
+    for (const r of lastPerKey(rows, (x) => x.ts)) {
       const value = r.value === undefined ? null : r.value;
       const cur = curReading.get(series, r.ts);
       if (cur && same(cur.value, value)) continue;
-      if (cur) supReading.run(recordedAt, series, r.ts);
-      insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, recordedAt, r.rawId ?? rawId ?? null);
+      // A correction in the same millisecond as the version it replaces would repeat (series, ts, recorded_at):
+      // the new version is stamped one millisecond after the old one instead of failing the batch.
+      const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;
+      if (cur) supReading.run(at, series, r.ts);
+      insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
       changed++;
     }
   });
@@ -93,22 +119,24 @@ export function putReadings(series, rows, rawId) {
 }
 
 const curInterval = db.prepare(
-  'SELECT value FROM interval_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
+  'SELECT value, recorded_at FROM interval_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
 const supInterval = db.prepare(
   'UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
 const insInterval = db.prepare(
   'INSERT INTO interval_fact (series_id, start_ts, end_ts, value, quality, recorded_at, raw_id) VALUES (?, ?, ?, ?, ?, ?, ?)');
 
 export function putIntervals(series, rows, rawId) {
+  checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
   tx(() => {
-    for (const r of rows) {
+    for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
       const value = r.value === undefined ? null : r.value;
       const cur = curInterval.get(series, r.start, r.end);
       if (cur && same(cur.value, value)) continue;
-      if (cur) supInterval.run(recordedAt, series, r.start, r.end);
-      insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, recordedAt, r.rawId ?? rawId ?? null);
+      const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;   // see putReadings
+      if (cur) supInterval.run(at, series, r.start, r.end);
+      insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
       changed++;
     }
   });
@@ -126,9 +154,10 @@ const latestForecast = db.prepare('SELECT value FROM forecast_fact WHERE series_
 // period, compared with its own latest issue and stored, never dropped. recorded_at (ms) is when
 // the core stored the issue (readForecastAsOf); issuedAt (s) stays the provider's issue time.
 export function putForecasts(series, issuedAt, rows, rawId, { recordedAt = Date.now() } = {}) {
+  checkWriter(series);
   let n = 0;
   tx(() => {
-    for (const r of rows) {
+    for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
       const value = r.value === undefined ? null : r.value;
       const last = latestForecast.get(series, r.start, r.end);
       if (last && same(last.value, value)) continue;

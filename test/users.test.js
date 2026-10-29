@@ -1,4 +1,4 @@
-// Prototype users (src/core/users.js, delta 070) over HTTP, on the three SYNTHETIC homes of
+// Prototype users (src/core/users.js, delta 076) over HTTP, on the three SYNTHETIC homes of
 // scripts/lib/multi-market.js (GB, FR, NL) in a temp database, with the demo "Viewing as" switch on
 // (USER_SWITCHER=1): with no X-User-Id header only the homes no user owns are seen (every home of a
 // database without users, as before users existed); with one, each user sees only their own homes, everywhere a
@@ -48,6 +48,7 @@ test('no user header: only the homes no user owns (all of them before any home i
   assert.deepEqual(await siteIds(null), [loose]);
   assert.equal((await call(`/api/sites/${loose}/now`)).status, 200);
   assert.equal((await call(`/api/sites/${loose}/now`, alice.id)).status, 404, 'a user sees only their own homes');
+  db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
   db.prepare('DELETE FROM site WHERE id = ?').run(loose);
   assert.equal(visibleSiteIds(admin), null);
 });
@@ -136,13 +137,14 @@ test('a home added while a user is picked is theirs, and only theirs', async () 
   assert.ok(!(await siteIds(null)).includes(r.body.id), 'nobody signed in does not see it');
 });
 
-test('delta 070 is listed, runs again without change, and deleting a home drops its links', () => {
-  assert.ok(DELTAS.indexOf('070-users.sql') > DELTAS.indexOf('060-coverage.sql'));
+test('delta 076 is listed, runs again without change, and deleting a home drops its links', () => {
+  assert.ok(DELTAS.indexOf('076-users.sql') > DELTAS.indexOf('060-coverage.sql'));
   const before = db.prepare('SELECT COUNT(*) AS n FROM user_site').get().n;
-  applyDelta(fs.readFileSync(new URL('../src/db/deltas/070-users.sql', import.meta.url), 'utf8'));
+  applyDelta(fs.readFileSync(new URL('../src/db/deltas/076-users.sql', import.meta.url), 'utf8'));
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_site').get().n, before);
   const tmp = db.prepare("INSERT INTO site (name, created_at) VALUES ('tmp', 0) RETURNING id").get().id;
   giveHome(nora.id, tmp);
+  db.prepare('DELETE FROM binding WHERE site_id = ?').run(tmp);   // a home's bindings go with it
   db.prepare('DELETE FROM site WHERE id = ?').run(tmp);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_site WHERE site_id = ?').get(tmp).n, 0);
 });

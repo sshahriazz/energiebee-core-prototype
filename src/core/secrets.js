@@ -1,4 +1,4 @@
-// A home's provider logins (delta 071, connection_secret): the secret store the core lacked. Each login
+// A home's provider logins (delta 077, connection_secret): the secret store the core lacked. Each login
 // is encrypted with AES-256-GCM under a key derived from SECRET_KEY (.env, at least 32 characters; make
 // one with `openssl rand -hex 32`), with (site_id, provider) as associated data. Without SECRET_KEY no
 // login is stored or read. Nothing here ever returns a secret to the API: only the sync steps read them,

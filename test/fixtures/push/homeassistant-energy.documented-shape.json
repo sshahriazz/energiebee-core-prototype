@@ -1,0 +1,1 @@
+{"entity_id":"sensor.heater_energy","state":"123.456","attributes":{"unit_of_measurement":"kWh","device_class":"energy","state_class":"total_increasing","friendly_name":"Heater energy"},"last_changed":"2026-10-27T10:15:00.123456+00:00","last_updated":"2026-10-27T10:15:00.123456+00:00"}

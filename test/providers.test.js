@@ -264,6 +264,7 @@ test('POST connections: allowed for the market, stored without secrets; refused 
 });
 
 test('the .env home takes its market from SITE_COUNTRY and only the connections that market allows', () => {
+  db.prepare("DELETE FROM binding WHERE site_id IN (SELECT id FROM site WHERE env_key = 'env')").run();   // a home's bindings go with it
   db.prepare("DELETE FROM site WHERE env_key = 'env'").run();
   process.env.SITE_COUNTRY = 'FR';
   const id = ensureEnvSite();

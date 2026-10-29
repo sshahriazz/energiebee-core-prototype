@@ -206,3 +206,18 @@ data/                  core.db and raw/ (git-ignored)
 - Panel tilt and direction are estimates until the installer's figures are entered (see "Your system's details" above).
 - "As known at" rebuilds read facts, prices, tariff agreements, meters, device details and system details as they were then. Where no version existed yet at that moment (for 10 Acresbrook: device details before 14:28 BST and system details before 13:53 BST on 16 Oct), the earliest recorded one is used and listed with the result. The `.env` tariff used before the first Octopus sync was not kept, so history before 07:49 BST on 16 Oct can't be reconstructed.
 - EV charging is measured only through Octopus smart-charge dispatches. For a car whose smart control is not available it is not measured (the EV page says so); it is still inside the house's use.
+
+## Docker (nginx + the app in one container)
+
+```bash
+cp .env.example .env        # fill in your credentials
+docker compose up -d --build   # then open http://localhost:8080
+# or without compose:
+docker build -t energiebee-core .
+docker run -d --name energiebee -p 8080:80 --env-file .env -v energiebee-data:/app/data energiebee-core
+```
+
+- **nginx** serves the website (`public/`) and proxies `/api/` to the Node app, which listens only inside the container (port 4100 is not published).
+- **The environment is not baked into the image.** `.env` is excluded by `.dockerignore`; pass it with `--env-file` (or `env_file:` in `docker-compose.yml`). Sync, credentials and `DB_FILE` all come from it.
+- **Data persists in the `/app/data` volume** (database, raw payloads, logs). Remove the volume (`docker volume rm energiebee-data`) to start fresh.
+- Health: `docker ps` shows `healthy` once `/api/status` answers; the first sync after a fresh start can take a minute.

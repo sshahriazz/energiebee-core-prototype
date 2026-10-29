@@ -23,6 +23,7 @@ import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTi
 import { series as plannerSeries } from './planner-read.js';
 import { loadPricing, priceAt, fixedPerDay } from './pricing.js';
 import { buildSite } from './build.js';
+import { bindingsFor } from './inputs.js';
 import { nowSec, localDate, addDays, dayBounds, daysBetween, slotLength, slotNoun, slotLabel, zonedParts, todMinute, floorTo, parseIso, slotFloor } from './time.js';
 import { mapRecords } from '../adapters/tariffscanner.js';
 import { mapPrices, mapComponents } from '../adapters/tounify.js';
@@ -864,7 +865,7 @@ function loadCx(site, from, to, { slot = null } = {}) {
   const intervals = (id, pad = 0) => (id == null ? [] : db.prepare('SELECT series_id, start_ts, end_ts, value, raw_id, recorded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ? AND start_ts >= ? AND superseded_at IS NULL ORDER BY start_ts')
     .all(id, a - pad, b + pad, a - pad - 2 * 86400));
   const devices = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'").all(site.id);
-  const meterId = (kind, metric) => { const d = devices.find((x) => x.kind === kind); return d ? findSeries('device', d.id, metric, 'octopus_meter') : null; };
+  const meterId = (kind, metric) => { const d = devices.find((x) => x.kind === kind); const src = bindingsFor(site.id, 'meter_energy')[0]?.source; return d && src ? findSeries('device', d.id, metric, src) : null; };
   const gasDev = devices.find((d) => d.kind === 'meter_gas');
   const gasAttrs = gasDev ? (() => { try { return JSON.parse(gasDev.attrs || '{}'); } catch { return {}; } })() : {};
   const meters = { import: intervals(meterId('meter_import', 'grid_import_kwh')), export: intervals(meterId('meter_export', 'grid_export_kwh')),
@@ -980,7 +981,7 @@ function slotChecks(cx, row) {
   // Meter vs inverter clamp.
   const clampWords = 'the inverter\'s own sensor on the grid cable (its "clamp")';
   for (const [dir, col, key] of [['import', 'grid_import', 'imp'], ['export', 'grid_export', 'exp']]) {
-    const meterUsed = lin[dir] === 'octopus_meter';
+    const meterUsed = lin[dir] === 'meter';
     const clamp = lin.ct?.[key];
     const meterFact = F.meters[dir][0];
     const id = `meter_vs_ct${dir === 'export' ? '_export' : ''}`;
@@ -988,7 +989,7 @@ function slotChecks(cx, row) {
     const how = `We compared what the smart meter measured ${dir === 'import' ? 'coming from' : 'going to'} the grid with what ${clampWords} measured in the same ${noun}. The meter is the official figure; the clamp is a cross-check.`;
     if (!meterUsed || clamp == null) {
       out.push(ck(id, 'consistency', title, how, { status: 'skip', unit: 'kWh', evidence: ev({}),
-        explanation: !meterUsed ? `There is no smart meter ${dir} reading for this ${noun}${lin[dir] === 'sunsynk_ct' ? ', so the clamp figure is used on its own' : ''}: nothing to compare.` : `The inverter sent no readings for this ${noun}.` }));
+        explanation: !meterUsed ? `There is no smart meter ${dir} reading for this ${noun}${lin[dir] === 'clamp' ? ', so the clamp figure is used on its own' : ''}: nothing to compare.` : `The inverter sent no readings for this ${noun}.` }));
       continue;
     }
     const meter = row[col]; const diff = meter - clamp; const tol = Math.max(0.05 * h * 2, 0.1 * Math.abs(meter));
@@ -1352,7 +1353,7 @@ function dayChecks(cx, date) {
     const c = stored(code);
     if (!c) continue;
     let meter = 0; let clamp = 0; let n = 0;
-    for (const r of rows) { const l = JSON.parse(r.lineage || '{}'); if (l[dir] === 'octopus_meter' && l.ct) { meter += r[col] ?? 0; clamp += l.ct[key] ?? 0; n++; } }
+    for (const r of rows) { const l = JSON.parse(r.lineage || '{}'); if (l[dir] === 'meter' && l.ct) { meter += r[col] ?? 0; clamp += l.ct[key] ?? 0; n++; } }
     out.push(ck(`${code}_day`, 'consistency', `The smart meter and the inverter agree over the day (${dir})`, `Over the ${noun}s both measured, we compared the smart meter's ${dir} with the inverter's own sensor on the grid cable (its "clamp"). Within 5% is normal.`,
       { source_value: meter, our_value: clamp, unit: 'kWh', diff: meter - clamp, tolerance: 0.05, status: c.status, evidence: { ts: ds, table: 'check_result' },
         explanation: `On ${day}, over ${n} ${noun}s, the meter measured ${kw(meter, 2)} and the clamp ${kw(clamp, 2)}: ${meter > 0 ? `${fx(Math.abs((meter - clamp) / meter) * 100, 1)}% apart` : 'no difference to measure'}. ${c.status === 'pass' ? 'That is normal.' : 'That is more than usual.'}` }));

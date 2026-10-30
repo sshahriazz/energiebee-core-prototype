@@ -52,8 +52,8 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
     <div id="basis-slot"></div>`);
   document.body.insertAdjacentHTML('beforeend', `
     <footer class="foot">
-      <img src="/img/technext-logo.png" alt="Technext">
-      <span>Prototype built by Technext for EnergieBee · every number on these pages comes from the core's slot timeline and can be traced on the Data &amp; trust page.</span>
+      ${BEE}
+      <span>Prototype built by EnergieBee Labs · every number on these pages comes from the core's slot timeline and can be traced on the Data &amp; trust page.</span>
     </footer>`);
 
   const select = document.getElementById('site-select');

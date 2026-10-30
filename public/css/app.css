@@ -248,9 +248,7 @@ dialog {
 dialog::backdrop { background: rgb(0 0 0 / 0.35); }
 
 .foot { max-width: 1240px; margin: 0 auto; padding: 16px; display: flex; gap: 10px; align-items: center; color: var(--text-3); font-size: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
-.foot img { height: 18px; width: auto; }
-:root[data-theme="dark"] .foot img { filter: invert(1) hue-rotate(180deg); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .foot img { filter: invert(1) hue-rotate(180deg); } }
+.foot .brand-mark { width: 18px; height: 18px; }
 .spin { animation: spin 1s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .skeleton { color: var(--text-3); padding: 24px 0; text-align: center; }

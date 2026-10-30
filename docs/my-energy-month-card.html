@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Month So Far</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f3f1ec; --border: #e4e1d8; --border-2: #cfcbc0;
+    --text: #141413; --text-2: #4f4d47; --text-3: #85827a;
+    --accent: #b67600; --accent-soft: #fdf1d6;
+    --good: #0a7d0a; --good-soft: #eaf5e9; --warn: #9a6400; --warn-soft: #fbf1dc; --bad: #c22f2f; --bad-soft: #fbeceb;
+    --c-el: #2a72cc; --c-gas: #d24545; --c-st: #8a5fc4;
+    --sun: #e09a00; --oct: #2a72cc; --ng: #d24545; --vat: #7a6fd0; --calc: #b67600;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121211; --surface: #1b1b1a; --surface-2: #242422; --border: #33322f; --border-2: #4a4945;
+      --text: #f3f2ee; --text-2: #c9c7bf; --text-3: #8d8b84;
+      --accent: #f0b429; --accent-soft: #3a2e10;
+      --good: #4cc24c; --good-soft: #17271a; --warn: #f0b429; --warn-soft: #2e2512; --bad: #ef6b6b; --bad-soft: #321a1a;
+      --c-el: #4a8fe6; --c-gas: #e66767; --c-st: #9677d9;
+      --sun: #e6a817; --oct: #4a8fe6; --ng: #e66767; --vat: #9d93f0; --calc: #f0b429;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121211; --surface: #1b1b1a; --surface-2: #242422; --border: #33322f; --border-2: #4a4945;
+    --text: #f3f2ee; --text-2: #c9c7bf; --text-3: #8d8b84;
+    --accent: #f0b429; --accent-soft: #3a2e10;
+    --good: #4cc24c; --good-soft: #17271a; --warn: #f0b429; --warn-soft: #2e2512; --bad: #ef6b6b; --bad-soft: #321a1a;
+    --c-el: #4a8fe6; --c-gas: #e66767; --c-st: #9677d9;
+    --sun: #e6a817; --oct: #4a8fe6; --ng: #e66767; --vat: #9d93f0; --calc: #f0b429;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-variant-numeric: tabular-nums; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 80px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.015em; }
+  h2 { font-size: 22px; margin: 0 0 6px; line-height: 1.3; letter-spacing: -0.01em; }
+  h3 { font-size: 18px; margin: 0; line-height: 1.35; }
+  p { margin: 8px 0; }
+  code { font-family: var(--mono); font-size: 0.85em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+  .lede { color: var(--text-2); font-size: 17.5px; max-width: 660px; margin: 0; }
+  .small { font-size: 13.5px; color: var(--text-3); }
+  .kick { font-size: 12.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 28px; margin: 18px 0; }
+  .card > .sub { color: var(--text-2); margin: 0 0 18px; max-width: 700px; }
+  .label { font-size: 12px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-3); margin: 22px 0 10px; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Tabs */
+  .tabs { position: sticky; top: 0; z-index: 5; padding: 12px 0; margin: 26px 0 0; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); }
+  .tabs-inner { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--border); }
+  .tab { border: 0; background: transparent; color: var(--text-2); font-weight: 600; font-size: 15px; padding: 10px 12px; border-radius: 10px; cursor: pointer; display: flex; gap: 8px; align-items: center; justify-content: center; text-align: center; line-height: 1.25; }
+  .tab .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--border); color: var(--text-2); flex: none; }
+  .tab[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / 0.1); }
+  .tab[aria-selected="true"] .n { background: var(--accent); color: #fff; }
+  .tab .cnt { font-size: 12px; font-weight: 700; color: var(--bad); }
+  [role="tabpanel"][hidden] { display: none; }
+
+  /* Short answer */
+  .verdicts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .vd { border-radius: 18px; padding: 22px; border: 1px solid var(--border); }
+  .vd .ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+  .vd h3 { font-size: 19px; }
+  .vd p { color: var(--text-2); font-size: 15px; margin: 6px 0 0; }
+  .vd .big { font: 700 28px/1.15 system-ui, sans-serif; margin-top: 10px; letter-spacing: -0.01em; }
+  .vd .big small { display: block; font-size: 13px; font-weight: 600; color: var(--text-3); letter-spacing: 0; margin-top: 2px; }
+  .vd.ok { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
+  .vd.ok .ic { background: var(--good); color: var(--surface); }
+  .vd.no { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, var(--border)); }
+  .vd.no .ic { background: var(--bad); color: var(--surface); }
+  .vd.no .big { color: var(--bad); }
+  .vd.ok .big { color: var(--good); }
+  .nextbar { display: flex; justify-content: flex-end; margin-top: 18px; }
+  .btn { border: 1px solid var(--border-2); background: var(--surface); border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 15px; cursor: pointer; }
+  .btn:hover { border-color: var(--text-3); }
+  .btn.primary { background: var(--text); color: var(--surface); border-color: var(--text); }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+
+  /* Chart */
+  .keyrow { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14px; color: var(--text-2); margin: 0 0 14px; }
+  .keyrow i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+  .keyrow i.hatch { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--bad) 3px 4.5px); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); }
+  .chart-wrap { position: relative; }
+  .chart { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 8px; }
+  .yax { position: relative; height: 250px; font-size: 11.5px; color: var(--text-3); }
+  .yax span { position: absolute; right: 0; transform: translateY(50%); }
+  .plot { position: relative; height: 250px; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; align-items: end; border-bottom: 1px solid var(--border-2); }
+  .grid-l { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border); pointer-events: none; }
+  .col { position: relative; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; border-radius: 4px 4px 0 0; }
+  .col.nogas { background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in srgb, var(--bad) 10%, transparent) 5px 7px); }
+  .col:hover, .col:focus-visible { outline: none; background-color: color-mix(in srgb, var(--text) 7%, transparent); }
+  .seg { width: 100%; }
+  .seg:not(:last-child) { border-bottom: 2px solid var(--surface); }
+  .col .seg:first-child { border-radius: 4px 4px 0 0; }
+  .xax { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; margin-left: 48px; font-size: 11px; color: var(--text-3); text-align: center; margin-top: 5px; }
+  .xax span.nogas { color: var(--bad); font-weight: 700; }
+  .callouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+  .callout { border-left: 3px solid var(--bad); padding: 4px 0 4px 12px; font-size: 14.5px; color: var(--text-2); }
+  .callout b { color: var(--text); }
+  .tip { position: absolute; pointer-events: none; z-index: 3; background: var(--surface); border: 1px solid var(--border-2); border-radius: 12px; padding: 10px 12px; font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.15); min-width: 200px; display: none; line-height: 1.5; }
+  .tip b { display: block; margin-bottom: 4px; }
+  .tip .r { display: flex; justify-content: space-between; gap: 14px; }
+  .tip .r span:last-child { font-family: var(--mono); }
+  .tip .flag { color: var(--bad); font-weight: 600; margin-top: 4px; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; font-weight: 600; color: var(--text-2); font-size: 15px; }
+  .tscroll { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { font-size: 12.5px; color: var(--text-3); font-weight: 600; }
+  td { font-family: var(--mono); font-size: 13px; }
+  td:first-child, td:nth-child(2) { font-family: inherit; font-size: 13.5px; }
+  tr.nogas td { background: color-mix(in srgb, var(--bad) 6%, transparent); }
+  td.zero { color: var(--bad); font-weight: 700; }
+  tfoot td { font-weight: 700; border-top: 2px solid var(--border-2); border-bottom: 0; }
+
+  /* How: three steps */
+  .steps3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; position: relative; }
+  .s3 { background: var(--surface-2); border-radius: 16px; padding: 18px; position: relative; }
+  .s3 .num { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 14px; background: var(--accent); color: #fff; margin-bottom: 10px; }
+  .s3 h3 { font-size: 17px; }
+  .s3 p { font-size: 14.5px; color: var(--text-2); margin: 4px 0 0; }
+  .s3:not(:last-child)::after { content: "→"; position: absolute; right: -13px; top: 50%; transform: translateY(-50%); color: var(--text-3); font-size: 18px; }
+  .srcs { display: grid; gap: 6px; margin-top: 10px; }
+  .src { display: flex; gap: 8px; align-items: baseline; font-size: 14px; }
+  .src i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); flex: none; transform: translateY(-1px); }
+  .src span { color: var(--text-3); font-size: 13px; }
+  .hh { margin-top: 14px; }
+  .hh-rows { display: grid; gap: 0; margin-top: 10px; background: var(--surface-2); border-radius: 14px; padding: 6px 16px; }
+  .hh-row { display: grid; grid-template-columns: 180px minmax(0, 1fr) 80px; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: baseline; font-size: 15px; }
+  .hh-row:last-child { border-bottom: 0; font-weight: 700; }
+  .hh-row .how { color: var(--text-2); font-size: 14px; }
+  .hh-row .v { font-family: var(--mono); font-weight: 700; text-align: right; }
+
+  /* Explorer */
+  .explore { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 26px; align-items: start; }
+  .phone { position: sticky; top: 92px; border: 1px solid var(--border-2); border-radius: 22px; padding: 20px; background: var(--surface); box-shadow: 0 10px 30px rgb(0 0 0 / 0.07); }
+  .phone .cap { font-size: 12.5px; color: var(--text-3); text-align: center; margin-top: 10px; }
+  .hit { display: block; width: 100%; text-align: left; border: 2px solid transparent; background: transparent; border-radius: 10px; padding: 4px 8px; margin: 0 -10px; width: calc(100% + 20px); cursor: pointer; position: relative; }
+  .hit:hover { background: var(--surface-2); }
+  .hit[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .hit .dot { position: absolute; right: 8px; top: 8px; width: 9px; height: 9px; border-radius: 50%; }
+  .hit .dot.ok { background: var(--good); }
+  .hit .dot.no { background: var(--bad); }
+  .ph-q { font-size: 13.5px; color: var(--text-3); font-weight: 600; }
+  .ph-big { font: 700 36px/1.15 system-ui, sans-serif; letter-spacing: -0.02em; }
+  .ph-lead { font-size: 14px; color: var(--text-2); line-height: 1.5; }
+  .ph-bar { height: 9px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin: 6px 0 4px; }
+  .ph-bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+  .ph-lab { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text-3); }
+  .ph-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 20px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .ph-split .hit span { display: block; font-size: 12.5px; color: var(--text-3); }
+  .ph-split .hit b { font-size: 16px; }
+  .ph-note { font-size: 12.5px; color: var(--text-3); line-height: 1.5; margin-top: 8px; }
+  .ph-row { display: flex; gap: 6px; margin: 0 -10px; }
+  .ph-row .hit { margin: 0; width: auto; flex: 1; }
+
+  .panel { min-height: 520px; }
+  .pv-top { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+  .pv-top .shown { font: 700 30px/1.1 system-ui, sans-serif; letter-spacing: -0.01em; }
+  .pv-what { font-size: 17px; color: var(--text); margin: 10px 0 0; max-width: 620px; }
+  .eqc { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin-top: 4px; }
+  .term { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 9px 13px; min-width: 76px; }
+  .term b { display: block; font-size: 18px; font-family: var(--mono); letter-spacing: -0.02em; }
+  .term span { display: block; font-size: 12.5px; color: var(--text-3); line-height: 1.3; margin-top: 2px; }
+  .term.res { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .term.res b { color: var(--text); }
+  .term.hl { border-color: var(--bad); background: var(--bad-soft); }
+  .op { display: grid; place-items: center; font-size: 20px; font-weight: 600; color: var(--text-3); padding: 0 2px; }
+  .pv-extra { font-size: 14px; color: var(--text-2); margin-top: 10px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill { display: inline-flex; gap: 7px; align-items: center; font-size: 13.5px; font-weight: 600; padding: 5px 11px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
+  .pill i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+  .verdict { margin-top: 22px; border-radius: 14px; padding: 14px 16px; font-size: 15px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
+  .verdict .vi { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: var(--surface); }
+  .verdict.ok { background: var(--good-soft); }
+  .verdict.ok .vi { background: var(--good); }
+  .verdict.no { background: var(--bad-soft); }
+  .verdict.no .vi { background: var(--bad); }
+  .verdict b.t { display: block; }
+  .verdict p { margin: 2px 0 0; color: var(--text-2); }
+  .linkbtn { border: 0; background: none; color: var(--bad); font-weight: 700; cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 3px; }
+  .pv-nav { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .pv-nav .btn { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .dsrc { display: grid; gap: 0; }
+  .dsrc-h, .dsrc-r { display: grid; grid-template-columns: 180px minmax(0, 1.6fr) minmax(0, 1fr) 190px; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 14.5px; align-items: start; }
+  .dsrc-h { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); padding: 0 0 8px; }
+  .dsrc-r:last-child { border-bottom: 0; }
+  .dsrc-r > div { color: var(--text-2); }
+  .dsrc-r .dn b { display: block; color: var(--text); font-size: 15px; }
+  .dsrc-r .dn i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 7px; }
+  .dsrc-r .dn b { display: inline; }
+  .dsrc-r .dn small { display: block; color: var(--text-3); font-size: 12.5px; margin-top: 2px; }
+  .dsrc-r b { color: var(--text); }
+  .uses { display: flex; flex-wrap: wrap; gap: 5px; }
+  .uchip { white-space: nowrap; border: 1px solid var(--border-2); background: var(--surface); border-radius: 999px; font-size: 12px; font-weight: 600; padding: 2px 9px; cursor: pointer; color: var(--text); }
+  .uchip:hover { border-color: var(--accent); }
+  .formula { font-family: var(--mono); font-size: 13.5px; background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: 12px; padding: 14px 16px; white-space: pre; overflow-x: auto; line-height: 1.75; margin: 4px 0 0; }
+  .inputs { display: grid; gap: 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .inp { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 14px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 14.5px; align-items: baseline; }
+  .inp .iw { font-weight: 600; }
+  .inp:last-child { border-bottom: 0; }
+  .inp .iv { font-family: var(--mono); font-weight: 700; text-align: right; }
+  .inp .is { grid-column: 1 / -1; color: var(--text-2); font-size: 13.5px; }
+  .inp .is .pill { padding: 1px 9px; font-size: 12px; margin-right: 6px; }
+  .panel .formula { white-space: pre-wrap; font-size: 13px; }
+  .coderef { font-size: 13.5px; color: var(--text-2); margin-top: 10px; }
+
+  /* Problems */
+  .plist { display: grid; gap: 6px; }
+  .pr { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; text-align: left; border: 2px solid transparent; background: var(--surface-2); border-radius: 14px; padding: 11px 14px; cursor: pointer; font-size: 15px; }
+  .pr:hover { border-color: var(--border-2); }
+  .pr[aria-pressed="true"] { border-color: var(--sev); background: var(--surface); }
+  .pr .m { font: 700 14px var(--mono); white-space: nowrap; }
+  .pn { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font: 700 13px system-ui, sans-serif; color: var(--surface); background: var(--sev); flex: none; }
+  .hi { --sev: var(--bad); } .md { --sev: var(--warn); } .lo { --sev: var(--text-3); }
+  .pb { margin-top: 22px; border-top: 4px solid var(--sev); padding-top: 22px; }
+  .pb-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .pb-head h3 { font-size: 21px; flex: 1 1 280px; }
+  .sevchip { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sev); border: 1.5px solid var(--sev); border-radius: 999px; padding: 1px 10px; }
+  .pb-one { font-size: 17.5px; margin: 12px 0 0; max-width: 720px; line-height: 1.6; }
+  .pic { background: var(--surface-2); border-radius: 16px; padding: 18px; }
+  .pic-cap { font-size: 14px; color: var(--text-2); margin-top: 12px; }
+  .cal { display: grid; grid-template-columns: 170px repeat(31, minmax(0, 1fr)); gap: 4px 2px; align-items: center; }
+  .cal .lab { font-size: 14px; font-weight: 600; padding-right: 8px; line-height: 1.25; }
+  .cal .lab small { display: block; font-weight: 400; color: var(--text-3); font-size: 12px; }
+  .cal .c { height: 26px; border-radius: 4px; }
+  .cal .dn { font-size: 10.5px; color: var(--text-3); text-align: center; }
+  .c.on { background: color-mix(in srgb, var(--good) 72%, transparent); }
+  .c.inv { background: color-mix(in srgb, var(--sun) 78%, transparent); }
+  .c.off { background: transparent; border: 1px dashed var(--border-2); }
+  .c.miss { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bad) 25%, transparent) 0 4px, var(--bad) 4px 6px); }
+  .c.wait { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warn) 18%, transparent) 0 4px, color-mix(in srgb, var(--warn) 70%, transparent) 4px 6px); }
+  .ckey { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13.5px; color: var(--text-2); margin-top: 12px; }
+  .ckey i { display: inline-block; width: 15px; height: 13px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+  .events { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+  .ev { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; font-size: 14.5px; }
+  .ev .evh { display: block; font-size: 13px; font-weight: 700; color: var(--text-3); }
+  .cmp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .cmp > div { border-radius: 14px; padding: 14px 16px; border: 1px solid var(--border); }
+  .cmp .k { font-size: 13px; font-weight: 600; color: var(--text-3); }
+  .cmp .v { font: 700 24px/1.25 system-ui, sans-serif; margin-top: 2px; letter-spacing: -0.01em; }
+  .cmp .s { font-size: 14px; color: var(--text-2); margin-top: 2px; }
+  .cmp .bad { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, var(--border)); }
+  .cmp .bad .v { color: var(--bad); }
+  .cmp .good { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
+  .cmp .good .v { color: var(--good); }
+  .cmp .quote { font-size: 16px; font-weight: 600; letter-spacing: 0; color: var(--text); }
+  .rcpts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .rcpt { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; font-size: 15px; }
+  .rcpt h4 { margin: 0 0 8px; font-size: 14.5px; }
+  .rcpt .ln { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+  .rcpt .ln span:last-child { font-family: var(--mono); }
+  .rcpt .ln.x { color: var(--bad); font-weight: 600; }
+  .rcpt .ln.t { border-bottom: 0; border-top: 2px solid var(--border-2); font-weight: 700; margin-top: 2px; }
+  .sumline { margin-top: 12px; font-size: 15.5px; }
+  .hb { display: grid; grid-template-columns: 160px minmax(0, 1fr) 84px; gap: 8px 12px; align-items: center; font-size: 14.5px; }
+  .hb .t { height: 20px; border-radius: 0 5px 5px 0; background: var(--c-el); min-width: 2px; display: block; }
+  .hb .t.red { background: var(--bad); }
+  .hb .t.green { background: var(--good); }
+  .hb .t.amber { background: var(--warn); }
+  .hb .v { font-family: var(--mono); font-weight: 700; text-align: right; }
+  .hb .l.hl { color: var(--bad); font-weight: 700; }
+  .hb .track { position: relative; }
+  .avgline { position: absolute; top: -5px; bottom: -5px; border-left: 2px dashed var(--text); }
+  .why { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; counter-reset: w; }
+  .why li { counter-increment: w; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; font-size: 16px; color: var(--text-2); }
+  .why li::before { content: counter(w); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 12.5px; font-weight: 700; background: var(--surface-2); color: var(--text); border: 1px solid var(--border-2); }
+  .why b { color: var(--text); }
+  .fixrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; margin-top: 20px; padding: 14px 16px; border-radius: 14px; background: var(--good-soft); border: 1px solid color-mix(in srgb, var(--good) 30%, var(--border)); font-size: 16px; }
+  .fixrow b { color: var(--good); }
+  .self { font-size: 13px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; }
+  .self.no { color: var(--bad); background: var(--bad-soft); }
+  .self.part { color: var(--warn); background: var(--warn-soft); }
+  .self.na { color: var(--text-2); background: var(--surface-2); }
+  .dev { font-size: 14px; color: var(--text-2); }
+  .dev p { margin: 8px 0 0; }
+
+  /* Checks */
+  .checks { display: grid; gap: 12px; }
+  .chk { border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
+  .chk h3 { font-size: 17px; display: flex; gap: 10px; align-items: center; }
+  .chk h3 .num { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; background: var(--surface-2); border: 1px solid var(--border-2); flex: none; }
+  .chk .q { display: block; margin-top: 10px; font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .chk .ans { margin-top: 8px; font-size: 14.5px; color: var(--text-2); }
+  .chk .ans b { color: var(--good); }
+
+  .theme { position: fixed; right: 14px; bottom: 14px; font-size: 13px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--surface); cursor: pointer; }
+
+  @media (max-width: 860px) {
+    .explore { grid-template-columns: minmax(0, 1fr); }
+    .phone { position: static; }
+    .panel { min-height: 0; }
+  }
+  @media (max-width: 720px) {
+    main { padding-top: 28px; }
+    h1 { font-size: 25px; }
+    .card { padding: 20px 16px; border-radius: 16px; }
+    .tabs-inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tab { font-size: 14px; padding: 8px; justify-content: flex-start; text-align: left; }
+    .verdicts, .steps3, .callouts, .events, .cmp, .rcpts { grid-template-columns: minmax(0, 1fr); }
+    .s3:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -19px; transform: translateX(50%); }
+    .steps3 { gap: 22px; }
+    .hh-row { grid-template-columns: minmax(0, 1fr) 70px; }
+    .hh-row .how { grid-column: 1 / -1; grid-row: 2; }
+    .xax span:nth-child(even) { visibility: hidden; }
+    .yax, .plot { height: 210px; }
+    .cal { grid-template-columns: repeat(31, minmax(0, 1fr)); }
+    .cal .lab { grid-column: 1 / -1; margin-top: 8px; }
+    .cal .sp { display: none; }
+    .cal .c { height: 20px; }
+    .cal .dn { font-size: 9px; }
+    .hb { grid-template-columns: 100px minmax(0, 1fr) 70px; font-size: 13px; }
+    .fixrow { grid-template-columns: minmax(0, 1fr); }
+    .fixrow .self { justify-self: start; }
+    .pr .m { font-size: 12.5px; }
+    .dsrc-h { display: none; }
+    .dsrc-r { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .formula { white-space: pre-wrap; font-size: 12.5px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="kick">My Energy tab · "This month so far"</div>
+  <h1>Is the "This month so far" card right?</h1>
+  <p class="lede">What the card says, how each number is worked out, and what needs fixing, explained one step at a time.</p>
+  <p class="small" style="margin-top:10px">10 Acresbrook · data as of <span id="snap"></span> · every number is recalculated in this page from the app's data</p>
+
+  <nav class="tabs" aria-label="Sections"><div class="tabs-inner" role="tablist">
+    <button class="tab" role="tab" id="t-answer" aria-controls="answer" aria-selected="true"><span class="n">1</span>Short answer</button>
+    <button class="tab" role="tab" id="t-how" aria-controls="how" aria-selected="false"><span class="n">2</span>How it's worked out</button>
+    <button class="tab" role="tab" id="t-wrong" aria-controls="wrong" aria-selected="false"><span class="n">3</span>What's wrong <span class="cnt">6</span></button>
+    <button class="tab" role="tab" id="t-check" aria-controls="check" aria-selected="false"><span class="n">4</span>Check it yourself</button>
+  </div></nav>
+
+  <!-- 1 ─ Short answer -->
+  <section id="answer" role="tabpanel" aria-labelledby="t-answer">
+    <div class="card">
+      <h2>The short answer</h2>
+      <p class="sub">The card adds up correctly, but it is missing some data, so the real bill will be higher.</p>
+      <div class="verdicts">
+        <div class="vd ok"><div class="ic">✓</div><h3>The maths is right</h3>
+          <p>Electricity, gas, standing charges and export are each priced correctly, and they add up exactly.</p>
+          <div class="big" id="a-total"><small>this month so far</small></div></div>
+        <div class="vd no"><div class="ic">!</div><h3>But a week of gas is missing</h3>
+          <p>Gas readings for 2–8 October were never loaded, so those days count £0 for gas.</p>
+          <div class="big" id="a-miss"><small>not counted</small></div></div>
+        <div class="vd no"><div class="ic">!</div><h3>So October will cost more</h3>
+          <p>The card says <b id="a-est"></b>. With the missing gas added, the bill will more likely be:</p>
+          <div class="big" id="a-real"><small>for October, roughly</small></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>See the gap, day by day</h2>
+      <p class="sub">What each day cost (before export payments). The <b style="color:var(--bad)">striped days</b> have no gas reading, so their gas isn't counted. Point at a day to see its numbers.</p>
+      <div class="keyrow" aria-hidden="true">
+        <span><i style="background:var(--c-el)"></i>Electricity</span>
+        <span><i style="background:var(--c-gas)"></i>Gas</span>
+        <span><i style="background:var(--c-st)"></i>Standing charges</span>
+        <span><i class="hatch"></i>No gas reading</span>
+      </div>
+      <div class="chart-wrap" id="chart-wrap">
+        <div class="chart"><div class="yax" id="yax"></div><div class="plot" id="plot" role="img" aria-label="Daily cost from 2 to 29 October. 2 to 8 and 28 to 29 October have no gas."></div></div>
+        <div class="xax" id="xax"></div>
+        <div class="tip" id="tip" role="status"></div>
+      </div>
+      <div class="callouts">
+        <div class="callout"><b>2–8 Oct: no gas at all.</b> These readings were never loaded, and they won't fill in on their own.</div>
+        <div class="callout"><b>28–29 Oct: gas not here yet.</b> The gas meter reports a day late, so these will fill in.</div>
+      </div>
+      <details><summary>Show every day as a table</summary><div class="tscroll"><table id="dtab"></table></div></details>
+      <div class="nextbar"><button class="btn primary" data-go="how">How is it worked out? →</button></div>
+    </div>
+  </section>
+
+  <!-- 2 ─ How -->
+  <section id="how" role="tabpanel" aria-labelledby="t-how" hidden>
+    <div class="card">
+      <h2>How the card is worked out</h2>
+      <p class="sub">Three steps, repeated every 10 minutes.</p>
+      <div class="steps3">
+        <div class="s3"><div class="num">1</div><h3>Collect the data</h3>
+          <div class="srcs">
+            <div class="src" style="--c:var(--sun)"><i></i><div>Inverter <span>solar, battery, electricity</span></div></div>
+            <div class="src" style="--c:var(--oct)"><i></i><div>Smart meter <span>electricity, gas</span></div></div>
+            <div class="src" style="--c:var(--oct)"><i></i><div>Octopus tariffs <span>prices</span></div></div>
+            <div class="src" style="--c:var(--ng)"><i></i><div>National Gas <span>gas energy content</span></div></div>
+            <div class="src" style="--c:var(--vat)"><i></i><div>VAT rules <span>0% electricity, 5% gas</span></div></div>
+          </div></div>
+        <div class="s3"><div class="num">2</div><h3>Price every half-hour</h3>
+          <p>48 times a day, the app works out what that half-hour cost: electricity bought + gas used + a share of the standing charges − export paid.</p></div>
+        <div class="s3"><div class="num">3</div><h3>Add them up</h3>
+          <p>The card adds every half-hour from 1 October until now: <b id="h-slots"></b> half-hours.</p></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Where the data comes from</h2>
+      <p class="sub">Five sources feed the card, and the app works out the rest. The chips show which numbers on the card each source is used for.</p>
+      <div class="dsrc">
+        <div class="dsrc-h" aria-hidden="true"><span>Source</span><span>What it gives</span><span>How often · since when</span><span>Used for</span></div>
+        <div class="dsrc-r" style="--c:var(--sun)"><div class="dn"><i></i><b>Sunsynk inverter</b><small>your solar/battery inverter</small></div>
+          <div>Solar power, battery charge and discharge, battery level (%), and grid import and export from its own clamp. These are watts every 5 minutes, which the app turns into kWh for each half-hour.</div>
+          <div>Every 5 minutes, live.<br><b>Since 2 Oct</b> (connected 16 Oct, loaded 14 days back)</div>
+          <div class="uses" data-uses="el,ex,first,estd"></div></div>
+        <div class="dsrc-r" style="--c:var(--oct)"><div class="dn"><i></i><b>Octopus smart meter</b><small>the readings you are billed on</small></div>
+          <div>Electricity imported (kWh), electricity exported (kWh) and gas used (m³), for every half-hour. When these arrive they replace the inverter's grid numbers.</div>
+          <div>Half-hourly, about a day late.<br><b>Since 9 Oct</b> (connected 23 Oct, loaded 14 days back)</div>
+          <div class="uses" data-uses="el,gas,ex,estd"></div></div>
+        <div class="dsrc-r" style="--c:var(--oct)"><div class="dn"><i></i><b>Octopus tariffs</b><small>your prices, before VAT</small></div>
+          <div><b>Import</b> <code>E-1R-IOG-SMB-FIX-12M-26-06-13-G</code>: 32.1441p per kWh by day, 7.619p at night (23:30–05:30), standing charge 44.4133p a day.<br>
+            <b>Export</b> <code>E-1R-OUTGOING-VAR-24-10-26-G</code>: 12p per kWh.<br>
+            <b>Gas</b> <code>G-1R-OE-FIX-18M-26-09-11-G</code>: 7.7434p per kWh, standing charge 27.6476p a day.</div>
+          <div>Read from your Octopus account when prices change.<br>The night window comes from the time-stamped prices of your earlier Intelligent Octopus Go tariff</div>
+          <div class="uses" data-uses="el,gas,st,ex"></div></div>
+        <div class="dsrc-r" style="--c:var(--ng)"><div class="dn"><i></i><b>National Gas</b><small>gas energy content</small></div>
+          <div>The calorific value (CV): how much energy is in a cubic metre of gas in your area (North West). It was 38.9–40.7 MJ/m³ this month. It is needed to turn the meter's m³ into kWh.</div>
+          <div>One value a day.<br>Used for every day with a gas reading</div>
+          <div class="uses" data-uses="gas"></div></div>
+        <div class="dsrc-r" style="--c:var(--vat)"><div class="dn"><i></i><b>VAT rules</b><small>in the app: <code>src/db/registry.js</code></small></div>
+          <div>Electricity <b>0%</b> from 1 Oct 2026 ("as observed in Octopus published prices on 16 Oct 2026"). Gas <b>5%</b>, the reduced rate for home fuel.</div>
+          <div>Fixed table in the code</div>
+          <div class="uses" data-uses="el,gas,st"></div></div>
+        <div class="dsrc-r" style="--c:var(--calc)"><div class="dn"><i></i><b>Worked out in the app</b><small>the EnergieBee engine</small></div>
+          <div>Splits each half-hour's energy into where it went (grid → house, grid → battery, solar → grid…), prices it, adds the half-hours up, and makes the forecast and the notes.</div>
+          <div>Rebuilt every 10 minutes for the half-hours whose data changed</div>
+          <div class="uses" data-uses="total,est,pd,bar,left,first,estd"></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>One half-hour, priced</h2>
+      <p class="sub">Every number on the card is built from rows like this one, one for each half-hour. This is a real one: <b>Wed 21 Oct, 17:30–18:00</b>, measured by the smart meter.</p>
+<div class="formula">cost of a half-hour = grid import kWh × import price × (1 + electricity VAT)
+                   + gas kWh × gas unit price × (1 + gas VAT)
+                   + (electricity standing + gas standing × 1.05) ÷ half-hours in the day
+                   − exported kWh × export price
+
+gas kWh = gas m³ × 1.02264 × CV ÷ 3.6</div>
+      <div class="hh-rows">
+        <div class="hh-row"><span>Electricity</span><span class="how">0.469 kWh imported (smart meter) × 32.1441p (day rate, 17:30 is before 23:30) × (1 + 0% VAT)</span><span class="v">15.08p</span></div>
+        <div class="hh-row"><span>Gas</span><span class="how">0.269 m³ (gas meter) × 1.02264 × 40.7 MJ/m³ (National Gas, 21 Oct) ÷ 3.6 = 3.110 kWh × 7.7434p × 1.05</span><span class="v">25.29p</span></div>
+        <div class="hh-row"><span>Standing charges</span><span class="how">(44.4133p + 27.6476p × 1.05) ÷ 48 = 73.4433p ÷ 48</span><span class="v">1.53p</span></div>
+        <div class="hh-row"><span>Export</span><span class="how">0 kWh paid × 12p (the meter saw 0.011 kWh, but none of it traced to solar or the battery; see problem 5)</span><span class="v">0.00p</span></div>
+        <div class="hh-row"><span>This half-hour cost</span><span class="how">15.08 + 25.29 + 1.53 − 0</span><span class="v">41.89p</span></div>
+      </div>
+      <p class="small">The engine stored <code>total_cost = 41.8921</code> for this half-hour in the <code>site_hh</code> table, the same answer. 1.02264 is the standard UK correction for gas temperature and pressure, and ÷ 3.6 turns megajoules into kWh.</p>
+    </div>
+
+    <div class="card">
+      <h2>Every number on the card</h2>
+      <p class="sub">Tap any number on the card to see how it is worked out. <span style="color:var(--good)">●</span> correct &nbsp; <span style="color:var(--bad)">●</span> has a problem</p>
+      <div class="explore">
+        <div>
+          <div class="phone" id="phone"></div>
+        </div>
+        <div class="panel" id="panel" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 ─ Wrong -->
+  <section id="wrong" role="tabpanel" aria-labelledby="t-wrong" hidden>
+    <div class="card">
+      <h2>What's wrong: 6 problems</h2>
+      <p class="sub">Biggest first. Pick one to see a picture of it, what the card says against what it should say, why it happens, and the fix.</p>
+      <div class="plist" id="plist"></div>
+      <div id="prob"></div>
+    </div>
+  </section>
+
+  <!-- 4 ─ Check -->
+  <section id="check" role="tabpanel" aria-labelledby="t-check" hidden>
+    <div class="card">
+      <h2>Check it yourself</h2>
+      <p class="sub">Run these in a terminal in the project folder. Each one shows the answer you should get.</p>
+      <div class="checks" id="checks"></div>
+      <p class="small" style="margin-top:18px">Code behind the card: <code>public/js/pages/my.js</code> (the card), <code>src/server.js</code> (adding up), <code>src/core/build.js</code> (pricing each half-hour), <code>src/jobs/steps.js</code> (loading data).</p>
+    </div>
+  </section>
+</main>
+<button class="theme" id="theme" type="button" aria-label="Switch light or dark theme">◐ Theme</button>
+
+<script>
+const DATA = {"m":{"slots":1311,"final":914,"provisional":397,"missing":0,"solar":290.4348,"grid_import":495.5768,"grid_export":97.914,"gas":938.0317,"grid_to_home_cost":3046.3679,"grid_to_battery_cost":1478.8033,"loss_cost":519.4967,"gas_cost":7626.7327,"standing_cost":1762.7573,"export_credit":1162.1818,"total_cost":13271.9761,"solar_to_grid":92.9892,"battery_to_grid":3.8592,"grid_to_home":281.7294,"grid_to_battery":184.5466,"grid_to_loss":29.3008,"import_paid":5044.668},"D":[{"d":"2026-10-02","n":48,"f":0,"p":48,"imp":14.1,"exp":6.7,"gas":null,"el":119.42,"gc":0,"st":44.413,"ex":78.8,"tot":85.03},{"d":"2026-10-03","n":48,"f":0,"p":48,"imp":9.8,"exp":12.1,"gas":null,"el":86.88,"gc":0,"st":44.413,"ex":142.68,"tot":-11.39},{"d":"2026-10-04","n":48,"f":0,"p":48,"imp":15.5,"exp":5.9,"gas":null,"el":127.08,"gc":0,"st":44.413,"ex":69.64,"tot":101.86},{"d":"2026-10-05","n":48,"f":0,"p":48,"imp":10.3,"exp":0.094,"gas":null,"el":86.53,"gc":0,"st":44.413,"ex":1.13,"tot":129.82},{"d":"2026-10-06","n":48,"f":0,"p":48,"imp":21.8,"exp":0,"gas":null,"el":169.16,"gc":0,"st":44.413,"ex":0,"tot":213.57},{"d":"2026-10-07","n":48,"f":0,"p":48,"imp":20.1,"exp":10.1,"gas":null,"el":156.27,"gc":0,"st":44.413,"ex":121.2,"tot":79.48},{"d":"2026-10-08","n":48,"f":0,"p":48,"imp":15,"exp":12.1,"gas":null,"el":118.91,"gc":0,"st":44.413,"ex":145.2,"tot":18.12},{"d":"2026-10-09","n":48,"f":48,"p":0,"imp":20.403,"exp":0.094,"gas":19.16,"el":322.98,"gc":155.76,"st":73.443,"ex":0.79,"tot":551.39},{"d":"2026-10-10","n":48,"f":48,"p":0,"imp":11.505,"exp":10.241,"gas":11.02,"el":89.81,"gc":89.6,"st":73.443,"ex":121.34,"tot":131.51},{"d":"2026-10-11","n":48,"f":48,"p":0,"imp":17.914,"exp":4.42,"gas":64.38,"el":161.36,"gc":523.43,"st":73.443,"ex":51.82,"tot":706.41},{"d":"2026-10-12","n":48,"f":48,"p":0,"imp":11.272,"exp":0.018,"gas":50.5,"el":165.47,"gc":410.61,"st":73.443,"ex":0.19,"tot":649.33},{"d":"2026-10-13","n":48,"f":48,"p":0,"imp":14.3,"exp":3.087,"gas":28.53,"el":114.27,"gc":231.98,"st":73.443,"ex":37.04,"tot":382.65},{"d":"2026-10-14","n":48,"f":48,"p":0,"imp":21.384,"exp":8.663,"gas":37.31,"el":172.73,"gc":303.36,"st":73.443,"ex":103.55,"tot":445.99},{"d":"2026-10-15","n":48,"f":48,"p":0,"imp":29.677,"exp":0.043,"gas":28.37,"el":425.13,"gc":230.69,"st":73.443,"ex":0.46,"tot":728.8},{"d":"2026-10-16","n":48,"f":48,"p":0,"imp":23.544,"exp":2.471,"gas":19.31,"el":196.87,"gc":156.97,"st":73.443,"ex":29.48,"tot":397.8},{"d":"2026-10-17","n":48,"f":48,"p":0,"imp":20.502,"exp":6.702,"gas":62.56,"el":173.27,"gc":508.68,"st":73.443,"ex":80.26,"tot":675.14},{"d":"2026-10-18","n":48,"f":48,"p":0,"imp":22.101,"exp":4.558,"gas":61.07,"el":204.54,"gc":496.55,"st":73.443,"ex":53.06,"tot":721.48},{"d":"2026-10-19","n":48,"f":48,"p":0,"imp":23.621,"exp":2.675,"gas":37.46,"el":203.68,"gc":304.59,"st":73.443,"ex":31.28,"tot":550.44},{"d":"2026-10-20","n":48,"f":48,"p":0,"imp":18.384,"exp":0.022,"gas":41.82,"el":207.27,"gc":340.02,"st":73.443,"ex":0.23,"tot":620.5},{"d":"2026-10-21","n":48,"f":48,"p":0,"imp":28.732,"exp":0.065,"gas":62.95,"el":341.95,"gc":511.81,"st":73.443,"ex":0.53,"tot":926.68},{"d":"2026-10-22","n":48,"f":48,"p":0,"imp":33.28,"exp":0.08,"gas":73.56,"el":459.01,"gc":598.1,"st":73.443,"ex":0.4,"tot":1130.15},{"d":"2026-10-23","n":48,"f":48,"p":0,"imp":23.375,"exp":0.204,"gas":68.37,"el":351.61,"gc":555.9,"st":73.443,"ex":2.34,"tot":978.61},{"d":"2026-10-24","n":48,"f":48,"p":0,"imp":19.513,"exp":0.012,"gas":88.85,"el":193.87,"gc":722.4,"st":73.443,"ex":0.12,"tot":989.6},{"d":"2026-10-25","n":50,"f":50,"p":0,"imp":12.076,"exp":2.258,"gas":77.16,"el":96.62,"gc":627.35,"st":73.443,"ex":26.98,"tot":770.44},{"d":"2026-10-26","n":48,"f":48,"p":0,"imp":7.599,"exp":0.007,"gas":61.12,"el":64.81,"gc":496.92,"st":73.443,"ex":0.08,"tot":635.1},{"d":"2026-10-27","n":48,"f":48,"p":0,"imp":9.751,"exp":5.3,"gas":44.52,"el":76.67,"gc":362.01,"st":73.443,"ex":63.6,"tot":448.53},{"d":"2026-10-28","n":48,"f":0,"p":48,"imp":8.4,"exp":0,"gas":null,"el":69.78,"gc":0,"st":44.413,"ex":0,"tot":114.2},{"d":"2026-10-29","n":13,"f":0,"p":13,"imp":11.644,"exp":0,"gas":null,"el":88.71,"gc":0,"st":12.029,"ex":0,"tot":100.74}],"H":[{"d":"2026-10-21","tot":926.68},{"d":"2026-10-22","tot":1130.15},{"d":"2026-10-23","tot":978.61},{"d":"2026-10-24","tot":989.6},{"d":"2026-10-25","tot":770.44},{"d":"2026-10-26","tot":635.1},{"d":"2026-10-27","tot":448.53},{"d":"2026-10-28","tot":114.2}]};
+const SNAP = "29 Oct 2026, 06:40";
+const TODAY = '2026-10-29';
+const GAS_ST = 27.6476 * 1.05;   // gas standing per day, p with VAT
+
+const $ = (id) => document.getElementById(id);
+const gbp = (p) => (p < 0 ? '−' : '') + '£' + (Math.abs(p) / 100).toFixed(2);
+const dlab = (d) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const wlab = (d) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
+
+// ── The card's numbers, exactly as public/js/pages/my.js works them out ──
+const m = DATA.m, D = DATA.D;
+const elec = m.grid_to_home_cost + m.grid_to_battery_cost + m.loss_cost;
+const full = DATA.H.filter((d) => d.d < TODAY && d.tot != null).slice(-7);
+const perDay = sum(full, (d) => d.tot) / full.length;
+const daysLeft = 31 - +TODAY.slice(8, 10);
+const todaySoFar = D.find((d) => d.d === TODAY)?.tot ?? 0;
+const restToday = Math.max(0, perDay - todaySoFar);
+const estimate = m.total_cost + daysLeft * perDay + restToday;
+const progress = Math.min(100, (m.total_cost / estimate) * 100);
+const firstDay = D[0].d;
+const estDays = D.filter((d) => d.p > 0).map((d) => d.d);
+const meterUpTo = D.filter((d) => !d.p && d.f).map((d) => d.d).pop();
+const expKwh = m.solar_to_grid + m.battery_to_grid;
+
+// ── What is missing ──
+const noGas = D.filter((d) => d.gas == null);
+const finalDays = D.filter((d) => !d.p && d.gas != null);
+const gasPerFinalDay = sum(finalDays, (d) => d.gc) / finalDays.length;
+const noGasDays = sum(noGas, (d) => d.n / 48);
+const missStanding = noGasDays * GAS_ST;
+const early = noGas.filter((d) => d.d < '2026-10-09');
+const gasLo = early.length * 250, gasHi = early.length * 400;   // 2–8 Oct gas, p: 30–50 kWh a day at 8.13p
+const late = noGas.filter((d) => d.d >= '2026-10-28' && d.d < TODAY);
+const lateGas = late.length * gasPerFinalDay;
+const last7m = finalDays.slice(-7);
+const perDayFix = sum(last7m, (d) => d.tot) / last7m.length;
+const restFix = daysLeft * perDayFix + Math.max(0, perDayFix - todaySoFar);
+const realLo = m.total_cost + missStanding + gasLo + lateGas + perDayFix + restFix;   // + 1 Oct, one ordinary day
+const realHi = m.total_cost + missStanding + gasHi + lateGas + perDayFix + restFix;
+const estFix = m.total_cost + restFix;
+const nStand = sum(D, (d) => d.n / 48);
+const elecSt = nStand * 44.4133;
+const gasSt = (nStand - noGasDays) * GAS_ST;
+const vatAdd = (elec + elecSt) * 0.05;
+const yday = full[full.length - 1];
+const pounds0 = (p) => '£' + Math.round(p / 100);
+
+$('snap').textContent = SNAP;
+
+// ── Tab 1: short answer ──
+$('a-total').insertAdjacentText('afterbegin', gbp(m.total_cost));
+$('a-miss').insertAdjacentText('afterbegin', `${pounds0(gasLo + missStanding)}–${pounds0(gasHi + missStanding)}`);
+$('a-real').insertAdjacentText('afterbegin', `${pounds0(realLo)}–${pounds0(realHi)}`);
+$('a-est').textContent = gbp(estimate);
+
+const spend = (d) => d.el + (d.gc || 0) + d.st;
+const maxV = Math.ceil(Math.max(...D.map(spend)) / 200) * 200;
+const ticks = [0, maxV / 4, maxV / 2, (3 * maxV) / 4, maxV];
+$('yax').innerHTML = ticks.map((t) => `<span style="bottom:${(t / maxV) * 100}%">£${(t / 100).toFixed(0)}</span>`).join('');
+// Stacked bottom to top: electricity, gas, standing (the column is bottom-aligned, so the markup runs top first).
+$('plot').innerHTML = ticks.slice(1).map((t) => `<div class="grid-l" style="bottom:${(t / maxV) * 100}%"></div>`).join('')
+  + D.map((d, i) => {
+    const h = (v) => `${(v / maxV) * 100}%`;
+    return `<div class="col ${d.gas == null ? 'nogas' : ''}" data-i="${i}" tabindex="0" aria-label="${wlab(d.d)}: ${gbp(spend(d))}">
+      ${d.st ? `<div class="seg" style="height:${h(d.st)};background:var(--c-st)"></div>` : ''}
+      ${d.gc ? `<div class="seg" style="height:${h(d.gc)};background:var(--c-gas)"></div>` : ''}
+      <div class="seg" style="height:${h(d.el)};background:var(--c-el)"></div></div>`;
+  }).join('');
+$('xax').innerHTML = D.map((d) => `<span class="${d.gas == null ? 'nogas' : ''}">${+d.d.slice(8)}</span>`).join('');
+const tip = $('tip'), wrap = $('chart-wrap');
+function showTip(col) {
+  const d = D[+col.dataset.i];
+  tip.innerHTML = `<b>${wlab(d.d)}${d.d === TODAY ? ' (so far)' : ''}</b>
+    <div class="r"><span>Electricity</span><span>${gbp(d.el)}</span></div>
+    <div class="r"><span>Gas</span><span>${d.gas == null ? 'none' : gbp(d.gc)}</span></div>
+    <div class="r"><span>Standing</span><span>${gbp(d.st)}</span></div>
+    <div class="r"><span>Export</span><span>−${gbp(d.ex)}</span></div>
+    <div class="r" style="border-top:1px solid var(--border);margin-top:3px;padding-top:3px"><span>Day total</span><span>${gbp(d.tot)}</span></div>
+    <div class="small">${d.p ? 'From the inverter (estimate)' : 'From the smart meter'}</div>
+    ${d.gas == null ? `<div class="flag">No gas reading: gas and the gas standing charge are missing</div>` : ''}`;
+  tip.style.display = 'block';
+  const wr = wrap.getBoundingClientRect(), cr = col.getBoundingClientRect();
+  tip.style.left = Math.max(0, Math.min(cr.left - wr.left + cr.width / 2 - tip.offsetWidth / 2, wr.width - tip.offsetWidth)) + 'px';
+  tip.style.top = Math.max(0, cr.top - wr.top + 10) + 'px';
+}
+$('plot').addEventListener('pointerover', (e) => { const c = e.target.closest('.col'); if (c) showTip(c); });
+$('plot').addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+$('plot').addEventListener('focusin', (e) => { const c = e.target.closest('.col'); if (c) showTip(c); });
+$('plot').addEventListener('focusout', () => { tip.style.display = 'none'; });
+const cell = (v, zero) => `<td class="${zero ? 'zero' : ''}">${v}</td>`;
+$('dtab').innerHTML = `<thead><tr><th>Day</th><th>From</th><th>Electricity</th><th>Gas</th><th>Standing</th><th>Export</th><th>Total</th></tr></thead><tbody>`
+  + D.map((d) => `<tr class="${d.gas == null ? 'nogas' : ''}"><td>${wlab(d.d)}</td><td>${d.p ? 'Inverter' : 'Meter'}</td>${cell(gbp(d.el))}${cell(d.gas == null ? 'none' : gbp(d.gc), d.gas == null)}${cell(gbp(d.st), d.gas == null)}${cell('−' + gbp(d.ex))}${cell(gbp(d.tot))}</tr>`).join('')
+  + `</tbody><tfoot><tr><td>Month</td><td></td>${cell(gbp(elec))}${cell(gbp(m.gas_cost))}${cell(gbp(m.standing_cost))}${cell('−' + gbp(m.export_credit))}${cell(gbp(m.total_cost))}</tr></tfoot>`;
+
+// ── Tab 2: every value ──
+const SRC = { sun: ['Inverter', 'var(--sun)'], meter: ['Smart meter', 'var(--oct)'], tariff: ['Octopus tariffs', 'var(--oct)'], ng: ['National Gas', 'var(--ng)'], vat: ['VAT rules', 'var(--vat)'], calc: ['Worked out in the app', 'var(--calc)'] };
+const T = (v, l, cls = '') => ({ v, l, cls });
+// inputs: [what, value, source, where it is stored or comes from]
+const I = (w, v, s, f) => ({ w, v, s, f });
+const mF = D.filter((d) => !d.p).length, mP = D.filter((d) => d.p).length;
+const VALS = [
+  { k: 'total', t: 'This month so far', shown: gbp(m.total_cost), ok: true,
+    what: `Everything you have spent on energy since the 1st, minus what you were paid for export.`,
+    terms: [T(gbp(elec), 'electricity'), '+', T(gbp(m.gas_cost), 'gas'), '+', T(gbp(m.standing_cost), 'standing charges'), '−', T(gbp(m.export_credit), 'export paid'), '=', T(gbp(m.total_cost), 'so far', 'res')],
+    formula: `this month so far = Σ total_cost of every half-hour from the 1st to now\n\ntotal_cost (one half-hour) = electricity + gas + standing − export`,
+    inputs: [I('Half-hours added up', m.slots.toLocaleString('en-GB'), 'calc', `${m.final} measured by the meter, ${m.provisional} estimated from the inverter (table site_hh)`),
+      I('Electricity', gbp(elec), 'calc', 'number 6'), I('Gas', gbp(m.gas_cost), 'calc', 'number 7'),
+      I('Standing charges', gbp(m.standing_cost), 'calc', 'number 8'), I('Export paid', gbp(m.export_credit), 'calc', 'number 9')],
+    code: `src/server.js summarise(): SUM(total_cost) FROM site_hh · shown at public/js/pages/my.js line 65`,
+    verdict: `The sum is right, but it leaves out the gas for 2–8 Oct and some gas standing charges.`, prob: 1 },
+  { k: 'est', t: 'On track for about …', shown: gbp(estimate), ok: false,
+    what: `A guess at the whole month: what you've spent so far, plus the days left at your usual daily cost.`,
+    terms: [T(gbp(m.total_cost), 'spent so far'), '+', T(gbp(daysLeft * perDay), `${daysLeft} days × ${gbp(perDay)}`), '+', T(gbp(restToday), 'rest of today'), '=', T(gbp(estimate), 'forecast', 'res')],
+    formula: `forecast = so far + days left × a usual day + rest of today\n\nrest of today = max(0, a usual day − today so far)`,
+    inputs: [I('So far', gbp(m.total_cost), 'calc', 'number 1'), I('A usual day', gbp(perDay), 'calc', 'number 3'),
+      I('Days left', String(daysLeft), 'calc', 'number 5'),
+      I('Today so far', gbp(todaySoFar), 'sun', `29 Oct, ${D.find((d) => d.d === TODAY).n} half-hours, from the inverter`)],
+    code: `public/js/pages/my.js lines 50–57`,
+    verdict: `Too low. The "usual day" includes yesterday, which has no gas yet, and the missing gas for 2–8 Oct is never added back.`, prob: 3 },
+  { k: 'pd', t: '… a day (last 7 days)', shown: gbp(perDay), ok: false,
+    what: `The average cost of the last 7 full days.`,
+    terms: [...full.flatMap((d, i) => [i ? '+' : null, T(gbp(d.tot), dlab(d.d), d === yday ? 'hl' : '')]).filter(Boolean), '÷', T('7', 'days'), '=', T(gbp(perDay), 'a day', 'res')],
+    formula: `a usual day = (total of the last 7 full days) ÷ 7\n\nfull day = before today and has a total`,
+    inputs: full.map((d) => { const r = D.find((x) => x.d === d.d); return I(wlab(d.d), gbp(d.tot), r.p ? 'sun' : 'meter', r.gas == null ? 'estimate from the inverter, <b style="color:var(--bad)">no gas yet</b>' : 'measured by the smart meter, gas included'); }),
+    code: `public/js/pages/my.js lines 50–52 (the last 7 days are read from /api/sites/1/timeline?step=day)`,
+    verdict: `Too low. Using the last 7 days that have gas readings gives ${gbp(perDayFix)} a day.`, prob: 3 },
+  { k: 'bar', t: 'Progress bar', shown: Math.round(progress) + '%', ok: true,
+    what: `How much of the month's forecast you have already spent.`,
+    terms: [T(gbp(m.total_cost), 'spent so far'), '÷', T(gbp(estimate), 'forecast'), '=', T(progress.toFixed(1) + '%', 'of the bar', 'res')],
+    formula: `bar = so far ÷ forecast × 100   (never more than 100%)`,
+    inputs: [I('So far', gbp(m.total_cost), 'calc', 'number 1'), I('Forecast', gbp(estimate), 'calc', 'number 2')],
+    code: `public/js/pages/my.js line 61`,
+    verdict: `The maths is right. The bar just looks fuller than it should because the forecast is too low.` },
+  { k: 'left', t: 'Days to go', shown: String(daysLeft), ok: true,
+    what: `How many days of the month are left after today.`,
+    terms: [T('31', 'days in October'), '−', T('29', "today's date"), '=', T(String(daysLeft), 'days to go', 'res')],
+    formula: `days to go = days in the month − today's date`,
+    inputs: [I("Today's date", '29 Oct', 'calc', "in the home's time zone (Europe/London)"), I('Days in October', '31', 'calc', 'calendar')],
+    code: `public/js/pages/my.js line 54`, verdict: `Correct.` },
+  { k: 'el', t: 'Electricity', shown: gbp(elec), ok: true,
+    what: `Every unit of electricity bought from the grid, at the price of the half-hour it was bought in.`,
+    terms: [T(gbp(m.grid_to_home_cost), 'used in the house'), '+', T(gbp(m.grid_to_battery_cost), 'charging the battery'), '+', T(gbp(m.loss_cost), 'lost in the inverter'), '=', T(gbp(elec), 'electricity', 'res')],
+    formula: `electricity = Σ over half-hours ( grid import kWh × import price )\n\nimport price = 32.1441p (05:30–23:30) or 7.619p (23:30–05:30) × (1 + 0% VAT)\ngrid import  = smart meter kWh on measured days, inverter clamp kWh on estimated days\ngrid import  = to the house + to the battery + inverter losses`,
+    inputs: [I('Grid import', m.grid_import.toFixed(1) + ' kWh', 'meter', `smart meter on ${mF} measured days; inverter clamp on ${mP} estimated days`),
+      I('Day price', '32.1441p', 'tariff', 'IOG-SMB-FIX tariff, 05:30–23:30'), I('Night price', '7.619p', 'tariff', 'same tariff, 23:30–05:30'),
+      I('VAT', '0%', 'vat', 'src/db/registry.js VAT_RATES (to confirm, problem 6)'),
+      I('… to the house', m.grid_to_home.toFixed(1) + ' kWh', 'calc', 'split using the inverter’s solar and battery flows'),
+      I('… to the battery', m.grid_to_battery.toFixed(1) + ' kWh', 'sun', 'battery charging from the grid, mostly at night'),
+      I('… inverter losses', m.grid_to_loss.toFixed(1) + ' kWh', 'calc', 'energy lost in conversion')],
+    extra: `Average ${(m.import_paid / m.grid_import).toFixed(1)}p a kWh. It's low because most of it is battery charging at night for 7.62p. Electricity used from the battery isn't charged again: it was paid for when the battery was charged.`,
+    code: `src/core/build.js lines 530–532 (cost), src/core/pricing.js (price of each half-hour)`,
+    verdict: `Correct. One thing to confirm: no VAT is added to electricity.`, prob: 6 },
+  { k: 'gas', t: 'Gas', shown: gbp(m.gas_cost), ok: false,
+    what: `The gas meter's reading, turned into kWh, times the gas price plus 5% VAT.`,
+    terms: [T(m.gas.toFixed(0) + ' kWh', 'gas used'), '×', T('7.7434p', 'price per kWh'), '×', T('1.05', '5% VAT'), '=', T(gbp(m.gas_cost), 'gas', 'res')],
+    formula: `gas kWh  = gas m³ × 1.02264 × CV ÷ 3.6\ngas cost = gas kWh × 7.7434p × (1 + 5% VAT)\n\n1.02264 = standard UK correction for temperature and pressure\n÷ 3.6   = megajoules to kWh`,
+    inputs: [I('Gas used', '82.49 m³', 'meter', `Octopus gas meter, half-hourly, ${finalDays.length} days (9–27 Oct)`),
+      I('Calorific value (CV)', '38.9–40.7 MJ/m³', 'ng', 'one value a day, North West area'),
+      I('Gas used in kWh', m.gas.toFixed(1) + ' kWh', 'calc', 'm³ × 1.02264 × CV ÷ 3.6, per half-hour'),
+      I('Gas price', '7.7434p', 'tariff', 'OE-FIX-18M gas tariff'), I('VAT', '5%', 'vat', 'src/db/registry.js VAT_RATES')],
+    code: `src/core/build.js line 268 (kWh from m³), line 529 (cost)`,
+    verdict: `Right for 9–27 Oct, but there is no gas at all for 2–8 Oct (never loaded) or 28–29 Oct (not here yet).`, prob: 1 },
+  { k: 'st', t: 'Standing charges', shown: gbp(m.standing_cost), ok: false,
+    what: `Fixed daily fees you pay just for having a supply: 44.41p for electricity and 29.03p for gas.`,
+    terms: [T(gbp(elecSt), `electricity, ${nStand.toFixed(1)} days`), '+', T(gbp(gasSt), `gas, ${(nStand - noGasDays).toFixed(1)} days`), '=', T(gbp(m.standing_cost), 'standing', 'res')],
+    formula: `per half-hour = (44.4133p × (1 + 0%)  +  27.6476p × (1 + 5%)) ÷ half-hours in the day\n                                ↑ gas part added only when the half-hour has a gas reading (problem 2)`,
+    inputs: [I('Electricity standing', '44.4133p a day', 'tariff', 'IOG-SMB-FIX tariff, 0% VAT'),
+      I('Gas standing', '27.6476p a day', 'tariff', 'OE-FIX-18M gas tariff, + 5% VAT = 29.03p'),
+      I('Half-hours in a day', '48', 'calc', '50 on 25 Oct, when the clocks went back'),
+      I('Days charged: electricity', nStand.toFixed(2), 'calc', 'every day with data'),
+      I('Days charged: gas', (nStand - noGasDays).toFixed(2), 'calc', 'only days with a gas reading')],
+    code: `src/core/build.js line 486 (gas prices looked up only with a reading), line 528 (standing)`,
+    verdict: `The gas fee is left out on every day without a gas reading: ${gbp(missStanding)} so far.`, prob: 2 },
+  { k: 'ex', t: 'Export earned', shown: '−' + gbp(m.export_credit), ok: true,
+    what: `What Octopus pays you for electricity sent to the grid: 12p a kWh.`,
+    terms: [T(expKwh.toFixed(1) + ' kWh', 'sent to the grid'), '×', T('12p', 'per kWh'), '=', T(gbp(m.export_credit), 'earned', 'res')],
+    formula: `export paid = (solar → grid + battery → grid) kWh × 12p`,
+    inputs: [I('Solar → grid', m.solar_to_grid.toFixed(2) + ' kWh', 'sun', 'worked out from the inverter’s flows'),
+      I('Battery → grid', m.battery_to_grid.toFixed(2) + ' kWh', 'sun', 'worked out from the inverter’s flows'),
+      I('Export price', '12p', 'tariff', 'OUTGOING-VAR tariff, no VAT'),
+      I('For comparison: meter export', m.grid_export.toFixed(2) + ' kWh', 'meter', 'Octopus export meter; about 1 kWh more (problem 5)')],
+    code: `src/core/build.js line 535`,
+    verdict: `Correct, apart from about 1 kWh (13p) the meter saw but the app didn't pay.`, prob: 5 },
+  { k: 'first', t: '"Data from …" note', shown: dlab(firstDay), ok: true,
+    what: `The first day this month that the app has any data for.`,
+    terms: [T(dlab(firstDay), 'first day with data', 'res')],
+    formula: `first day = the earliest day this month that has half-hours`,
+    inputs: [I('Inverter connected', '16 Oct', 'sun', 'the app loaded 14 days back (INITIAL_DAYS = 14)'), I('First day with data', dlab(firstDay), 'calc', '1 Oct has no data')],
+    code: `public/js/pages/my.js lines 58–59 and 76`, verdict: `Correct. 1 Oct has no data, and the note says so.` },
+  { k: 'estd', t: '"… are estimates" note', shown: `${dlab(estDays[0])} to ${dlab(estDays[estDays.length - 1])}`, ok: false,
+    what: `Which days still use the inverter's readings because the smart meter hasn't sent them.`,
+    terms: estDays.map((d) => T(dlab(d), 'estimate')),
+    formula: `estimate days      = days with any half-hour not yet measured by the meter\nshown as           = first estimate day "to" last estimate day\nmeter readings up to = last day measured fully by the meter`,
+    inputs: [I('Estimate days', `${estDays.length} days`, 'sun', estDays.map(dlab).join(', ')), I('Meter readings up to', dlab(meterUpTo), 'meter', 'last full day from the smart meter')],
+    code: `public/js/pages/my.js lines 60 and 77`,
+    verdict: `Misleading. It sounds like the whole month is an estimate, but 9–27 Oct are measured by the meter. It also doesn't say that gas is missing on these days.`, prob: 4 },
+];
+const SHORT = { total: 'Total', est: 'Forecast', pd: 'Per day', bar: 'Progress bar', left: 'Days to go', el: 'Electricity', gas: 'Gas', st: 'Standing', ex: 'Export', first: 'Data-from note', estd: 'Estimates note' };
+const VI = Object.fromEntries(VALS.map((v, i) => [v.k, i]));
+const dot = (k) => `<span class="dot ${VALS[VI[k]].ok ? 'ok' : 'no'}"></span>`;
+const hit = (k, inner) => `<button class="hit" data-v="${k}" aria-pressed="false" aria-label="${VALS[VI[k]].t}">${inner}${dot(k)}</button>`;
+$('phone').innerHTML = `
+  ${hit('total', `<div class="ph-q">This month so far</div><div class="ph-big">${gbp(m.total_cost)}</div>`)}
+  ${hit('est', `<div class="ph-lead">On track for about <b>${gbp(estimate)}</b> in October</div>`)}
+  ${hit('pd', `<div class="ph-lead">based on your last ${full.length} days (${gbp(perDay)} a day)</div>`)}
+  <div class="ph-row">${hit('bar', `<div class="ph-bar"><i style="width:${progress}%"></i></div><div class="ph-lab"><span>${gbp(m.total_cost)} so far</span></div>`)}${hit('left', `<div class="ph-lab" style="margin-top:12px"><span>${daysLeft} days to go</span></div>`)}</div>
+  <div class="ph-split">
+    ${hit('el', `<span>Electricity</span><b>${gbp(elec)}</b>`)}
+    ${hit('gas', `<span>Gas</span><b>${gbp(m.gas_cost)}</b>`)}
+    ${hit('st', `<span>Standing charges</span><b>${gbp(m.standing_cost)}</b>`)}
+    ${hit('ex', `<span>Export earned</span><b style="color:var(--good)">−${gbp(m.export_credit)}</b>`)}
+  </div>
+  ${hit('first', `<div class="ph-note">EnergieBee has data from ${dlab(firstDay)}, so earlier days of October are not included.</div>`)}
+  ${hit('estd', `<div class="ph-note">${dlab(estDays[0])} to ${dlab(estDays[estDays.length - 1])} are estimates from your inverter until your smart meter reports (meter readings up to ${dlab(meterUpTo)}).</div>`)}
+  <div class="cap">The card as it appears in the app</div>`;
+
+let curV = 0;
+function showVal(i) {
+  curV = i;
+  const v = VALS[i];
+  document.querySelectorAll('.hit').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === v.k)));
+  const terms = v.terms.map((x) => typeof x === 'string' ? `<span class="op">${x}</span>` : `<div class="term ${x.cls}"><b>${x.v}</b><span>${x.l}</span></div>`).join('');
+  $('panel').innerHTML = `
+    <div class="kick">Number ${i + 1} of ${VALS.length}</div>
+    <div class="pv-top"><h3 style="font-size:22px">${v.t}</h3><span class="shown">${v.shown}</span></div>
+    <p class="pv-what">${v.what}</p>
+    <div class="label">How it's worked out</div>
+    <div class="eqc">${terms}</div>
+    ${v.extra ? `<p class="pv-extra">${v.extra}</p>` : ''}
+    <div class="label">The formula</div>
+    <div class="formula">${v.formula}</div>
+    <div class="label">The data that goes in</div>
+    <div class="inputs">${v.inputs.map((x) => `<div class="inp"><span class="iw">${x.w}</span><span class="iv">${x.v}</span><span class="is"><span class="pill" style="--c:${SRC[x.s][1]}"><i></i>${SRC[x.s][0]}</span>${x.f}</span></div>`).join('')}</div>
+    <p class="coderef">In the code: <code>${v.code}</code></p>
+    <div class="verdict ${v.ok ? 'ok' : 'no'}"><span class="vi">${v.ok ? '✓' : '!'}</span><div><b class="t">${v.ok ? 'Correct' : 'Has a problem'}</b><p>${v.verdict.replace(/^Correct\.\s*/, '')}${v.prob ? ` <button class="linkbtn" data-prob="${v.prob - 1}">See problem ${v.prob} →</button>` : ''}</p></div></div>
+    <div class="pv-nav"><button class="btn" data-vi="${i - 1}" ${i ? '' : 'disabled'}>← ${i ? VALS[i - 1].t : 'Previous'}</button><button class="btn" data-vi="${i + 1}" ${i < VALS.length - 1 ? '' : 'disabled'}>${i < VALS.length - 1 ? VALS[i + 1].t : 'Next'} →</button></div>`;
+}
+document.querySelectorAll('.uses').forEach((u) => { u.innerHTML = u.dataset.uses.split(',').map((k) => `<button class="uchip" data-uv="${k}">${VI[k] + 1} · ${SHORT[k]}</button>`).join(''); });
+$('h-slots').textContent = m.slots.toLocaleString('en-GB');
+
+// ── Tab 3: problems ──
+const byDay = (n) => D.find((d) => +d.d.slice(8) === n);
+const DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
+function cal(rows, mark) {
+  return `<div class="cal">${rows.map(([lab, sm, f]) => `<div class="lab">${lab}${sm ? `<small>${sm}</small>` : ''}</div>`
+    + DAYS.map((n) => `<div class="c ${f(n, byDay(n))}" title="${n} Oct"></div>`).join('')).join('')}
+    <div class="sp"></div>${DAYS.map((n) => `<div class="dn">${n === 1 || n === 31 || (mark || []).includes(n) ? n : ''}</div>`).join('')}</div>`;
+}
+const key = (items) => `<div class="ckey">${items.map(([c, l]) => `<span><i class="c ${c}"></i>${l}</span>`).join('')}</div>`;
+const hb = (rows, max, line) => `<div class="hb">${rows.map(([l, v, cls, txt, hl]) => `<span class="l ${hl ? 'hl' : ''}">${l}</span>
+  <span class="track"><span class="t ${cls}" style="width:${Math.max(0.5, (v / max) * 100)}%"></span>${line != null ? `<span class="avgline" style="left:${(line / max) * 100}%"></span>` : ''}</span>
+  <span class="v">${txt}</span>`).join('')}</div>`;
+const SELF = { no: ['no', 'No'], part: ['part', 'Partly'], na: ['na', 'Check needed'] };
+const gasDays = (n, r) => !r ? 'off' : r.gas != null ? 'on' : n < 9 ? 'miss' : 'wait';
+const nbr = full.slice(-3, -1);
+
+const PROBS = [
+  { sev: 'hi', t: 'A week of gas is missing (2–8 Oct)', money: `${pounds0(gasLo + 7 * GAS_ST)}–${pounds0(gasHi + 7 * GAS_ST)}`, self: 'no',
+    one: `The app has <b>no gas readings for 2–8 October</b>, so it counts the gas for those 7 days as £0. You'll still be billed for it.`,
+    pic: `${cal([
+        ['Inverter data', 'solar, battery, electricity', (n, r) => r ? 'inv' : 'off'],
+        ['Smart meter data', 'electricity and gas', (n, r) => r && !r.p ? 'on' : 'off'],
+        ['Gas on the card', '', gasDays],
+      ], [2, 9, 16, 23, 28])}
+      ${key([['inv', 'Inverter data'], ['on', 'Meter data · gas counted'], ['miss', 'Gas missing for good'], ['wait', 'Gas on its way'], ['off', 'No data']])}
+      <div class="events">
+        <div class="ev"><span class="evh">16 Oct · inverter connected</span>The app loaded 14 days back, so inverter data starts on <b>2 Oct</b>.</div>
+        <div class="ev"><span class="evh">23 Oct · Octopus connected</span>The app again loaded only 14 days back, so gas data starts on <b>9 Oct</b>.</div>
+      </div>`,
+    cmp: [['bad', 'The card says gas cost', gbp(m.gas_cost), `19 days of gas (9–27 Oct)`],
+          ['good', 'Gas really cost about', `${pounds0(m.gas_cost + gasLo)}–${pounds0(m.gas_cost + gasHi)}`, `with 2–8 Oct added (30–50 kWh a day; 7–8 Oct were 7–9°C)`]],
+    why: [`Octopus was connected a week after the inverter, and only <b>14 days back</b> were loaded each time.`,
+          `Only the smart meter measures gas, so for 2–8 Oct the app has electricity (from the inverter) but <b>no gas</b>.`,
+          `After the first load the app only checks the last 4 days, so <b>it never goes back</b> to fetch them.`],
+    fix: `When Octopus is first connected, load its readings back to the home's first day of data (2 Oct). Octopus keeps the history.`,
+    dev: `<code>src/jobs/steps.js</code> line 168: <code>meterFrom = octoFirst ? octoFrom : …</code>; <code>octoFrom</code> is today − <code>INITIAL_DAYS</code> (14, line 27). The first fetch asked for <code>period_from=2026-10-08T23:00:00Z</code>.` },
+
+  { sev: 'hi', t: 'The gas standing charge is left out on days with no gas reading', money: gbp(missStanding), self: 'part',
+    one: `The gas standing charge (<b>29.03p a day</b>) is a fixed fee you pay every day. The app only adds it when it has a gas reading, so on ${noGas.length} days it's missing.`,
+    pic: `<div class="rcpts">
+        <div class="rcpt"><h4>A normal day (21 Oct)</h4>
+          <div class="ln"><span>Electricity standing</span><span>44.41p</span></div>
+          <div class="ln"><span>Gas standing</span><span>29.03p</span></div>
+          <div class="ln t"><span>Standing charges</span><span>73.44p</span></div></div>
+        <div class="rcpt"><h4>A day with no gas reading (5 Oct)</h4>
+          <div class="ln"><span>Electricity standing</span><span>44.41p</span></div>
+          <div class="ln x"><span>Gas standing (left out)</span><span>0.00p</span></div>
+          <div class="ln t"><span>Standing charges</span><span>44.41p</span></div></div>
+      </div>
+      <p class="sumline">${noGasDays.toFixed(1)} days without gas × 29.03p = <b>${gbp(missStanding)} missing</b></p>`,
+    why: [`A standing charge is owed every day, <b>even if you use nothing</b>.`,
+          `But the app only looks up the gas prices <b>when a half-hour has a gas reading</b>.`,
+          `No reading, so no gas prices, so no gas standing charge.`],
+    fix: `Always add the gas standing charge. Only the gas usage needs a reading.`,
+    dev: `<code>src/core/build.js</code> line 486: <code>const pg = gas != null ? priceOver(pricing, 'meter_gas', …) : null</code>; line 528 adds the gas standing charge only when <code>pg</code> is set. 28–29 Oct will correct themselves when their readings arrive; 2–8 Oct never will.` },
+
+  { sev: 'md', t: 'The month forecast is too low', money: `${pounds0(realLo - estimate)}–${pounds0(realHi - estimate)}`, self: 'part',
+    one: `The forecast assumes a usual day costs ${gbp(perDay)}. But one of the days it averages, <b>yesterday</b>, has no gas yet, so it looks much cheaper than it was.`,
+    pic: `<div class="label" style="margin-top:0">The 7 days the forecast averages</div>
+      ${hb(full.map((d) => [wlab(d.d), d.tot, d === yday ? 'red' : '', gbp(d.tot), d === yday]), Math.max(...full.map((d) => d.tot)) * 1.05, perDay)}
+      <p class="pic-cap">Dashed line: the average the card uses (<b>${gbp(perDay)}</b>). ${dlab(yday.d)} shows only ${gbp(yday.tot)} because its gas hasn't arrived; the days before it cost ${nbr.map((d) => gbp(d.tot)).join(' and ')}.</p>
+      <div class="label">October's total, worked out three ways</div>
+      ${hb([['What the card says', estimate, 'red', gbp(estimate), true],
+            ['With a fair average', estFix, 'amber', gbp(estFix)],
+            ['With the missing gas', realHi, 'green', `${pounds0(realLo)}–${pounds0(realHi)}`]], realHi * 1.04)}`,
+    why: [`Forecast = <b>spent so far</b> + <b>days left × a usual day</b>.`,
+          `"A usual day" is the average of the last 7 days, <b>including yesterday</b>.`,
+          `The gas meter reports a day late, so yesterday always has no gas yet. That pulls the average down.`,
+          `The forecast also never adds back the gas missing for 2–8 Oct, or 1 Oct.`],
+    fix: `Average only days that have gas readings, and add an estimate for the days whose gas is missing.`,
+    dev: `<code>public/js/pages/my.js</code> line 50: <code>full = hist.rows.filter(d =&gt; d.local_date &lt; today &amp;&amp; d.total_cost != null).slice(-7)</code> includes provisional days. Using days with <code>slots_provisional === 0</code> gives ${gbp(perDayFix)} a day.` },
+
+  { sev: 'md', t: 'The note under the card is misleading', money: 'wording', self: 'no',
+    one: `The note says "<b>2 Oct to 29 Oct are estimates</b>". Really only 9 of those days are estimates; the other 19 are measured by your smart meter.`,
+    pic: `${cal([
+        ['What the note suggests', '', (n, r) => r ? 'inv' : 'off'],
+        ['What is true', '', (n, r) => !r ? 'off' : r.p ? 'inv' : 'on'],
+      ], [2, 8, 9, 27, 28])}
+      ${key([['inv', 'Estimate (no gas)'], ['on', 'Measured by the meter'], ['off', 'No data']])}`,
+    cmp: [['bad', 'The card says', `<span class="quote">"2 Oct to 29 Oct are estimates from your inverter."</span>`, ''],
+          ['good', 'It should say', `<span class="quote">"2–8 Oct and 28–29 Oct are estimates from your inverter, and don't include gas yet."</span>`, '']],
+    why: [`The estimated days are <b>two separate groups</b>: 2–8 Oct and 28–29 Oct.`,
+          `The note shows only <b>the first and the last</b> day, so it becomes "2 Oct to 29 Oct".`,
+          `It also says the total "includes gas", but those days have none.`],
+    fix: `List each group of days, and say when gas isn't included.`,
+    dev: `<code>public/js/pages/my.js</code> line 60 builds <code>estimatedDays</code>; line 77 prints the first "to" the last. Line 75 is the "Includes electricity, gas…" sentence.` },
+
+  { sev: 'lo', t: 'A little export is not paid', money: gbp((m.grid_export - expKwh) * 12), self: 'no',
+    one: `Your meter says you sent <b>${m.grid_export.toFixed(1)} kWh</b> to the grid, but the app pays you for <b>${expKwh.toFixed(1)} kWh</b>.`,
+    pic: `${hb([['Meter: sent to grid', m.grid_export, '', `${m.grid_export.toFixed(2)}`], ['App: paid for', expKwh, 'green', `${expKwh.toFixed(2)}`]], m.grid_export * 1.02)}
+      <p class="sumline">${(m.grid_export - expKwh).toFixed(2)} kWh × 12p = <b>${gbp((m.grid_export - expKwh) * 12)} not paid</b></p>`,
+    why: [`The meter counts <b>all</b> electricity sent to the grid.`,
+          `The app pays only for export it can trace to the <b>solar panels or the battery</b>.`,
+          `Small amounts it can't trace (like 0.011 kWh on 21 Oct, 17:30) are never paid.`],
+    fix: `Pay for everything the meter says was exported.`,
+    dev: `<code>src/core/build.js</code> line 535: <code>exportCredit = (sToGrid + bToGrid) × expRate</code>. Use <code>grid_export × expRate</code>.` },
+
+  { sev: 'lo', t: 'Electricity VAT is 0%: to be confirmed', money: `+${gbp(vatAdd)}?`, self: 'na',
+    one: `The app adds <b>no VAT</b> to electricity from 1 Oct 2026; gas still gets 5%. If Octopus actually charges 5% on electricity, the card is a little too low.`,
+    cmp: [['bad', 'Electricity with 0% VAT (now)', gbp(elec + elecSt), `usage ${gbp(elec)} + standing ${gbp(elecSt)}`],
+          ['good', 'If it should be 5%', gbp((elec + elecSt) * 1.05), `${gbp(vatAdd)} more`]],
+    why: [`The app's VAT table says electricity is 0% from 1 Oct 2026, based on Octopus's published prices.`,
+          `If that's right, nothing changes. If not, every electricity cost is 5% too low.`],
+    fix: `Check the VAT line on the October bill from Octopus.`,
+    dev: `<code>src/db/registry.js</code>, <code>VAT_RATES</code>.` },
+];
+const SEVN = { hi: 'High', md: 'Medium', lo: 'Low' };
+$('plist').innerHTML = PROBS.map((p, i) => `<button class="pr ${p.sev}" data-p="${i}" aria-pressed="false"><span class="pn">${i + 1}</span><span>${p.t}</span><span class="m">${p.money}</span></button>`).join('');
+let curP = 0;
+function showProb(i) {
+  curP = i;
+  const p = PROBS[i];
+  document.querySelectorAll('.pr').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.p === i)));
+  $('prob').innerHTML = `<article class="pb ${p.sev}">
+    <div class="pb-head"><span class="pn">${i + 1}</span><h3>${p.t}</h3><span class="sevchip">${p.self === 'na' ? 'To confirm' : SEVN[p.sev]}</span></div>
+    <p class="pb-one">${p.one}</p>
+    ${p.pic ? `<div class="label">See it</div><div class="pic">${p.pic}</div>` : ''}
+    ${p.cmp ? `<div class="label">The card says / it should say</div><div class="cmp">${p.cmp.map(([c, k, v, s]) => `<div class="${c}"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`).join('')}</div>` : ''}
+    <div class="label">Why it happens</div>
+    <ol class="why">${p.why.map((s) => `<li><span>${s}</span></li>`).join('')}</ol>
+    <div class="fixrow"><span><b>Fix:</b> ${p.fix}</span><span class="self ${SELF[p.self][0]}">Fixes itself? ${SELF[p.self][1]}</span></div>
+    <details class="dev"><summary>For developers</summary><p>${p.dev}</p></details>
+    <div class="pv-nav"><button class="btn" data-pi="${i - 1}" ${i ? '' : 'disabled'}>← ${i ? `Problem ${i}` : 'Previous'}</button><button class="btn" data-pi="${i + 1}" ${i < PROBS.length - 1 ? '' : 'disabled'}>${i < PROBS.length - 1 ? `Problem ${i + 2}` : 'Next'} →</button></div>
+  </article>`;
+}
+
+// ── Tab 4: checks ──
+const CHECKS = [
+  ['The total is the sum of the half-hours', `sqlite3 -readonly data/core.db "SELECT ROUND(SUM(total_cost)/100,2) FROM site_hh WHERE site_id=1 AND local_date BETWEEN '2026-10-01' AND '2026-10-29'"`, `<b>${(m.total_cost / 100).toFixed(2)}</b>, the card's total (a little more if newer half-hours have been built)`],
+  ['Which days have no gas', `sqlite3 -readonly data/core.db "SELECT local_date, ROUND(SUM(standing_cost),2) FROM site_hh WHERE site_id=1 AND local_date >= '2026-10-01' AND gas IS NULL GROUP BY local_date"`, `<b>2–8 Oct, 28 Oct and 29 Oct</b>, each with a standing charge of 44.41 a day: electricity only`],
+  ['When the gas meter data starts', `sqlite3 -readonly data/core.db "SELECT datetime(MIN(start_ts),'unixepoch') FROM interval_fact WHERE series_id=29 AND superseded_at IS NULL"`, `<b>2026-10-08 23:00:00</b> (UTC), which is midnight at the start of 9 Oct in the UK`],
+  ['How far back Octopus was asked', `sqlite3 -readonly data/core.db "SELECT request FROM raw_payload WHERE source_id=4 AND request LIKE '%consumption%' ORDER BY id LIMIT 1"`, `<b>period_from=2026-10-08T23:00:00Z</b>: 14 days before 23 Oct`],
+  ['The gas prices', `sqlite3 -readonly data/core.db "SELECT component, price_ex_vat FROM rate_interval WHERE tariff_id=14 AND superseded_at IS NULL"`, `<b>unit 7.7434</b> and <b>standing 27.6476</b>, in pence before 5% VAT`],
+];
+$('checks').innerHTML = CHECKS.map(([t, q, a], i) => `<div class="chk"><h3><span class="num">${i + 1}</span>${t}</h3><code class="q">${q}</code><div class="ans">You should see: ${a}</div></div>`).join('')
+  + `<div class="chk" style="background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))"><h3><span class="num">${CHECKS.length + 1}</span>Compare with Octopus</h3>
+     <div class="ans" style="color:var(--text)">In the Octopus app, under <b style="color:inherit">My energy → Usage</b>, the gas for 2–8 Oct is there. When the October bill arrives, it should be close to <b style="color:inherit">${pounds0(realLo)}–${pounds0(realHi)}</b>, not the card's ${gbp(estimate)}.</div></div>`;
+
+// ── Tabs and clicks ──
+const TABS = ['answer', 'how', 'wrong', 'check'];
+function openTab(id, push = true) {
+  TABS.forEach((t) => { $('t-' + t).setAttribute('aria-selected', String(t === id)); $(t).hidden = t !== id; });
+  if (push) history.replaceState(null, '', '#' + id);
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('.tab'); if (t) { openTab(t.getAttribute('aria-controls')); return; }
+  const go = e.target.closest('[data-go]'); if (go) { openTab(go.dataset.go); scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  const h = e.target.closest('.hit'); if (h) { showVal(VI[h.dataset.v]); if (innerWidth <= 860) $('panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+  const uv = e.target.closest('[data-uv]'); if (uv) { showVal(VI[uv.dataset.uv]); $('panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+  const vi = e.target.closest('[data-vi]'); if (vi) { showVal(+vi.dataset.vi); return; }
+  const lp = e.target.closest('[data-prob]'); if (lp) { openTab('wrong'); showProb(+lp.dataset.prob); scrollTo({ top: 0 }); return; }
+  const pr = e.target.closest('.pr'); if (pr) { showProb(+pr.dataset.p); $('prob').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+  const pi = e.target.closest('[data-pi]'); if (pi) { showProb(+pi.dataset.pi); $('prob').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+});
+document.querySelector('.tabs-inner').addEventListener('keydown', (e) => {
+  const i = TABS.indexOf(document.activeElement?.getAttribute('aria-controls'));
+  if (i < 0 || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+  const n = TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
+  openTab(n); $('t-' + n).focus();
+});
+showVal(0);
+showProb(0);
+const start = location.hash.slice(1);
+if (TABS.includes(start)) openTab(start, false);
+
+$('theme').addEventListener('click', () => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = dark ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

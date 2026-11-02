@@ -102,7 +102,7 @@ test('the user list names each user with the number of homes they see', async ()
   const by = Object.fromEntries(r.body.map((u) => [u.name, u]));
   assert.equal(by.Alice.homes, 1); assert.equal(by.Ivan.homes, 2); assert.equal(by.Nora.homes, 0);
   assert.equal(by.Admin.role, 'admin');
-  assert.ok(r.body.every((u) => !('password' in u)));
+  assert.ok(r.body.every((u) => !('pin_hash' in u) && !('password_hash' in u)));
 });
 
 test("raw payloads: another user's home is not found; shared payloads (no home) are for everyone", async () => {
@@ -151,7 +151,7 @@ test('delta 076 is listed, runs again without change, and deleting a home drops 
 
 test('demo server: "+ Sign up" makes a user the dropdown picks (no cookie), who adds a home and then appears in the list', async () => {
   const s = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/signup`, { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'demo-new@example.com', password: 'demo password', name: 'Dee' }) });
+    body: JSON.stringify({ username: 'dee', pin: '8402', name: 'Dee' }) });
   assert.equal(s.status, 201);
   assert.equal(s.headers.get('set-cookie'), null, 'no session cookie on the demo server: it would sign the main app out');
   const dee = (await s.json()).user;

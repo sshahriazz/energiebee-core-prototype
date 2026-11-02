@@ -7,6 +7,8 @@ export async function api(path, opts = {}) {
   const headers = { 'content-type': 'application/json', ...(userId != null ? { 'x-user-id': String(userId) } : {}) };
   const res = await fetch(path, { headers, ...opts });
   const body = await res.json().catch(() => ({}));
+  // Signed out meanwhile (the session ended, or signed out in another tab): back to the sign-in page.
+  if (res.status === 401 && body.error === 'Sign in first' && !/^\/(login|signup)/.test(location.pathname)) location.replace('/login');
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;
 }

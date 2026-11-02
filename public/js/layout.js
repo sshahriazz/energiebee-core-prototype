@@ -13,14 +13,15 @@ const store = {
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
 };
 
-const BEE = `<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+export const BEE = `<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
   <path d="M16 2.5 28 9.25v13.5L16 29.5 4 22.75V9.25z" fill="var(--solar)"/>
   <path d="M10 13h12M9.5 17h13M11 21h10" stroke="var(--text)" stroke-width="2.2" stroke-linecap="round"/>
 </svg>`;
 
 // homeScoped false: a page about the whole core, not one home (Connectors). It renders with or
 // without a home, and shows none of the selected home's banners (errors, provenance, basis).
-export async function init({ page, title, subtitle, periods = true, homeScoped = true, render }) {
+// bare: the sign-in page, for nobody signed in yet: the brand and the theme switch only, no pages or home to pick.
+export async function init({ page, title, subtitle, periods = true, homeScoped = true, bare = false, render }) {
   const params = new URLSearchParams(location.search);
   const state = {
     period: params.get('period') || store.get('eb.period') || 'today',
@@ -33,7 +34,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
   if (theme) document.documentElement.dataset.theme = theme;
 
   document.body.insertAdjacentHTML('afterbegin', `
-    <header class="topbar"><div class="topbar-inner">
+    <header class="topbar${bare ? ' bare' : ''}"><div class="topbar-inner">
       <a class="brand" href="/">${BEE}<span>EnergieBee <small>core prototype</small></span></a>
       <nav class="nav">${PAGES.map(([k, l, h]) => `<a href="${h}" data-page="${k}" ${k === page ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
       <div class="controls">
@@ -48,10 +49,10 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
   main.insertAdjacentHTML('afterbegin', `
     <div id="banner-slot"></div>
     <div id="provenance-slot"></div>
-    <div class="page-head">
+    ${bare ? '' : `<div class="page-head">
       <div><h1>${esc(title)}</h1>${subtitle ? `<p>${subtitle}</p>` : ''}</div>
       ${periods ? `<div class="segmented" role="group" aria-label="Period">${PERIODS.map(([k, l]) => `<button data-period="${k}" aria-pressed="${k === state.period}">${l}</button>`).join('')}</div>` : ''}
-    </div>
+    </div>`}
     <div id="basis-slot"></div>`);
   document.body.insertAdjacentHTML('beforeend', `
     <footer class="foot">
@@ -63,6 +64,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
   const syncBtn = document.getElementById('sync-btn');
 
   const keepUrl = () => {
+    if (bare) return;   // the sign-in page: no period or home in its address
     const q = new URLSearchParams(location.search);
     q.set('period', state.period);
     if (state.siteId) q.set('site', state.siteId);
@@ -105,7 +107,8 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
   }
 
   async function loadSites() {
-    state.sites = await api('/api/sites');
+    // Nobody signed in (the sign-in page) has no homes to list.
+    state.sites = await api('/api/sites').catch((err) => { if (bare) return []; throw err; });
     if (!state.sites.find((s) => s.id === state.siteId)) state.siteId = state.sites[0]?.id || null;
     state.site = state.sites.find((s) => s.id === state.siteId) || null;
     state.tz = state.site?.timezone || 'Europe/London';
@@ -195,7 +198,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
     if (state.me?.switcher) {
       slot.innerHTML = `<a class="btn btn-primary" href="/signup" title="Create a new user, add their home and connect their providers">+ Sign up</a>${logins}`;
     } else if (u) {
-      slot.innerHTML = `<span class="account-who" title="Signed in">${esc(u.email || u.name)}</span>
+      slot.innerHTML = `<span class="account-who" title="Signed in">${esc(u.username || u.name)}</span>
         <a class="btn" href="/onboarding">+ Home</a>${logins}<button class="btn" id="logout-btn">Sign out</button>`;
       document.getElementById('logout-btn').addEventListener('click', async () => {
         await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
@@ -203,7 +206,9 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
         location.href = '/login';
       });
     } else {
-      slot.innerHTML = `<a class="btn" href="/login">Sign in</a><a class="btn btn-primary" href="/signup">Sign up</a>`;
+      // Nobody signed in is only ever on the sign-in page, which signs in and creates accounts itself.
+      slot.innerHTML = '';
+      return;
     }
     document.getElementById('logins-btn')?.addEventListener('click', (e) => {
       if (state.siteId) e.currentTarget.href = `/onboarding?home=${state.siteId}`;
@@ -242,6 +247,8 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
 
   await loadUsers();
   await loadSites();
+  // Signed in with no home yet: adding one comes first.
+  if (!state.sites.length && homeScoped && state.me?.user && !state.me.switcher) { location.replace('/onboarding'); return state; }
   if (!state.site && homeScoped) {
     document.getElementById('content').innerHTML = state.user
       ? `<div class="card empty"><h2>No home yet</h2><p>${esc(state.user.name)} has no home to show yet. Add one, or pick another user above to see theirs.</p><p><a class="btn btn-primary" href="/onboarding">Add a home for ${esc(state.user.name)}</a></p></div>`

@@ -34,14 +34,14 @@ const fr = home("is_demo = 1 AND country = 'FR'");
 const nl = home("is_demo = 1 AND country = 'NL'");
 if (!gb || !fr || !nl) { console.error('expected the GB, FR and NL homes of demo-ui.js'); process.exit(1); }
 
-// One user per scenario. Fictional people; example.com addresses.
+// One user per scenario. Fictional people; no PIN (picked with the switch; scripts/set-pin.js gives one).
 const USERS = [
-  { name: 'Alice Morgan', email: 'alice@example.com', role: 'owner', homes: [gb], note: 'a real GB home with live provider data' },
-  { name: 'Pierre Laurent', email: 'pierre@example.com', role: 'owner', homes: [fr], note: 'a synthetic French home: euros, Tempo days' },
-  { name: 'Sanne de Vries', email: 'sanne@example.com', role: 'owner', homes: [nl], note: 'a synthetic Dutch home: euros, quarter-hours' },
-  { name: 'Ivan Petrov', email: 'ivan@example.com', role: 'installer', homes: [fr, nl], note: 'an installer looking after two homes' },
-  { name: 'Nora Newman', email: 'nora@example.com', role: 'owner', homes: [], note: 'just signed up: no home yet' },
-  { name: 'Admin', email: 'admin@example.com', role: 'admin', homes: [], note: 'sees every home' },
+  { name: 'Alice Morgan', username: 'alice', role: 'owner', homes: [gb], note: 'a real GB home with live provider data' },
+  { name: 'Pierre Laurent', username: 'pierre', role: 'owner', homes: [fr], note: 'a synthetic French home: euros, Tempo days' },
+  { name: 'Sanne de Vries', username: 'sanne', role: 'owner', homes: [nl], note: 'a synthetic Dutch home: euros, quarter-hours' },
+  { name: 'Ivan Petrov', username: 'ivan', role: 'installer', homes: [fr, nl], note: 'an installer looking after two homes' },
+  { name: 'Nora Newman', username: 'nora', role: 'owner', homes: [], note: 'just signed up: no home yet' },
+  { name: 'Admin', username: 'admin', role: 'admin', homes: [], note: 'sees every home' },
 ];
 db.exec('DELETE FROM user_site; DELETE FROM app_user;');
 for (const u of USERS) {

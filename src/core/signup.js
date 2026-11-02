@@ -207,7 +207,7 @@ export function disconnectHome(user, site, provider) {
     .all(String(site.id), ...p, ...devices.map(String)).map((r) => r.id);
   const now = Date.now();
   const reason = `${card.name} was disconnected from this home by its owner: the data it brought is withdrawn.`;
-  let withdrawn = 0;
+  let withdrawn = 0; let agreements = 0;
   tx(() => {
     for (const id of series) {
       const n = db.prepare('UPDATE reading SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(now, id).changes
@@ -215,6 +215,9 @@ export function disconnectHome(user, site, provider) {
       if (n) db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)').run(site.id, nowSec(), id, n, reason);
       withdrawn += n;
     }
+    // Its meters' tariff agreements go too (superseded, kept in history): pricing reads only current ones,
+    // so a retired meter would otherwise go on pricing the home with the old account's tariffs.
+    for (const id of devices) agreements += db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, id).changes;
     deleteSecret(site.id, connection);
     db.prepare('DELETE FROM connection WHERE site_id = ? AND provider = ?').run(site.id, connection);
   });
@@ -229,5 +232,5 @@ export function disconnectHome(user, site, provider) {
     markDirty(site.id, dayBounds(site.timezone, first)[0], nowSec(), `${provider} disconnected`);
     rebuilt = processQueue().filter((r) => r.siteId === site.id);
   }
-  return { disconnected: true, provider, withdrawn, devices: devices.length, rebuilt };
+  return { disconnected: true, provider, withdrawn, agreements, devices: devices.length, rebuilt };
 }

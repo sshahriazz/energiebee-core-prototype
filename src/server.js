@@ -25,7 +25,7 @@ import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
-import { userOf, canSee, visibleSiteIds, listUsers, giveHome, publicUser, switcherOn, signUp, signIn, startSession, endSession, cookieOf, sessionCookie } from './core/users.js';
+import { userOf, loginRequired, canSee, visibleSiteIds, listUsers, giveHome, publicUser, switcherOn, signUp, signIn, startSession, endSession, cookieOf, sessionCookie } from './core/users.js';
 import { addHome, homeProviders, connectHome, disconnectHome, findPlants, COUNTRIES } from './core/signup.js';
 import * as onboardingCore from './core/onboarding.js';
 import * as healthCore from './core/health.js';
@@ -42,12 +42,26 @@ export const app = express();
 // the 100 KB JSON parser applies to every other route.
 const jsonBody = express.json();
 app.use((req, res, next) => (req.path === pushIngest.ENDPOINT ? next() : jsonBody(req, res, next)));
+// Sign-in required (loginRequired, src/core/users.js): nobody signed in gets only the sign-in page, which also creates
+// an account, and the API answers only signing in, the supervisor's liveness check and device pushes (their own token).
+const OPEN_PAGES = new Set(['/login', '/login.html', '/signup', '/signup.html']);
+const OPEN_API = new Set(['/api/auth/me', '/api/auth/login', '/api/auth/signup', '/api/auth/logout', '/api/status', '/api/users', pushIngest.ENDPOINT]);
+const isPage = (p) => p === '/' || p.endsWith('.html') || !path.extname(p);
+app.use((req, res, next) => {
+  if (!loginRequired() || req.method !== 'GET' || req.path.startsWith('/api/') || !isPage(req.path) || OPEN_PAGES.has(req.path)) return next();
+  let user = null;
+  try { user = userOf(req); } catch { /* a refused header is nobody */ }
+  if (user) return next();
+  res.set('Cache-Control', 'no-store');
+  res.redirect(302, '/login');
+});
 app.use(express.static(path.join(here, '..', 'public'), { extensions: ['html'] }));
-// Who is looking (src/core/users.js): the user the X-User-Id header names, or null (every home).
+// Who is looking (src/core/users.js): the signed-in user, on the demo server the one the X-User-Id header names, or null.
 // API answers are never cached by the browser: they change with every sync and every user switch.
 app.use('/api', (req, res, next) => {
   res.set('Cache-Control', 'no-store');
   try { req.user = userOf(req); } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  if (!req.user && loginRequired() && !OPEN_API.has(req.baseUrl + req.path)) return res.status(401).json({ error: 'Sign in first' });
   next();
 });
 // Every route under one home checks here that the user may see it, including the routes that look the home up
@@ -99,7 +113,7 @@ app.get('/api/status', (req, res) => {
 // ───────────── Accounts (src/core/users.js) and the steps after sign-up (src/core/signup.js) ─────────────
 
 // The prototype's users to switch between ("Viewing as", no password): only where USER_SWITCHER=1 (the
-// demo server); elsewhere none are listed, so the switcher stays hidden and nobody's email is shown.
+// demo server); elsewhere none are listed, so the switcher stays hidden and nobody's username is shown.
 app.get('/api/users', (req, res) => res.json(switcherOn() ? listUsers() : []));
 
 // Who is signed in (null when nobody is), whether the demo switch is on, and the countries a home can be added in.
@@ -107,7 +121,7 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ user: publicUser(req.user), switcher: switcherOn(), homes: req.user ? (visibleSiteIds(req.user)?.size ?? null) : null,
     countries: Object.entries(COUNTRIES).map(([code, c]) => ({ code, name: c.name, example: c.example })) });
 });
-// { email, password, name? }: a new account, signed in at once (the session cookie). On the demo
+// { username, pin, name? }: a new account, signed in at once (the session cookie). On the demo
 // server (the switch on) the dropdown picks the new user instead: no cookie, since cookies on
 // localhost are shared between ports and one would sign the main app's browser out.
 app.post('/api/auth/signup', (req, res) => {
@@ -115,6 +129,7 @@ app.post('/api/auth/signup', (req, res) => {
   if (!switcherOn()) res.setHeader('set-cookie', sessionCookie(startSession(u.id)));
   res.status(201).json({ user: publicUser(u) });
 });
+// { username, pin }: 401 when either is wrong, 429 while the account is locked after too many wrong PINs.
 app.post('/api/auth/login', (req, res) => {
   const u = signIn(req.body || {});
   res.setHeader('set-cookie', sessionCookie(startSession(u.id)));

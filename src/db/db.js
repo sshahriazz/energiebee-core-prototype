@@ -177,7 +177,9 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   '075-replay-log.sql',
   // Prototype users (076): who is looking, and which homes each one may see (src/core/users.js); it widens the
   // app_user of 070 with an email, a role and a note. Sign-up, sessions and each home's encrypted provider logins (077).
-  '076-users.sql', '077-auth.sql'];
+  '076-users.sql', '077-auth.sql',
+  // Sign-in with a username and a 4-digit PIN, with a lockout after wrong PINs (079).
+  '079-pin-auth.sql'];
 
 export function deltaStatements(sql) {
   const out = [];

@@ -1,5 +1,5 @@
 // Sign-up and the steps after it (src/core/users.js, src/core/signup.js, src/core/secrets.js) over
-// HTTP in a temp database: an account from an email and a password (scrypt, a session cookie), a home
+// HTTP in a temp database: an account from a username and a 4-digit PIN (scrypt, a lockout, a session cookie), a home
 // from a postcode, the providers its market lists, and connecting one with the user's own login:
 // checked first, stored encrypted and bound to its home, never sent back, read by the sync steps. The
 // provider checks, the postcode look-up and the sync start are fakes (onboarding hooks); the Sunsynk
@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { useDb } from './helpers.js';
 
 useDb();
+process.env.REQUIRE_LOGIN = '1';   // the main app: nobody signed in sees nothing
 process.env.SECRET_KEY = 'test-secret-key-0123456789abcdef-0123456789';
 delete process.env.USER_SWITCHER;
 const { db } = await import('../src/db/db.js');
@@ -42,40 +43,65 @@ function browser() {
   };
 }
 
-test('sign-up makes an account, signs it in, and keeps only a scrypt hash of the password', async () => {
+test('nobody signed in: every page sends to the sign-in page and the API answers only signing in', async () => {
+  const anon = browser();
+  for (const page of ['/', '/my', '/my.html', '/timeline', '/onboarding', '/data', '/explorer', '/providers']) {
+    const r = await globalThis.fetch(`${base()}${page}`, { redirect: 'manual' });
+    assert.equal(r.status, 302, page); assert.equal(r.headers.get('location'), '/login', page);
+  }
+  for (const page of ['/login', '/signup']) assert.equal((await globalThis.fetch(`${base()}${page}`, { redirect: 'manual' })).status, 200, page);
+  for (const asset of ['/css/app.css', '/js/layout.js']) assert.equal((await globalThis.fetch(`${base()}${asset}`)).status, 200, asset);
+  for (const api of ['/api/sites', '/api/sites/1/now', '/api/connectors', '/api/compatibility', '/api/catalog', '/api/sources', '/api/raw/1', '/api/explorer/sites']) {
+    const r = await anon(api);
+    assert.equal(r.status, 401, api); assert.equal(r.body.error, 'Sign in first', api);
+  }
+  assert.equal((await anon('/api/auth/me')).status, 200);
+  assert.equal((await anon('/api/status')).status, 200, 'the supervisor\'s liveness check stays open');
+  assert.notEqual((await globalThis.fetch(`${base()}/api/ingest`, { method: 'POST', body: '{}' })).status, 401, 'device pushes have their own token');
+});
+
+test('sign-up makes an account, signs it in, and keeps only a scrypt hash of the PIN', async () => {
   const b = browser();
-  const r = await b('/api/auth/signup', { method: 'POST', body: { email: '  Bob@Example.com ', password: 'correct horse', name: 'Bob' } });
+  const r = await b('/api/auth/signup', { method: 'POST', body: { username: '  Bob ', pin: '4829', name: 'Bob' } });
   assert.equal(r.status, 201, r.text);
-  assert.deepEqual(Object.keys(r.body.user).sort(), ['email', 'id', 'name', 'role']);
-  assert.equal(r.body.user.email, 'bob@example.com');
+  assert.deepEqual(Object.keys(r.body.user).sort(), ['id', 'name', 'role', 'username']);
+  assert.equal(r.body.user.username, 'bob');
   assert.match(r.setCookie, /^eb_session=[\w-]{20,}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+/);
   const me = await b('/api/auth/me');
-  assert.equal(me.body.user.email, 'bob@example.com');
+  assert.equal(me.body.user.username, 'bob');
   assert.equal(me.body.switcher, false);
-  const row = db.prepare('SELECT password_hash FROM app_user WHERE email = ?').get('bob@example.com');
-  assert.match(row.password_hash, /^scrypt\$16384\$8\$1\$/);
-  assert.ok(!row.password_hash.includes('correct horse'));
+  const row = db.prepare('SELECT pin_hash, email, password_hash FROM app_user WHERE username = ?').get('bob');
+  assert.match(row.pin_hash, /^scrypt\$16384\$8\$1\$/);
+  assert.ok(!row.pin_hash.includes('4829'));
+  assert.equal(row.email, null); assert.equal(row.password_hash, null);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_session').get().n, 1);
   assert.ok(!db.prepare('SELECT token_hash FROM user_session').get().token_hash.includes(r.setCookie.split(';')[0].split('=')[1]), 'only a hash of the token is stored');
 });
 
-test('sign-up refuses a bad email, a short password and an email already used (any case)', async () => {
+test('sign-up refuses a bad username, a PIN that is not 4 digits, and a username already taken (any case)', async () => {
   const b = browser();
-  assert.equal((await b('/api/auth/signup', { method: 'POST', body: { email: 'not-an-email', password: 'long enough' } })).status, 400);
-  assert.equal((await b('/api/auth/signup', { method: 'POST', body: { email: 'eve@example.com', password: 'short' } })).status, 400);
-  const dup = await b('/api/auth/signup', { method: 'POST', body: { email: 'BOB@example.com', password: 'another one' } });
+  for (const username of ['ab', 'has space', '-dash', 'x'.repeat(31), 'émile', '']) {
+    assert.equal((await b('/api/auth/signup', { method: 'POST', body: { username, pin: '4829' } })).status, 400, username);
+  }
+  for (const pin of ['123', '12345', 'abcd', '4 29', 4829, '']) {
+    const r = await b('/api/auth/signup', { method: 'POST', body: { username: 'eve', pin } });
+    assert.equal(r.status, 400, `PIN ${JSON.stringify(pin)}`);
+  }
+  const dup = await b('/api/auth/signup', { method: 'POST', body: { username: 'BOB', pin: '7302' } });
   assert.equal(dup.status, 409);
   assert.equal((await b('/api/auth/me')).body.user, null, 'a refused sign-up signs nobody in');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM app_user WHERE username = 'eve'").get().n, 0);
 });
 
-test('sign-in: a wrong password and an unknown email get the same answer; sign-out ends the session', async () => {
+test('sign-in: a wrong PIN and an unknown username get the same answer; sign-out ends the session', async () => {
   const b = browser();
-  const wrong = await b('/api/auth/login', { method: 'POST', body: { email: 'bob@example.com', password: 'wrong password' } });
-  const unknown = await b('/api/auth/login', { method: 'POST', body: { email: 'nobody@example.com', password: 'wrong password' } });
+  const wrong = await b('/api/auth/login', { method: 'POST', body: { username: 'bob', pin: '0001' } });
+  const unknown = await b('/api/auth/login', { method: 'POST', body: { username: 'nobody', pin: '0001' } });
   assert.equal(wrong.status, 401); assert.equal(unknown.status, 401);
   assert.deepEqual(wrong.body, unknown.body);
-  const ok = await b('/api/auth/login', { method: 'POST', body: { email: 'BOB@example.com', password: 'correct horse' } });
+  const ok = await b('/api/auth/login', { method: 'POST', body: { username: 'BOB', pin: '4829' } });
   assert.equal(ok.status, 200);
+  assert.equal(db.prepare("SELECT failed_logins FROM app_user WHERE username = 'bob'").get().failed_logins, 0, 'a right PIN clears the count');
   const stolen = ok.setCookie.split(';')[0];
   assert.equal((await b('/api/auth/me')).body.user.name, 'Bob');
   const out = await b('/api/auth/logout', { method: 'POST' });
@@ -85,8 +111,54 @@ test('sign-in: a wrong password and an unknown email get the same answer; sign-o
   assert.equal(replay.user, null, 'the old cookie no longer works');
 });
 
+test('five wrong PINs in a row lock the account, even against the right PIN, until the lock ends', async () => {
+  const { signIn, PIN_TRIES, LOCK_MINUTES } = await import('../src/core/users.js');
+  const b = browser();
+  await b('/api/auth/signup', { method: 'POST', body: { username: 'lockme', pin: '2718' } });
+  for (let i = 1; i < PIN_TRIES; i++) assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '0001' } })).status, 401, `try ${i}`);
+  const last = await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '0001' } });
+  assert.equal(last.status, 429); assert.match(last.body.error, /Too many wrong PINs/);
+  const right = await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } });
+  assert.equal(right.status, 429, 'locked: the right PIN is refused too');
+  const until = db.prepare("SELECT locked_until FROM app_user WHERE username = 'lockme'").get().locked_until;
+  assert.ok(until > Date.now() + (LOCK_MINUTES - 1) * 60000);
+  // After the lock: the right PIN works and clears it.
+  assert.equal(signIn({ username: 'lockme', pin: '2718' }, until + 1).username, 'lockme');
+  assert.deepEqual({ ...db.prepare("SELECT failed_logins, locked_until FROM app_user WHERE username = 'lockme'").get() }, { failed_logins: 0, locked_until: null });
+});
+
+test('setPin (scripts/set-pin.js) gives an account a new PIN, unlocks it and signs it out everywhere', async () => {
+  const { setPin } = await import('../src/core/users.js');
+  const b = browser();
+  await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } });
+  assert.equal((await b('/api/auth/me')).body.user.username, 'lockme');
+  assert.throws(() => setPin('lockme', '12345'), /4 digits/);
+  assert.throws(() => setPin('nobody-here', '5820'), /No user/);
+  setPin('LockMe', '5820');
+  assert.equal((await b('/api/auth/me')).body.user, null, 'signed out by the new PIN');
+  assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } })).status, 401);
+  assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '5820' } })).status, 200);
+});
+
+test('delta 079: accounts made before it get their email name as username (unique), and no PIN', async () => {
+  const fs = await import('node:fs');
+  const { applyDelta } = await import('../src/db/db.js');
+  const ins = db.prepare('INSERT INTO app_user (name, email, role, created_at) VALUES (?, ?, ?, 0)');
+  const a = ins.run('Old One', 'Legacy@one.test', 'owner').lastInsertRowid;
+  const c = ins.run('Old Two', 'legacy@two.test', 'owner').lastInsertRowid;
+  const none = ins.run('No email', null, 'owner').lastInsertRowid;
+  applyDelta(fs.readFileSync(new URL('../src/db/deltas/079-pin-auth.sql', import.meta.url), 'utf8'));
+  const name = (id) => db.prepare('SELECT username, pin_hash FROM app_user WHERE id = ?').get(id);
+  assert.deepEqual({ ...name(a) }, { username: 'legacy', pin_hash: null });
+  assert.equal(name(c).username, `legacy${c}`);
+  assert.equal(name(none).username, null);
+  const b = browser();
+  assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'legacy', pin: '0001' } })).status, 401, 'no PIN yet: cannot sign in');
+  db.prepare('DELETE FROM app_user WHERE id IN (?, ?, ?)').run(a, c, none);
+});
+
 test('the demo switch header is refused on the main app, so nobody can become someone else', async () => {
-  const bob = db.prepare('SELECT id FROM app_user WHERE email = ?').get('bob@example.com').id;
+  const bob = db.prepare('SELECT id FROM app_user WHERE username = ?').get('bob').id;
   const r = await globalThis.fetch(`${base()}/api/sites`, { headers: { 'x-user-id': String(bob) } });
   assert.equal(r.status, 403);
   assert.deepEqual(await (await globalThis.fetch(`${base()}/api/users`)).json(), []);
@@ -97,7 +169,7 @@ test('step 1: a postcode makes a home for the signed-in user only (GB looked up 
   const anon = browser();
   assert.equal((await anon('/api/onboarding/home', { method: 'POST', body: { country: 'GB', postcode: 'BB12 9BY' } })).status, 401);
   bobB = browser();
-  await bobB('/api/auth/login', { method: 'POST', body: { email: 'bob@example.com', password: 'correct horse' } });
+  await bobB('/api/auth/login', { method: 'POST', body: { username: 'bob', pin: '4829' } });
   for (const [country, postcode] of [['GB', '12345'], ['FR', 'BB12 9BY'], ['NL', '1012'], ['XX', '1']]) {
     assert.equal((await bobB('/api/onboarding/home', { method: 'POST', body: { country, postcode } })).status, 400, `${country} ${postcode}`);
   }
@@ -109,9 +181,9 @@ test('step 1: a postcode makes a home for the signed-in user only (GB looked up 
   assert.equal(gbHome.currency, 'GBP');
   assert.deepEqual((await bobB('/api/sites')).body.map((s) => s.id), [gbHome.id]);
   // Nobody signed in, and another account, do not see it.
-  assert.equal((await anon(`/api/sites/${gbHome.id}/now`)).status, 404);
+  assert.equal((await anon(`/api/sites/${gbHome.id}/now`)).status, 401, 'nobody signed in: sign in first');
   const carol = browser();
-  await carol('/api/auth/signup', { method: 'POST', body: { email: 'carol@example.com', password: 'carol password' } });
+  await carol('/api/auth/signup', { method: 'POST', body: { username: 'carol', pin: '3057' } });
   assert.deepEqual((await carol('/api/sites')).body, []);
   assert.equal((await carol(`/api/sites/${gbHome.id}/providers`)).status, 404);
   // The shared steps that always run have their connection rows, as the .env home has.
@@ -270,13 +342,16 @@ test('a connected provider shows its account; disconnecting forgets the login an
   const meter = db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'meter_import', 'octopus', 'MPAN-1', 'Import', '{}', ?) RETURNING id").get(id, Date.now()).id;
   const imp = seriesId('device', meter, 'grid_import_kwh', 'octopus_meter');
   putIntervals(imp, [{ start: t, end: t + 1800, value: 0.4 }]);
+  const tariff = db.prepare("INSERT INTO tariff (provider, tariff_code, fuel, direction, structure) VALUES ('octopus', 'E-1R-TEST-OLD-G', 'electricity', 'import', 'flat') RETURNING id").get().id;
+  db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?)').run(id, meter, tariff, t - 86400, Date.now());
+  const agreements = (current) => db.prepare(`SELECT COUNT(*) AS n FROM tariff_agreement WHERE device_id = ?${current ? ' AND superseded_at IS NULL' : ''}`).get(meter).n;
   setAttribute(id, 'pv_kwp', 6.5, 'provider', 'Sunsynk plant 4242 record');
   const live = (s) => db.prepare('SELECT COUNT(*) AS n FROM reading WHERE series_id = ? AND superseded_at IS NULL').get(s).n
     + db.prepare('SELECT COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL').get(s).n;
 
   // Someone else cannot disconnect it; the owner can.
   const eve = browser();
-  await eve('/api/auth/signup', { method: 'POST', body: { email: 'eve@example.com', password: 'eve password' } });
+  await eve('/api/auth/signup', { method: 'POST', body: { username: 'eve', pin: '6192' } });
   assert.equal((await eve(`/api/sites/${id}/providers/sunsynk`, { method: 'DELETE' })).status, 404);
   const d = await bobB(`/api/sites/${id}/providers/sunsynk`, { method: 'DELETE' });
   assert.equal(d.status, 200, d.text);
@@ -285,6 +360,7 @@ test('a connected provider shows its account; disconnecting forgets the login an
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM reading WHERE series_id = ?').get(solar).n, 2, '... but kept in the history');
   assert.equal(live(weather), 1, 'weather is not the inverter\'s: it stays');
   assert.equal(live(imp), 1, 'the meter is another provider: it stays');
+  assert.equal(agreements(true), 1, "the meter's tariff is another provider's: it stays");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ? AND provider = 'sunsynk'").get(id).n, 0, 'the login is forgotten');
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(id).n, 0);
   assert.match(db.prepare('SELECT reason FROM fact_correction WHERE site_id = ? AND series_id = ?').get(id, solar).reason, /Sunsynk was disconnected/);
@@ -306,6 +382,8 @@ test('a connected provider shows its account; disconnecting forgets the login an
   assert.deepEqual(r.body.replaced, { withdrawn: 1 });
   assert.equal(live(imp), 0, 'the old account\'s meter readings are withdrawn');
   assert.ok(db.prepare('SELECT retired_at FROM device WHERE id = ?').get(meter).retired_at, 'and its meter retired');
+  assert.equal(agreements(true), 0, 'its tariff agreements no longer price the home');
+  assert.equal(agreements(false), 1, '... but are kept in the history');
   p = (await bobB(`/api/sites/${id}/providers`)).body;
   assert.equal(card('octopus').account.accountNumber, 'A-9999FFFF');
   assert.equal(db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'octopus'").get(id).external_ref, 'A-9999FFFF');
@@ -325,7 +403,7 @@ test('Sunsynk: the login lists its plants to pick from (nothing stored), and the
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get().n, before, 'listing stores nothing');
   assert.equal((await bobB(`/api/sites/${id}/providers/octopus/plants`, { method: 'POST', body: { credentials: {} } })).status, 400, 'Octopus has no plants');
   const eve = browser();
-  await eve('/api/auth/signup', { method: 'POST', body: { email: 'eve2@example.com', password: 'eve password' } });
+  await eve('/api/auth/signup', { method: 'POST', body: { username: 'eve2', pin: '6192' } });
   assert.equal((await eve(`/api/sites/${id}/providers/sunsynk/plants`, { method: 'POST', body: { credentials: { username: 'x', password: 'good' } } })).status, 404, 'not her home');
   const c = await bobB(`/api/sites/${id}/providers/sunsynk`, { method: 'POST', body: { credentials: { username: 'bob@example.com', password: 'good-pw', plantId: '4343' } } });
   assert.equal(c.status, 201, c.text);

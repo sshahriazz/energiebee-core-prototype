@@ -1,14 +1,14 @@
-// Sign up, sign in, and add a home (/signup, /login, /onboarding): the account (src/core/users.js),
+// Sign in (/login), create an account (/signup), and add a home (/onboarding): the account (src/core/users.js),
 // then the home from a postcode and its providers connected with the user's own logins
 // (src/core/signup.js). Logins go to the server once and are never shown again.
 import { api, esc } from '../api.js';
-import { init } from '../layout.js';
+import { init, BEE } from '../layout.js';
 
 const view = location.pathname.replace(/^\/|\.html$/g, '') || 'login';
 const TITLES = {
-  signup: ['Create your account', 'An email and a password. Next: your postcode, then your inverter and meter.'],
-  login: ['Sign in', 'Welcome back.'],
-  onboarding: ['Add your home', 'Your postcode tells us your region, prices and weather; then connect your own providers.'],
+  login: ['Sign in', ''],
+  signup: ['Create your account', ''],
+  onboarding: ['Add your home', ''],
 };
 const $ = (id) => document.getElementById(id);
 const content = () => $('content');
@@ -27,19 +27,52 @@ function onSubmit(form, fn, errId = 'form-error') {
   });
 }
 
-// ───────────── Sign up and sign in ─────────────
+// ───────────── Sign in (/login) and create an account (/signup) ─────────────
 
+const steps = (n) => `<div class="steps" aria-label="Steps">${['Account', 'Postcode', 'Connect providers'].map((t, i) => `<span ${i === n ? 'aria-current="step"' : ''}>${i + 1}. ${t}</span>`).join('')}</div>`;
+
+// A centred card: the bee, a heading, the form, and a link to the other page.
+const authCard = ({ heading, sub, form, alt = '', top = '' }) => `<div class="auth-shell">
+  ${top}<section class="auth-card">
+    <div class="auth-logo">${BEE}</div>
+    <h1>${heading}</h1><p class="auth-sub">${sub}</p>
+    ${form}
+    ${alt ? `<p class="auth-alt">${alt}</p>` : ''}
+  </section>
+  <p class="auth-note">Your Sunsynk and Octopus logins are checked with them and stored encrypted. They are never shown again.</p>
+</div>`;
+const usernameField = (hint = '') => `<label>Username${hint ? ` <small>${hint}</small>` : ''}<input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="30" required></label>`;
+const pinField = (autocomplete) => `<label>PIN <small>4 digits</small><input name="pin" class="pin-input" type="password" inputmode="numeric" pattern="\\d{4}" maxlength="4" autocomplete="${autocomplete}" placeholder="••••" required></label>`;
+
+function loginView(state) {
+  if (state.me?.user) { location.replace(state.sites.length ? '/my' : '/onboarding'); return; }
+  content().innerHTML = authCard({
+    heading: 'Welcome back', sub: 'Sign in with your username and 4-digit PIN.',
+    form: `<form class="form" id="f" novalidate>${errorBox()}${usernameField()}${pinField('current-password')}
+      <button class="btn btn-primary" type="submit">Sign in</button></form>`,
+    alt: 'New to EnergieBee? <a href="/signup">Create a new account</a>',
+  });
+  $('f').querySelector('input').focus();
+  onSubmit($('f'), async (b) => {
+    await api('/api/auth/login', { method: 'POST', body: JSON.stringify(b) });
+    const me = await api('/api/auth/me');
+    try { localStorage.removeItem('eb.site'); } catch { /* private mode */ }
+    location.href = me.homes ? '/my' : '/onboarding';
+  });
+}
+
+// The demo server makes users here too (picked in its "Viewing as" dropdown, without a PIN to sign in with).
 function signupView(state) {
   const demo = !!state.me?.switcher;
   if (state.me?.user && !demo) { location.replace('/onboarding'); return; }
-  content().innerHTML = `<div class="auth-wrap"><section class="card"><form class="form" id="f" novalidate>
-    ${errorBox()}
-    <label>Email<input name="email" type="email" autocomplete="email" required></label>
-    <label>Password <small>at least 8 characters</small><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
-    <label>Your name <small>optional</small><input name="name" type="text" autocomplete="name"></label>
-    <button class="btn btn-primary" type="submit">Create account</button>
-    ${demo ? '<p class="muted">Demo server: the new user is picked in the "Viewing as" dropdown, next to the others.</p>' : '<p class="muted">Already have an account? <a href="/login">Sign in</a></p>'}
-  </form></section></div>`;
+  content().innerHTML = authCard({
+    top: steps(0),
+    heading: 'Create your account', sub: 'Pick a username and a 4-digit PIN. Next: your postcode, then your inverter and meter.',
+    form: `<form class="form" id="f" novalidate>${errorBox()}${usernameField('3 to 30 letters or digits')}${pinField('new-password')}
+      <button class="btn btn-primary" type="submit">Create account</button></form>`,
+    alt: demo ? 'Demo server: the new user is picked in the "Viewing as" dropdown, next to the others.' : 'Already have an account? <a href="/login">Sign in</a>',
+  });
+  $('f').querySelector('input').focus();
   onSubmit($('f'), async (b) => {
     const r = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify(b) });
     // Demo server: pick the new user in the dropdown (no cookie there), with no home chosen yet.
@@ -50,26 +83,8 @@ function signupView(state) {
   });
 }
 
-function loginView(state) {
-  if (state.me?.user) { location.replace(state.sites.length ? '/my' : '/onboarding'); return; }
-  content().innerHTML = `<div class="auth-wrap"><section class="card"><form class="form" id="f" novalidate>
-    ${errorBox()}
-    <label>Email<input name="email" type="email" autocomplete="email" required></label>
-    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-    <button class="btn btn-primary" type="submit">Sign in</button>
-    <p class="muted">New here? <a href="/signup">Create an account</a></p>
-  </form></section></div>`;
-  onSubmit($('f'), async (b) => {
-    await api('/api/auth/login', { method: 'POST', body: JSON.stringify(b) });
-    const me = await api('/api/auth/me');
-    try { localStorage.removeItem('eb.site'); } catch { /* private mode */ }
-    location.href = me.homes ? '/my' : '/onboarding';
-  });
-}
-
 // ───────────── Add a home: postcode, then providers ─────────────
 
-const steps = (n) => `<div class="steps" aria-label="Steps">${['Account', 'Postcode', 'Connect providers'].map((t, i) => `<span ${i === n ? 'aria-current="step"' : ''}>${i + 1}. ${t}</span>`).join('')}</div>`;
 
 function onboardingView(state) {
   // The signed-in user, or on the demo server the one picked in the dropdown.
@@ -81,7 +96,9 @@ function onboardingView(state) {
   const siteId = Number(new URLSearchParams(location.search).get('home')) || null;
   if (siteId) return providersStep(siteId);
   const countries = state.me.countries || [{ code: 'GB', name: 'United Kingdom', example: 'BB12 9BY' }];
-  content().innerHTML = `<div class="onb-wrap">${steps(1)}<section class="card"><form class="form" id="f" novalidate>
+  content().innerHTML = `<div class="onb-flow">${steps(1)}<section class="card onb-card">
+    <div class="onb-card-head"><h2>Where is your home?</h2><p>Your postcode gives us your region, prices and weather.</p></div>
+    <form class="form" id="f" novalidate>
     ${errorBox()}
     <div class="row">
       <label>Country<select name="country" id="country">${countries.map((c) => `<option value="${c.code}">${esc(c.name)}</option>`).join('')}</select></label>
@@ -90,6 +107,7 @@ function onboardingView(state) {
     <label>Name for this home <small>optional, e.g. "Home" or the street</small><input name="name" type="text"></label>
     <button class="btn btn-primary" type="submit">Continue</button>
   </form></section></div>`;
+  $('postcode').focus();
   $('country').addEventListener('change', () => { $('postcode').placeholder = countries.find((c) => c.code === $('country').value)?.example || ''; });
   onSubmit($('f'), async (b) => {
     const r = await api('/api/onboarding/home', { method: 'POST', body: JSON.stringify(b) });
@@ -102,26 +120,25 @@ function onboardingView(state) {
 const STATUS = { ok: ['good', 'synced'], error: ['bad', 'last sync failed'], skipped: ['warn', 'waiting'], running: ['info', 'syncing'], new: ['info', 'waiting for first sync'] };
 const statusBadge = (s) => { const [cls, txt] = STATUS[s] || ['info', s || 'not synced yet']; return `<span class="badge ${cls}">${esc(txt)}</span>`; };
 
-async function providersStep(siteId, created = null) {
+// One provider at a time: the inverter first, then the meter, then anything else the home's market lists. Each can be
+// skipped; when none is left to ask for, a summary of the accounts connected (disconnect or use another login there).
+// A provider not switched on yet in the market (coming soon) is never asked for, only listed in the summary.
+const ROLE_ORDER = ['inverter', 'meter'];
+const rank = (c) => { const i = ROLE_ORDER.indexOf(c.role); return i < 0 ? ROLE_ORDER.length : i; };
+const skipped = new Set();   // skipped on this visit: asked again on the next one
+
+async function providersStep(siteId, created = null, flash = '') {
   let p;
   try { p = await api(`/api/sites/${siteId}/providers`); } catch (err) {
-    content().innerHTML = `<div class="onb-wrap"><section class="card empty"><h2>Home not found</h2><p>${esc(err.message)}</p><p><a class="btn" href="/onboarding">Add a home</a></p></section></div>`;
+    content().innerHTML = `<div class="onb-flow"><section class="card empty"><h2>Home not found</h2><p>${esc(err.message)}</p><p><a class="btn" href="/onboarding">Add a home</a></p></section></div>`;
     return;
   }
   const s = created?.site;
-  const where = s ? `<p class="muted">${esc(s.name)} · ${esc(s.postcode)}${s.gsp_region ? ` · price region ${esc(s.gsp_region)}` : ''}${s.carbon_region != null ? ` · carbon region ${esc(s.carbon_region)}` : ''} · ${esc(s.currency)}</p>` : '';
-  const card = (c) => {
-    if (!c.available) return `<article class="prov-card off"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3><p>${esc(c.what)}</p><p><b>${esc(c.reason)}</b></p></article>`;
-    if (c.connected) {
-      return `<article class="prov-card"><h3>${esc(c.name)} <span class="badge good">connected</span></h3><p>${esc(c.what)}</p>
-        ${accountList(c)}
-        <p>${statusBadge(c.status)}${c.last_error ? `<br><small>${esc(c.last_error)}</small>` : ''}</p>
-        ${c.can_disconnect ? `<div class="form-error" id="err-dis-${esc(c.adapter)}" role="alert" aria-live="polite"></div>
-        <p class="prov-actions"><button class="btn" type="button" data-disconnect="${esc(c.adapter)}">Disconnect</button></p>
-        <details><summary>Not your account? Use another login</summary>${form(c)}</details>` : '<p><small>Read from .env on this home.</small></p>'}</article>`;
-    }
-    return `<article class="prov-card"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3><p>${esc(c.what)}</p>${form(c)}</article>`;
-  };
+  const where = s ? `<p class="onb-where">${esc(s.name)}${s.name.includes(s.postcode) ? '' : ` · ${esc(s.postcode)}`}${s.gsp_region ? ` · price region ${esc(s.gsp_region)}` : ''} · ${esc(s.currency)}</p>` : '';
+  const list = p.connect.filter((c) => c.available).sort((a, b) => rank(a) - rank(b));
+  const soon = p.connect.filter((c) => !c.available);
+  const current = list.find((c) => !c.connected && !skipped.has(c.adapter)) || null;
+  const next = current ? list.slice(list.indexOf(current) + 1).find((c) => !c.connected && !skipped.has(c.adapter)) : null;
   // The account connected, so a wrong one is easy to spot: the login, the plant or account it reads.
   const accountList = (c) => {
     const a = c.account || {};
@@ -139,18 +156,48 @@ async function providersStep(siteId, created = null) {
       <input name="${esc(f.key)}" type="${esc(f.type)}" ${f.required ? 'required' : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''} autocomplete="${f.secret ? 'new-password' : 'off'}"></label>`).join('')}
     ${picks(c) ? '<fieldset class="plant-pick" hidden><legend>Pick your plant</legend><div class="plant-list"></div></fieldset>' : ''}
     <button class="btn btn-primary" type="submit">${picks(c) ? 'Find my plants' : `Connect ${esc(c.name)}`}</button></form>`;
-  content().innerHTML = `<div class="onb-wrap">${steps(2)}
-    ${created?.geoError ? `<div class="banner warn" role="status"><span aria-hidden="true">⚠</span><div>${esc(created.geoError)}</div></div>` : ''}
+  const banners = `${created?.geoError ? `<div class="banner warn" role="status"><span aria-hidden="true">⚠</span><div>${esc(created.geoError)}</div></div>` : ''}
     ${p.secrets_ready ? '' : '<div class="banner bad" role="status"><span aria-hidden="true">⚠</span><div><b>Logins cannot be stored on this server yet:</b> SECRET_KEY is not set in .env.</div></div>'}
-    <section class="card"><div class="card-head"><div><h2>Connect your providers</h2><p>Your logins are checked with the provider, then stored encrypted. They are never shown again.</p>${where}</div></div>
-      <div id="connect-msg"></div>
-      <div class="prov-grid">${p.connect.map(card).join('') || '<p class="muted">No provider to connect in this market yet.</p>'}</div>
-    </section>
-    <section class="card section"><div class="card-head"><div><h2>Automatic</h2><p>These need no login: they run for every home in your area.</p></div></div>
-      <ul class="auto-list">${p.automatic.map((a) => `<li><span class="badge info" title="${esc(a.adapter)}">${esc(a.label)}</span></li>`).join('')}</ul>
-    </section>
-    <p class="section"><a class="btn btn-primary" href="/my?site=${siteId}">${p.connect.some((c) => c.connected) ? 'Done: see my energy' : 'Skip for now'}</a></p>
-  </div>`;
+    ${flash ? `<p class="form-ok onb-flash" role="status">${flash}</p>` : ''}`;
+  // Where the user is: each provider asked for, done, now, skipped or still to come.
+  const progress = list.length > 1 ? `<ol class="onb-progress">${list.map((c, i) => {
+    const st = c.connected ? 'done' : c === current ? 'now' : skipped.has(c.adapter) ? 'skipped' : 'todo';
+    return `<li class="${st}"><span class="onb-dot" aria-hidden="true">${st === 'done' ? '✓' : i + 1}</span><span>${esc(c.name)}<small>${st === 'done' ? 'connected' : st === 'skipped' ? 'skipped' : esc(c.role_label)}</small></span></li>`;
+  }).join('<li class="onb-line" aria-hidden="true"></li>')}</ol>` : '';
+
+  if (current) {
+    content().innerHTML = `<div class="onb-flow">${steps(2)}${banners}${progress}
+      <section class="card onb-card">
+        <div class="onb-card-head"><span class="badge">${esc(current.role_label)}</span><h2>Connect ${esc(current.name)}</h2><p>${esc(current.what)}</p>${where}</div>
+        ${form(current)}
+        <p class="onb-skip"><button type="button" class="link-btn" data-skip="${esc(current.adapter)}">Skip for now${next ? ` and connect ${esc(next.name)}` : ''}</button></p>
+      </section>
+      <p class="auth-note">Your login is checked with ${esc(current.name)}, then stored encrypted. It is never shown again.</p>
+    </div>`;
+  } else {
+    const any = list.some((c) => c.connected);
+    const row = (c) => c.connected
+      ? `<article class="prov-row"><div class="prov-row-head"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3>${statusBadge(c.status)}</div>
+        ${accountList(c)}${c.last_error ? `<p class="prov-err">${esc(c.last_error)}</p>` : ''}
+        ${c.can_disconnect ? `<div class="form-error" id="err-dis-${esc(c.adapter)}" role="alert" aria-live="polite"></div>
+        <div class="prov-actions"><button class="btn" type="button" data-disconnect="${esc(c.adapter)}">Disconnect</button>
+          <details><summary>Not your account? Use another login</summary>${form(c)}</details></div>` : '<p class="muted"><small>Read from .env on this home.</small></p>'}</article>`
+      : `<article class="prov-row off"><div class="prov-row-head"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3><span class="badge warn">not connected</span></div>
+        <p class="muted">${esc(c.what)}</p><div class="prov-actions"><button class="btn" type="button" data-connect="${esc(c.adapter)}">Connect ${esc(c.name)}</button></div></article>`;
+    const soonRow = (c) => `<article class="prov-row off"><div class="prov-row-head"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3><span class="badge">coming soon</span></div><p class="muted">${esc(c.what)}</p></article>`;
+    content().innerHTML = `<div class="onb-flow">${steps(2)}${banners}${progress}
+      <section class="card onb-card">
+        <div class="onb-card-head">${any ? '<span class="onb-check" aria-hidden="true">✓</span>' : ''}<h2>${any ? 'Your home is connected' : 'No provider connected yet'}</h2>
+          <p>${any ? 'Your data is loading: the first sync takes a few minutes.' : 'Connect one to see your energy, or come back to it later from "Manage providers".'}</p>${where}</div>
+        <div class="prov-rows">${list.map(row).join('')}${soon.map(soonRow).join('')}${list.length || soon.length ? '' : '<p class="muted">No provider to connect in this market yet.</p>'}</div>
+        <a class="btn btn-primary onb-done" href="/my?site=${siteId}">${any ? 'See my energy' : 'Go to my energy'}</a>
+      </section>
+      ${p.automatic.length ? `<p class="auth-note">Also running for your area, with no login: ${p.automatic.map((a) => esc(a.label)).join(', ')}.</p>` : ''}
+    </div>`;
+  }
+
+  document.querySelectorAll('button[data-skip]').forEach((b) => b.addEventListener('click', () => { skipped.add(b.dataset.skip); providersStep(siteId, created); }));
+  document.querySelectorAll('button[data-connect]').forEach((b) => b.addEventListener('click', () => { skipped.delete(b.dataset.connect); providersStep(siteId, created); }));
   document.querySelectorAll('button[data-disconnect]').forEach((b) => {
     const provider = b.dataset.disconnect;
     const name = p.connect.find((c) => c.adapter === provider)?.name || provider;
@@ -159,8 +206,8 @@ async function providersStep(siteId, created = null) {
       b.disabled = true; b.textContent = 'Disconnecting…';
       try {
         const r = await api(`/api/sites/${siteId}/providers/${encodeURIComponent(provider)}`, { method: 'DELETE' });
-        await providersStep(siteId, created);
-        $('connect-msg').innerHTML = `<p class="form-ok" role="status">${esc(name)} disconnected: its login is forgotten${r.withdrawn ? ` and ${r.withdrawn.toLocaleString()} readings removed from this home` : ''}. Connect it again below.</p>`;
+        skipped.add(provider);   // back to the summary, not straight into its form
+        await providersStep(siteId, created, `${esc(name)} disconnected: its login is forgotten${r.withdrawn ? ` and ${r.withdrawn.toLocaleString()} readings removed from this home` : ''}.`);
       } catch (err) { showError(err, `err-dis-${provider}`); b.disabled = false; b.textContent = 'Disconnect'; }
     });
   });
@@ -192,26 +239,27 @@ async function providersStep(siteId, created = null) {
       }
       const r = await api(`/api/sites/${siteId}/providers/${encodeURIComponent(provider)}`, { method: 'POST', body: JSON.stringify({ credentials }) });
       f.reset();
-      await providersStep(siteId, created);
-      $('connect-msg').innerHTML = `<p class="form-ok" role="status">${esc(name)} connected${r.checked?.plantName ? ` (plant "${esc(r.checked.plantName)}")` : ''}${r.replaced ? ', replacing the account connected before (its data is removed)' : ''}. The first sync has started: your data appears in a few minutes.</p>`;
+      skipped.delete(provider);
+      await providersStep(siteId, created, `<b>${esc(name)} connected</b>${r.checked?.plantName ? ` (plant "${esc(r.checked.plantName)}")` : ''}${r.replaced ? ', replacing the account connected before (its data is removed)' : ''}. Your data is loading.`);
     }, `err-${provider}`);
   });
+  document.querySelector('.onb-card form[data-provider] input')?.focus();
 }
 
 // ───────────── Page ─────────────
 
 // Opened for a home already added: its providers, not a new home.
-if (view === 'onboarding' && new URLSearchParams(location.search).get('home')) TITLES.onboarding = ['Your providers', 'The accounts connected to this home. Not yours? Disconnect it, or connect another login.'];
+if (view === 'onboarding' && new URLSearchParams(location.search).get('home')) TITLES.onboarding = ['Your providers', ''];
 const [title, subtitle] = TITLES[view] || TITLES.login;
 let built = false;
 init({
-  page: 'account', title, subtitle, periods: false, homeScoped: false,
+  page: 'account', title, subtitle, periods: false, homeScoped: false, bare: view !== 'onboarding',
   // Built once: the page shell re-renders every two minutes, which must not wipe a half-filled form.
   render: async (state) => {
     if (built) return;
     built = true;
-    if (view === 'signup') signupView(state);
-    else if (view === 'onboarding') await onboardingView(state);
+    if (view === 'onboarding') await onboardingView(state);
+    else if (view === 'signup') signupView(state);
     else loginView(state);
   },
 });

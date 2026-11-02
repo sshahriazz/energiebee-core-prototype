@@ -24,6 +24,8 @@ export function useDb({ snapshot = false } = {}) {
     src.close();
   }
   process.env.DB_FILE = file;
+  // Sign-in is required on the main app; tests that read homes without a user turn it off (test/signup.test.js turns it on).
+  process.env.REQUIRE_LOGIN ??= '0';
   // TEST_SLOT_S=900|3600 runs a snapshot test at another slot length (npm run test:slots). Stored slot rows stay as they are; dry-run builds follow the new length.
   if (snapshot && process.env.TEST_SLOT_S) {
     const c = new DatabaseSync(file);

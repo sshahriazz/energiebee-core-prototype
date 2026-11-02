@@ -203,3 +203,18 @@ test('an inverter connected after the home was first built fetches the full init
   db.prepare("UPDATE connection SET last_success_at = ? WHERE site_id = ? AND provider = 'sunsynk'").run(Date.UTC(2026, 9, 28, 9) / 1000, id);
   assert.deepEqual(prep(ctx).dates, ['2026-10-27', '2026-10-28'], 'synced before: yesterday and today');
 });
+
+test('a sync asked for while one runs (a provider connected meanwhile) runs again as soon as it ends, once', async () => {
+  const id = gbHome('Asked twice');
+  const runs = () => db.prepare('SELECT id, finished_at FROM sync_run WHERE site_id = ? ORDER BY id').all(id);
+  const first = syncSite(id);
+  assert.deepEqual(await syncSite(id), { skipped: 'already running', queued: true });
+  assert.deepEqual(await syncSite(id), { skipped: 'already running', queued: true }, 'asked again: still one more run, not two');
+  await first;
+  for (let i = 0; i < 200 && !(runs().length === 2 && runs()[1].finished_at); i++) await new Promise((r) => setTimeout(r, 25));
+  const r = runs();
+  assert.equal(r.length, 2, 'the first run, then one more');
+  assert.ok(r[1].finished_at, 'the second run finished');
+  await new Promise((res) => setTimeout(res, 100));
+  assert.equal(runs().length, 2, 'and no third');
+});

@@ -19,6 +19,9 @@ import { INITIAL_DAYS, resumeDate } from './steps.js';
 export { resumeDate };
 const env = process.env;
 const running = new Set();
+// Homes asked to sync while a sync of theirs was running: synced again once it ends, so a provider connected
+// meanwhile (Octopus while Sunsynk's first sync runs) is fetched at once, not at the next scheduler tick.
+const again = new Set();
 
 function setConnection(siteId, provider, ok, error) {
   db.prepare(
@@ -186,7 +189,7 @@ export async function runEntry(ctx, e, log) {
  * synced on its own gets a fresh one.
  */
 export async function syncSite(siteId, { cycle = newCycle() } = {}) {
-  if (running.has(siteId)) return { skipped: 'already running' };
+  if (running.has(siteId)) { again.add(siteId); return { skipped: 'already running', queued: true }; }
   running.add(siteId);
   const runId = Number(db.prepare("INSERT INTO sync_run (site_id, started_at, status) VALUES (?, ?, 'running')").run(siteId, nowSec()).lastInsertRowid);
   const syncStartMs = Date.now();
@@ -230,6 +233,7 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     throw err;
   } finally {
     running.delete(siteId);
+    if (again.delete(siteId)) syncSite(siteId).catch((err) => console.error(`sync site ${siteId} (again):`, err.message));
   }
 }
 

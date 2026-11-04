@@ -1,11 +1,15 @@
 // Page shell: top bar, navigation, home and period pickers, sync button, footer.
 import { api, setUser, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns, originBadge, originLegend, minorSymbol } from './api.js';
 
-const PAGES = [
-  ['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown'], ['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'],
-  ['grid', 'Grid', '/grid'], ['tariffs', 'Tariffs', '/tariffs'], ['ev', 'EV', '/ev'], ['data', 'Data & trust', '/data'],
-  ['connectors', 'Connectors', '/connectors'], ['providers', 'Providers', '/providers'], ['devices', 'Devices', '/devices'], ['compatibility', 'Compatibility', '/compatibility'], ['explorer', 'Data Explorer', '/explorer'],
+// The pages in nav order, in groups. A wide screen shows them in one row (the group names hidden); a narrow one
+// shows the Menu button and the groups in a drawer.
+const PAGE_GROUPS = [
+  ['Your energy', [['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown']]],
+  ['Energy and prices', [['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'], ['grid', 'Grid', '/grid'], ['tariffs', 'Tariffs', '/tariffs'], ['ev', 'EV', '/ev']]],
+  ['Data and setup', [['data', 'Data & trust', '/data'], ['connectors', 'Connectors', '/connectors'], ['providers', 'Providers', '/providers'], ['devices', 'Devices', '/devices'],
+    ['compatibility', 'Compatibility', '/compatibility'], ['explorer', 'Data Explorer', '/explorer']]],
 ];
+const NARROW = '(max-width: 1100px)';   // the same width as the drawer rule in app.css
 const PERIODS = [['today', 'Today'], ['yesterday', 'Yesterday'], ['7d', '7 days'], ['30d', '30 days']];
 
 const store = {
@@ -36,7 +40,12 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
   document.body.insertAdjacentHTML('afterbegin', `
     <header class="topbar${bare ? ' bare' : ''}"><div class="topbar-inner">
       <a class="brand" href="/">${BEE}<span>EnergieBee <small>core prototype</small></span></a>
-      <nav class="nav">${PAGES.map(([k, l, h]) => `<a href="${h}" data-page="${k}" ${k === page ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>
+      <button class="btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="menu"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>Menu</button>
+      <div class="menu" id="menu" aria-label="Menu">
+        <div class="menu-head"><b>Menu</b><button class="btn icon-btn" id="menu-close" type="button" aria-label="Close the menu">✕</button></div>
+        <nav class="nav" aria-label="Pages">${PAGE_GROUPS.map(([g, pages]) => `<div class="nav-group"><span class="nav-h">${g}</span>${pages.map(([k, l, h]) => `<a href="${h}" data-page="${k}" ${k === page ? 'aria-current="page"' : ''}>${esc(l)}</a>`).join('')}</div>`).join('')}</nav>
+      </div>
+      <div class="menu-scrim" id="menu-scrim"></div>
       <div class="controls">
         <span id="account-slot" class="account"></span>
         <select id="user-select" aria-label="Viewing as" title="Viewing as: the prototype user whose homes are shown (no login)" hidden></select>
@@ -62,6 +71,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
 
   const select = document.getElementById('site-select');
   const syncBtn = document.getElementById('sync-btn');
+  menuDrawer();
 
   const keepUrl = () => {
     if (bare) return;   // the sign-in page: no period or home in its address
@@ -262,6 +272,44 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
   // Keep "now" fresh without a manual reload.
   setInterval(async () => { await loadSites(); rerender(); }, 120000);
   return state;
+}
+
+// The Menu button and its drawer, on a narrow screen. Open: a dialog that keeps the focus inside it, closed by
+// ✕, Escape, a tap outside it or the screen getting wide. On a wide screen the drawer's contents sit in the top bar,
+// and the account buttons go back to the controls.
+function menuDrawer() {
+  const btn = document.getElementById('menu-btn');
+  const menu = document.getElementById('menu');
+  const account = document.getElementById('account-slot');
+  const controls = document.querySelector('.topbar .controls');
+  const narrow = matchMedia(NARROW);
+  const focusable = () => [...menu.querySelectorAll('a[href], button:not([disabled]), select')].filter((el) => el.offsetParent !== null);
+  const setOpen = (open, { refocus = true } = {}) => {
+    document.body.classList.toggle('menu-open', open);
+    btn.setAttribute('aria-expanded', String(open));
+    if (open) focusable()[0]?.focus();
+    else if (refocus && narrow.matches) btn.focus();
+  };
+  // The drawer is a dialog only while it is a drawer.
+  const mode = () => {
+    if (narrow.matches) { menu.setAttribute('role', 'dialog'); menu.setAttribute('aria-modal', 'true'); menu.append(account); return; }
+    menu.removeAttribute('role'); menu.removeAttribute('aria-modal');
+    controls.prepend(account);
+    if (document.body.classList.contains('menu-open')) setOpen(false, { refocus: false });
+  };
+  mode();
+  narrow.addEventListener('change', mode);
+  btn.addEventListener('click', () => setOpen(!document.body.classList.contains('menu-open')));
+  document.getElementById('menu-close').addEventListener('click', () => setOpen(false));
+  document.getElementById('menu-scrim').addEventListener('click', () => setOpen(false));
+  document.addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('menu-open')) return;
+    if (e.key === 'Escape') { setOpen(false); return; }
+    if (e.key !== 'Tab') return;
+    const els = focusable(); const first = els[0]; const last = els.at(-1);
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 }
 
 // Card with a heading, an optional note and a body slot.

@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic Home Check</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f3f1ec; --border: #e4e1d8; --border-2: #cfcbc0;
+    --text: #141413; --text-2: #4f4d47; --text-3: #85827a;
+    --accent: #b67600; --accent-soft: #fdf1d6;
+    --good: #0a7d0a; --good-soft: #eaf5e9; --warn: #9a6400; --warn-soft: #fbf1dc; --bad: #c22f2f; --bad-soft: #fbeceb;
+    --plug: #d97a00; --hp: #d24545; --ev: #2a72cc; --bat: #0a8f6a; --temp: #8a5fc4;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121211; --surface: #1b1b1a; --surface-2: #242422; --border: #33322f; --border-2: #4a4945;
+      --text: #f3f2ee; --text-2: #c9c7bf; --text-3: #8d8b84;
+      --accent: #f0b429; --accent-soft: #3a2e10;
+      --good: #4cc24c; --good-soft: #17271a; --warn: #f0b429; --warn-soft: #2e2512; --bad: #ef6b6b; --bad-soft: #321a1a;
+      --plug: #f0a03c; --hp: #e66767; --ev: #4a8fe6; --bat: #34c49a; --temp: #9d82e0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121211; --surface: #1b1b1a; --surface-2: #242422; --border: #33322f; --border-2: #4a4945;
+    --text: #f3f2ee; --text-2: #c9c7bf; --text-3: #8d8b84;
+    --accent: #f0b429; --accent-soft: #3a2e10;
+    --good: #4cc24c; --good-soft: #17271a; --warn: #f0b429; --warn-soft: #2e2512; --bad: #ef6b6b; --bad-soft: #321a1a;
+    --plug: #f0a03c; --hp: #e66767; --ev: #4a8fe6; --bat: #34c49a; --temp: #9d82e0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-variant-numeric: tabular-nums; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 80px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.015em; }
+  h2 { font-size: 22px; margin: 0 0 6px; line-height: 1.3; letter-spacing: -0.01em; }
+  h3 { font-size: 18px; margin: 0; line-height: 1.35; }
+  p { margin: 8px 0; }
+  code { font-family: var(--mono); font-size: 0.85em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+  .lede { color: var(--text-2); font-size: 17.5px; max-width: 680px; margin: 0; }
+  .small { font-size: 13.5px; color: var(--text-3); }
+  .kick { font-size: 12.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 28px; margin: 18px 0; }
+  .card > .sub { color: var(--text-2); margin: 0 0 18px; max-width: 720px; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .tabs { position: sticky; top: 0; z-index: 5; padding: 12px 0; margin: 26px 0 0; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); }
+  .tabs-inner { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--border); }
+  .tab { border: 0; background: transparent; color: var(--text-2); font-weight: 600; font-size: 15px; padding: 10px 12px; border-radius: 10px; cursor: pointer; display: flex; gap: 8px; align-items: center; justify-content: center; text-align: center; line-height: 1.25; }
+  .tab .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--border); color: var(--text-2); flex: none; }
+  .tab[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / 0.1); }
+  .tab[aria-selected="true"] .n { background: var(--accent); color: #fff; }
+  .tab .cnt { font-size: 12px; font-weight: 700; color: var(--warn); }
+  [role="tabpanel"][hidden] { display: none; }
+
+  .verdicts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .vd { border-radius: 18px; padding: 22px; border: 1px solid var(--border); }
+  .vd .ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+  .vd h3 { font-size: 19px; }
+  .vd p { color: var(--text-2); font-size: 15px; margin: 6px 0 0; }
+  .vd .big { font: 700 28px/1.15 system-ui, sans-serif; margin-top: 10px; letter-spacing: -0.01em; }
+  .vd .big small { display: block; font-size: 13px; font-weight: 600; color: var(--text-3); letter-spacing: 0; margin-top: 2px; }
+  .vd.ok { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
+  .vd.ok .ic { background: var(--good); color: var(--surface); }
+  .vd.ok .big { color: var(--good); }
+  .vd.mid { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); }
+  .vd.mid .ic { background: var(--warn); color: var(--surface); }
+  .vd.mid .big { color: var(--warn); }
+  .nextbar { display: flex; justify-content: flex-end; margin-top: 18px; }
+  .btn { border: 1px solid var(--border-2); background: var(--surface); border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 15px; cursor: pointer; }
+  .btn:hover { border-color: var(--text-3); }
+  .btn.primary { background: var(--text); color: var(--surface); border-color: var(--text); }
+
+  /* Day strip */
+  .keyrow { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14px; color: var(--text-2); margin: 0 0 14px; }
+  .keyrow i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+  .strip { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 6px 12px; align-items: center; }
+  .strip .lab { font-size: 14px; font-weight: 600; line-height: 1.25; }
+  .strip .lab small { display: block; font-weight: 400; color: var(--text-3); font-size: 12px; }
+  .row { position: relative; height: 26px; display: grid; grid-template-columns: repeat(288, minmax(0, 1fr)); background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+  .row i { display: block; height: 100%; }
+  .row i.on { background: var(--c); }
+  .row i.dis { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--c) 3px 5px); }
+  .row i.miss { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bad) 20%, transparent) 0 3px, var(--bad) 3px 4.5px); }
+  .row i.have { background: color-mix(in srgb, var(--c) 35%, transparent); }
+  .row .mk { position: absolute; top: -2px; bottom: -2px; width: 3px; background: var(--text); border-radius: 2px; }
+  .hours { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); font-size: 11.5px; color: var(--text-3); }
+  .callouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+  .callout { border-left: 3px solid var(--text-3); padding: 4px 0 4px 12px; font-size: 14.5px; color: var(--text-2); }
+  .callout b { color: var(--text); }
+
+  details { margin-top: 14px; }
+  summary { cursor: pointer; font-weight: 600; color: var(--text-2); font-size: 15px; }
+  .tscroll { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-size: 12.5px; color: var(--text-3); font-weight: 600; }
+  td { font-family: var(--mono); font-size: 13px; }
+  td:first-child { font-family: inherit; font-size: 13.5px; }
+  td.ok { color: var(--good); font-weight: 700; font-family: inherit; }
+  td.txt { font-family: inherit; text-align: left; white-space: normal; color: var(--text-2); }
+  tr.part td { color: var(--text-3); }
+
+  .hb { display: grid; grid-template-columns: 170px minmax(0, 1fr) 96px; gap: 8px 12px; align-items: center; font-size: 14.5px; }
+  .hb .t { height: 20px; border-radius: 0 5px 5px 0; background: var(--c); min-width: 2px; display: block; }
+  .hb .v { font-family: var(--mono); font-weight: 700; text-align: right; }
+  .hb .guess { position: absolute; top: -4px; bottom: -4px; border-left: 2px dashed var(--text); }
+  .hb .track { position: relative; }
+
+  .steps3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; position: relative; }
+  .s3 { background: var(--surface-2); border-radius: 16px; padding: 18px; position: relative; }
+  .s3 .num { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 14px; background: var(--accent); color: #fff; margin-bottom: 10px; }
+  .s3 h3 { font-size: 17px; }
+  .s3 p { font-size: 14.5px; color: var(--text-2); margin: 4px 0 0; }
+  .s3:not(:last-child)::after { content: "→"; position: absolute; right: -13px; top: 50%; transform: translateY(-50%); color: var(--text-3); font-size: 18px; }
+
+  .dsrc-h, .dsrc-r { display: grid; grid-template-columns: 170px minmax(0, 1.5fr) minmax(0, 1.2fr) 150px; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 14.5px; align-items: start; }
+  .dsrc-h { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); padding: 0 0 8px; }
+  .dsrc-r:last-child { border-bottom: 0; }
+  .dsrc-r > div { color: var(--text-2); }
+  .dsrc-r .dn i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 7px; }
+  .dsrc-r .dn b { color: var(--text); font-size: 15px; }
+  .dsrc-r .dn small { display: block; color: var(--text-3); font-size: 12.5px; margin-top: 2px; }
+  .res { font-weight: 700; color: var(--good); }
+  .res small { display: block; font-weight: 400; color: var(--text-3); font-size: 12.5px; }
+
+  .formula { font-family: var(--mono); font-size: 13.5px; background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: 12px; padding: 14px 16px; white-space: pre; overflow-x: auto; line-height: 1.75; margin: 4px 0 0; }
+  .hh-rows { display: grid; margin-top: 10px; background: var(--surface-2); border-radius: 14px; padding: 6px 16px; }
+  .hh-row { display: grid; grid-template-columns: 200px minmax(0, 1fr) 100px; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: baseline; font-size: 15px; }
+  .hh-row:last-child { border-bottom: 0; font-weight: 700; }
+  .hh-row .how { color: var(--text-2); font-size: 14px; }
+  .hh-row .v { font-family: var(--mono); font-weight: 700; text-align: right; }
+
+  .faults { display: grid; gap: 12px; }
+  .fault { border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+  .fault h3 { grid-column: 1 / -1; font-size: 17px; display: flex; gap: 10px; align-items: center; }
+  .fault h3 .okc { font-size: 12px; font-weight: 700; color: var(--good); background: var(--good-soft); border-radius: 999px; padding: 2px 10px; margin-left: auto; }
+  .fault .k { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+  .fault .t { font-size: 14.5px; color: var(--text-2); margin-top: 2px; }
+
+  .plist { display: grid; gap: 6px; }
+  .pr { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; text-align: left; border: 2px solid transparent; background: var(--surface-2); border-radius: 14px; padding: 11px 14px; cursor: pointer; font-size: 15px; }
+  .pr:hover { border-color: var(--border-2); }
+  .pr[aria-pressed="true"] { border-color: var(--sev); background: var(--surface); }
+  .pr .m { font: 700 13px var(--mono); white-space: nowrap; color: var(--text-3); }
+  .pn { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font: 700 13px system-ui, sans-serif; color: var(--surface); background: var(--sev); flex: none; }
+  .md { --sev: var(--warn); } .lo { --sev: var(--text-3); }
+  .pb { margin-top: 22px; border-top: 4px solid var(--sev); padding-top: 22px; }
+  .pb[hidden] { display: none; }
+  .pb-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .pb-head h3 { font-size: 21px; flex: 1 1 280px; }
+  .sevchip { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sev); border: 1.5px solid var(--sev); border-radius: 999px; padding: 1px 10px; }
+  .pb-one { font-size: 17px; margin: 12px 0 16px; max-width: 740px; line-height: 1.6; }
+  .cmp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .cmp > div { border-radius: 14px; padding: 14px 16px; border: 1px solid var(--border); }
+  .cmp .k { font-size: 13px; font-weight: 600; color: var(--text-3); }
+  .cmp .v { font: 700 22px/1.3 system-ui, sans-serif; margin-top: 2px; letter-spacing: -0.01em; }
+  .cmp .s { font-size: 14px; color: var(--text-2); margin-top: 4px; }
+  .cmp .shown { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); }
+  .cmp .real { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
+  .why { margin-top: 16px; font-size: 15px; color: var(--text-2); }
+  .why b { color: var(--text); }
+  .fixrow { margin-top: 14px; padding: 14px 16px; border-radius: 14px; background: var(--surface-2); font-size: 15px; }
+  .fixrow b { color: var(--text); }
+
+  .checks { display: grid; gap: 12px; }
+  .chk { border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
+  .chk h3 { font-size: 17px; display: flex; gap: 10px; align-items: center; }
+  .chk h3 .num { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; background: var(--surface-2); border: 1px solid var(--border-2); flex: none; }
+  .chk .q { display: block; margin-top: 10px; font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .chk .ans { margin-top: 8px; font-size: 14.5px; color: var(--text-2); }
+  .chk .ans b { color: var(--good); }
+
+  .theme { position: fixed; right: 14px; bottom: 14px; font-size: 13px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--surface); cursor: pointer; }
+
+  @media (max-width: 720px) {
+    main { padding-top: 28px; }
+    h1 { font-size: 25px; }
+    .card { padding: 20px 16px; border-radius: 16px; }
+    .tabs-inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tab { font-size: 14px; padding: 8px; justify-content: flex-start; text-align: left; }
+    .verdicts, .steps3, .callouts, .cmp, .fault { grid-template-columns: minmax(0, 1fr); }
+    .s3:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -19px; transform: translateX(50%); }
+    .steps3 { gap: 22px; }
+    .strip { grid-template-columns: minmax(0, 1fr); }
+    .strip .lab { margin-top: 6px; }
+    .strip .sp { display: none; }
+    .hours span:nth-child(even) { visibility: hidden; }
+    .hb { grid-template-columns: 110px minmax(0, 1fr) 80px; font-size: 13px; }
+    .hh-row { grid-template-columns: minmax(0, 1fr) 90px; }
+    .hh-row .how { grid-column: 1 / -1; grid-row: 2; }
+    .dsrc-h { display: none; }
+    .dsrc-r { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .formula { white-space: pre-wrap; font-size: 12.5px; }
+    .pr .m { display: none; }
+    .pr { grid-template-columns: 30px minmax(0, 1fr); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="kick">Devices page · "Create the synthetic demo home"</div>
+  <h1>Is the synthetic home's data right?</h1>
+  <p class="lede">What the five demo devices send, how the core turns it into energy, whether each number on the page matches, and what needs fixing, explained one step at a time.</p>
+  <p class="small" style="margin-top:10px">Synthetic IoT home (demo data), home 2 · history 27 Oct 10:05 to 30 Oct 10:05 (UK time, GMT) · every value was regenerated from the formulas and compared with what the core stored and what the page receives</p>
+
+  <nav class="tabs" aria-label="Sections"><div class="tabs-inner" role="tablist">
+    <button class="tab" role="tab" id="t-answer" aria-controls="answer" aria-selected="true"><span class="n">1</span>Short answer</button>
+    <button class="tab" role="tab" id="t-how" aria-controls="how" aria-selected="false"><span class="n">2</span>How it's worked out</button>
+    <button class="tab" role="tab" id="t-wrong" aria-controls="wrong" aria-selected="false"><span class="n">3</span>What to fix <span class="cnt">5</span></button>
+    <button class="tab" role="tab" id="t-check" aria-controls="check" aria-selected="false"><span class="n">4</span>Check it yourself</button>
+  </div></nav>
+
+  <!-- 1 ─ Short answer -->
+  <section id="answer" role="tabpanel" aria-labelledby="t-answer">
+    <div class="card">
+      <h2>The short answer</h2>
+      <p class="sub">The data is right, down to the last reading. A few things on the page are worded or drawn in a way that can mislead.</p>
+      <div class="verdicts">
+        <div class="vd ok"><div class="ic">✓</div><h3>Every reading matches</h3>
+          <p>All 14 channels of the 5 devices, every 5 minutes for 3 days, are exactly what the generator's formulas give. Nothing is missing and nothing extra was stored.</p>
+          <div class="big">12,072 / 12,072<small>readings identical</small></div></div>
+        <div class="vd ok"><div class="ic">✓</div><h3>The energy adds up</h3>
+          <p>Every period of every counter is the difference of the two readings around it. The four built-in faults are each handled the right way.</p>
+          <div class="big">3,436 / 3,436<small>energy periods correct</small></div></div>
+        <div class="vd mid"><div class="ic">!</div><h3>But 5 things can mislead</h3>
+          <p>None of them changes a number. The biggest: the battery's evening discharge never shows as power, and its settings don't match how it behaves.</p>
+          <div class="big">5<small>display and wording fixes</small></div></div>
+      </div>
+      <p class="small" style="margin-top:16px">"No new data, last data 36 minutes ago" on every device is expected: the history deliberately stops 30 minutes before the home was created, so you can press "Simulate next period" to catch up.</p>
+    </div>
+
+    <div class="card">
+      <h2>One day, device by device</h2>
+      <p class="sub">29 October, the full day with all four built-in faults. Each strip is 288 five-minute readings, exactly as stored. The thin marks on the plug strip and the hatched stretches are the faults.</p>
+      <div class="keyrow" aria-hidden="true">
+        <span><i style="background:var(--text-3)"></i>On or charging</span>
+        <span><i style="background:repeating-linear-gradient(135deg, transparent 0 3px, var(--bat) 3px 5px)"></i>Battery discharging</span>
+        <span><i style="background:repeating-linear-gradient(135deg, transparent 0 3px, var(--bad) 3px 4.5px)"></i>No reading (built-in gap)</span>
+        <span><i style="background:var(--text);width:4px"></i>Restart or refused reading</span>
+      </div>
+      <div class="strip" id="strip" role="img" aria-label="29 October: the plug heater runs 25 minutes of every hour from 06:00 to 23:00, the heat pump runs from 05:30 to 22:30, the EV charges from 00:00 to 03:00 and from 23:00, the battery charges from 00:30 to 03:30 and discharges from 17:00 to 23:00. The heat counter has no readings from 10:20 to 11:55 and the room sensor none from 11:00 to 12:30."></div>
+      <div class="callouts">
+        <div class="callout"><b>14:05: the plug restarts.</b> Its counter goes back to 0. The core marks that period as partial and keeps the 0.152 kWh it can see.</div>
+        <div class="callout"><b>21:00: one bad plug reading.</b> 2.031 kWh, lower than before and not a restart. It is refused, and the energy is worked out across the 10 minutes around it.</div>
+        <div class="callout"><b>10:20–11:55: heat counter silent.</b> The total across the gap is still exact (6.144 kWh). Only when inside the gap it was used is unknown.</div>
+        <div class="callout"><b>11:00–12:30: room sensor silent.</b> The temperature line is broken there. Nothing is drawn where nothing was received.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Energy per day</h2>
+      <p class="sub">Each device's energy, added up from the stored periods. The dashed line is the hand estimate from the formula (see "How it's worked out"). The two full days land on it.</p>
+      <div id="days"></div>
+      <details><summary>Show every day as a table</summary><div class="tscroll"><table id="dtab"></table></div></details>
+      <div class="nextbar"><button class="btn primary" data-go="how">How is it worked out? →</button></div>
+    </div>
+  </section>
+
+  <!-- 2 ─ How -->
+  <section id="how" role="tabpanel" aria-labelledby="t-how" hidden>
+    <div class="card">
+      <h2>How the data is made and shown</h2>
+      <p class="sub">Three steps. The data is fake, but steps 2 and 3 are the real ones a real device goes through.</p>
+      <div class="steps3">
+        <div class="s3"><div class="num">1</div><h3>Generate</h3>
+          <p>Every 5 minutes, each device's value is worked out from the time of day by a fixed formula with a little fixed "noise". There is no random number, so the same time always gives the same value. Code: <code>src/core/synthetic-iot.js</code>.</p></div>
+        <div class="s3"><div class="num">2</div><h3>Ingest</h3>
+          <p>The readings go in through <code>ingestObservations</code>, like a real device's. Channels turn each point into a standard measurement. Counters become energy per period, and bad or unknown points are refused.</p></div>
+        <div class="s3"><div class="num">3</div><h3>Show</h3>
+          <p>The Devices page reads it back: a card per device with its latest values, then charts, notes "in words", the channel table and the refused readings. Code: <code>src/core/devices-view.js</code>.</p></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>The five devices</h2>
+      <p class="sub">What each one sends, the rule behind it, and what the check found.</p>
+      <div class="dsrc">
+        <div class="dsrc-h" aria-hidden="true"><span>Device</span><span>What it sends, every 5 minutes</span><span>The rule</span><span>Check</span></div>
+        <div class="dsrc-r" style="--c:var(--plug)"><div class="dn"><i></i><b>Smart plug</b><small>a heater · fills "plug energy"</small></div>
+          <div>An energy counter that restarts each midnight, power (W), relay on/off</div>
+          <div>On for 25 minutes of every hour (:00 to :20) from 06:00 to 23:00, at 1,800 W ± 8%. Off it uses 2 W.</div>
+          <div class="res">2,594 ✓<small>readings; 863 periods</small></div></div>
+        <div class="dsrc-r" style="--c:var(--hp)"><div class="dn"><i></i><b>Heat pump</b><small>fills heat pump energy, heat output, heat telemetry</small></div>
+          <div>Two lifetime counters (electricity in, heat out), flow and return temperature, on/off, defrost events</div>
+          <div>On from 05:30 to 22:30, resting 30 minutes in every 3 hours. It draws 700–2,600 W depending on the outdoor temperature, and heat out = electricity × COP (2.4–4.2).</div>
+          <div class="res">4,306 ✓<small>readings; 1,709 periods; 6 defrosts</small></div></div>
+        <div class="dsrc-r" style="--c:var(--ev)"><div class="dn"><i></i><b>EV charger</b><small>fills "EV charger energy"</small></div>
+          <div>A delivered-energy counter, power (W), plugged in on/off, plugged-in events</div>
+          <div>Plugged in from 22:40 to 07:30, charging at about 7,200 W from 23:00 to 03:00.</div>
+          <div class="res">2,595 ✓<small>readings; 864 periods; 3 plug-ins</small></div></div>
+        <div class="dsrc-r" style="--c:var(--bat)"><div class="dn"><i></i><b>Battery</b><small>10 kWh · can be controlled · fills no role</small></div>
+          <div>Charge level (%), charging power (W), and its settings once</div>
+          <div>Charges at 2,000 W from 00:30 until it reaches 98%. Discharges 700–1,300 W from 17:00 to 23:00 until it falls to 12%.</div>
+          <div class="res">1,730 ✓<small>readings; see problems 1 and 2</small></div></div>
+        <div class="dsrc-r" style="--c:var(--temp)"><div class="dn"><i></i><b>Room sensor</b><small>living room · fills heat telemetry</small></div>
+          <div>Temperature (°C), plus a <code>firmware_temp</code> point once that no channel maps</div>
+          <div>About 20 °C ± 1.1 over the day, 0.45 °C warmer while the heat pump runs.</div>
+          <div class="res">847 ✓<small>readings; the unmapped point is refused</small></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>One five-minute period, by hand</h2>
+      <p class="sub">Every energy bar on the page is built like this one: the plug heater, <b>Wed 28 Oct, 18:00–18:05</b>.</p>
+<div class="formula">is it on?   18:05 is inside 06:00–23:00, and (time ÷ 5 min) mod 12 &lt; 5
+power       1800 W × (0.92 + 0.16 × noise)
+energy      power × 300 s ÷ 3,600,000          (W·s → kWh)
+counter     previous counter + energy, rounded to 3 decimals
+period      this counter − previous counter</div>
+      <div class="hh-rows">
+        <div class="hh-row"><span>Is it on?</span><span class="how">5,977,369 five-minute steps since 1970; 5,977,369 mod 12 = 1, which is under 5</span><span class="v">on</span></div>
+        <div class="hh-row"><span>Power</span><span class="how">noise for this step = 0.2308 → 1800 × (0.92 + 0.16 × 0.2308) = 1722.5, rounded</span><span class="v">1,722 W</span></div>
+        <div class="hh-row"><span>True energy</span><span class="how">1,722 × 300 ÷ 3,600,000</span><span class="v">0.1435 kWh</span></div>
+        <div class="hh-row"><span>Counter readings</span><span class="how">18:00 → 18:05, as stored and as sent to the page</span><span class="v">9.141 → 9.285</span></div>
+        <div class="hh-row"><span>Period stored</span><span class="how">9.285 − 9.141. The extra 0.0005 is the counter's rounding, and it cancels out over the day.</span><span class="v">0.144 kWh</span></div>
+      </div>
+      <p class="small">Over all 3 days the rounding never adds up: the plug's periods total 38.304 kWh against 38.305 true, the heat pump's 66.463 against 66.462, its heat 217.763 against 217.763, and the EV's 85.724 against 85.724.</p>
+    </div>
+
+    <div class="card">
+      <h2>The built-in faults, and what happened to each</h2>
+      <p class="sub">The generator breaks the data on purpose, on the day before the home was made, to show the core coping. Every one is handled correctly.</p>
+      <div class="faults">
+        <div class="fault"><h3>Plug restarts at 14:05 <span class="okc">✓ right</span></h3>
+          <div><div class="k">Generator</div><div class="t">The counter drops from 6.228 kWh to 0 and carries on counting.</div></div>
+          <div><div class="k">Core</div><div class="t">The 14:00–14:05 period is stored as <b>partial</b>, with 0.152 kWh, which is exactly what the counter shows after the restart. Nothing is invented.</div></div>
+          <div><div class="k">Page</div><div class="t">A highlighted bar, a reset line on the counter chart and a "Restart" note.</div></div></div>
+        <div class="fault"><h3>Bad plug reading at 21:00 <span class="okc">✓ right</span></h3>
+          <div><div class="k">Generator</div><div class="t">Sends 2.031 kWh, 40% of the real 5.08 kWh: a drop that isn't a restart.</div></div>
+          <div><div class="k">Core</div><div class="t">Refused as <code>counter_backwards</code> and never stored. One 10-minute period, 20:55–21:05, holds 0.302 kWh, the two steps together.</div></div>
+          <div><div class="k">Page</div><div class="t">A cross on the counter chart, a "Refused reading" note, and a row in "Refused readings".</div></div></div>
+        <div class="fault"><h3>Heat counter silent, 10:20–11:55 <span class="okc">✓ right</span></h3>
+          <div><div class="k">Generator</div><div class="t">19 heat-output readings left out. Electricity and the temperatures carry on.</div></div>
+          <div><div class="k">Core</div><div class="t">One 100-minute period, 10:15–11:55, of 6.144 kWh, marked <b>estimated</b>. The total equals the true heat to the last decimal.</div></div>
+          <div><div class="k">Page</div><div class="t">A grey bar and a "Gap" note. The bar's height is misleading; see problem 5.</div></div></div>
+        <div class="fault"><h3>Room sensor silent, 11:00–12:30 <span class="okc">✓ right</span></h3>
+          <div><div class="k">Generator</div><div class="t">18 temperature readings left out.</div></div>
+          <div><div class="k">Core</div><div class="t">Nothing stored and nothing filled in. 847 readings instead of 865.</div></div>
+          <div><div class="k">Page</div><div class="t">The line breaks from 10:55 to 12:30, with a "Gap" note.</div></div></div>
+        <div class="fault"><h3>The plug's daily reset at midnight <span class="okc">✓ right</span></h3>
+          <div><div class="k">Generator</div><div class="t">The plug counts "energy since midnight", so it drops to 0 every night.</div></div>
+          <div><div class="k">Core</div><div class="t">The 23:55–00:00 period is partial, with 0 kWh. Nothing is lost: the heater is off then and uses 2 W.</div></div>
+          <div><div class="k">Page</div><div class="t">Called a "Restart" every night; see problem 3.</div></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Every value on the device cards</h2>
+      <p class="sub">The newest value each card shows (data up to 30 Oct 10:05), against the value the formula gives for that moment.</p>
+      <div class="tscroll"><table id="ctab"></table></div>
+    </div>
+  </section>
+
+  <!-- 3 ─ What to fix -->
+  <section id="wrong" role="tabpanel" aria-labelledby="t-wrong" hidden>
+    <div class="card">
+      <h2>What to fix: 5 problems</h2>
+      <p class="sub">None of these makes a stored number wrong. They're about what the page leaves out, or how it words or draws something. Biggest first.</p>
+      <div class="plist" id="plist"></div>
+      <div id="probs">
+        <div class="pb md" data-p="1">
+          <div class="pb-head"><span class="pn">1</span><h3>The battery's discharge never shows as power</h3><span class="sevchip">Medium</span></div>
+          <p class="pb-one">From 17:00 to 23:00 the battery's power chart reads 0 W, while its charge level falls from 99% to 41%. About 5.8 kWh leaves the battery each evening, and the page never shows it as power.</p>
+          <div class="cmp">
+            <div class="shown"><div class="k">The page shows, 29 Oct 17:00–23:00</div><div class="v">0 W</div><div class="s">"Charging power" is the only power channel.</div></div>
+            <div class="real"><div class="k">What actually happened</div><div class="v">5.84 kWh out</div><div class="s">700–1,300 W for 6 hours (99.05% → 40.67% of 10 kWh)</div></div>
+          </div>
+          <p class="why"><b>Why:</b> the generator works out the discharge but only sends <code>charge_power</code>, and the channel keeps only positive values (<code>part: 'positive'</code>). The discharge is used to move the charge level and then dropped.</p>
+          <div class="fixrow"><b>Fix:</b> send a <code>discharge_power</code> point (or one signed battery power, split into two channels) in <code>stepAll</code>, and add its channel in <code>createSyntheticIotHome</code>.</div>
+        </div>
+        <div class="pb md" data-p="2" hidden>
+          <div class="pb-head"><span class="pn">2</span><h3>The battery's settings don't match how it behaves</h3><span class="sevchip">Medium</span></div>
+          <p class="pb-one">The settings panel says the battery keeps a 4% reserve, charges to 100% and has no charge window. The battery actually charges from 00:30 to 98% and stops discharging at 12%.</p>
+          <div class="cmp">
+            <div class="shown"><div class="k">The settings panel says</div><div class="v">reserve 4% · target 100%<br>window 00:00–00:00</div><div class="s">charge and discharge rate 3,000 W</div></div>
+            <div class="real"><div class="k">The battery's data shows</div><div class="v">floor 12% · stops at 98%<br>charges from 00:30</div><div class="s">charges at 2,000 W, discharges at 700–1,300 W</div></div>
+          </div>
+          <p class="why"><b>Why:</b> the settings come from the simulated control driver's defaults (<code>createSimulatedDriver</code>), and the charge level comes from a separate rule in <code>batteryAt</code>. The two were never matched. Anyone testing a command against these settings will see behaviour they don't explain.</p>
+          <div class="fixrow"><b>Fix:</b> start the driver with the generator's own values (reserve 12, target 98, window 30–300 minutes, rate 2,000 W), or make <code>batteryAt</code> read the driver's settings.</div>
+        </div>
+        <div class="pb lo" data-p="3" hidden>
+          <div class="pb-head"><span class="pn">3</span><h3>The plug's normal midnight reset is called a "Restart"</h3><span class="sevchip">Low</span></div>
+          <p class="pb-one">With 3 days showing, the page lists 4 restarts. Three of them are just the plug's counter starting a new day, yet each one says "the energy used between the last reading and the restart is unknown". It reads like a fault happening every night.</p>
+          <div class="cmp">
+            <div class="shown"><div class="k">The page says</div><div class="v">4 × "Restart"</div><div class="s">28 Oct 00:00, 29 Oct 00:00, 29 Oct 14:05, 30 Oct 00:00</div></div>
+            <div class="real"><div class="k">It should say</div><div class="v">3 × daily reset<br>1 × restart</div><div class="s">only 29 Oct 14:05 is a real restart</div></div>
+          </div>
+          <p class="why"><b>Why:</b> the core marks every drop in a counter as partial, which is the safe choice for the data. The page then words every partial period as a restart.</p>
+          <div class="fixrow"><b>Fix:</b> for a counter whose contract says it resets daily, call a drop at local midnight a "daily reset" in <code>explanationsHtml</code>, and keep "Restart" for drops at any other time.</div>
+        </div>
+        <div class="pb lo" data-p="4" hidden>
+          <div class="pb-head"><span class="pn">4</span><h3>The unmapped point shows the wrong time and no value</h3><span class="sevchip">Low</span></div>
+          <p class="pb-one">The sensor sent <code>firmware_temp = 41</code> on 27 Oct at 11:05. "Refused readings" lists it at 30 Oct 10:36, when the home was created, with no value.</p>
+          <div class="cmp">
+            <div class="shown"><div class="k">The page shows</div><div class="v">30 Oct 10:36 · no value</div><div class="s">"Unmapped point: reported, not stored"</div></div>
+            <div class="real"><div class="k">The device sent</div><div class="v">27 Oct 11:05 · 41</div><div class="s">a single reading</div></div>
+          </div>
+          <p class="why"><b>Why:</b> <code>src/core/channels.js:172</code> records each unmapped point with the time it was refused (<code>nowSec()</code>) and a null value. That's deliberate, to keep one row per point instead of flooding, but the time looks like the reading's time.</p>
+          <div class="fixrow"><b>Fix:</b> keep one row per point, but store the first reading's time and value, or label the column "refused at" for this reason.</div>
+        </div>
+        <div class="pb lo" data-p="5" hidden>
+          <div class="pb-head"><span class="pn">5</span><h3>The heat gap is drawn as a full-height block</h3><span class="sevchip">Low</span></div>
+          <p class="pb-one">The 6.144 kWh of the 100-minute gap is drawn as one bar. It's more than 11 times the tallest normal bar, so it's cut off at the top of the chart and looks like 100 minutes of maximum output.</p>
+          <div class="cmp">
+            <div class="shown"><div class="k">The chart draws</div><div class="v">a full-height bar</div><div class="s">10:15–11:55; the tallest normal bar is 0.542 kWh</div></div>
+            <div class="real"><div class="k">On the same scale it is</div><div class="v">0.307 kWh per 5 min</div><div class="s">6.144 ÷ 20, close to the usual 0.43</div></div>
+          </div>
+          <p class="why"><b>Why:</b> <code>counterEnergyChart</code> sets each bar's height from the period's total kWh. A 5-minute bar and a 100-minute bar are drawn on the same scale, and the scale leaves gap bars out.</p>
+          <div class="fixrow"><b>Fix:</b> draw a gap bar's height as its average per 5 minutes (value ÷ number of 5-minute steps), hatched. Keep the total in the tooltip as it is now.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 ─ Check -->
+  <section id="check" role="tabpanel" aria-labelledby="t-check" hidden>
+    <div class="card">
+      <h2>Check it yourself</h2>
+      <p class="sub">Run these in a terminal in the project folder. They only read: <code>-readonly</code> means nothing is changed. Home 2 is the synthetic home in this database. The dates come out in UTC, which is the same as UK time until the clocks go forward in March.</p>
+      <div class="checks" id="checks"></div>
+      <p class="small" style="margin-top:18px">Code behind the page: <code>src/core/synthetic-iot.js</code> (the generator and its faults), <code>src/core/channels.js</code> (ingest, counters, refusals), <code>src/core/devices-view.js</code> (what the page reads), <code>public/js/devices-view.js</code> (cards, charts and notes).</p>
+    </div>
+  </section>
+</main>
+<button class="theme" id="theme" type="button" aria-label="Switch light or dark theme">◐ Theme</button>
+
+<script>
+// Stored data for 29 Oct, one character per five-minute reading (00:00 first): 1 on, 0 off, c charging, d discharging, - no reading.
+const STRIP = {"plug":"000000000000000000000000000000000000000000000000000000000000000000000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000111110000000000000000000","hp":"000000000000000000000000000000000000000000000000000000000000000000000000111111111111111111111111111111000000111111111111111111111111111111000000111111111111111111111111111111000000111111111111111111111111111111000000111111111111111111111111111111000000111111111111111111000000000000000000","ev":"111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000111111111111","bat":"000000cccccccccccccccccccccccccccccccccccc000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd000000000000","temp":"111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111------------------111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111","heat":"1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111-------------------1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"};
+// Energy per day from the stored periods (kWh). Partial days are the first and last of the history.
+const DAYS = [
+  { d: '27 Oct', span: '10:05–24:00', full: false, plug: 9.406, hpE: 15.382, hpH: 51.56, ev: 7.732, batIn: 0, batOut: 2.833 },
+  { d: '28 Oct', span: 'full day', full: true, plug: 12.711, hpE: 22.044, hpH: 72.495, ev: 28.57, batIn: 8.667, batOut: 5.928 },
+  { d: '29 Oct', span: 'full day', full: true, plug: 12.848, hpE: 22.36, hpH: 72.929, ev: 28.581, batIn: 6.0, batOut: 5.838 },
+  { d: '30 Oct', span: '00:00–10:05', full: false, plug: 3.339, hpE: 6.677, hpH: 20.779, ev: 20.841, batIn: 5.833, batOut: 0 },
+];
+// What a full day should be, from the formula alone: 85 on-steps × 1.8 kW × 5/60 h, and 48 steps × ~7.15 kW × 5/60 h.
+const GUESS = { plug: 12.75, ev: 28.6 };
+const CARD = [
+  ['Smart plug', 'Energy counter', '3.339 kWh', '3.339 kWh'], ['Smart plug', 'Last period', '0.145 kWh', '0.145 kWh'], ['Smart plug', 'Power', '1741 W', '1741 W'], ['Smart plug', 'Relay', 'on', 'on'],
+  ['Heat pump', 'Electricity counter', '3266.599 kWh', '3266.599 kWh'], ['Heat pump', 'Heat counter', '10018.213 kWh', '10018.213 kWh'], ['Heat pump', 'Flow temperature', '37.524 °C', '37.524 °C'],
+  ['Heat pump', 'Return temperature', '32.233 °C', '32.233 °C'], ['Heat pump', 'Heating', 'on', 'on'],
+  ['EV charger', 'Energy counter', '495.724 kWh', '495.724 kWh'], ['EV charger', 'Power', '0 W', '0 W'], ['EV charger', 'Plugged in', 'no', 'no'],
+  ['Battery', 'Charge level', '99.003 %', '99.003 %'], ['Battery', 'Charging power', '0 W', '0 W'], ['Room sensor', 'Temperature', '19.437 °C', '19.437 °C'],
+];
+const PROBLEMS = [
+  ['md', 'The battery\'s discharge never shows as power', '5.8 kWh a night'], ['md', 'The battery\'s settings don\'t match how it behaves', 'reserve 4% vs 12%'],
+  ['lo', 'The plug\'s normal midnight reset is called a "Restart"', '3 of 4'], ['lo', 'The unmapped point shows the wrong time and no value', '3 days off'],
+  ['lo', 'The heat gap is drawn as a full-height block', '11× too tall'],
+];
+const SQL = (where) => `JOIN series se ON se.id = X.series_id JOIN metric m ON m.id = se.metric_id JOIN device d ON se.subject_kind = 'device' AND se.subject_id = CAST(d.id AS TEXT) WHERE d.site_id = 2 AND X.superseded_at IS NULL${where}`;
+const COUNTERS = "m.code IN ('plug_kwh','heatpump_elec_kwh','heat_output_kwh','ev_delivered_kwh')";
+const CHECKS = [
+  ['How many readings each channel holds', `sqlite3 -readonly data/core.db "SELECT m.code, COUNT(*) FROM reading X ${SQL(" AND m.code NOT LIKE 'ctl_%'")} GROUP BY m.code;"`,
+    '<b>865</b> for 11 channels; <b>864</b> for <code>plug_counter_kwh</code> (one refused), <b>846</b> for <code>heat_output_counter_kwh</code> (19 in the gap), <b>847</b> for <code>indoor_temp_c</code> (18 in the gap).'],
+  ['The refused readings', `sqlite3 -readonly data/core.db "SELECT point, datetime(ts, 'unixepoch'), value, reason FROM channel_reject WHERE site_id = 2;"`,
+    '<b>2 rows</b>: <code>energy_total</code> 2026-10-29 21:00, 2.031, <code>counter_backwards</code>; and <code>firmware_temp</code> at the time the home was made, no value, <code>unmapped_point</code>.'],
+  ['The periods that aren\'t a plain 5 minutes', `sqlite3 -readonly data/core.db "SELECT m.code, datetime(X.start_ts, 'unixepoch'), datetime(X.end_ts, 'unixepoch'), round(X.value, 3), CASE WHEN X.quality & 16 THEN 'partial' WHEN X.quality & 8 THEN 'estimated' ELSE 'measured' END FROM interval_fact X ${SQL(` AND ${COUNTERS} AND (X.quality & 24 OR X.end_ts - X.start_ts > 300)`)};"`,
+    '<b>6 rows</b>: the heat gap 10:15–11:55, 6.144, estimated; the plug at 23:55–00:00 on three nights, 0.0, partial; 14:00–14:05, 0.152, partial; and 20:55–21:05, 0.302, measured.'],
+  ['Energy per day, per device', `sqlite3 -readonly data/core.db "SELECT date(X.end_ts - 1, 'unixepoch') day, m.code, round(SUM(X.value), 3) FROM interval_fact X ${SQL(` AND ${COUNTERS}`)} GROUP BY day, m.code;"`,
+    'For 29 Oct: EV <b>28.581</b>, heat <b>72.929</b>, heat pump electricity <b>22.36</b>, plug <b>12.848</b>. The same numbers as "Energy per day".'],
+  ['What the page receives for a device', 'curl -s "http://localhost:4100/api/sites/2/devices/7?hours=72" | python3 -c "import json,sys; d=json.load(sys.stdin); print([(r[\'point\'], r[\'reason\']) for r in d[\'rejects\']], len(d[\'markers\'][\'resets\']))"',
+    'With the server running: <b>[(\'energy_total\', \'counter_backwards\')] 4</b>, meaning the one refused reading and the four restart markers of problem 3. Device 7 is the plug in this database.'],
+];
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Tabs
+const tabs = [...document.querySelectorAll('.tab')];
+function go(id) {
+  for (const t of tabs) { const on = t.getAttribute('aria-controls') === id; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute('aria-controls')).hidden = !on; }
+  window.scrollTo({ top: Math.min(window.scrollY, $('.tabs').offsetTop), behavior: 'auto' });
+}
+tabs.forEach((t, i) => {
+  t.addEventListener('click', () => go(t.getAttribute('aria-controls')));
+  t.addEventListener('keydown', (e) => { const k = { ArrowRight: 1, ArrowLeft: -1 }[e.key]; if (k) { const n = tabs[(i + k + tabs.length) % tabs.length]; n.focus(); go(n.getAttribute('aria-controls')); } });
+});
+document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
+
+// Day strip
+const ROWS = [
+  ['Smart plug', 'relay on', 'plug', (c) => (c === '1' ? 'on' : ''), [[169, 'Restart at 14:05'], [252, 'Refused reading at 21:00']]],
+  ['Heat pump', 'running', 'hp', (c) => (c === '1' ? 'on' : ''), []],
+  ['Heat counter', 'readings received', 'heat', (c) => (c === '-' ? 'miss' : 'have'), [], '--hp'],
+  ['EV charger', 'charging', 'ev', (c) => (c === '1' ? 'on' : ''), []],
+  ['Battery', 'charging · discharging', 'bat', (c) => (c === 'c' ? 'on' : c === 'd' ? 'dis' : ''), []],
+  ['Room sensor', 'readings received', 'temp', (c) => (c === '-' ? 'miss' : 'have'), []],
+];
+const color = { plug: '--plug', hp: '--hp', heat: '--hp', ev: '--ev', bat: '--bat', temp: '--temp' };
+$('#strip').innerHTML = ROWS.map(([lab, sub, key, cls, marks]) => `<div class="lab">${lab}<small>${sub}</small></div>
+  <div class="row" style="--c:var(${color[key]})">${[...STRIP[key]].map((c) => `<i class="${cls(c)}"></i>`).join('')}${marks.map(([i, t]) => `<span class="mk" style="left:calc(${(i / 288) * 100}% - 1px)" title="${esc(t)}"></span>`).join('')}</div>`).join('')
+  + `<div class="sp"></div><div class="hours">${['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'].map((h) => `<span>${h}</span>`).join('')}</div>`;
+
+// Energy per day
+const BARS = [['Smart plug', 'plug', '--plug', 'plug'], ['Heat pump, electricity', 'hpE', '--hp'], ['Heat pump, heat out', 'hpH', '--hp'], ['EV charger', 'ev', '--ev', 'ev']];
+const full = DAYS.filter((d) => d.full);
+const maxOf = (k) => Math.max(...DAYS.map((d) => d[k]));
+$('#days').innerHTML = BARS.map(([lab, k, c, g]) => `<p style="margin:18px 0 8px;font-weight:600">${lab}${g ? ` <span class="small">· hand estimate ${GUESS[g]} kWh a full day</span>` : ''}</p>
+  <div class="hb">${DAYS.map((d) => `<span>${d.d} <span class="small">${d.span}</span></span><span class="track"><span class="t" style="--c:var(${c});width:${(d[k] / maxOf(k)) * 100}%;opacity:${d.full ? 1 : 0.45}"></span>${g ? `<span class="guess" style="left:${(GUESS[g] / maxOf(k)) * 100}%"></span>` : ''}</span><span class="v">${d[k].toFixed(3)}</span>`).join('')}</div>`).join('')
+  + `<p class="small" style="margin-top:14px">Heat pump COP (heat out ÷ electricity in) on the full days: ${full.map((d) => `${d.d} ${(d.hpH / d.hpE).toFixed(2)}`).join(', ')}. The formula gives 3.1 at 7 °C outside, and the days here are about 8 °C.</p>`;
+$('#dtab').innerHTML = `<thead><tr><th>Day</th><th>Plug</th><th>Heat pump in</th><th>Heat out</th><th>COP</th><th>EV</th><th>Battery in</th><th>Battery out</th></tr></thead><tbody>${DAYS.map((d) => `<tr class="${d.full ? '' : 'part'}"><td>${d.d}, ${d.span}</td><td>${d.plug.toFixed(3)}</td><td>${d.hpE.toFixed(3)}</td><td>${d.hpH.toFixed(3)}</td><td>${(d.hpH / d.hpE).toFixed(2)}</td><td>${d.ev.toFixed(3)}</td><td>${d.batIn.toFixed(3)}</td><td>${d.batOut.toFixed(3)}</td></tr>`).join('')}</tbody>`
+  + '<tfoot><tr><td colspan="8" class="txt">kWh. Battery in is the charging power the battery sent. Battery out is worked out from the generator\'s formula, because the battery doesn\'t send it (problem 1).</td></tr></tfoot>';
+
+// Card values
+$('#ctab').innerHTML = `<thead><tr><th>Device</th><th style="text-align:left">Value</th><th>Card shows</th><th>Formula gives</th><th>Same</th></tr></thead><tbody>${CARD.map(([d, v, s, e]) => `<tr><td>${d}</td><td class="txt">${v}</td><td>${s}</td><td>${e}</td><td class="ok">✓</td></tr>`).join('')}</tbody>`;
+
+// Problems
+$('#plist').innerHTML = PROBLEMS.map(([sev, t, m], i) => `<button class="pr ${sev}" data-p="${i + 1}" aria-pressed="${i === 0}"><span class="pn">${i + 1}</span><span>${esc(t)}</span><span class="m">${esc(m)}</span></button>`).join('');
+document.querySelectorAll('.pr').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('.pr').forEach((x) => x.setAttribute('aria-pressed', x === b));
+  document.querySelectorAll('.pb').forEach((p) => { p.hidden = p.dataset.p !== b.dataset.p; });
+}));
+
+// Checks
+$('#checks').innerHTML = CHECKS.map(([t, q, a], i) => `<div class="chk"><h3><span class="num">${i + 1}</span>${esc(t)}</h3><code class="q">${esc(q)}</code><div class="ans">You should get: ${a}</div></div>`).join('');
+
+// Theme
+$('#theme').addEventListener('click', () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  root.dataset.theme = dark ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

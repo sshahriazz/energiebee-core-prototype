@@ -61,6 +61,7 @@ import { dayBounds, localDate, addDays } from '../core/time.js';
 import { envCredentials, SERVICE_CREDENTIALS } from '../core/providers.js';
 import { assertOwner } from './contract.js';
 import { tariffKindOf, nativePeriodOf } from './octopus.js';
+import { linkSupplier, tariffscannerSupplierOf } from '../core/suppliers.js';
 
 export const PROVIDER = 'tariffscanner';
 export const DEFAULT_BASE_URL = 'https://api.tariffscan.futureenergy.associates';
@@ -510,6 +511,9 @@ export function storeMapped(mapped, { rawId = null, recordedAt = Date.now() } = 
   tx(() => {
     for (const { tariff, rows, windows } of mapped.tariffs.values()) {
       const u = upsertTariffRow(tariff);
+      // The supplier as its own row (delta 080), so the tariff picker lists suppliers alike for every source.
+      const sup = tariffscannerSupplierOf(tariff.name);
+      if (sup) linkSupplier(u.row.id, { provider: PROVIDER, country: tariff.country ?? 'GB', externalId: sup, name: sup });
       out.tariffs_created += u.created;
       out.tariffs_updated += u.updated;
       out.rate_rows += putCatalogueRates(u.row.id, rows, { rawId, recordedAt });

@@ -15,7 +15,7 @@ const HOUR = 3600; const DAY = 86400;
 function feedsFor(site, slotS) {
   const perHalfHour = Math.max(1, slotS / 1800);
   const sid = (metric, source) => seriesId('site', site.id, metric, source);
-  const dev = (kind) => db.prepare("SELECT * FROM device WHERE site_id = ? AND kind = ? AND provider != 'env' AND retired_at IS NULL").get(site.id, kind);
+  const dev = (kind) => db.prepare("SELECT * FROM device WHERE site_id = ? AND kind = ? AND provider NOT IN ('env', 'picker', 'tounify') AND retired_at IS NULL").get(site.id, kind);
   const out = [];
   // Where each feed comes from, in words: a demo home's data is generated, so it never names a
   // provider; a price names the provider of the tariffs agreed (Octopus for the live home).

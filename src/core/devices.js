@@ -79,12 +79,13 @@ export function retireDevice(deviceId) {
 }
 
 // Replace a meter's current agreements with a new list: the old ones are superseded, not deleted.
+// rows: [{ tariffId, from, to?, paymentMethod? }] (paymentMethod: how the home pays, delta 080; null = not stated).
 export function supersedeAgreements(siteId, deviceId, rows) {
   const now = Date.now();
   tx(() => {
     db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
-    const ins = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, ?, ?)');
-    for (const r of rows) ins.run(siteId, deviceId, r.tariffId, r.from, r.to ?? null, now);
+    const ins = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const r of rows) ins.run(siteId, deviceId, r.tariffId, r.from, r.to ?? null, now, r.paymentMethod ?? null);
   });
 }
 

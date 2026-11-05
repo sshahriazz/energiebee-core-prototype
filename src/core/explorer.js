@@ -864,7 +864,7 @@ function loadCx(site, from, to, { slot = null } = {}) {
   const readings = ids.length ? db.prepare(`SELECT series_id, ts, value, raw_id FROM reading WHERE series_id IN (${ids.map(() => '?').join(',')}) AND ts >= ? AND ts < ? AND superseded_at IS NULL ORDER BY ts`).all(...ids, a - 300, b) : [];
   const intervals = (id, pad = 0) => (id == null ? [] : db.prepare('SELECT series_id, start_ts, end_ts, value, raw_id, recorded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ? AND start_ts >= ? AND superseded_at IS NULL ORDER BY start_ts')
     .all(id, a - pad, b + pad, a - pad - 2 * 86400));
-  const devices = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'").all(site.id);
+  const devices = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider NOT IN ('env', 'picker', 'tounify')").all(site.id);
   const meterId = (kind, metric) => { const d = devices.find((x) => x.kind === kind); const src = bindingsFor(site.id, 'meter_energy')[0]?.source; return d && src ? findSeries('device', d.id, metric, src) : null; };
   const gasDev = devices.find((d) => d.kind === 'meter_gas');
   const gasAttrs = gasDev ? (() => { try { return JSON.parse(gasDev.attrs || '{}'); } catch { return {}; } })() : {};

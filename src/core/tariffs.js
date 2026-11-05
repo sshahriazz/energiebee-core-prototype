@@ -201,9 +201,9 @@ export function storeWindows(tariffId, {
 
 // A meter on a tariff over [validFrom, validTo). The database refuses a tariff whose currency is
 // not the home's (trigger agreement_same_currency_insert) and an overlap with a current agreement.
-export function agreeTariff({ siteId, deviceId, tariffId, validFrom, validTo = null, recordedAt = Date.now() }) {
-  db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(siteId, deviceId, tariffId, validFrom, validTo, recordedAt);
+export function agreeTariff({ siteId, deviceId, tariffId, validFrom, validTo = null, recordedAt = Date.now(), paymentMethod = null }) {
+  db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(siteId, deviceId, tariffId, validFrom, validTo, recordedAt, paymentMethod);
 }
 
 // A meter or other device of a home, known from recordedAt (ms).

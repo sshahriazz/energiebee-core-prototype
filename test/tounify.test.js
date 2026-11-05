@@ -707,3 +707,65 @@ test('nothing in this file reached the network, and no token was written to the 
     for (const f of fs.readdirSync(path.join(rawDir, day))) assert.ok(!fs.readFileSync(path.join(rawDir, day, f), 'utf8').includes(TU.TEST_PREFIX.slice(0, -1)), f);
   }
 });
+
+// ───────────── The tariff picker on tounify (src/core/tariff-picker.js): the same interface as GB ─────────────
+
+test('tariff picker, France: registered without a tariff, suppliers and tariffs listed once a week, the choice priced', async () => {
+  fresh();
+  const PK = await import('../src/core/tariff-picker.js');
+  const s = createSite({ name: 'Paris picker', country: 'FR', postcode: '75008' });
+  const row = () => db.prepare('SELECT * FROM site WHERE id = ?').get(s.id);
+  // Not switched on (no TOUNIFY_DEV, no token): said plainly, nothing called.
+  await assert.rejects(PK.listSuppliers(row()), (e) => e.status === 503 && /licence is unconfirmed|TOUNIFY_API_KEY/.test(e.message));
+  assert.equal(api.calls.length, 0);
+  await withEnv(DEV, async () => {
+    const sup = await PK.listSuppliers(row());
+    assert.equal(sup.source, 'tounify');
+    // One registration with no tariff, then the companies under it.
+    assert.equal(api.of(/\/connections$/).length, 1);
+    assert.equal(api.of(/\/connections$/)[0].body.tariffs, undefined);
+    assert.equal(api.of(/\/consumption\/companies$/).length, 1);
+    const edf = sup.suppliers.find((x) => /Electricite de France/.test(x.name));
+    assert.ok(edf, 'EDF listed under its catalogue name');
+    // The home is registered but has no tariff: the daily sync says so and calls nothing.
+    const calls = api.calls.length;
+    assert.match((await TU.syncTounifyHome({ site: row(), client: client(DEV) })).skipped, /no tariff chosen yet/);
+    assert.equal(api.calls.length, calls);
+    const t1 = await PK.listTariffs(row(), edf.code);
+    const hphc = t1.tariffs.find((t) => t.id === 'EDFTRVHPHC');
+    assert.equal(hphc.kind, 'two_rate');
+    assert.equal(hphc.prices_known, false, 'tounify prices a tariff only for a home on it');
+    assert.deepEqual(hphc.questions.map((q) => q.field), ['contracted_kva', 'off_peak_hours']);
+    // Asked again within the week: from our copy, no call.
+    const before = api.calls.length;
+    await PK.listSuppliers(row());
+    await PK.listTariffs(row(), edf.code);
+    assert.equal(api.calls.length, before);
+    // The subscribed power is required for France.
+    await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC' }), /Subscribed power \(kVA\): an answer is required/);
+    await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 7 }), /must be one of 3, 6, 9/);
+    const r = await PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '06:00' } });
+    assert.equal(r.source, 'tounify');
+    assert.equal(r.tariff, 'TOUNIFY-FR-EDFTRVHPHC');
+    // Sent upstream: the tariff, the power and the off-peak hours; then the home's own prices were read.
+    const patch = api.of(/\/connections\/eb-site-\d+$/).filter((c) => c.method === 'PATCH').at(-1);
+    assert.equal(patch.body.tariffs.consumption, 'EDFTRVHPHC');
+    assert.equal(patch.body.capacity.contracted_kva, 6);
+    assert.deepEqual(patch.body.metering.off_peak_hours, { all_year: [{ from: '22:00', to: '06:00' }] });
+    assert.ok(r.prices.unit_rows > 0);
+    assert.equal(row().contracted_kva, 6);
+    // Stored the same way as a GB choice: supplier on the tariff, the meter on it, the meter's own hours.
+    const t = db.prepare("SELECT t.*, sp.name AS supplier FROM tariff t JOIN supplier sp ON sp.id = t.supplier_id WHERE t.tariff_code = 'TOUNIFY-FR-EDFTRVHPHC'").get();
+    assert.match(t.supplier, /Electricite de France/);
+    const c = PK.tariffChoice(row());
+    assert.equal(c.current.tariff, 'TOUNIFY-FR-EDFTRVHPHC');
+    assert.equal(c.current.via, 'tounify');
+    assert.equal(c.current.chosen, true);
+    assert.deepEqual(c.current.hours, [{ from: '22:00', to: '06:00' }]);
+    // Now that the home holds them, the list shows this tariff's prices.
+    const t2 = await PK.listTariffs(row(), edf.code);
+    const shown = t2.tariffs.find((x) => x.id === 'EDFTRVHPHC');
+    assert.equal(shown.prices_known, true);
+    assert.deepEqual(shown.options[0].unit.map((u) => u.label), ['Peak', 'Off-peak']);
+  });
+});

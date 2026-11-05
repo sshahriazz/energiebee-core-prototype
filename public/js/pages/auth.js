@@ -29,7 +29,7 @@ function onSubmit(form, fn, errId = 'form-error') {
 
 // ───────────── Sign in (/login) and create an account (/signup) ─────────────
 
-const steps = (n) => `<div class="steps" aria-label="Steps">${['Account', 'Postcode', 'Connect providers'].map((t, i) => `<span ${i === n ? 'aria-current="step"' : ''}>${i + 1}. ${t}</span>`).join('')}</div>`;
+const steps = (n) => `<div class="steps" aria-label="Steps">${['Account', 'Postcode', 'Supplier & tariff', 'Connect accounts'].map((t, i) => `<span ${i === n ? 'aria-current="step"' : ''}>${i + 1}. ${t}</span>`).join('')}</div>`;
 
 // A centred card: the bee, a heading, the form, and a link to the other page.
 const authCard = ({ heading, sub, form, alt = '', top = '' }) => `<div class="auth-shell">
@@ -126,10 +126,17 @@ const statusBadge = (s) => { const [cls, txt] = STATUS[s] || ['info', s || 'not 
 const ROLE_ORDER = ['inverter', 'meter'];
 const rank = (c) => { const i = ROLE_ORDER.indexOf(c.role); return i < 0 ? ROLE_ORDER.length : i; };
 const skipped = new Set();   // skipped on this visit: asked again on the next one
+// The tariff step (src/core/tariff-picker.js): the supplier picked, a change asked for from the summary, and a
+// provider asked for out of turn (Octopus, picked as the supplier: its login gives the exact tariff).
+const tariffUi = { supplier: null, change: false, force: null };
+const TARIFF = { adapter: 'tariff', name: 'Your tariff', role_label: 'electricity tariff' };
+const minor = (v, cur) => (v == null ? '' : `${(+v).toFixed(2)}${cur === 'EUR' ? 'c' : 'p'}`);
+const KIND_LABEL = { one_price: 'one price', two_rate: 'day / night', dynamic: 'price changes through the day' };
 
 async function providersStep(siteId, created = null, flash = '') {
   let p;
-  try { p = await api(`/api/sites/${siteId}/providers`); } catch (err) {
+  let choice = null;
+  try { [p, choice] = await Promise.all([api(`/api/sites/${siteId}/providers`), api(`/api/sites/${siteId}/tariff-choice`).catch(() => null)]); } catch (err) {
     content().innerHTML = `<div class="onb-flow"><section class="card empty"><h2>Home not found</h2><p>${esc(err.message)}</p><p><a class="btn" href="/onboarding">Add a home</a></p></section></div>`;
     return;
   }
@@ -137,8 +144,21 @@ async function providersStep(siteId, created = null, flash = '') {
   const where = s ? `<p class="onb-where">${esc(s.name)}${s.name.includes(s.postcode) ? '' : ` · ${esc(s.postcode)}`}${s.gsp_region ? ` · price region ${esc(s.gsp_region)}` : ''} · ${esc(s.currency)}</p>` : '';
   const list = p.connect.filter((c) => c.available).sort((a, b) => rank(a) - rank(b));
   const soon = p.connect.filter((c) => !c.available);
-  const current = list.find((c) => !c.connected && !skipped.has(c.adapter)) || null;
-  const next = current ? list.slice(list.indexOf(current) + 1).find((c) => !c.connected && !skipped.has(c.adapter)) : null;
+  // Right after the postcode: who supplies the home's electricity and on which tariff, from the list its country's
+  // source holds for its region (src/core/tariff-picker.js). Then what that choice still needs: picking Octopus asks
+  // for the Octopus login (exact tariff and smart-meter readings); any other supplier's tariff gives the prices, and
+  // the inverter is asked for next because it measures what the home uses. A tariff held already (an Octopus account
+  // connected, or one picked) answers the step; a picked tariff means the meter account is not asked for (it stays
+  // in the summary, to connect any time).
+  const pickerOn = !!(choice && (choice.available || choice.current?.chosen));
+  const meterConnected = list.some((c) => c.role === 'meter' && c.connected);
+  const tariffDone = !tariffUi.change && (!!choice?.current || meterConnected);
+  const flow = [...(pickerOn ? [{ ...TARIFF, connected: tariffDone }] : []),
+    ...list.filter((c) => c.role === 'inverter'),
+    ...list.filter((c) => c.role !== 'inverter' && !(c.role === 'meter' && choice?.current?.chosen && !c.connected))];
+  const forced = tariffUi.force ? list.find((c) => c.adapter === tariffUi.force) : null;
+  const current = forced || flow.find((c) => !c.connected && !skipped.has(c.adapter)) || null;
+  const next = current ? flow.slice(flow.indexOf(current) + 1).find((c) => !c.connected && !skipped.has(c.adapter)) : null;
   // The account connected, so a wrong one is easy to spot: the login, the plant or account it reads.
   const accountList = (c) => {
     const a = c.account || {};
@@ -160,17 +180,21 @@ async function providersStep(siteId, created = null, flash = '') {
     ${p.secrets_ready ? '' : '<div class="banner bad" role="status"><span aria-hidden="true">⚠</span><div><b>Logins cannot be stored on this server yet:</b> SECRET_KEY is not set in .env.</div></div>'}
     ${flash ? `<p class="form-ok onb-flash" role="status">${flash}</p>` : ''}`;
   // Where the user is: each provider asked for, done, now, skipped or still to come.
-  const progress = list.length > 1 ? `<ol class="onb-progress">${list.map((c, i) => {
+  const progress = flow.length > 1 ? `<ol class="onb-progress">${flow.map((c, i) => {
     const st = c.connected ? 'done' : c === current ? 'now' : skipped.has(c.adapter) ? 'skipped' : 'todo';
-    return `<li class="${st}"><span class="onb-dot" aria-hidden="true">${st === 'done' ? '✓' : i + 1}</span><span>${esc(c.name)}<small>${st === 'done' ? 'connected' : st === 'skipped' ? 'skipped' : esc(c.role_label)}</small></span></li>`;
+    return `<li class="${st}"><span class="onb-dot" aria-hidden="true">${st === 'done' ? '✓' : i + 1}</span><span>${esc(c.name)}<small>${st === 'done' ? (c === TARIFF || c.adapter === 'tariff' ? 'set' : 'connected') : st === 'skipped' ? 'skipped' : esc(c.role_label)}</small></span></li>`;
   }).join('<li class="onb-line" aria-hidden="true"></li>')}</ol>` : '';
 
+  if (current?.adapter === 'tariff') return tariffStep(siteId, created, { banners, progress, where, next, choice, octopus: list.find((c) => c.adapter === 'octopus') });
+  // A tariff picked from a list gives the prices; the inverter measures what the home uses: both make its costs.
+  const why = current?.role === 'inverter' && choice?.current?.chosen
+    ? `<p class="onb-why">Your tariff (${esc(choice.current.supplier?.name ?? choice.current.name)}) gives the prices. ${esc(current.name)} measures how much you use, so we can work out your costs.</p>` : '';
   if (current) {
-    content().innerHTML = `<div class="onb-flow">${steps(2)}${banners}${progress}
+    content().innerHTML = `<div class="onb-flow">${steps(forced ? 2 : 3)}${banners}${progress}
       <section class="card onb-card">
-        <div class="onb-card-head"><span class="badge">${esc(current.role_label)}</span><h2>Connect ${esc(current.name)}</h2><p>${esc(current.what)}</p>${where}</div>
+        <div class="onb-card-head"><span class="badge">${esc(current.role_label)}</span><h2>Connect ${esc(current.name)}</h2><p>${esc(current.what)}</p>${why}${where}</div>
         ${form(current)}
-        <p class="onb-skip"><button type="button" class="link-btn" data-skip="${esc(current.adapter)}">Skip for now${next ? ` and connect ${esc(next.name)}` : ''}</button></p>
+        <p class="onb-skip"><button type="button" class="link-btn" data-skip="${esc(current.adapter)}">${forced ? 'Back to the tariff list' : `Skip for now${next ? ` and ${next.adapter === 'tariff' ? 'choose your tariff' : `connect ${esc(next.name)}`}` : ''}`}</button></p>
       </section>
       <p class="auth-note">Your login is checked with ${esc(current.name)}, then stored encrypted. It is never shown again.</p>
     </div>`;
@@ -185,18 +209,28 @@ async function providersStep(siteId, created = null, flash = '') {
       : `<article class="prov-row off"><div class="prov-row-head"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3><span class="badge warn">not connected</span></div>
         <p class="muted">${esc(c.what)}</p><div class="prov-actions"><button class="btn" type="button" data-connect="${esc(c.adapter)}">Connect ${esc(c.name)}</button></div></article>`;
     const soonRow = (c) => `<article class="prov-row off"><div class="prov-row-head"><h3>${esc(c.name)} <span class="badge">${esc(c.role_label)}</span></h3><span class="badge">coming soon</span></div><p class="muted">${esc(c.what)}</p></article>`;
-    content().innerHTML = `<div class="onb-flow">${steps(2)}${banners}${progress}
+    // A tariff with nothing to measure the home's use: prices but no costs, said plainly.
+    const usage = list.some((c) => (c.role === 'inverter' || c.role === 'meter') && c.connected);
+    const noUsage = choice?.current && !usage
+      ? '<div class="banner warn" role="status"><span aria-hidden="true">⚠</span><div><b>Your tariff is set, but nothing measures your use yet.</b> Connect your inverter (or your smart meter account) to see your costs.</div></div>' : '';
+    content().innerHTML = `<div class="onb-flow">${steps(3)}${banners}${noUsage}${progress}
       <section class="card onb-card">
         <div class="onb-card-head">${any ? '<span class="onb-check" aria-hidden="true">✓</span>' : ''}<h2>${any ? 'Your home is connected' : 'No provider connected yet'}</h2>
           <p>${any ? 'Your data is loading: the first sync takes a few minutes.' : 'Connect one to see your energy, or come back to it later from "Manage providers".'}</p>${where}</div>
-        <div class="prov-rows">${list.map(row).join('')}${soon.map(soonRow).join('')}${list.length || soon.length ? '' : '<p class="muted">No provider to connect in this market yet.</p>'}</div>
+        <div class="prov-rows">${list.filter((c) => c.role === 'inverter').map(row).join('')}${tariffRow(choice, pickerOn)}${list.filter((c) => c.role !== 'inverter').map(row).join('')}${soon.map(soonRow).join('')}${list.length || soon.length ? '' : '<p class="muted">No provider to connect in this market yet.</p>'}</div>
         <a class="btn btn-primary onb-done" href="/my?site=${siteId}">${any ? 'See my energy' : 'Go to my energy'}</a>
       </section>
       ${p.automatic.length ? `<p class="auth-note">Also running for your area, with no login: ${p.automatic.map((a) => esc(a.label)).join(', ')}.</p>` : ''}
     </div>`;
   }
 
-  document.querySelectorAll('button[data-skip]').forEach((b) => b.addEventListener('click', () => { skipped.add(b.dataset.skip); providersStep(siteId, created); }));
+  document.querySelectorAll('button[data-skip]').forEach((b) => b.addEventListener('click', () => {
+    if (tariffUi.force === b.dataset.skip) tariffUi.force = null; else skipped.add(b.dataset.skip);
+    providersStep(siteId, created);
+  }));
+  document.querySelectorAll('button[data-tariff]').forEach((b) => b.addEventListener('click', () => {
+    Object.assign(tariffUi, { change: true, supplier: null, force: null }); skipped.delete('tariff'); providersStep(siteId, created);
+  }));
   document.querySelectorAll('button[data-connect]').forEach((b) => b.addEventListener('click', () => { skipped.delete(b.dataset.connect); providersStep(siteId, created); }));
   document.querySelectorAll('button[data-disconnect]').forEach((b) => {
     const provider = b.dataset.disconnect;
@@ -240,10 +274,130 @@ async function providersStep(siteId, created = null, flash = '') {
       const r = await api(`/api/sites/${siteId}/providers/${encodeURIComponent(provider)}`, { method: 'POST', body: JSON.stringify({ credentials }) });
       f.reset();
       skipped.delete(provider);
+      if (tariffUi.force === provider) Object.assign(tariffUi, { force: null, supplier: null, change: false });
       await providersStep(siteId, created, `<b>${esc(name)} connected</b>${r.checked?.plantName ? ` (plant "${esc(r.checked.plantName)}")` : ''}${r.replaced ? ', replacing the account connected before (its data is removed)' : ''}. Your data is loading.`);
     }, `err-${provider}`);
   });
   document.querySelector('.onb-card form[data-provider] input')?.focus();
+}
+
+// ───────────── Your tariff: supplier, then tariff (one shape for every country's source) ─────────────
+
+// The summary's tariff row: what the home is on, from a list (change it) or from a meter account (read only).
+function tariffRow(choice, pickerOn) {
+  if (!choice || (!pickerOn && !choice.current)) return '';
+  const c = choice.current;
+  const hours = c?.hours?.length ? ` · cheap rate ${c.hours.map((h) => `${esc(h.from)}–${esc(h.to)}`).join(', ')}` : '';
+  const what = c ? `<p>${c.supplier ? `<b>${esc(c.supplier.name)}</b> · ` : ''}${esc(c.supplier && (c.name || '').startsWith(`${c.supplier.name}: `) ? c.name.slice(c.supplier.name.length + 2) : (c.name || c.tariff))}${hours}</p>
+    <p class="muted"><small>${c.chosen ? `Chosen by you, from ${esc(c.from)}${c.payment_method && c.payment_method !== 'ANY' ? ` · ${esc(c.payment_label || c.payment_method)}` : ''}` : `From your ${esc(c.via)} account`}</small></p>` : '<p class="muted">Without it, your costs cannot be worked out.</p>';
+  return `<article class="prov-row${c ? '' : ' off'}"><div class="prov-row-head"><h3>Your tariff <span class="badge">electricity tariff</span></h3>${c ? '<span class="badge good">set</span>' : '<span class="badge warn">not set</span>'}</div>
+    ${what}${pickerOn ? `<div class="prov-actions"><button class="btn" type="button" data-tariff="1">${c ? 'Change tariff' : 'Choose your tariff'}</button></div>` : ''}</article>`;
+}
+
+async function tariffStep(siteId, created, ctx) {
+  const shell = (body) => `<div class="onb-flow">${steps(2)}${ctx.banners}${ctx.progress}<section class="card onb-card">${body}</section>
+    <p class="auth-note">Prices are the supplier's published prices for your area, before VAT. Change your tariff any time from "Your providers".</p></div>`;
+  const skipLabel = tariffUi.change ? 'Keep my current tariff' : `Skip for now${ctx.next ? ` and connect ${esc(ctx.next.name)}` : ''}`;
+  const skip = `<p class="onb-skip"><button type="button" class="link-btn" id="t-skip">${skipLabel}</button></p>`;
+  const wire = () => {
+    $('t-skip')?.addEventListener('click', () => { Object.assign(tariffUi, { change: false, supplier: null }); skipped.add('tariff'); providersStep(siteId, created); });
+    $('t-back')?.addEventListener('click', () => { tariffUi.supplier = null; tariffStep(siteId, created, ctx); });
+  };
+  content().innerHTML = shell('<div class="onb-card-head"><span class="badge">electricity tariff</span><h2>Who supplies your electricity?</h2><p class="muted">Loading the suppliers in your area…</p></div>');
+
+  // Stage 1: the suppliers in the home's area.
+  if (!tariffUi.supplier) {
+    let r;
+    try { r = await api(`/api/sites/${siteId}/suppliers`); } catch (err) {
+      content().innerHTML = shell(`<div class="onb-card-head"><span class="badge">electricity tariff</span><h2>Who supplies your electricity?</h2>${ctx.where}</div>
+        <div class="banner warn" role="status"><span aria-hidden="true">⚠</span><div>${esc(err.message)}</div></div>${skip}`);
+      return wire();
+    }
+    content().innerHTML = shell(`<div class="onb-card-head"><span class="badge">electricity tariff</span><h2>Who supplies your electricity?</h2>
+        <p>Pick your supplier, then your tariff. Your costs are worked out from its prices.</p>${ctx.where}</div>
+      <div class="form"><label>Search<input id="t-search" type="search" placeholder="Supplier name" autocomplete="off"></label>
+      <div class="sup-list" id="t-sups">${r.suppliers.map((x) => `<button type="button" class="sup-opt" data-sup="${esc(x.code)}" data-name="${esc(x.name.toLowerCase())}">
+        <span>${esc(x.name)}</span>${x.tariffs ? `<small>${x.tariffs} tariff${x.tariffs === 1 ? '' : 's'}</small>` : ''}</button>`).join('')}</div>
+      ${r.suppliers.length ? '' : '<p class="muted">No supplier is listed for your area yet.</p>'}</div>${skip}`);
+    $('t-search').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      document.querySelectorAll('.sup-opt').forEach((b) => { b.hidden = q && !b.dataset.name.includes(q); });
+    });
+    document.querySelectorAll('.sup-opt').forEach((b) => b.addEventListener('click', () => {
+      tariffUi.supplier = { code: b.dataset.sup, name: b.querySelector('span').textContent };
+      tariffStep(siteId, created, ctx);
+    }));
+    $('t-search').focus();
+    return wire();
+  }
+
+  // Stage 2: the supplier's tariffs. Octopus: its own login gives the exact tariff (Agile, Intelligent ...).
+  const sup = tariffUi.supplier;
+  const octo = /^octopus-energy$/.test(sup.code) && ctx.octopus?.available && !ctx.octopus.connected ? ctx.octopus : null;
+  let r;
+  try { r = await api(`/api/sites/${siteId}/suppliers/${encodeURIComponent(sup.code)}/tariffs`); } catch (err) {
+    content().innerHTML = shell(`<div class="onb-card-head"><span class="badge">electricity tariff</span><h2>${esc(sup.name)}</h2></div>
+      <div class="banner warn" role="status"><span aria-hidden="true">⚠</span><div>${esc(err.message)}</div></div>
+      <p class="onb-skip"><button type="button" class="link-btn" id="t-back">← Another supplier</button></p>${skip}`);
+    return wire();
+  }
+  const cur = r.country === 'GB' ? 'GBP' : 'EUR';
+  const priceText = (t, pm) => {
+    const o = t.options.find((x) => x.payment_method === pm) || t.options[0];
+    if (!o || !o.unit.length) return 'price after you choose it';
+    const u = o.unit.map((x) => (o.unit.length > 1 ? `${esc(x.label)} ${minor(x.price, cur)}` : `${minor(x.price, cur)}/kWh`)).join(' · ');
+    return `${u}${o.standing ? ` · ${minor(o.standing.price, cur)}/${o.standing.per}` : ''}`;
+  };
+  content().innerHTML = shell(`<div class="onb-card-head"><span class="badge">electricity tariff</span><h2>Which ${esc(r.supplier.name)} tariff?</h2>
+      <p>${r.tariffs.length} tariff${r.tariffs.length === 1 ? '' : 's'} for your area.</p>${ctx.where}</div>
+    ${octo ? `<div class="banner info" role="status"><span aria-hidden="true">★</span><div><b>With Octopus? Connect your account instead.</b> It gives your exact tariff (including Agile and Intelligent Go) and your smart meter's readings.
+      <div class="prov-actions" style="margin-top:8px"><button class="btn btn-primary" type="button" id="t-octo">Connect my Octopus account</button></div></div></div>` : ''}
+    <form class="form" id="t-form" novalidate>${errorBox('err-tariff')}
+      ${r.tariffs.length > 6 ? '<label>Search<input id="t-filter" type="search" placeholder="Tariff name" autocomplete="off"></label>' : ''}
+      <div class="tariff-list">${r.tariffs.map((t, i) => `<label class="plant-opt tariff-opt" data-name="${esc(t.name.toLowerCase())}">
+        <input type="radio" name="tariff" value="${esc(t.id)}" ${i === 0 && r.tariffs.length === 1 ? 'checked' : ''}>
+        <span><b>${esc(t.name)}</b><small>${esc(KIND_LABEL[t.kind] || t.kind)}${t.variant ? ` · ${esc(t.variant)}` : ''}</small><small class="mono" data-price="${esc(t.id)}">${priceText(t, t.default_payment_method)}</small></span></label>`).join('')}</div>
+      <div id="t-details"></div>
+      <button class="btn btn-primary" type="submit">Save my tariff</button>
+    </form>
+    <p class="onb-skip"><button type="button" class="link-btn" id="t-back">← Another supplier</button></p>${skip}`);
+
+  // The questions of the tariff picked: payment method (where prices differ by it), its hours, the market's own.
+  const details = () => {
+    const id = $('t-form').querySelector('input[name="tariff"]:checked')?.value;
+    const t = r.tariffs.find((x) => x.id === id);
+    if (!t) { $('t-details').innerHTML = ''; return; }
+    const pmSel = t.options.length > 1 ? `<label>How do you pay?<select name="payment_method" id="t-pm">${t.options.map((o) => `<option value="${esc(o.payment_method)}" ${o.payment_method === t.default_payment_method ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>` : '';
+    const q = (f) => t.questions.find((x) => x.field === f);
+    const hq = q('off_peak_hours');
+    const hours = hq ? `<fieldset class="t-hours"><legend>${esc(hq.label)}${hq.required ? '' : ' <small>optional</small>'}</legend>${hq.help ? `<small class="muted">${esc(hq.help)}</small>` : ''}
+      <div class="row"><label>From<input name="h_from" type="time" value="${esc(t.hours?.from ?? '')}" ${hq.required ? 'required' : ''}></label><label>To<input name="h_to" type="time" value="${esc(t.hours?.to ?? '')}" ${hq.required ? 'required' : ''}></label></div></fieldset>` : '';
+    const others = t.questions.filter((x) => x.field !== 'off_peak_hours').map((x) => `<label>${esc(x.label)}${x.required ? '' : ' <small>optional</small>'}${x.help ? ` <small>${esc(x.help)}</small>` : ''}
+      ${x.allowed ? `<select name="${esc(x.field)}" ${x.required ? 'required' : ''}><option value="">Choose…</option>${x.allowed.map((v) => `<option>${esc(v)}</option>`).join('')}</select>` : `<input name="${esc(x.field)}" ${x.required ? 'required' : ''}>`}</label>`).join('');
+    const since = r.source === 'tounify' ? '' : '<label>On this tariff since <small>optional: leave empty to price all the days we hold</small><input name="since" type="date"></label>';
+    $('t-details').innerHTML = `${pmSel}${hours}${others}${since}`;
+    $('t-pm')?.addEventListener('change', (e) => { const el = document.querySelector(`[data-price="${CSS.escape(t.id)}"]`); if (el) el.innerHTML = priceText(t, e.target.value); });
+  };
+  $('t-form').addEventListener('change', (e) => { if (e.target.name === 'tariff') details(); });
+  details();
+  $('t-filter')?.addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('.tariff-opt').forEach((l) => { l.hidden = q && !l.dataset.name.includes(q); });
+  });
+  $('t-octo')?.addEventListener('click', () => { tariffUi.force = 'octopus'; skipped.delete('octopus'); providersStep(siteId, created); });
+  onSubmit($('t-form'), async (b) => {
+    if (!b.tariff) throw new Error('Pick your tariff first');
+    const body = { supplier: sup.code, tariff: b.tariff };
+    if (b.payment_method) body.payment_method = b.payment_method;
+    if (b.h_from || b.h_to) body.hours = { from: b.h_from, to: b.h_to };
+    if (b.since) body.since = b.since;
+    for (const k of ['contracted_kva', 'fuse']) if (b[k]) body[k] = k === 'contracted_kva' ? Number(b[k]) : b[k];
+    const res = await api(`/api/sites/${siteId}/tariff`, { method: 'POST', body: JSON.stringify(body) });
+    Object.assign(tariffUi, { change: false, supplier: null });
+    skipped.delete('tariff');
+    await providersStep(siteId, created, `<b>Tariff saved:</b> ${esc(r.supplier.name)} · ${esc(r.tariffs.find((t) => t.id === b.tariff)?.name ?? b.tariff)}${res.from ? `, priced from ${esc(res.from)}` : ''}.${res.notes?.length ? ` ${esc(res.notes.join('; '))}.` : ''}`);
+  }, 'err-tariff');
+  return wire();
 }
 
 // ───────────── Page ─────────────

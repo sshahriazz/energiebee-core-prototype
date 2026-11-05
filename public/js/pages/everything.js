@@ -21,7 +21,19 @@ function lanesFor(d) {
   const synthetic = !!d.site.is_demo;
   if (synthetic) conn.demo = conn.demo || { status: 'ok' };
   const fresh = (...ps) => { const c = ps.map((p) => conn[p]).find(Boolean); return c?.last_success_at != null ? { at: c.last_success_at, status: c.status, error: c.last_error } : null; };
-  const meterSource = synthetic ? 'Synthetic meter (demo data)' : conn.demo ? 'Demo meter (Octopus-shaped)' : 'Octopus smart meter; inverter clamp until it arrives';
+  // Each lane names where its numbers really come from: a smart-meter account only when one is connected, the
+  // inverter's grid clamp otherwise; the tariff the home is on (picked from a list, or from its account).
+  const viaMeter = all.some((r) => r.import_source === 'meter');
+  const meterSource = synthetic ? 'Synthetic meter (demo data)' : conn.demo ? 'Demo meter (Octopus-shaped)'
+    : conn.octopus ? (viaMeter ? 'Octopus smart meter; inverter clamp until it arrives' : 'Inverter grid clamp (Sunsynk) until the Octopus meter readings arrive')
+      : 'Inverter grid clamp (Sunsynk): no smart meter connected';
+  const t = d.tariff;
+  const tName = t ? (t.name || t.tariff) : null;
+  const short = t ? (t.supplier && tName.startsWith(`${t.supplier.name}: `) ? tName.slice(t.supplier.name.length + 2) : tName) : null;
+  const tariffSource = t
+    ? (t.chosen ? `${t.supplier ? `${t.supplier.name} · ` : ''}${short} (published prices, ${t.via === 'tounify' ? 'tounify' : 'Tariffscanner'})`
+      : `${short} (from your ${t.via === 'env' ? 'settings' : `${t.via} account`})`)
+    : 'No tariff set: costs cannot be worked out';
   return [
     { key: 'solar', label: 'Solar', part: `Panels ${d.site.pv_kwp ? `${d.site.pv_kwp} kWp ` : ''}→ inverter`, source: synthetic ? 'Synthetic inverter (demo data)' : 'Sunsynk 5-min · forecast', h: 58, unit: 'kWh', color: COLORS.solar, fresh: fresh('sunsynk', 'demo'),
       pos: [{ get: (r) => r.solar, color: COLORS.solar }], line: { get: (r) => (r.state === 'forecast' ? null : r.solar_forecast), color: 'var(--text-2)', dash: true } },
@@ -35,9 +47,9 @@ function lanesFor(d) {
       pos: [{ get: (r) => r.solar_to_home, color: COLORS.solar }, { get: (r) => r.battery_to_home, color: COLORS.battery }, { get: (r) => r.grid_to_home, color: COLORS.grid }] },
     (ev || has('ev')) && { key: 'ev', label: 'EV', part: ev ? `${ev.label}${ev.state === 'SMART_CONTROL_NOT_AVAILABLE' ? ' · smart control off' : ''}` : 'Car charging', source: 'Octopus Kraken dispatches', h: 40, unit: 'kWh', color: COLORS.ev, fresh: fresh('octopus', 'demo'),
       pos: [{ get: (r) => r.ev, color: COLORS.ev }], bands: 'dispatch' },
-    has('gas') && { key: 'gas', label: 'Gas', part: 'Gas meter', source: 'Octopus smart meter', h: 40, unit: 'kWh', color: GAS, fresh: fresh('octopus'),
+    has('gas') && { key: 'gas', label: 'Gas', part: 'Gas meter', source: conn.octopus ? 'Octopus smart meter' : 'Gas meter', h: 40, unit: 'kWh', color: GAS, fresh: fresh('octopus'),
       pos: [{ get: (r) => r.gas, color: GAS }] },
-    { key: 'price', label: 'Price', part: 'Import and export price', source: synthetic ? `Synthetic tariff (demo data)${d.provenance?.placeholders?.some((x) => /\[placeholder\]$/.test(x)) ? '; placeholder taxes' : ''}` : conn.demo ? 'Octopus Agile rates (public)' : 'Octopus tariff rates', h: 50, unit: priceUnit(), color: COLORS.grid, fresh: fresh('octopus', 'tariff', 'demo'),
+    { key: 'price', label: 'Price', part: 'Import and export price', source: synthetic ? `Synthetic tariff (demo data)${d.provenance?.placeholders?.some((x) => /\[placeholder\]$/.test(x)) ? '; placeholder taxes' : ''}` : conn.demo ? 'Octopus Agile rates (public)' : tariffSource, h: 50, unit: priceUnit(), color: COLORS.grid, fresh: fresh('octopus', 'tariff', 'tounify', 'tariffscanner', 'demo'),
       lines: [{ get: (r) => r.import_rate, color: COLORS.grid, step: true }, { get: (r) => r.export_rate, color: COLORS.export, step: true }] },
     { key: 'cost', label: 'Cost', part: `Bill per ${slotNoun()} (dashed: grid only)`, source: 'Core: priced build', h: 50, unit: currencySymbol(), color: 'var(--text-2)', money: true,
       pos: [{ get: (r) => Math.max(0, r.total_cost ?? 0), color: 'var(--text-2)' }], neg: [{ get: (r) => Math.max(0, -(r.total_cost ?? 0)), color: COLORS.export }],

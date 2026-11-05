@@ -67,6 +67,7 @@ import { db, tx, dataDir } from '../db/db.js';
 import { landRaw, quarantine } from '../core/facts.js';
 import { createTariff, addDevice } from '../core/tariffs.js';
 import { supersedeAgreements } from '../core/devices.js';
+import { linkSupplier } from '../core/suppliers.js';
 import { CURRENCIES, toMinor } from '../core/money.js';
 import { rulesFor } from '../core/tax.js';
 import { dayBounds, localDate, slotLength, recordedNow } from '../core/time.js';
@@ -731,6 +732,7 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   const c = connectionOf(site.id);
   if (!c?.external_ref) return { skipped: 'not registered with tounify: no connection reference for this home' };
   const ref = c.external_ref;
+  if (c.meta.tariffs && !c.meta.tariffs.consumption) return { skipped: 'registered with tounify, no tariff chosen yet (the tariff picker sets it)' };
   const cc = c.meta.country ?? site.country ?? site.market_code;
   const nowMs = client.clock.now();
   const prev = readState().connections?.[ref] ?? {};
@@ -801,6 +803,11 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   const recordedAt = recordedNow();
   tx(() => {
     const u = upsertTariff(mp.tariff);
+    // The supplier as its own row (delta 080): tounify's company id, named as the catalogue lists it.
+    if (mp.company) {
+      const listed = readState().catalogue?.[mp.tariff.country]?.companies?.find((x) => x.id === mp.company);
+      linkSupplier(u.row.id, { provider: PROVIDER, country: mp.tariff.country, externalId: mp.company, name: listed?.name ?? mp.company });
+    }
     out.tariff = mp.tariff.tariffCode;
     out.kind = mp.tariff.kind;
     out.taxes_in_price = mp.taxesInPrice;
@@ -940,6 +947,54 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
   return out;
 }
 
+// ───────────── Supplier and tariff lists for the tariff picker (src/core/tariff-picker.js) ─────────────
+
+// v3 lists companies and tariffs only under a registered connection. Each list is kept in provider_state
+// (catalogue[country].companies / .tariffs[company], with the moment read) and asked again at most once
+// every catalogueEveryMs (7 days), so the second and later homes of a country cost no call. Naming a
+// company spends one of a testing token's distinct companies (the allowance guard refuses it first).
+async function listUnder(site, client, key, pathname, scope, names, accept, force) {
+  const c = connectionOf(site.id);
+  if (!c?.external_ref) throw bad('the home is not registered with tounify yet');
+  const cc = c.meta.country ?? site.country ?? site.market_code;
+  const cat = readState().catalogue?.[cc] ?? {};
+  const nowMs = client.clock.now();
+  const at = cat.listed_at?.[key];
+  const held = key === 'companies' ? cat.companies : cat.tariffs?.[key.slice('tariffs:'.length)];
+  if (!force && held && at && nowMs - at < policy.catalogueEveryMs) return { list: held, cached: true, country: cc, listed_at: iso(at) };
+  const path = cpath(cc, c.external_ref, pathname);
+  const r = await client.request('GET', path, { scope, names });
+  const problem = accept(r.body);
+  const request = { method: 'GET', path, request_id: r.requestId ?? null };
+  if (problem) {
+    quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason: `unexpected shape: ${problem}` });
+    throw new TounifyError(`tounify ${key}: unexpected answer (quarantined)`, { kind: 'shape' });
+  }
+  landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body });
+  const list = key === 'companies' ? r.body.map(compactCompany) : r.body.map(compactTariff);
+  updateState((s) => {
+    s.catalogue ??= {};
+    const k = (s.catalogue[cc] ??= {});
+    if (key === 'companies') k.companies = list; else (k.tariffs ??= {})[key.slice('tariffs:'.length)] = list;
+    (k.listed_at ??= {})[key] = nowMs;
+  });
+  return { list, cached: false, country: cc, listed_at: iso(nowMs) };
+}
+const listOfIds = (what) => (b) => (Array.isArray(b) && b.every((x) => isObj(x) && typeof x.id === 'string') ? null : `not a list of ${what} with ids`);
+
+/** The electricity suppliers (consumption companies) of the home's country: { list: [{ id, name }], cached, country }. */
+export function listCompanies(site, { client, force = false } = {}) {
+  const ref = connectionOf(site.id)?.external_ref;
+  return listUnder(site, client, 'companies', '/consumption/companies', { endpoint: 'GET companies', thing: ref ?? 'none' }, undefined, listOfIds('companies'), force);
+}
+
+/** One supplier's consumption tariffs: { list: [{ id, name, companyid, type, time_of_use_rates, available }], cached, country }. */
+export function listCompanyTariffs(site, company, { client, force = false } = {}) {
+  if (!company || typeof company !== 'string') throw bad('a supplier (tounify company id) is required');
+  return listUnder(site, client, `tariffs:${company}`, `/consumption/${encodeURIComponent(company)}/tariffs`, { endpoint: 'GET tariffs', thing: company },
+    { companies: [company] }, listOfIds('tariffs'), force);
+}
+
 /** The catalogue's state for a market (status hook). */
 export function catalogueStatus(country) {
   const cat = readState().catalogue?.[country];
@@ -987,9 +1042,11 @@ export function connectionBody(site, input = {}, cc = site.country ?? site.marke
   const postal = String(input.postal_code ?? site.postcode ?? '').trim();
   if (!postal) throw bad('postal_code is required: the postal code selects the network operator, the local levies and the time-of-use clock (it is the only address detail sent)');
   const consumption = typeof input.consumption_tariff === 'string' ? input.consumption_tariff.trim() : '';
-  if (!consumption) throw bad('consumption_tariff is required: the tounify tariff id the home buys its energy on (for example EDFTRVHPHC)');
+  // A home is registered before its tariff is chosen (no_tariff_yet: the tariff picker, which lists the
+  // suppliers and tariffs only under a connection); otherwise the tariff is required.
+  if (!consumption && input.no_tariff_yet !== true) throw bad('consumption_tariff is required: the tounify tariff id the home buys its energy on (for example EDFTRVHPHC)');
   const feedin = typeof input.feedin_tariff === 'string' && input.feedin_tariff.trim() ? input.feedin_tariff.trim() : null;
-  const body = { reference: referenceOf(site), postal_code: postal, tariffs: { consumption, ...(feedin ? { feedin } : {}) } };
+  const body = { reference: referenceOf(site), postal_code: postal, ...(consumption ? { tariffs: { consumption, ...(feedin ? { feedin } : {}) } } : {}) };
   if (typeof input.grid_operator === 'string' && input.grid_operator.trim()) body.grid_operator = input.grid_operator.trim();
   // Capacity: what the caller gave (only properties the market lists), else the home's contracted kVA.
   const capacity = {};
@@ -1050,7 +1107,7 @@ export async function registerConnection(site, input = {}, { client } = {}) {
   const st = readState().connections?.[ref] ?? {};
   const patchBody = { ...body };
   delete patchBody.reference;
-  patchBody.tariffs = { consumption: body.tariffs.consumption, feedin: body.tariffs.feedin ?? null };
+  if (body.tariffs) patchBody.tariffs = { consumption: body.tariffs.consumption, feedin: body.tariffs.feedin ?? null };
   let r;
   let created = false;
   const patch = () => client.request('PATCH', cpath(cc, ref), { body: patchBody, ifMatch: st.conn_etag ?? null, scope: { endpoint: 'PATCH connection', thing: ref }, names });

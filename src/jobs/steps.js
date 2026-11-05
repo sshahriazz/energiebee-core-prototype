@@ -20,6 +20,7 @@ import { syncComparison, octopusRegion } from '../core/compare.js';
 import { syncGasCv } from '../adapters/nationalgas.js';
 import { measureBatteryCapacity } from '../core/derive.js';
 import { retireDevice, supersedeAgreements } from '../core/devices.js';
+import { retirePickedMeters } from '../core/tariff-picker.js';
 import { clientFor, credentialsFromEnv, sweepCatalogue, sweepDue, sweepStatus } from '../adapters/tariffscanner.js';
 import * as TU from '../adapters/tounify.js';
 
@@ -136,7 +137,9 @@ async function syncEnvTariffs(ctx) {
   if (db.prepare("SELECT 1 FROM device WHERE site_id = ? AND provider = 'octopus' AND retired_at IS NULL").get(site.id)) {
     // Retired, not deleted: the .env tariffs still priced the half-hours before the account was read.
     for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'env' AND retired_at IS NULL").all(site.id)) { retireDevice(d.id); supersedeAgreements(site.id, d.id, []); }
-    return { skipped: 'using Octopus account agreements' };
+    // A tariff the user picked from a list (src/core/tariff-picker.js) ends where the account's agreements begin.
+    const picked = retirePickedMeters(site.id);
+    return { skipped: 'using Octopus account agreements', ...(picked ? { picked_meters_retired: picked } : {}) };
   }
   let rates = 0;
   const used = [];
@@ -161,6 +164,8 @@ async function syncOctopusMeters(ctx, a, creds) {
   const { octoFirst, octoFrom } = a;
   const meters = await syncOctopusAccount(site, creds);
   ctx.agreementsChanged = !!meters.agreementsChanged;
+  // The account now prices the home: a tariff the user picked from a list ends where the account's begin.
+  if (retirePickedMeters(siteId)) ctx.agreementsChanged = true;
   // Gas units straight from Octopus; if they changed, re-read the whole gas history.
   let gasUnits = null;
   try { gasUnits = await syncGasUnits(site, creds); } catch (err) { gasUnits = { error: err.message }; }

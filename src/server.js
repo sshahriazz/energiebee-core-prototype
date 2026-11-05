@@ -25,6 +25,7 @@ import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
+import { listSuppliers, listTariffs, chooseTariff, tariffChoice } from './core/tariff-picker.js';
 import { userOf, loginRequired, canSee, visibleSiteIds, listUsers, giveHome, publicUser, switcherOn, signUp, signIn, startSession, endSession, cookieOf, sessionCookie } from './core/users.js';
 import { addHome, homeProviders, connectHome, disconnectHome, findPlants, COUNTRIES } from './core/signup.js';
 import * as onboardingCore from './core/onboarding.js';
@@ -159,6 +160,20 @@ app.post('/api/sites/:id/providers/:provider/plants', async (req, res) => {
 });
 // Disconnect it (a wrong login, another account): the login is forgotten and its data withdrawn.
 app.delete('/api/sites/:id/providers/:provider', (req, res) => res.json(disconnectHome(req.user, site(req), req.params.provider)));
+
+// Step 3 of onboarding: the home's own supplier and tariff (src/core/tariff-picker.js), from the list its country's
+// source holds (GB Tariffscanner, from our own tables; FR / NL tounify, registered upstream, lists kept 7 days).
+// The same answers for every country. Choosing puts the home's meter on the tariff from a start day (the first day
+// of data unless given), with its payment method and, for a day / night tariff, the meter's own night hours.
+app.get('/api/sites/:id/tariff-choice', (req, res) => res.json(tariffChoice(site(req))));
+app.get('/api/sites/:id/suppliers', async (req, res) => res.json(await listSuppliers(site(req))));
+app.get('/api/sites/:id/suppliers/:supplier/tariffs', async (req, res) => res.json(await listTariffs(site(req), req.params.supplier)));
+app.post('/api/sites/:id/tariff', async (req, res) => {
+  const s = site(req);
+  const r = await chooseTariff(s, req.body || {});
+  const rebuilt = processQueue().filter((x) => x.siteId === s.id);
+  res.status(201).json({ ...r, rebuilt: rebuilt.length, choice: tariffChoice(db.prepare('SELECT * FROM site WHERE id = ?').get(s.id)) });
+});
 
 app.get('/api/sites', (req, res) => {
   const visible = visibleSiteIds(req.user);
@@ -599,6 +614,9 @@ app.get('/api/sites/:id/everything', (req, res) => {
     site: { name: s.name, postcode: s.postcode, pv_kwp: s.pv_kwp, battery_kwh: s.battery_kwh, region: s.gsp_region, is_demo: s.is_demo },
     connections: conns,
     devices: devices.map((d) => ({ kind: d.kind, provider: d.provider, label: d.label, ref: mask(d.external_ref), state: JSON.parse(d.attrs || '{}').status?.currentState || null })),
+    // The tariff the home is on and where it came from (a list it was picked from, or an account), so every lane
+    // names its real source instead of assuming one.
+    tariff: tariffChoice(s).current,
   });
 });
 

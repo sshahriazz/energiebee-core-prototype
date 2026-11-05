@@ -229,7 +229,10 @@ function build(siteId, fromDate, toDate, opts) {
   const hasInverter = (readings.get(powerIds.solar) || []).length > 0 || (readings.get(powerIds.imp) || []).length > 0;
 
   // Meters in use, with their details (gas unit and zone), as known at the moment being built.
-  const meters = devicesAt(siteId, "kind IN ('meter_import','meter_export','meter_gas') AND provider != 'env'", asOf != null ? asOf * 1000 : null);
+  // Tariff-only meters carry a tariff but no readings: the .env tariff codes ('env'), a tariff the user picked from a
+  // list ('picker', src/core/tariff-picker.js) and a tounify connection's ('tounify'). They price the home; they are never
+  // waited for as meter data (else every day would stay provisional for readings that never come).
+  const meters = devicesAt(siteId, "kind IN ('meter_import','meter_export','meter_gas') AND provider NOT IN ('env', 'picker', 'tounify')", asOf != null ? asOf * 1000 : null);
   // Inputs read as they are now because no earlier version was kept (as-of rebuilds only).
   const approximations = [];
   for (const m of meters) if (m.approximateAttrs) approximations.push(`${m.kind} details as first recorded at ${new Date(m.approximateAttrs).toISOString()}`);

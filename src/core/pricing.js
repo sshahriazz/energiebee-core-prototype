@@ -85,8 +85,21 @@ export function loadPricing(siteId, fromTs, toTs, siteRow = null) {
   }
   // Tax rules of the home's country, as known at the moment being built (versioned like facts).
   const taxRules = country ? db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND ${inForce()}`).all(country) : [];
+  // How the home pays each tariff it is on (delta 080): a source that publishes one price per payment
+  // method (Tariffscanner) is priced at the home's own method.
+  const payment = new Map(agreements.filter((a) => a.payment_method).map((a) => [a.tariff_id, a.payment_method]));
+  // A meter's own day / night switch times (register_window rows with device_id), whatever tariff it is on:
+  // they price an Economy 7 tariff, whose supplier hours may differ from the meter's.
+  const deviceIds = [...new Set(agreements.map((a) => a.device_id))];
+  const meterWindows = new Map();
+  if (deviceIds.length) {
+    for (const w of db.prepare(`SELECT * FROM register_window WHERE device_id IN (${deviceIds.map(() => '?').join(',')}) AND calendar IS NULL AND ${inForce()}
+        ORDER BY device_id, start_min, id`).all(...deviceIds)) {
+      (meterWindows.get(w.device_id) ?? meterWindows.set(w.device_id, []).get(w.device_id)).push(w);
+    }
+  }
   return {
-    agreements, rates, vat, taxRules, country, currency, dispatches, tz,
+    agreements, rates, vat, taxRules, country, currency, dispatches, tz, payment, meterWindows,
     hasFixed: rates.some((r) => r.component === 'fixed' || r.component === 'capacity'),
     capacityKva: site?.contracted_kva ?? null, capacityOrigin: site?.contracted_kva_origin ?? null,
     shapes: new Map(),
@@ -198,15 +211,36 @@ export function taxesAt(p, fuel, direction, ts, { inPrice = false } = {}) {
 
 // Which register applies. Returns null when no source says, so the half-hour stays unpriced
 // (and fails the rate-coverage check) rather than being priced on a guess.
-// - Economy 7: Octopus does not publish each meter's switch times, so it is not priced.
+// - Economy 7: priced only from the meter's own switch times (register_window rows with device_id: the hours
+//   the user confirmed). Octopus does not publish them, so without them it is not priced.
 // - Intelligent Octopus Go: the off-peak window learned from Octopus's time-stamped IOG
 //   prices, plus completed smart-charge dispatches reported by Kraken.
 // - windows (HP/HC, Tempo, any day/night with known times): the unit rows were expanded from
 //   the tariff's register windows (tariff-expand.js), so the row covering the instant says.
 const ANY_REGISTER = '*';
+// The register a meter's own windows put an instant in: the window covering it (its register, e.g.
+// 'night'), else 'day' when the meter has windows, else null (not known: the slot stays unpriced).
+// weekdays: bit 0 = Monday ... bit 6 = Sunday, read on the day the window starts (tariff-expand.js).
+export function meterRegister(p, deviceId, ts) {
+  const ws = (p.meterWindows?.get(deviceId) ?? []).filter((w) => (w.valid_from == null || w.valid_from <= ts) && (w.valid_to == null || w.valid_to > ts));
+  if (!ws.length) return null;
+  for (const w of ws) {
+    const zone = w.clock === 'utc' ? 'UTC' : p.tz;
+    const { y, m, d, hh, mm } = zonedParts(zone, ts);
+    const mins = hh * 60 + mm;
+    const wd = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
+    const across = w.end_min <= w.start_min;
+    let startDay = null;
+    if (!across) { if (mins >= w.start_min && mins < w.end_min) startDay = wd; }
+    else if (mins >= w.start_min) startDay = wd;
+    else if (mins < w.end_min) startDay = (wd + 6) % 7;
+    if (startDay != null && ((w.weekdays ?? 127) >> startDay) & 1) return w.register;
+  }
+  return 'day';
+}
 function registerAt(p, a, ts) {
   if (a.structure === 'windows') return ANY_REGISTER;
-  if (a.structure === 'e7') return null;
+  if (a.structure === 'e7') return meterRegister(p, a.device_id, ts);
   if (a.structure === 'iog') {
     if (p.dispatchAllowed.has(floorTo(ts, HALF_HOUR))) return 'night';
     if (!p.iogWindow) return null;
@@ -220,7 +254,8 @@ function registerAt(p, a, ts) {
 }
 
 // The row covering ts for one tariff, component and register (null register: any register),
-// and for fixed charges one charge period. Home-specific rows win; payment methods must agree.
+// and for fixed charges one charge period. Home-specific rows win; then the home's own payment method
+// (its agreement's), else a row for any method, else rows of every method that agree.
 export function rateRow(p, tariffId, component, register, ts, period) {
   const covering = p.rates.filter((r) => r.tariff_id === tariffId && r.component === component && (register == null || r.register === register)
     && (period === undefined || r.charge_period === period)
@@ -228,6 +263,9 @@ export function rateRow(p, tariffId, component, register, ts, period) {
   if (!covering.length) return null;
   const homeSpecific = covering.filter((r) => r.site_id != null);
   const pool = homeSpecific.length ? homeSpecific : covering;
+  // The home's own payment method first (its agreement says it, delta 080), then a row for any method.
+  const own = p.payment?.get(tariffId);
+  if (own) { const mine = pool.find((r) => r.payment_method === own); if (mine) return mine; }
   const any = pool.find((r) => r.payment_method === 'ANY');
   if (any) return any;
   return pool.every((r) => Math.abs(r.price_ex_vat - pool[0].price_ex_vat) < 1e-9) ? pool[0] : null;

@@ -23,7 +23,8 @@
     "retention": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/retention.js",
     "demo:users": "node --disable-warning=ExperimentalWarning scripts/demo-users.js",
     "demo:start": "node --disable-warning=ExperimentalWarning scripts/demo-start.js",
-    "user:pin": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/set-pin.js"
+    "user:pin": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/set-pin.js",
+    "seed:homes": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/seed-homes.js"
   },
   "dependencies": {
     "express": "^5.3.0"

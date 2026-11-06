@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tariff Picker Check</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --surface: #ffffff; --surface-2: #f3f1ec; --border: #e4e1d8; --border-2: #cfcbc0;
+    --text: #141413; --text-2: #4f4d47; --text-3: #85827a;
+    --accent: #b67600; --accent-soft: #fdf1d6;
+    --good: #0a7d0a; --good-soft: #eaf5e9; --warn: #9a6400; --warn-soft: #fbf1dc; --bad: #c22f2f; --bad-soft: #fbeceb;
+    --info: #2a72cc; --info-soft: #e8f0fb;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121211; --surface: #1b1b1a; --surface-2: #242422; --border: #33322f; --border-2: #4a4945;
+      --text: #f3f2ee; --text-2: #c9c7bf; --text-3: #8d8b84;
+      --accent: #f0b429; --accent-soft: #3a2e10;
+      --good: #4cc24c; --good-soft: #17271a; --warn: #f0b429; --warn-soft: #2e2512; --bad: #ef6b6b; --bad-soft: #321a1a;
+      --info: #4a8fe6; --info-soft: #16233a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121211; --surface: #1b1b1a; --surface-2: #242422; --border: #33322f; --border-2: #4a4945;
+    --text: #f3f2ee; --text-2: #c9c7bf; --text-3: #8d8b84;
+    --accent: #f0b429; --accent-soft: #3a2e10;
+    --good: #4cc24c; --good-soft: #17271a; --warn: #f0b429; --warn-soft: #2e2512; --bad: #ef6b6b; --bad-soft: #321a1a;
+    --info: #4a8fe6; --info-soft: #16233a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-variant-numeric: tabular-nums; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 80px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.015em; }
+  h2 { font-size: 22px; margin: 0 0 6px; line-height: 1.3; letter-spacing: -0.01em; }
+  h3 { font-size: 18px; margin: 0; line-height: 1.35; }
+  p { margin: 8px 0; }
+  code { font-family: var(--mono); font-size: 0.85em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+  .lede { color: var(--text-2); font-size: 17.5px; max-width: 700px; margin: 0; }
+  .small { font-size: 13.5px; color: var(--text-3); }
+  .kick { font-size: 12.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 28px; margin: 18px 0; }
+  .card > .sub { color: var(--text-2); margin: 0 0 18px; max-width: 740px; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .tabs { position: sticky; top: 0; z-index: 5; padding: 12px 0; margin: 26px 0 0; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); }
+  .tabs-inner { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--border); }
+  .tab { border: 0; background: transparent; color: var(--text-2); font-weight: 600; font-size: 15px; padding: 10px 12px; border-radius: 10px; cursor: pointer; display: flex; gap: 8px; align-items: center; justify-content: center; text-align: center; line-height: 1.25; }
+  .tab .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--border); color: var(--text-2); flex: none; }
+  .tab[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / 0.1); }
+  .tab[aria-selected="true"] .n { background: var(--accent); color: #fff; }
+  .tab .cnt { font-size: 12px; font-weight: 700; color: var(--warn); }
+  [role="tabpanel"][hidden] { display: none; }
+
+  .verdicts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .vd { border-radius: 18px; padding: 22px; border: 1px solid var(--border); }
+  .vd .ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+  .vd h3 { font-size: 19px; }
+  .vd p { color: var(--text-2); font-size: 15px; margin: 6px 0 0; }
+  .vd .big { font: 700 28px/1.15 system-ui, sans-serif; margin-top: 10px; letter-spacing: -0.01em; }
+  .vd .big small { display: block; font-size: 13px; font-weight: 600; color: var(--text-3); letter-spacing: 0; margin-top: 2px; }
+  .vd.ok { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
+  .vd.ok .ic { background: var(--good); color: var(--surface); }
+  .vd.ok .big { color: var(--good); }
+  .vd.mid { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); }
+  .vd.mid .ic { background: var(--warn); color: var(--surface); }
+  .vd.mid .big { color: var(--warn); }
+  .nextbar { display: flex; justify-content: flex-end; margin-top: 18px; }
+  .btn { border: 1px solid var(--border-2); background: var(--surface); border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 15px; cursor: pointer; }
+  .btn:hover { border-color: var(--text-3); }
+
+  .steps3 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+  .s3 { background: var(--surface-2); border-radius: 16px; padding: 18px; position: relative; }
+  .s3 .num { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 14px; background: var(--accent); color: #fff; margin-bottom: 10px; }
+  .s3 h3 { font-size: 17px; }
+  .s3 p { font-size: 14.5px; color: var(--text-2); margin: 4px 0 0; }
+  .s3:not(:last-child)::after { content: "→"; position: absolute; right: -13px; top: 50%; transform: translateY(-50%); color: var(--text-3); font-size: 18px; }
+
+  .dsrc-h, .dsrc-r { display: grid; grid-template-columns: 150px minmax(0, 1.4fr) minmax(0, 1.3fr) 150px; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 14.5px; align-items: start; }
+  .dsrc-h { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); padding: 0 0 8px; }
+  .dsrc-r:last-child { border-bottom: 0; }
+  .dsrc-r > div { color: var(--text-2); }
+  .dsrc-r .dn b { color: var(--text); font-size: 15px; }
+  .dsrc-r .dn small { display: block; color: var(--text-3); font-size: 12.5px; margin-top: 2px; }
+  .res { font-weight: 700; }
+  .res.g { color: var(--good); } .res.w { color: var(--warn); } .res.b { color: var(--bad); }
+  .res small { display: block; font-weight: 400; color: var(--text-3); font-size: 12.5px; }
+
+  .tscroll { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-size: 12.5px; color: var(--text-3); font-weight: 600; }
+  td { font-family: var(--mono); font-size: 13px; }
+  td:first-child, td.txt { font-family: inherit; font-size: 13.5px; }
+  td.txt { text-align: left; white-space: normal; color: var(--text-2); }
+  td.ok { color: var(--good); font-weight: 700; font-family: inherit; }
+  td.wn { color: var(--warn); font-weight: 700; font-family: inherit; }
+
+  .bars { display: grid; grid-template-columns: 130px minmax(0, 1fr) 70px; gap: 8px 12px; align-items: center; font-size: 14.5px; margin-top: 12px; }
+  .bars .t { height: 20px; border-radius: 0 5px 5px 0; background: var(--c, var(--good)); min-width: 2px; display: block; }
+  .bars .v { font-family: var(--mono); font-weight: 700; text-align: right; }
+
+  .formula { font-family: var(--mono); font-size: 13.5px; background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: 12px; padding: 14px 16px; white-space: pre; overflow-x: auto; line-height: 1.75; margin: 6px 0 0; }
+
+  .checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .chk { border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
+  .chk h3 { font-size: 16.5px; display: flex; gap: 10px; align-items: baseline; }
+  .chk h3 .pill { margin-left: auto; }
+  .chk p { font-size: 14.5px; color: var(--text-2); margin: 6px 0 0; }
+  .pill { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+  .pill.g { color: var(--good); background: var(--good-soft); }
+  .pill.w { color: var(--warn); background: var(--warn-soft); }
+  .pill.b { color: var(--bad); background: var(--bad-soft); }
+  .pill.i { color: var(--info); background: var(--info-soft); }
+
+  .probs { display: grid; gap: 12px; }
+  .prob { border: 1px solid var(--border); border-left: 4px solid var(--c); border-radius: 14px; padding: 16px 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 22px; }
+  .prob h3 { grid-column: 1 / -1; font-size: 17px; display: flex; gap: 10px; align-items: baseline; }
+  .prob h3 .pill { margin-left: auto; }
+  .prob .k { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+  .prob p { margin: 2px 0 0; font-size: 14.5px; color: var(--text-2); }
+  .prob.b { --c: var(--bad); } .prob.w { --c: var(--warn); } .prob.i { --c: var(--info); }
+
+  .srcs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .src { background: var(--surface-2); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
+  .src-ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; font-weight: 700; font-size: 18px; color: var(--surface); background: var(--c); margin-bottom: 6px; }
+  .src b { font-size: 15.5px; }
+  .src-v { font-family: var(--mono); font-size: 13.5px; font-weight: 700; color: var(--text); }
+  .src small { font-size: 13.5px; color: var(--text-2); line-height: 1.5; }
+
+  .clock { margin: 18px 0 6px; }
+  .clock-bar { position: relative; display: flex; height: 38px; border-radius: 10px; overflow: visible; }
+  .clock-bar .z { display: flex; align-items: center; padding: 0 10px; font-size: 13px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; }
+  .clock-bar .z:first-child { border-radius: 10px 0 0 10px; }
+  .clock-bar .z:nth-child(3) { border-radius: 0 10px 10px 0; }
+  .z.night { background: var(--info); } .z.day { background: var(--accent); }
+  .pin { position: absolute; top: -8px; bottom: -8px; width: 3px; background: var(--text); border-radius: 2px; }
+  .pin i { position: absolute; top: -22px; left: -4px; font-style: normal; font-size: 12px; font-weight: 700; white-space: nowrap; color: var(--text); }
+  .clock-hours { display: grid; grid-template-columns: 29.17% 20.83% 25% 20.83% 4.17%; font-size: 12px; color: var(--text-3); margin-top: 6px; }
+  .clock-hours span { white-space: nowrap; }
+  .clock-hours span:not(:first-child) { transform: translateX(-50%); }
+  .clock-hours span:last-child { transform: translateX(-75%); }
+
+  .eq { display: flex; align-items: stretch; gap: 10px; margin: 22px 0 10px; flex-wrap: wrap; }
+  .eq-t { flex: 1 1 150px; background: var(--surface-2); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+  .eq-v { font: 700 24px/1.2 var(--mono); }
+  .eq-l { font-size: 14px; color: var(--text-2); }
+  .eq-t small { font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-3); margin-top: 4px; }
+  .eq-op { align-self: center; font-size: 26px; font-weight: 700; color: var(--text-3); }
+  .res-t { background: var(--good-soft); border: 1px solid color-mix(in srgb, var(--good) 30%, var(--border)); }
+  .res-t .eq-v { color: var(--good); }
+
+  .hh48 { display: grid; grid-template-columns: repeat(48, minmax(0, 1fr)); gap: 2px; align-items: end; height: 140px; margin-top: 16px; padding-top: 4px; border-bottom: 1px solid var(--border-2); }
+  .hh48 i { display: block; border-radius: 3px 3px 0 0; min-height: 2px; background: var(--c); }
+  .bill { margin-top: 18px; background: var(--surface-2); border-radius: 16px; padding: 6px 18px; }
+  .bill-r { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 110px; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); align-items: baseline; font-size: 15px; }
+  .bill-r .how { color: var(--text-2); font-size: 14px; font-family: var(--mono); }
+  .bill-r .amt { font: 700 15px var(--mono); text-align: right; }
+  .bill-r.tot { border-top: 2px solid var(--text); border-bottom: 1px solid var(--border); font-weight: 700; }
+  .bill-r.tot .how, .bill-r.app .how { font-family: inherit; }
+  .bill-r.app { border-bottom: 0; }
+  .bill-r.app .amt { color: var(--good); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 8px; }
+  .match { margin-top: 14px; background: var(--good-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--good) 30%, var(--border)); border-radius: 14px; padding: 14px 16px; font-size: 15px; font-weight: 600; }
+
+  .kwh-src { margin-top: 14px; border: 1px solid var(--border); border-radius: 14px; padding: 12px 16px; }
+  .kwh-src summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  .kwh-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 10px; }
+  .kwh-list { font-family: var(--mono); font-size: 13px; color: var(--text-2); line-height: 1.8; }
+  .kwh-sum { font: 700 15px var(--mono); margin: 4px 0 0; }
+
+  .kwh-src.today { margin-top: 18px; }
+  .kwh-src.today .match { margin-bottom: 4px; }
+  .hh48 i.miss { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--bad) 3px 4.5px); }
+  .hh48 i.wait { background: var(--surface-2); border: 1px dashed var(--border-2); border-bottom: 0; }
+  .keyrow2 { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--text-2); margin: 10px 0 0; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+  .sw.miss { background: repeating-linear-gradient(135deg, transparent 0 2px, var(--bad) 2px 3.5px); border: 1px solid var(--bad); }
+  .sw.wait { background: var(--surface-2); border: 1px dashed var(--border-2); }
+
+  ol.how { padding-left: 20px; margin: 8px 0 0; }
+  ol.how li { margin: 6px 0; color: var(--text-2); }
+
+  @media (max-width: 760px) {
+    h1 { font-size: 25px; }
+    .card { padding: 20px 16px; border-radius: 16px; }
+    .tabs-inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tab { font-size: 13.5px; padding: 8px; }
+    .verdicts, .steps3, .checks { grid-template-columns: minmax(0, 1fr); }
+    .s3:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -16px; transform: translateX(50%); }
+    .dsrc-h { display: none; }
+    .dsrc-r { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .prob { grid-template-columns: minmax(0, 1fr); }
+    .bars { grid-template-columns: 96px minmax(0, 1fr) 56px; font-size: 13.5px; }
+    .srcs, .kwh-cols { grid-template-columns: minmax(0, 1fr); }
+    .eq { flex-direction: column; }
+    .eq-op { align-self: flex-start; padding-left: 12px; font-size: 22px; }
+    .eq-v { font-size: 21px; }
+    .clock-bar .z { font-size: 11.5px; padding: 0 6px; }
+    .clock-hours span:nth-child(3), .clock-hours span:nth-child(4) { visibility: hidden; }
+    .hh48 { gap: 1px; height: 110px; }
+    .bill-r { grid-template-columns: minmax(0, 1fr) 96px; }
+    .bill-r .how { grid-column: 1; grid-row: 2; font-size: 12.5px; }
+    .bill-r .amt { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="kick">Check of commit a9c6560 · feat/tariff-picker · 6 Nov 2026</div>
+  <h1>Is the tariff picker's data right?</h1>
+  <p class="lede">A new step in onboarding lets the user pick their electricity supplier and tariff. We checked where its data comes from, what comes in, whether anything is missing, and whether the money it works out is right. We ran the real code on a copy of the live database.</p>
+
+  <nav class="tabs" aria-label="Sections">
+    <div class="tabs-inner" role="tablist">
+      <button class="tab" role="tab" id="t1" aria-controls="p1" aria-selected="true"><span class="n">1</span>Short answer</button>
+      <button class="tab" role="tab" id="t2" aria-controls="p2" aria-selected="false" tabindex="-1"><span class="n">2</span>Where the data comes from</button>
+      <button class="tab" role="tab" id="t3" aria-controls="p3" aria-selected="false" tabindex="-1"><span class="n">3</span>Is it right?</button>
+      <button class="tab" role="tab" id="t4" aria-controls="p4" aria-selected="false" tabindex="-1"><span class="n">4</span>Problems <span class="cnt">7</span></button>
+    </div>
+  </nav>
+
+  <!-- ───────── 1. Short answer ───────── -->
+  <section role="tabpanel" id="p1" aria-labelledby="t1">
+    <div class="card">
+      <h2>The short answer</h2>
+      <p class="sub">The UK data is complete and the pricing is right to the penny. But France and the Netherlands can't use the picker yet, and some UK prices are old.</p>
+      <div class="verdicts">
+        <div class="vd ok"><div class="ic">✓</div><h3>The UK data is complete</h3>
+          <p>About 490–500 tariffs per region, from 20 suppliers. None has a missing price, a missing standing charge or missing night hours.</p>
+          <div class="big">0 gaps<small>in 1,482 tariffs, 3 regions</small></div></div>
+        <div class="vd ok"><div class="ic">✓</div><h3>The money is right</h3>
+          <p>Every half-hour gets the right day or night price, the 25 Oct clock change included. Every day total matches the same sum done by hand.</p>
+          <div class="big">734 / 734<small>half-hours priced correctly</small></div></div>
+        <div class="vd mid"><div class="ic">!</div><h3>But some gaps remain</h3>
+          <p>France and the Netherlands can't use the picker yet. 6% of UK prices haven't changed since 2023–25. There are also a few small bugs.</p>
+          <div class="big">7 problems<small>1 serious, 3 medium, 3 small</small></div></div>
+      </div>
+      <div class="nextbar"><button class="btn" data-go="2">Where the data comes from →</button></div>
+    </div>
+
+    <div class="card">
+      <h2>What the commit adds</h2>
+      <p class="sub">Right after the postcode, the user picks who supplies their electricity, then their tariff. That gives the home its prices; the inverter or meter then measures how much is used.</p>
+      <div class="steps3">
+        <div class="s3"><div class="num">1</div><h3>Postcode</h3><p>Gives the home's electricity region (e.g. M = Yorkshire).</p></div>
+        <div class="s3"><div class="num">2</div><h3>Supplier</h3><p>Only suppliers with tariffs in that region. Octopus users are offered the Octopus login instead.</p></div>
+        <div class="s3"><div class="num">3</div><h3>Tariff + questions</h3><p>A single price or day/night. For day/night: when the cheap night rate runs (we fill in the usual hours).</p></div>
+        <div class="s3"><div class="num">4</div><h3>Priced</h3><p>From the home's first day of data. Every half-hour is rebuilt with the new price.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── 2. Where the data comes from ───────── -->
+  <section role="tabpanel" id="p2" aria-labelledby="t2" hidden>
+    <div class="card">
+      <h2>Which provider, which data, and why</h2>
+      <p class="sub">Each country uses whichever source holds its tariffs. The screens and the API answer the same way whatever the source.</p>
+      <div class="dsrc-h"><div>Provider</div><div>What data</div><div>Why this one</div><div>Status</div></div>
+      <div class="dsrc-r">
+        <div class="dn"><b>Tariffscanner</b><small>UK · from our own database</small></div>
+        <div>Every UK supplier's published tariffs: unit price (p/kWh), standing charge (p/day), by payment method, for each of the 14 regions. For day/night tariffs, the supplier's usual night hours.</div>
+        <div>We already sync it every day, so the picker makes <b>no outside call</b>. It covers all the major UK suppliers.</div>
+        <div class="res g">Working<small>12,517 tariffs · last synced 6 Nov, 04:40 UTC</small></div>
+      </div>
+      <div class="dsrc-r">
+        <div class="dn"><b>tounify</b><small>France, Netherlands · live API</small></div>
+        <div>The suppliers and tariffs of the home's country. Its prices are only given for a home that is on the tariff, so they show after the choice.</div>
+        <div>The only source we have for FR/NL. Lists are kept for 7 days, so later homes in the same country cost no call.</div>
+        <div class="res b">Blocked<small>licence not confirmed; no login in .env. Tested only with fake data.</small></div>
+      </div>
+      <div class="dsrc-r">
+        <div class="dn"><b>Octopus account</b><small>UK · the user's own login</small></div>
+        <div>The home's exact tariff (including Agile, Go, Intelligent) and its smart-meter readings.</div>
+        <div>More exact than any list. When it's connected, the picked tariff ends where the account's tariff begins.</div>
+        <div class="res g">Handover correct<small>no gap, no overlap</small></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What comes in, for one UK region</h2>
+      <p class="sub">Region D (Merseyside), the list a home there sees. Regions M and E look almost the same (499 and 492 tariffs).</p>
+      <div class="bars" role="img" aria-label="Region D tariffs by kind">
+        <span>Single price</span><span class="t" style="width:59.9%"></span><span class="v">294</span>
+        <span>Day / night</span><span class="t" style="width:40.1%;--c:var(--info)"></span><span class="v">197</span>
+        <span>Electricity only</span><span class="t" style="width:53.8%;--c:var(--accent)"></span><span class="v">264</span>
+        <span>With gas (dual)</span><span class="t" style="width:46.2%;--c:var(--text-3)"></span><span class="v">227</span>
+      </div>
+      <div class="tscroll"><table>
+        <thead><tr><th>What</th><th>Value</th><th>Looks right?</th></tr></thead>
+        <tbody>
+          <tr><td>Suppliers listed</td><td>20 of 21</td><td class="ok">Yes. London Power only sells in regions 10, 12, 19, 20.</td></tr>
+          <tr><td>Supplier names</td><td>21, one row each</td><td class="ok">Yes. Every tariff is linked, none twice.</td></tr>
+          <tr><td>Average single price (direct debit)</td><td>28.83p/kWh</td><td class="ok">Yes, normal for the UK</td></tr>
+          <tr><td>Average day / night (direct debit)</td><td>32.80p / 17.25p</td><td class="ok">Yes. Night is always cheaper.</td></tr>
+          <tr><td>Average standing charge (direct debit)</td><td>54.57p/day</td><td class="ok">Yes</td></tr>
+          <tr><td>Night hours given</td><td>23:00–07:00 (133), 23:30–07:30 (33), 00:00–07:00 (19), 00:30–07:30 (11), 01:30–08:30 (1)</td><td class="ok">Yes. All 7 hours long.</td></tr>
+          <tr><td>Tariffs with several payment methods</td><td>1,997 in the UK</td><td class="ok">Yes, e.g. Utilita Smart Energy: prepay 24.81p, direct debit 25.60p, cash 26.51p</td></tr>
+          <tr><td>Tariffs with two prices in force at once</td><td>0</td><td class="ok">Yes</td></tr>
+          <tr><td>Questions asked</td><td>GB: night hours · FR: kVA, off-peak hours · NL: fuse size</td><td class="ok">Yes. Stored as rows, so a new country needs no code.</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>What a choice saves</h2>
+      <p class="sub">We picked Octopus "Flexible Octopus" (day/night) for "hope street" (region M, 16 days of data, no tariff before). This was saved:</p>
+      <div class="tscroll"><table>
+        <thead><tr><th>Saved</th><th>Value</th><th>Right?</th></tr></thead>
+        <tbody>
+          <tr><td>Meter</td><td>"picker" import meter</td><td class="ok">Yes. Not waited on for readings.</td></tr>
+          <tr><td>Tariff</td><td>TS-504-E-day_night-E-23</td><td class="ok">Yes (product 504, electricity only, region 23)</td></tr>
+          <tr><td>Starts</td><td>22 Oct 2026, 00:00 UK time</td><td class="ok">Yes. The first day of data.</td></tr>
+          <tr><td>Payment method</td><td>DDM (monthly direct debit)</td><td class="ok">Yes, the only one this tariff has</td></tr>
+          <tr><td>Night hours on the meter</td><td>23:00–07:00, every day, local clock</td><td class="ok">Yes</td></tr>
+          <tr><td>Prices used</td><td>Day 31.44p · Night 14.52p · 60.21p/day</td><td class="ok">Yes. They match the stored Tariffscanner rows.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="nextbar"><button class="btn" data-go="3">Is it right? →</button></div>
+    </div>
+  </section>
+
+  <!-- ───────── 3. Is it right ───────── -->
+  <section role="tabpanel" id="p3" aria-labelledby="t3" hidden>
+    <div class="card">
+      <div class="kick">Step 1 of 3</div>
+      <h2>Where every number comes from</h2>
+      <p class="sub">The app needs 4 things to work out a cost. Each comes from a different place.</p>
+      <div class="srcs">
+        <div class="src"><div class="src-ic" style="--c:var(--good)">⚡</div><b>How much electricity</b><span class="src-v">kWh per half-hour</span><small>From the home's <b>Sunsynk inverter</b>. A clamp on the grid cable measures every 5 minutes; the app adds them up per half-hour.</small></div>
+        <div class="src"><div class="src-ic" style="--c:var(--accent)">£</div><b>Price per kWh</b><span class="src-v">Day 31.44p · Night 14.52p</span><small>From <b>Tariffscanner</b>: the tariff's published price for this region and payment method (monthly direct debit).</small></div>
+        <div class="src"><div class="src-ic" style="--c:var(--info)">☾</div><b>Which price, when</b><span class="src-v">Night = 23:00 – 07:00</span><small>From <b>the user</b>, in onboarding: they picked "Flexible Octopus" (day/night) and confirmed the night hours.</small></div>
+        <div class="src"><div class="src-ic" style="--c:var(--text-3)">%</div><b>Fixed fee + VAT</b><span class="src-v">60.21p a day · 0% VAT</span><small>Daily fee from <b>Tariffscanner</b>. VAT from a <b>rule already in the database</b>: UK electricity VAT is 0% from 1 Oct 2026.</small></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="kick">Step 2 of 3</div>
+      <h2>Cost of one half-hour</h2>
+      <p class="sub">"hope street", 22 Oct, <b>00:30 to 01:00</b>. That time is inside the night hours, so the cheap night price applies.</p>
+
+      <div class="clock" aria-label="24 hours of 22 October: night price from 00:00 to 07:00 and from 23:00, day price in between; the example half-hour is at 00:30">
+        <div class="clock-bar">
+          <span class="z night" style="width:29.17%">Night 14.52p</span>
+          <span class="z day" style="width:66.66%">Day 31.44p</span>
+          <span class="z night" style="width:4.17%"></span>
+          <span class="pin" style="left:2.08%"><i>this half-hour</i></span>
+        </div>
+        <div class="clock-hours"><span>00:00</span><span>07:00</span><span>12:00</span><span>18:00</span><span>23:00</span></div>
+      </div>
+
+      <div class="eq">
+        <div class="eq-t"><span class="eq-v">9.524 kWh</span><span class="eq-l">electricity used</span><small>Sunsynk inverter</small></div>
+        <div class="eq-op">×</div>
+        <div class="eq-t"><span class="eq-v">14.52p</span><span class="eq-l">night price per kWh</span><small>Tariffscanner</small></div>
+        <div class="eq-op">×</div>
+        <div class="eq-t"><span class="eq-v">1.00</span><span class="eq-l">VAT 0% (nothing added)</span><small>tax rule</small></div>
+        <div class="eq-op">=</div>
+        <div class="eq-t res-t"><span class="eq-v">138.29p</span><span class="eq-l">cost of this half-hour</span><small>about £1.38</small></div>
+      </div>
+      <p class="small">At 10:00 the same home used only 0.043 kWh. That half-hour is in the day hours, so 0.043 × 31.44p = 1.35p.</p>
+    </div>
+
+    <div class="card">
+      <div class="kick">Step 3 of 3</div>
+      <h2>Cost of the whole day, and does the app agree?</h2>
+      <p class="sub">A day has 48 half-hours. Each bar is one half-hour's electricity on 22 Oct. Blue bars get the night price and orange bars the day price.</p>
+      <div class="hh48" id="hh48" role="img" aria-label="Electricity used per half-hour on 22 October: about 9 kWh each half-hour from midnight to 05:30 and from 23:30, almost nothing during the day"></div>
+      <div class="clock-hours"><span>00:00</span><span>07:00</span><span>12:00</span><span>18:00</span><span>23:00</span></div>
+      <p class="small">This home charges its battery from the grid at night, when it's cheap, and uses almost nothing from the grid in the day.</p>
+
+      <div class="bill">
+        <div class="bill-r"><span><i class="dot" style="--c:var(--info)"></i>Night half-hours</span><span class="how">104.588 kWh × 14.52p</span><span class="amt">1,518.62p</span></div>
+        <div class="bill-r"><span><i class="dot" style="--c:var(--accent)"></i>Day half-hours</span><span class="how">0.1117 kWh × 31.44p</span><span class="amt">3.51p</span></div>
+        <div class="bill-r"><span><i class="dot" style="--c:var(--text-3)"></i>Fixed daily fee</span><span class="how">same every day, used or not</span><span class="amt">60.21p</span></div>
+        <div class="bill-r tot"><span>Our total, by hand</span><span class="how">add the three lines</span><span class="amt">1,582.34p</span></div>
+        <div class="bill-r app"><span>The app's total</span><span class="how">worked out by the app itself, saved in <code>site_day</code></span><span class="amt">1,582.34p</span></div>
+      </div>
+      <details class="kwh-src">
+        <summary>Where do 104.588 kWh and 0.1117 kWh come from?</summary>
+        <p class="small">Both are the bars above, added up. Each bar is one half-hour of electricity from the grid (Sunsynk inverter's grid clamp, column <code>site_hh.grid_import</code>).</p>
+        <div class="kwh-cols">
+          <div><b><i class="dot" style="--c:var(--info)"></i>16 night half-hours</b>
+            <p class="kwh-list">00:00 9.051 · 00:30 9.524 · 01:00 9.401 · 01:30 9.414 · 02:00 9.319 · 02:30 9.394 · 03:00 9.388 · 03:30 9.058 · 04:00 8.136 · 04:30 8.180 · 05:00 6.821 · 05:30 0 · 06:00 0 · 06:30 0 · 23:00 0 · 23:30 6.902</p>
+            <p class="kwh-sum">= 104.588 kWh</p></div>
+          <div><b><i class="dot" style="--c:var(--accent)"></i>32 day half-hours</b>
+            <p class="kwh-list">22 are 0. The other 10: 08:00 0.0058 · 10:00 0.0425 · 12:30 0.0017 · 15:30 0.0042 · 16:00 0.0017 · 17:00 0.0042 · 18:00 0.0192 · 19:00 0.0067 · 22:00 0.0050 · 22:30 0.0208</p>
+            <p class="kwh-sum">= 0.1117 kWh</p></div>
+        </div>
+      </details>
+      <div class="match">✓ Same number, to the penny (£15.82). The app used the right kWh, the right price at the right time and the right daily fee. All 16 days matched the same way (table below).</div>
+
+      <details class="kwh-src today">
+        <summary>Today, 6 Nov: the same breakdown (so far)</summary>
+        <p class="small">Same home, same tariff (night 14.52p, day 31.44p, 60.21p a day). Today isn't finished: the data reaches 05:00. The readings for 05:00–06:30 haven't arrived yet, and 07:00 onwards hasn't happened yet when this copy was taken (06:18 UK time).</p>
+        <div class="hh48" id="hh48-today" role="img" aria-label="Electricity used per half-hour on 6 November so far: about 9 kWh each half-hour from midnight to 04:30, then no data yet"></div>
+        <div class="clock-hours"><span>00:00</span><span>07:00</span><span>12:00</span><span>18:00</span><span>23:00</span></div>
+        <div class="keyrow2"><span><i class="dot" style="--c:var(--info)"></i>night, has data</span><span><i class="sw miss"></i>reading not arrived yet</span><span><i class="sw wait"></i>not happened yet</span></div>
+
+        <div class="bill">
+          <div class="bill-r"><span><i class="dot" style="--c:var(--info)"></i>Night half-hours (10 with data)</span><span class="how">85.797 kWh × 14.52p</span><span class="amt">1,245.77p</span></div>
+          <div class="bill-r"><span><i class="dot" style="--c:var(--accent)"></i>Day half-hours</span><span class="how">none yet (day starts 07:00)</span><span class="amt">0.00p</span></div>
+          <div class="bill-r"><span><i class="dot" style="--c:var(--text-3)"></i>Daily fee, so far</span><span class="how">60.21p ÷ 48 × 14 half-hours</span><span class="amt">17.56p</span></div>
+          <div class="bill-r tot"><span>Our total, by hand</span><span class="how">add the three lines</span><span class="amt">1,263.33p</span></div>
+          <div class="bill-r app"><span>The app's total</span><span class="how">worked out by the app itself, saved in <code>site_day</code></span><span class="amt">1,263.33p</span></div>
+        </div>
+        <div class="kwh-cols">
+          <div><b><i class="dot" style="--c:var(--info)"></i>Night half-hours with data</b>
+            <p class="kwh-list">00:00 9.2342 · 00:30 8.9750 · 01:00 8.8833 · 01:30 8.6842 · 02:00 8.7175 · 02:30 8.7167 · 03:00 8.7383 · 03:30 8.8417 · 04:00 8.8808 · 04:30 6.1250</p>
+            <p class="kwh-sum">= 85.797 kWh</p></div>
+          <div><b><i class="sw miss"></i>Not counted yet</b>
+            <p class="kwh-list">05:00 · 05:30 · 06:00 · 06:30: no reading yet (marked "missing", so they cost 0p for now). They'll be priced at night 14.52p when the readings arrive.</p>
+            <p class="small">The daily fee is spread over the day: 60.21p ÷ 48 = 1.254p per half-hour. The app counts the 14 half-hours from 00:00 to 07:00, so 1.254p × 14 = 17.56p.</p></div>
+        </div>
+        <div class="match">✓ Same number, to the penny (£12.63 so far). Today is still "provisional": the total will grow as the rest of the day comes in.</div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Every day, by hand vs. the app</h2>
+      <p class="sub">Day/night tariff, all 16 days. "By hand" adds up each half-hour's kWh × price, plus the standing charge.</p>
+      <div class="tscroll"><table>
+        <thead><tr><th>Day</th><th>Half-hours</th><th>Imported kWh</th><th>By hand</th><th>App</th><th>Match</th></tr></thead>
+        <tbody>
+          <tr><td>22 Oct</td><td>48</td><td>104.7</td><td>1,582.34p</td><td>1,582.34p</td><td class="ok">✓</td></tr>
+          <tr><td>23 Oct</td><td>48</td><td>90.1</td><td>1,372.01p</td><td>1,372.01p</td><td class="ok">✓</td></tr>
+          <tr><td>24 Oct</td><td>48</td><td>93.1</td><td>1,416.85p</td><td>1,416.85p</td><td class="ok">✓</td></tr>
+          <tr><td>25 Oct (clocks back)</td><td>50</td><td>96.9</td><td>1,468.40p</td><td>1,468.40p</td><td class="ok">✓</td></tr>
+          <tr><td>26 Oct</td><td>48</td><td>65.4</td><td>1,033.85p</td><td>1,033.85p</td><td class="ok">✓</td></tr>
+          <tr><td>27 Oct</td><td>48</td><td>68.2</td><td>1,050.96p</td><td>1,050.96p</td><td class="ok">✓</td></tr>
+          <tr><td>28 Oct</td><td>48</td><td>69.6</td><td>1,086.15p</td><td>1,086.15p</td><td class="ok">✓</td></tr>
+          <tr><td>29 Oct</td><td>48</td><td>78.9</td><td>1,206.26p</td><td>1,206.26p</td><td class="ok">✓</td></tr>
+          <tr><td>30 Oct</td><td>48</td><td>83.2</td><td>1,269.04p</td><td>1,269.04p</td><td class="ok">✓</td></tr>
+          <tr><td>31 Oct</td><td>48</td><td>18.4</td><td>513.81p</td><td>513.81p</td><td class="ok">✓</td></tr>
+          <tr><td>1 Nov</td><td>48</td><td>102.9</td><td>1,554.77p</td><td>1,554.77p</td><td class="ok">✓</td></tr>
+          <tr><td>2 Nov</td><td>48</td><td>109.6</td><td>1,668.60p</td><td>1,668.60p</td><td class="ok">✓</td></tr>
+          <tr><td>3 Nov</td><td>48</td><td>90.5</td><td>1,384.26p</td><td>1,384.26p</td><td class="ok">✓</td></tr>
+          <tr><td>4 Nov</td><td>48</td><td>88.5</td><td>1,347.16p</td><td>1,347.16p</td><td class="ok">✓</td></tr>
+          <tr><td>5 Nov</td><td>48</td><td>78.6</td><td>1,202.12p</td><td>1,202.12p</td><td class="ok">✓</td></tr>
+          <tr><td>6 Nov (so far)</td><td>12</td><td>85.8</td><td>1,260.82p</td><td>1,260.82p</td><td class="ok">✓</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small">Before the choice, every one of these days cost 0p (no tariff). The 2 missing half-hours on 25 Oct are the repeated 01:00 hour. That reading gap was there before this commit.</p>
+    </div>
+
+    <div class="card">
+      <h2>Everything we checked</h2>
+      <div class="checks">
+        <div class="chk"><h3>Right day / night price <span class="pill g">734 / 734</span></h3><p>Night 23:00–07:00 UK time, before and after the clocks went back. 0 half-hours on the wrong rate.</p></div>
+        <div class="chk"><h3>Home's own payment method <span class="pill g">Correct</span></h3><p>On Utilita Smart Energy with prepay, it's 24.81p and 61.66p/day, not the direct debit price. Before this commit, those half-hours were left unpriced.</p></div>
+        <div class="chk"><h3>Start date <span class="pill g">Correct</span></h3><p>First day of data. A date before the tariff's first price moves to that day, with a note.</p></div>
+        <div class="chk"><h3>Octopus handover <span class="pill g">Correct</span></h3><p>Octopus connected on 1 Nov: the picked tariff ends 00:00 1 Nov, Octopus starts at the same moment, and the picker meter is retired.</p></div>
+        <div class="chk"><h3>Bad input refused <span class="pill g">8 / 8</span></h3><p>Octopus-account home (409), demo home, unknown supplier, tariff from another region, wrong payment method, bad hours, same from/to hours, bad date.</p></div>
+        <div class="chk"><h3>Days become final <span class="pill g">Correct</span></h3><p>The picker and tounify meters are skipped in all 3 places that wait on meter readings (build, trust, explorer).</p></div>
+        <div class="chk"><h3>The commit's own tests <span class="pill g">33 / 33 pass</span></h3><p>The tariff picker and tounify tests, France included (with a fake tounify).</p></div>
+        <div class="chk"><h3>Full test suite <span class="pill w">658 pass · 3 fail</span></h3><p>The 3 failures (trust view, Quartz, forecast accuracy) also fail on the commit before, so this commit didn't cause them.</p></div>
+      </div>
+      <div class="nextbar"><button class="btn" data-go="4">Problems →</button></div>
+    </div>
+  </section>
+
+  <!-- ───────── 4. Problems ───────── -->
+  <section role="tabpanel" id="p4" aria-labelledby="t4" hidden>
+    <div class="card">
+      <h2>What's wrong: 7 problems</h2>
+      <p class="sub">The calculation itself has no errors. The problems are about the data the source gives us, the countries that aren't usable yet, and a few small bugs.</p>
+      <div class="probs">
+        <div class="prob b"><h3>France and the Netherlands can't use the picker <span class="pill b">Serious</span></h3>
+          <div><div class="k">What happens</div><p>All 8 French homes get "not available": tounify's licence is unconfirmed, and there's no tounify login in <code>.env</code>.</p></div>
+          <div><div class="k">So</div><p>The FR/NL half of the commit only runs in tests with fake data. Check it against live tounify before relying on it.</p></div></div>
+        <div class="prob w"><h3>Some "current" prices are old <span class="pill w">Medium</span></h3>
+          <div><div class="k">What happens</div><p>436 of 6,939 tariffs on offer (6%) have a price that started in 2023–25 and never changed. E.g. British Gas Standard Variable (dual fuel, day/night) has been at 35.29p since Dec 2023.</p></div>
+          <div><div class="k">So</div><p>A standard variable price normally changes every quarter, so these are probably stale. The picker shows them as current. Hide them, or flag tariffs whose price is over a year old.</p></div></div>
+        <div class="prob w"><h3>The VAT basis is assumed <span class="pill w">Medium</span></h3>
+          <div><div class="k">What happens</div><p>The source note says "the API does not state the VAT basis". Prices are treated as before VAT.</p></div>
+          <div><div class="k">So</div><p>With 0% VAT on electricity since 1 Oct it makes no difference now. For any date with VAT, prices could be 5% off. Confirm with Tariffscanner.</p></div></div>
+        <div class="prob w"><h3>Night hours aren't checked <span class="pill w">Medium</span></h3>
+          <div><div class="k">What happens</div><p>01:00–03:00 (2 hours) is accepted for Economy 7, which is normally 7 hours. The French "exactly 8 hours" is only help text, not a check.</p></div>
+          <div><div class="k">So</div><p>A typo gives the home the wrong night/day split for every day since the start. Check the length per market.</p></div></div>
+        <div class="prob i"><h3>Old night hours stay after switching <span class="pill i">Small</span></h3>
+          <div><div class="k">What happens</div><p>Switching from Economy 7 to a single-price tariff leaves the 23:00–07:00 hours active. The summary then shows "cheap rate 23:00–07:00" on a single-price tariff.</p></div>
+          <div><div class="k">So</div><p>The price isn't affected; it's misleading text. End the meter's hours when the new tariff is single-price.</p></div></div>
+        <div class="prob i"><h3>A future start date is accepted <span class="pill i">Small</span></h3>
+          <div><div class="k">What happens</div><p>Choosing with a start date of 1 Jun 2027 works. On a first choice, every day before then has no price.</p></div>
+          <div><div class="k">So</div><p>Fine for "I switch next month", but not for a first tariff. Refuse future dates when nothing comes before.</p></div></div>
+        <div class="prob i"><h3>Octopus smart tariffs aren't in the list <span class="pill i">Small</span></h3>
+          <div><div class="k">What happens</div><p>Tariffscanner only has Octopus's standard and fixed tariffs, not Agile, Go or Intelligent.</p></div>
+          <div><div class="k">So</div><p>The screen already says "connect your Octopus account instead". Users who skip that can't find their tariff.</p></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Check it yourself</h2>
+      <ol class="how">
+        <li>Copy the database: <code>sqlite3 data/core.db ".backup /tmp/x/core.db"</code>, then run with <code>DB_FILE=/tmp/x/core.db</code> so the real one is never touched.</li>
+        <li>List suppliers and tariffs: <code>GET /api/sites/9/suppliers</code> and <code>GET /api/sites/9/suppliers/octopus-energy/tariffs</code>.</li>
+        <li>Pick one: <code>POST /api/sites/9/tariff</code> with <code>{"supplier":"octopus-energy","tariff":"TS-504-E-day_night-E-23"}</code>.</li>
+        <li>Compare by hand: <code>SELECT local_date, SUM(grid_import*import_rate_ex) FROM site_hh WHERE site_id=9 GROUP BY 1</code> plus the standing charge, against <code>site_day.total_cost</code>.</li>
+        <li>Find old prices: tariffs whose current unit row has <code>valid_from</code> before 2026.</li>
+      </ol>
+    </div>
+  </section>
+</main>
+<script>
+  // 22 Oct, "hope street": kWh from the grid per half-hour (00:00, 00:30 ... 23:30), Economy 7 night = 23:00-07:00.
+  const kwh = [9.051, 9.524, 9.401, 9.414, 9.319, 9.394, 9.388, 9.058, 8.136, 8.18, 6.821, 0, 0, 0,
+    0, 0, 0.006, 0, 0, 0, 0.043, 0, 0, 0, 0, 0.002, 0, 0, 0, 0, 0, 0.004, 0.002, 0, 0.004, 0, 0.019, 0, 0.007, 0, 0, 0, 0, 0, 0.005, 0.021,
+    0, 6.902];
+  const hh = document.getElementById('hh48');
+  const max = Math.max(...kwh);
+  kwh.forEach((v, i) => {
+    const night = i < 14 || i >= 46;
+    const t = `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`;
+    const b = document.createElement('i');
+    b.style.height = `${Math.max(1.5, (v / max) * 100)}%`;
+    b.style.setProperty('--c', night ? 'var(--info)' : 'var(--accent)');
+    b.title = `${t}  ${v} kWh × ${night ? '14.52p night' : '31.44p day'} = ${(v * (night ? 14.52 : 31.44)).toFixed(2)}p`;
+    hh.appendChild(b);
+  });
+  // Today, 6 Nov, so far: 10 half-hours with data (00:00-04:30), 4 not arrived (05:00-06:30), the rest not happened yet.
+  const today = [9.2342, 8.975, 8.8833, 8.6842, 8.7175, 8.7167, 8.7383, 8.8417, 8.8808, 6.125];
+  const ht = document.getElementById('hh48-today');
+  for (let i = 0; i < 48; i++) {
+    const t = `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`;
+    const b = document.createElement('i');
+    if (i < today.length) {
+      b.style.height = `${(today[i] / max) * 100}%`;
+      b.style.setProperty('--c', 'var(--info)');
+      b.title = `${t}  ${today[i]} kWh × 14.52p night = ${(today[i] * 14.52).toFixed(2)}p`;
+    } else if (i < 14) { b.className = 'miss'; b.style.height = '100%'; b.title = `${t}  reading not arrived yet`; }
+    else { b.className = 'wait'; b.style.height = '100%'; b.title = `${t}  not happened yet`; }
+    ht.appendChild(b);
+  }
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const show = (i) => {
+    tabs.forEach((t, j) => {
+      const on = i === j;
+      t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+    try { localStorage.setItem('tariff-check-tab', i); } catch (e) {}
+  };
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => show(i));
+    t.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const n = (i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length; show(n); tabs[n].focus(); }
+    });
+  });
+  document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => { show(+b.dataset.go - 1); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+  try { const s = +localStorage.getItem('tariff-check-tab'); if (s > 0 && s < tabs.length) show(s); } catch (e) {}
+</script>
+</body>
+</html>

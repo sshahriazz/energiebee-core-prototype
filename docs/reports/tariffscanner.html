@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tariffscanner in EnergieBee</title>
+<meta name="description" content="How EnergieBee uses the Tariffscanner UK tariff catalogue to price the energy of homes that are not on Octopus.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (max 1080px). Hero with stat tiles, then numbered sections:
+   problem → three moments → interactive picker + half-hour calculator → daily sweep timeline →
+   rate limits → data mapping → limits → FAQ → developer file map. */
+:root {
+  --bg: #fbf8f2;
+  --surface: #ffffff;
+  --surface-2: #f4efe4;
+  --ink: #1b1f2a;
+  --muted: #5e6472;
+  --line: #e6dfd0;
+  --sun: #f2a516;
+  --sun-ink: #8a5a00;
+  --sun-soft: #fff1d3;
+  --core: #127a6c;
+  --core-soft: #dcf2ee;
+  --ts: #4b5bd6;
+  --ts-soft: #e5e8fd;
+  --warn: #c2412d;
+  --warn-soft: #fde6e1;
+  --ok: #2f8a3e;
+  --shadow: 0 1px 2px rgba(27,31,42,.05), 0 8px 24px -12px rgba(27,31,42,.18);
+  --serif: "Fraunces", Georgia, serif;
+  --sans: "Inter", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11141b; --surface: #181c25; --surface-2: #1f2430; --ink: #eceef3; --muted: #a2a8b6; --line: #2c3240;
+    --sun: #ffbd3d; --sun-ink: #ffcf6e; --sun-soft: #2f2612; --core: #4fd1bd; --core-soft: #143029;
+    --ts: #8f9bff; --ts-soft: #1f2447; --warn: #ff8a75; --warn-soft: #3a1e1a; --ok: #6ccf7b;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11141b; --surface: #181c25; --surface-2: #1f2430; --ink: #eceef3; --muted: #a2a8b6; --line: #2c3240;
+  --sun: #ffbd3d; --sun-ink: #ffcf6e; --sun-soft: #2f2612; --core: #4fd1bd; --core-soft: #143029;
+  --ts: #8f9bff; --ts-soft: #1f2447; --warn: #ff8a75; --warn-soft: #3a1e1a; --ok: #6ccf7b;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 16px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1080px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--serif); font-weight: 650; line-height: 1.15; margin: 0; letter-spacing: -.01em; }
+h2 { font-size: clamp(26px, 4vw, 34px); text-wrap: balance; }
+h3 { font-size: 20px; }
+p { margin: 0; }
+code { font-family: var(--mono); font-size: .86em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--ts); }
+.muted { color: var(--muted); }
+
+/* Hero */
+.hero { padding: 56px 0 36px; display: grid; gap: 22px; }
+.kicker { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sun-ink); }
+.kicker .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 0 4px var(--sun-soft); }
+.hero h1 { font-size: clamp(36px, 6.4vw, 60px); max-width: 16ch; text-wrap: balance; }
+.hero h1 em { font-style: normal; color: var(--ts); }
+.hero .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 62ch; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); }
+.stat b { display: block; font-family: var(--serif); font-size: 32px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 13.5px; color: var(--muted); }
+.asof { font-size: 13px; color: var(--muted); }
+
+nav.toc { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); margin: 0 -16px; padding: 10px 16px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+nav.toc::-webkit-scrollbar { display: none; }
+nav.toc a { display: inline-block; color: var(--muted); text-decoration: none; font-size: 14px; font-weight: 500; padding: 5px 10px; border-radius: 999px; }
+nav.toc a:hover { background: var(--surface-2); color: var(--ink); }
+
+section.block { padding: 56px 0 8px; display: grid; gap: 22px; scroll-margin-top: 56px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; color: var(--sun-ink); text-transform: uppercase; }
+.intro { max-width: 68ch; color: var(--muted); font-size: 17px; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); }
+
+/* 1. Two lanes */
+.lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.lane { display: grid; gap: 14px; align-content: start; }
+.lane .tag { justify-self: start; font-size: 12.5px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+.lane.oct .tag { background: var(--core-soft); color: var(--core); }
+.lane.other .tag { background: var(--ts-soft); color: var(--ts); }
+.lane ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.lane li { display: grid; grid-template-columns: 30px 1fr; gap: 10px; align-items: start; font-size: 15px; }
+.lane li .n { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; font-size: 13px; background: var(--surface-2); }
+.lane.other li .n { background: var(--ts-soft); color: var(--ts); }
+.lane.oct li .n { background: var(--core-soft); color: var(--core); }
+.callout { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; border-radius: 14px; padding: 16px 18px; background: var(--sun-soft); border: 1px solid color-mix(in srgb, var(--sun) 35%, transparent); }
+.callout .ic { font-size: 22px; line-height: 1; }
+.callout.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+
+/* 2. Three moments */
+.moments { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; position: relative; }
+.moment { position: relative; padding: 0 12px; display: grid; gap: 12px; align-content: start; }
+.moment .badge { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; font-family: var(--serif); font-size: 24px; font-weight: 650; color: #fff; position: relative; z-index: 1; }
+.moment:nth-child(1) .badge { background: var(--ts); }
+.moment:nth-child(2) .badge { background: var(--sun); color: #2a1d00; }
+.moment:nth-child(3) .badge { background: var(--core); }
+.moment:not(:last-child)::after { content: ""; position: absolute; top: 27px; left: 78px; right: -12px; height: 2px; background: repeating-linear-gradient(90deg, var(--line) 0 8px, transparent 8px 14px); }
+.moment .when { font-size: 13px; color: var(--muted); }
+.moment ul { margin: 0; padding-left: 18px; font-size: 15px; display: grid; gap: 4px; }
+.pill { justify-self: start; font-size: 12.5px; font-weight: 600; padding: 4px 10px; border-radius: 999px; display: inline-flex; gap: 6px; align-items: center; }
+.pill.yes { background: var(--ts-soft); color: var(--ts); }
+.pill.no { background: var(--surface-2); color: var(--muted); }
+@media (max-width: 780px) {
+  .moments { grid-template-columns: 1fr; gap: 28px; }
+  .moment { padding: 0 0 0 70px; }
+  .moment .badge { position: absolute; left: 0; top: 0; }
+  .moment:not(:last-child)::after { top: 62px; left: 26px; right: auto; bottom: -24px; width: 2px; height: auto; background: repeating-linear-gradient(180deg, var(--line) 0 8px, transparent 8px 14px); }
+}
+
+/* 3. Picker demo */
+.demo { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { .demo { grid-template-columns: 1fr; } }
+.phone { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow); overflow: hidden; display: grid; }
+.phone-top { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.phone-top b { color: var(--ink); font-weight: 600; }
+.steps { display: flex; gap: 6px; }
+.steps i { width: 26px; height: 5px; border-radius: 3px; background: var(--line); }
+.steps i.on { background: var(--sun); }
+.phone-body { padding: 18px; display: grid; gap: 14px; }
+.q { font-family: var(--serif); font-size: 21px; font-weight: 650; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 8px 13px; border-radius: 999px; cursor: pointer; transition: border-color .15s, background .15s; }
+.chip:hover { border-color: var(--sun); }
+.chip[aria-pressed="true"] { background: var(--sun-soft); border-color: var(--sun); color: var(--sun-ink); font-weight: 600; }
+.chip:focus-visible, .tariff:focus-visible, .seg button:focus-visible { outline: 2px solid var(--ts); outline-offset: 2px; }
+.tariffs { display: grid; gap: 8px; max-height: 300px; overflow: auto; }
+.tariff { font: inherit; text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); cursor: pointer; }
+.tariff:hover { border-color: var(--sun); }
+.tariff[aria-pressed="true"] { border-color: var(--sun); background: var(--sun-soft); }
+.tariff small { color: var(--muted); font-size: 12.5px; grid-column: 1; }
+.tariff .from { grid-row: 1 / span 2; grid-column: 2; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; text-align: right; }
+.tariff .from small { display: block; font-weight: 400; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--surface-2); border-radius: 12px; padding: 4px; gap: 4px; }
+.seg button { font: inherit; font-size: 13.5px; border: 0; background: transparent; color: var(--muted); padding: 7px 11px; border-radius: 9px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.note-oct { font-size: 14px; border-radius: 12px; padding: 12px 14px; background: var(--core-soft); color: var(--ink); }
+.prices { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.price { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.price b { display: block; font-size: 22px; font-family: var(--serif); font-variant-numeric: tabular-nums; }
+.price span { font-size: 12.5px; color: var(--muted); }
+.empty-hint { color: var(--muted); font-size: 14.5px; padding: 6px 0; }
+
+.calc { display: grid; gap: 16px; align-content: start; }
+.calc label { font-size: 14px; font-weight: 500; display: flex; justify-content: space-between; gap: 10px; }
+.calc input[type=range] { width: 100%; accent-color: var(--sun); }
+.sum { display: grid; gap: 6px; font-variant-numeric: tabular-nums; }
+.sum div { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.sum div:last-child { border-bottom: 0; font-weight: 600; font-size: 17px; }
+.sum .k { color: var(--muted); }
+.big-total { font-family: var(--serif); font-size: 44px; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+.big-total small { font-size: 16px; color: var(--muted); font-family: var(--sans); font-weight: 400; }
+
+/* 4. Timeline */
+.timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.timeline li { display: grid; grid-template-columns: 44px 1fr; gap: 16px; position: relative; padding-bottom: 22px; }
+.timeline li:not(:last-child)::before { content: ""; position: absolute; left: 21px; top: 44px; bottom: 0; width: 2px; background: var(--line); }
+.timeline .ico { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: var(--ts-soft); color: var(--ts); font-size: 19px; }
+.timeline li.ours .ico { background: var(--core-soft); color: var(--core); }
+.timeline h3 { font-size: 18px; margin-top: 2px; }
+.timeline p { color: var(--muted); font-size: 15px; margin-top: 4px; max-width: 70ch; }
+.who { font-size: 11.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; margin-left: 6px; vertical-align: 2px; }
+.timeline li .who { color: var(--ts); }
+.timeline li.ours .who { color: var(--core); }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.split .card h3 { margin-bottom: 8px; }
+.split .card p { color: var(--muted); font-size: 15px; }
+.regions { display: grid; grid-template-columns: repeat(14, 1fr); gap: 4px; margin-top: 14px; }
+.regions i { aspect-ratio: 1; border-radius: 5px; background: var(--ts); opacity: .2; animation: fill 7s infinite; }
+@keyframes fill { 0% { opacity: .2; } 8% { opacity: 1; } 100% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .regions i { animation: none; opacity: .9; } }
+
+/* 5. Limits gauges */
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.rule { display: grid; gap: 8px; align-content: start; }
+.rule b { font-family: var(--serif); font-size: 34px; font-weight: 650; line-height: 1; }
+.rule b small { font-family: var(--sans); font-size: 15px; font-weight: 500; color: var(--muted); }
+.rule p { font-size: 14.5px; color: var(--muted); }
+.ticks { display: flex; gap: 3px; }
+.ticks i { flex: 1; min-width: 0; height: 18px; border-radius: 2px; background: var(--sun); }
+.ticks i.off { background: var(--line); }
+
+/* 6. Mapping */
+.map { display: grid; grid-template-columns: minmax(0, 1fr) 60px minmax(0, 1fr); gap: 0; align-items: center; }
+@media (max-width: 780px) { .map { grid-template-columns: 1fr; gap: 10px; } .map .arrow { transform: rotate(90deg); justify-self: center; } }
+.map .arrow { text-align: center; font-size: 28px; color: var(--sun); }
+.rec { font-family: var(--mono); font-size: 12.5px; line-height: 1.7; background: var(--surface-2); border-radius: 12px; padding: 14px 16px; overflow-x: auto; white-space: pre; }
+.rec .c { color: var(--muted); }
+.rows { display: grid; gap: 10px; }
+.row-card { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.row-card header { padding: 7px 12px; font-family: var(--mono); font-size: 12.5px; font-weight: 500; background: var(--core-soft); color: var(--core); }
+.row-card table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.row-card td, .row-card th { padding: 5px 12px; text-align: left; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.row-card th { font-weight: 500; color: var(--muted); font-size: 12px; }
+
+/* 7. Limits, FAQ, dev */
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+.limit h3 { font-family: var(--sans); font-size: 16px; font-weight: 600; margin-bottom: 6px; display: flex; gap: 8px; align-items: center; }
+.limit p { font-size: 14.5px; color: var(--muted); }
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0 18px; }
+details + details { margin-top: 10px; }
+summary { cursor: pointer; padding: 16px 0; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; font-size: 20px; line-height: 1; color: var(--muted); transition: transform .2s; }
+details[open] summary::after { transform: rotate(45deg); }
+details > div { padding: 0 0 18px; color: var(--muted); font-size: 15px; display: grid; gap: 8px; }
+.files { width: 100%; border-collapse: collapse; font-size: 14px; }
+.files td { padding: 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.files td:first-child { width: 42%; padding-right: 14px; }
+@media (max-width: 640px) { .files td { display: block; width: auto !important; padding: 2px 0; } .files tr { display: block; padding: 8px 0; border-top: 1px solid var(--line); } .files td { border: 0; } }
+
+footer { padding: 56px 0 48px; color: var(--muted); font-size: 13.5px; }
+
+/* 9. Screens */
+.shots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; align-items: start; }
+@media (max-width: 860px) { .shots { grid-template-columns: 1fr; max-width: 460px; } }
+figure { margin: 0; display: grid; gap: 10px; }
+figure .frame { display: block; padding: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #f6f5f1; box-shadow: var(--shadow); cursor: zoom-in; width: 100%; }
+figure .frame img { display: block; width: 100%; height: auto; }
+figure .frame:focus-visible { outline: 2px solid var(--ts); outline-offset: 3px; }
+figcaption { font-size: 14.5px; color: var(--muted); }
+figcaption b { color: var(--ink); }
+figcaption > b:first-child { display: block; font-size: 15px; margin-bottom: 3px; }
+.step-no { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--sun); color: #2a1d00; font-size: 12.5px; font-weight: 700; margin-right: 6px; vertical-align: 1px; }
+.wide-shot { display: grid; gap: 10px; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+@media (max-width: 860px) { .pair { grid-template-columns: 1fr; } }
+.redacted-note { font-size: 13px; color: var(--muted); }
+dialog.zoom { border: 0; padding: 0; background: transparent; max-width: min(96vw, 1400px); max-height: 94vh; }
+dialog.zoom::backdrop { background: rgba(10,12,18,.78); }
+dialog.zoom img { display: block; max-width: 100%; max-height: 92vh; border-radius: 10px; }
+dialog.zoom button { position: absolute; top: 8px; right: 8px; border: 0; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; font: inherit; font-size: 14px; padding: 6px 12px; cursor: pointer; }
+
+/* 10. Calculation */
+.chain { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: c; }
+.chain > li { counter-increment: c; display: grid; grid-template-columns: 40px 1fr; gap: 14px; position: relative; padding-bottom: 20px; }
+.chain > li:not(:last-child)::after { content: ""; position: absolute; left: 19px; top: 40px; bottom: 0; width: 2px; background: var(--line); }
+.chain > li::before { content: counter(c); width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--sun-soft); color: var(--sun-ink); font-family: var(--serif); font-weight: 650; font-size: 18px; }
+.chain h3 { font-size: 18px; margin: 6px 0 4px; }
+.chain p { color: var(--muted); font-size: 15px; max-width: 72ch; }
+.chain .src { font-family: var(--mono); font-size: 12px; color: var(--ts); margin-top: 6px; display: block; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.facts span { font-size: 13.5px; background: var(--surface-2); border-radius: 999px; padding: 4px 11px; font-variant-numeric: tabular-nums; }
+.facts span b { font-weight: 600; }
+.money { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 15px; margin-top: 10px; }
+.money th { text-align: left; font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.money td { padding: 9px 10px; border-bottom: 1px dashed var(--line); vertical-align: top; }
+.money td.n { text-align: right; white-space: nowrap; }
+.money td.calc { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.money tr.total td { border-bottom: 0; border-top: 2px solid var(--ink); font-weight: 600; font-size: 16px; }
+.money tr.info td { color: var(--muted); font-style: italic; }
+.money tr.save td { color: var(--ok); font-weight: 600; }
+@media (max-width: 640px) { .money td.calc { display: none; } .money th.calc { display: none; } }
+.money.cmp { min-width: 640px; }
+.money.cmp th:not(:first-child) { text-transform: none; letter-spacing: 0; font-size: 13.5px; color: var(--ink); }
+.money.cmp td:first-child { color: var(--muted); font-size: 14px; width: 24%; }
+.money.cmp td { font-size: 14.5px; }
+.money.cmp td.calc { display: table-cell; }
+.money.cmp tr.same td[colspan] { background: var(--sun-soft); text-align: center; }
+.tagf, .tagp { display: inline-block; font-size: 12.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; margin-right: 4px; }
+.tagf { background: var(--core-soft); color: var(--core); }
+.tagp { background: var(--sun-soft); color: var(--sun-ink); }
+.uses { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.uses .card { padding: 16px 18px; }
+.uses h3 { font-family: var(--sans); font-size: 15.5px; font-weight: 600; margin-bottom: 4px; }
+.uses p { font-size: 14px; color: var(--muted); }
+.codepath { display: grid; gap: 8px; counter-reset: k; margin: 0; padding: 0; list-style: none; }
+.codepath li { counter-increment: k; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 14.5px; }
+.codepath li::before { content: counter(k); width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: var(--ts-soft); color: var(--ts); font-weight: 600; font-size: 12.5px; }
+.codepath code { white-space: nowrap; }
+.codepath span.m { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <span class="kicker"><span class="dot"></span>EnergieBee core · how it works</span>
+    <h1>How EnergieBee knows what <em>your electricity costs</em></h1>
+    <p class="lede">To show a home's real cost for every half-hour, we need the price it pays. Octopus customers give us that through their account. For everyone else, we use <b>Tariffscanner</b>: a catalogue of every UK supplier's published tariffs. This page explains what it is, why we use it and what happens step by step.</p>
+    <div class="stats">
+      <div class="stat"><b>12,878</b><span>tariffs held</span></div>
+      <div class="stat"><b>21</b><span>suppliers</span></div>
+      <div class="stat"><b>14</b><span>UK regions</span></div>
+      <div class="stat"><b>38,069</b><span>prices stored</span></div>
+    </div>
+    <p class="asof">Figures from our database after the sweep of 5 Nov 2026, 08:32 UTC: “complete incremental sweep, 2 pages, 1,318 records, 2,242 rate rows written”.</p>
+  </header>
+
+  <nav class="toc" aria-label="Sections">
+    <a href="#why">Why</a><a href="#how">How it works</a><a href="#try">Try it</a><a href="#sweep">Daily sweep</a><a href="#rules">Rate limits</a><a href="#data">What we store</a><a href="#limits">Good to know</a><a href="#faq">FAQ</a><a href="#screens">In the app</a><a href="#calc">A real half-hour</a><a href="#today">Finished vs today</a><a href="#dev">For developers</a>
+  </nav>
+
+  <!-- 1. WHY -->
+  <section class="block" id="why">
+    <span class="eyebrow">01 · The problem</span>
+    <h2>No price, no cost</h2>
+    <p class="intro">Every saving and every cost figure in EnergieBee is energy × price, worked out for each half-hour. We always know the energy, from the inverter or the smart meter. The price depends on who the home buys electricity from, and there are two ways to find it.</p>
+    <div class="lanes">
+      <div class="card lane oct">
+        <span class="tag">Home on Octopus Energy</span>
+        <h3>We read it from the account</h3>
+        <ol>
+          <li><span class="n">1</span><span>The user signs in with their Octopus login.</span></li>
+          <li><span class="n">2</span><span>Octopus tells us the exact tariff the meter is on, and since when.</span></li>
+          <li><span class="n">3</span><span>We fetch that tariff's prices. Tariffscanner isn't needed.</span></li>
+        </ol>
+      </div>
+      <div class="card lane other">
+        <span class="tag">Any other supplier: British Gas, E.ON, EDF, OVO…</span>
+        <h3>The user picks it from Tariffscanner</h3>
+        <ol>
+          <li><span class="n">1</span><span>We can't log in to these suppliers, so we don't know the tariff.</span></li>
+          <li><span class="n">2</span><span>Tariffscanner lists every supplier's published tariffs and prices, for every region.</span></li>
+          <li><span class="n">3</span><span>The user chooses <b>supplier → tariff → how they pay</b> from that list, and we price the home with it.</span></li>
+        </ol>
+      </div>
+    </div>
+    <div class="callout"><span class="ic" aria-hidden="true">💡</span><p><b>In one sentence:</b> Tariffscanner is our price list for the whole UK market, so a home that isn't on Octopus can still see real costs. Without it, sign-up would say “Without it, your costs cannot be worked out.”</p></div>
+  </section>
+
+  <!-- 2. HOW -->
+  <section class="block" id="how">
+    <span class="eyebrow">02 · The big picture</span>
+    <h2>Three moments, and only one talks to Tariffscanner</h2>
+    <p class="intro">We never call Tariffscanner while a user is waiting. Once a day we copy its catalogue into our own database. Everything the user sees is read from that copy.</p>
+    <div class="moments">
+      <div class="moment">
+        <div class="badge">1</div>
+        <h3>Daily sweep</h3>
+        <span class="when">Once a day, as part of the 10-minute sync</span>
+        <ul>
+          <li>Sign in to Tariffscanner with EnergieBee's own account</li>
+          <li>Ask what tariffs changed since the last sweep</li>
+          <li>Save the answer, then store each tariff and its prices</li>
+        </ul>
+        <span class="pill yes">● Calls Tariffscanner</span>
+      </div>
+      <div class="moment">
+        <div class="badge">2</div>
+        <h3>User picks a tariff</h3>
+        <span class="when">During sign-up, or later under “Your providers”</span>
+        <ul>
+          <li>Suppliers in the home's region are listed</li>
+          <li>Then that supplier's tariffs and prices</li>
+          <li>The user chooses how they pay and from which day</li>
+        </ul>
+        <span class="pill no">○ Reads our copy, no call</span>
+      </div>
+      <div class="moment">
+        <div class="badge">3</div>
+        <h3>Every half-hour is priced</h3>
+        <span class="when">Straight after choosing, then on every rebuild</span>
+        <ul>
+          <li>The choice puts the home's meter on that tariff</li>
+          <li>The days since the start date are rebuilt</li>
+          <li>Cost, savings and charts now use the real price</li>
+        </ul>
+        <span class="pill no">○ Reads our copy, no call</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. TRY IT -->
+  <section class="block" id="try">
+    <span class="eyebrow">03 · Try it</span>
+    <h2>Pick a tariff the way a new user does</h2>
+    <p class="intro">This works like the sign-up step, using real prices from our database for <b>Eastern England</b> (6 of the 21 suppliers, two tariffs each). On the right you can see how one half-hour is priced from what you pick.</p>
+    <div class="demo">
+      <div class="phone" aria-live="polite">
+        <div class="phone-top"><span><b>Electricity tariff</b> · step <span id="stepno">1</span> of 3</span><span class="steps"><i class="on"></i><i id="s2"></i><i id="s3"></i></span></div>
+        <div class="phone-body">
+          <p class="q">Who supplies your electricity?</p>
+          <div class="chips" id="suppliers" role="group" aria-label="Suppliers"></div>
+          <div id="tariffBox" hidden>
+            <p class="q" style="margin-bottom:10px">Which tariff are you on?</p>
+            <div class="tariffs" id="tariffs"></div>
+          </div>
+          <div id="payBox" hidden>
+            <p class="q" style="margin-bottom:10px">How do you pay?</p>
+            <div class="seg" id="pay" role="group" aria-label="Payment method"></div>
+            <div class="prices" id="prices" style="margin-top:14px"></div>
+            <p class="muted" style="font-size:13px;margin-top:10px">Prices are the supplier's published prices for your area, before VAT.</p>
+          </div>
+          <p class="note-oct" id="octNote" hidden>In the real app, choosing <b>Octopus Energy</b> asks for your Octopus login instead, because the account tells us your exact tariff. The list is shown here so you can compare.</p>
+        </div>
+      </div>
+
+      <div class="card calc">
+        <h3>One half-hour, priced</h3>
+        <label for="kwh">Electricity taken from the grid <span id="kwhv">0.40 kWh</span></label>
+        <input type="range" id="kwh" min="0.05" max="2" step="0.05" value="0.4">
+        <div id="dayNight" hidden>
+          <p style="font-size:14px;font-weight:500;margin-bottom:6px">When was it used?</p>
+          <div class="seg" id="dn" role="group" aria-label="Day or night">
+            <button type="button" data-v="day" aria-pressed="true">Day rate</button><button type="button" data-v="night" aria-pressed="false">Night rate (cheap)</button>
+          </div>
+        </div>
+        <div class="big-total" id="total">–<small> this half-hour</small></div>
+        <div class="sum" id="sum"><p class="empty-hint">Pick a supplier, a tariff and a payment method to see the sum.</p></div>
+        <p class="muted" style="font-size:13.5px">The build engine does exactly this for all 48 half-hours of every day. The daily standing charge is shared out evenly: 1/48 per half-hour. VAT is applied at the rate in force that day: 0% on household electricity since 1 Oct 2026 (5% before; gas is still 5%). See a real half-hour <a href="#calc">worked through below</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. SWEEP -->
+  <section class="block" id="sweep">
+    <span class="eyebrow">04 · Behind the scenes</span>
+    <h2>What happens in the daily sweep</h2>
+    <p class="intro">The sweep runs inside the normal sync, once a day at most, for whichever home is synced first, because the catalogue is shared by all homes.</p>
+    <div class="card">
+      <ol class="timeline">
+        <li><span class="ico" aria-hidden="true">🔑</span><div><h3>Sign in <span class="who">Tariffscanner</span></h3><p>EnergieBee signs in with its own account (<code>TARIFFSCAN_USERNAME</code> / <code>PASSWORD</code> in <code>.env</code>, not the user's). The pass it gets back lasts 24 hours and is reused, so we rarely sign in twice.</p></div></li>
+        <li><span class="ico" aria-hidden="true">📨</span><div><h3>Ask for what changed <span class="who">Tariffscanner</span></h3><p>“Give me active tariffs updated since the day before my last complete sweep.” Answers come in pages of up to 1,000 tariffs. Yesterday's sweep needed 2 pages.</p></div></li>
+        <li class="ours"><span class="ico" aria-hidden="true">🗄️</span><div><h3>Keep the original answer <span class="who">EnergieBee</span></h3><p>Each page is saved exactly as received (<code>raw_payload</code> + a file under <code>data/raw/</code>), so every stored price can be traced back to the answer it came from.</p></div></li>
+        <li class="ours"><span class="ico" aria-hidden="true">🔁</span><div><h3>Translate into our own format <span class="who">EnergieBee</span></h3><p>Each record becomes a <b>tariff</b> plus its <b>prices</b>: a unit price (p/kWh) and a standing charge (p/day) for each payment method. Regions are converted to the standard UK numbering. Supplier names are linked so the picker can group by supplier.</p></div></li>
+        <li class="ours"><span class="ico" aria-hidden="true">🛡️</span><div><h3>Never overwrite history <span class="who">EnergieBee</span></h3><p>A price that hasn't changed is left alone. A changed price closes the old one and adds the new one, so a past day is always priced at what it cost <i>then</i>. Nothing is deleted.</p></div></li>
+        <li class="ours"><span class="ico" aria-hidden="true">✅</span><div><h3>Done until tomorrow <span class="who">EnergieBee</span></h3><p>The result is recorded (“complete incremental sweep…”). The next sweep may start 24 hours after this one started, even if this one failed.</p></div></li>
+      </ol>
+    </div>
+    <div class="split">
+      <div class="card">
+        <h3>The very first sweep</h3>
+        <p>On a new database, the sweep reads <b>every</b> active tariff, one region at a time across all 14 UK regions. It saves its place after each page, so if a run hits its request limit, the next run carries on where it stopped.</p>
+        <div class="regions" aria-hidden="true">
+          <i style="animation-delay:0s"></i><i style="animation-delay:.4s"></i><i style="animation-delay:.8s"></i><i style="animation-delay:1.2s"></i><i style="animation-delay:1.6s"></i><i style="animation-delay:2s"></i><i style="animation-delay:2.4s"></i><i style="animation-delay:2.8s"></i><i style="animation-delay:3.2s"></i><i style="animation-delay:3.6s"></i><i style="animation-delay:4s"></i><i style="animation-delay:4.4s"></i><i style="animation-delay:4.8s"></i><i style="animation-delay:5.2s"></i>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Every sweep after that</h3>
+        <p>Only <b>changes</b> are fetched: new tariffs and new prices. That keeps each daily sweep to a few requests, well inside Tariffscanner's limits.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. RULES -->
+  <section class="block" id="rules">
+    <span class="eyebrow">05 · Playing by the rules</span>
+    <h2>Being a polite guest of the API</h2>
+    <p class="intro">Tariffscanner limits how fast one account may ask. The limit belongs to the <b>account</b>, so anything else using the same login (a colleague, a script, a second copy of the server) uses up the same allowance.</p>
+    <div class="rules">
+      <div class="card rule"><b>20 <small>per minute</small></b><div class="ticks" aria-hidden="true" id="ticks"></div><p>The most requests Tariffscanner allows per account.</p></div>
+      <div class="card rule"><b>3 s <small>apart</small></b><p>We always leave at least 3 seconds between two requests. The wait is saved in the database, so even a restarted server can't send a burst.</p></div>
+      <div class="card rule"><b>60 <small>per run</small></b><p>A hard budget per sweep, the sign-in included. When it runs out, the sweep stops cleanly and the next one continues.</p></div>
+      <div class="card rule"><b>429 <small>→ stop</small></b><p>If Tariffscanner says “too many requests”, we stop at once, wait at least 60 seconds (longer if Tariffscanner asks) and don't retry until the next sweep.</p></div>
+    </div>
+    <div class="callout warn">
+      <span class="ic" aria-hidden="true">🚦</span>
+      <div style="display:grid;gap:6px">
+        <p><b>What the red “tariffscanner … HTTP 429 (rate limited)” banner means</b></p>
+        <p>Tariffscanner refused one request because the account's per-minute allowance was used up. EnergieBee stopped as designed, and the home's other data kept syncing. The catalogue already held stays usable, so users can still pick tariffs. The banner clears after the next successful daily sweep. If it keeps coming back, check that nothing else is using the same Tariffscanner login at the same time.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. DATA -->
+  <section class="block" id="data">
+    <span class="eyebrow">06 · What we store</span>
+    <h2>From one Tariffscanner record to our tables</h2>
+    <p class="intro">Tariffscanner sends one record per product, region, payment method and type. We store one <code>tariff</code> per product, region and type, and its prices as <code>rate_interval</code> rows, one per payment method. A real example:</p>
+    <div class="map">
+      <div class="rec"><span class="c">// Tariffscanner record (key fields only)</span>
+supplier_name          "E.ON Next"
+name                   "Next Flex"
+product_id             <span class="c">a number</span>
+dno_region             "Eastern" <span class="c">→ our region 10</span>
+dno_region_id          1  <span class="c">their own numbering</span>
+service_type           "E"   <span class="c">electricity</span>
+rate_type              "constant" <span class="c">→ flat</span>
+payment_method         "DDM" <span class="c">monthly Direct Debit</span>
+elec_import_unit_rate  26.61 <span class="c">p/kWh</span>
+elec_standing_charge   51.84 <span class="c">p/day</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="rows">
+        <div class="row-card"><header>tariff</header>
+          <table><tr><th>name</th><td>E.ON Next: Next Flex</td></tr><tr><th>structure</th><td>flat</td></tr><tr><th>region</th><td>10 · Eastern England</td></tr><tr><th>tariff_code</th><td style="font-family:var(--mono);font-size:11.5px">TS-&lt;product&gt;-E-constant-E-10</td></tr></table></div>
+        <div class="row-card"><header>rate_interval (one per payment method)</header>
+          <table><tr><th>method</th><th>unit p/kWh</th><th>standing p/day</th></tr>
+            <tr><td>Direct Debit monthly</td><td>26.61</td><td>51.84</td></tr>
+            <tr><td>Direct Debit quarterly</td><td>26.02</td><td>46.33</td></tr>
+            <tr><td>Cash or cheque</td><td>28.11</td><td>60.62</td></tr></table></div>
+      </div>
+    </div>
+    <div class="grid3">
+      <div class="card limit"><h3>Flat · 9,771 tariffs</h3><p>One price all day. The most common kind.</p></div>
+      <div class="card limit"><h3>Economy 7 · 2,931</h3><p>A day price and a cheaper night price. We keep the supplier's usual night hours, but price with <i>your meter's</i> own hours, which the user confirms.</p></div>
+      <div class="card limit"><h3>Export · 176</h3><p>What a supplier pays for electricity you send back to the grid.</p></div>
+    </div>
+  </section>
+
+  <!-- 7. LIMITS -->
+  <section class="block" id="limits">
+    <span class="eyebrow">07 · Good to know</span>
+    <h2>What Tariffscanner doesn't cover</h2>
+    <div class="grid3">
+      <div class="card limit"><h3>⏱️ Time-of-use tariffs are skipped</h3><p>Half-hourly, smart time-of-use and similar tariffs arrive without their time pattern, so we can't price them and they're counted and skipped. Octopus Agile and similar are priced through the Octopus account instead.</p></div>
+      <div class="card limit"><h3>🧾 VAT basis isn't stated</h3><p>Prices are stored exactly as Tariffscanner publishes them, and the app treats them as before VAT. Tariffscanner's records don't say which, so this is our assumption.</p></div>
+      <div class="card limit"><h3>🗑️ Withdrawn tariffs aren't spotted</h3><p>We don't receive a list of deleted tariffs, so a tariff that disappears upstream keeps its last prices here. That's fine for pricing past days, which is what matters.</p></div>
+      <div class="card limit"><h3>💳 Payment method matters</h3><p>The same tariff often costs more when paid by cash or cheque than by Direct Debit, so we ask how the user pays and price with that method.</p></div>
+      <div class="card limit"><h3>📈 Estimated annual cost isn't stored</h3><p>Tariffscanner's yearly estimate assumes a typical home, not a price, so we don't keep it. Real costs come from real usage.</p></div>
+      <div class="card limit"><h3>🔄 Octopus takes over</h3><p>If a user later connects an Octopus account, its exact tariff replaces the picked one from then on. Earlier days keep the price the user chose.</p></div>
+    </div>
+  </section>
+
+  <!-- 8. FAQ -->
+  <section class="block" id="faq">
+    <span class="eyebrow">08 · Questions</span>
+    <h2>Frequently asked</h2>
+    <div>
+      <details><summary>Does a user need a Tariffscanner account?</summary><div><p>No. EnergieBee uses its own account, set in <code>.env</code>. Users never see or enter a Tariffscanner login.</p></div></details>
+      <details><summary>Does picking a tariff send anything to Tariffscanner?</summary><div><p>No. Listing suppliers, listing tariffs and saving a choice all read and write our own database. Only the daily sweep talks to Tariffscanner.</p></div></details>
+      <details><summary>The picker says “no Tariffscanner tariffs are held for this region yet”. Why?</summary><div><p>Either the first sweep hasn't reached that region yet (it fills all 14 over one or more runs), or the home's postcode couldn't be matched to a region. Wait for the next daily sweep, or check the home's postcode.</p></div></details>
+      <details><summary>What if a supplier changes its prices?</summary><div><p>The next daily sweep picks up the new price. Days before the change keep the old price; days after use the new one. Nothing is overwritten.</p></div></details>
+      <details><summary>Can a user change their tariff later?</summary><div><p>Yes, from “Your providers”. The new tariff applies from the date they give. Earlier days keep the previous tariff, and the affected days are rebuilt straight away.</p></div></details>
+      <details><summary>What happens if Tariffscanner is down or rate-limits us?</summary><div><p>That day's sweep stops and records the error (the red banner). Everything already stored keeps working: pickers, pricing and rebuilds. The next sweep is tried 24 hours later.</p></div></details>
+      <details><summary>Is Tariffscanner used outside the UK?</summary><div><p>No. It's the UK (GB) catalogue only. France and the Netherlands are planned to use a different source (tounify) through the same picker screen.</p></div></details>
+    </div>
+  </section>
+
+  <!-- 9. SCREENS -->
+  <section class="block" id="screens">
+    <span class="eyebrow">09 · In the app</span>
+    <h2>What the user actually sees</h2>
+    <p class="intro">Screenshots from the running app (6 Nov 2026) for a real home, “Home” (home 8, North West England), whose owner picked a 100Green tariff from the Tariffscanner list. Nothing was saved while taking them. Click any picture to enlarge it.</p>
+    <div class="shots">
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: Your tariff card"><img src="img/tariffscanner/1-your-tariff.webp" alt="Your providers page: Sunsynk connected, and a Your tariff card showing 100Green, 100 Origin - Nov 27, chosen by you from 2026-10-30, Monthly Direct Debit, with a Change tariff button" loading="lazy" width="1152" height="1388"></button>
+        <figcaption><b><span class="step-no">1</span>The home's tariff</b>Under “Your providers”, the <b>Your tariff</b> card shows what was picked: supplier, tariff, start date and payment method. <b>Change tariff</b> opens the picker.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: supplier list"><img src="img/tariffscanner/2-suppliers.webp" alt="Who supplies your electricity? A searchable grid of suppliers with tariff counts: 100Green 24, British Gas 18, Co-operative Energy 71, E.ON Next 53 and more" loading="lazy" width="1152" height="1402"></button>
+        <figcaption><b><span class="step-no">2</span>Pick the supplier</b>Every supplier Tariffscanner lists for the home's region, with how many tariffs each has. Read from our database; no call to Tariffscanner.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: tariff list and save form"><img src="img/tariffscanner/3-choose-tariff.webp" alt="Which 100Green tariff? Four versions of 100 Origin - Nov 27 with their prices; the one-price dual-fuel version at 30.52p/kWh and 46.87p/day is selected; below are On this tariff since and Save my tariff" loading="lazy" width="1152" height="1613"></button>
+        <figcaption><b><span class="step-no">3</span>Pick the tariff and save</b>Each version shows its prices. The user picks one, optionally gives a start date, and presses <b>Save my tariff</b>. The days since then are re-priced straight away.</figcaption>
+      </figure>
+    </div>
+    <p class="redacted-note">The inverter login, plant number and street name in screenshot 1 have been blanked out.</p>
+  </section>
+
+  <!-- 10. CALC -->
+  <section class="block" id="calc">
+    <span class="eyebrow">10 · Where the price is used</span>
+    <h2>One real half-hour, worked through</h2>
+    <p class="intro">This is how the picked price becomes money, using home 8 on <b>Sunday 1 Nov 2026, 13:30–14:00</b>. Every number comes from the database, and the app shows the same working in <b>Data Explorer → Slot inspector</b> (screenshots below).</p>
+
+    <div class="card">
+      <ol class="chain">
+        <li><div>
+          <h3>Which tariff was the meter on at 13:30?</h3>
+          <p>Saving the choice created a <b>tariff agreement</b>: the home's import meter is on <b>100Green: 100 Origin - Nov 27</b> (one price, dual fuel), paid by <b>Monthly Direct Debit</b>, from 30 Oct 2026 with no end date.</p>
+          <div class="facts"><span>tariff <b>TS-331498-D-constant-E-16</b></span><span>region <b>16 · North West England</b></span><span>payment <b>DDM</b></span></div>
+          <span class="src">tariff_agreement · pricing.js loadPricing() → agreementAt()</span>
+        </div></li>
+        <li><div>
+          <h3>Which price rows apply?</h3>
+          <p>Of that tariff's stored prices, the engine takes the ones in force at 13:30 <b>for the home's own payment method</b> (Direct Debit here; cash or prepayment can cost more). They came from Tariffscanner's answer saved as raw file #10732.</p>
+          <div class="facts"><span>unit <b>30.52p/kWh</b></span><span>standing <b>46.87p/day</b></span><span>source <b>raw file #10732</b></span></div>
+          <span class="src">rate_interval · pricing.js rateRow()</span>
+        </div></li>
+        <li><div>
+          <h3>Add tax</h3>
+          <p>Prices are stored before VAT, and VAT is added at the rate in force that day. Household electricity has been <b>0%</b> since 1 Oct 2026, so the price paid is the same: 30.52p/kWh.</p>
+          <div class="facts"><span>price paid = 30.52 × (1 + 0%) = <b>30.52p/kWh</b></span></div>
+          <span class="src">vat_rate / tax_rule · pricing.js taxesAt() · build.js line 490</span>
+        </div></li>
+        <li><div>
+          <h3>Where did each kWh go?</h3>
+          <p>From the inverter readings, the engine has already split the half-hour's energy into flows. Only electricity taken from the grid costs money.</p>
+          <div class="facts"><span>☀️ solar → house <b>0.408 kWh</b></span><span>🔋 battery → house <b>0.492 kWh</b></span><span>⚡ grid → house <b>0.227 kWh</b></span><span>⚡ grid → battery <b>0.295 kWh</b></span><span>⚡ grid → inverter losses <b>0.083 kWh</b></span><span>house used <b>1.127 kWh</b></span></div>
+        </div></li>
+        <li><div>
+          <h3>Turn it into money</h3>
+          <table class="money">
+            <thead><tr><th>What</th><th class="calc">Sum</th><th style="text-align:right">Pence</th></tr></thead>
+            <tbody>
+              <tr><td>Grid → house</td><td class="calc">0.2273 kWh × 30.52p</td><td class="n">6.94p</td></tr>
+              <tr><td>Grid → battery (stored for later)</td><td class="calc">0.2951 kWh × 30.52p</td><td class="n">9.01p</td></tr>
+              <tr><td>Grid → inverter losses</td><td class="calc">0.0832 kWh × 30.52p</td><td class="n">2.54p</td></tr>
+              <tr><td>Standing charge, this half-hour's share</td><td class="calc">46.87p ÷ 48</td><td class="n">0.98p</td></tr>
+              <tr><td>Export credit (no export tariff, nothing exported)</td><td class="calc">0 kWh</td><td class="n">−0.00p</td></tr>
+              <tr class="total"><td>What this half-hour cost</td><td class="calc"></td><td class="n">19.46p</td></tr>
+              <tr><td>Same half-hour on grid power alone</td><td class="calc">1.1269 kWh × 30.52p + 0.98p</td><td class="n">35.37p</td></tr>
+              <tr class="save"><td>Saved by solar and the battery</td><td class="calc">35.37p − 19.46p</td><td class="n">15.91p</td></tr>
+              <tr class="info"><td>Battery → house: its energy cost 31.54p/kWh when it was stored (30.52p ÷ 96.8% efficiency). Shown for information; not added again, because it was paid for when charged.</td><td class="calc">0.492 kWh × 31.54p</td><td class="n">15.51p</td></tr>
+            </tbody>
+          </table>
+          <span class="src">build.js lines 487–541 (step “4 Price”) · pricing.js fixedOver()</span>
+        </div></li>
+        <li><div>
+          <h3>Store it, and use it everywhere</h3>
+          <p>The results are saved in that half-hour's row (<code>site_hh</code>: <code>import_rate_ex</code>, <code>grid_to_home_cost</code>, <code>standing_cost</code>, <code>total_cost</code>, <code>saving</code>…) and added up into the day (<code>site_day</code>). Every page reads these rows; nothing recalculates the price on the fly.</p>
+        </div></li>
+      </ol>
+    </div>
+
+    <h3 style="margin-top:6px">The same half-hour in the app</h3>
+    <div class="wide-shot">
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: Slot inspector header"><img src="img/tariffscanner/4-slot-header.webp" alt="Data Explorer Slot inspector: Half-hour Sun, 1 Nov 2026, 13:30–14:00, Final, matches the stored timeline" loading="lazy" width="1600" height="386"></button>
+        <figcaption><b>Data Explorer → Slot inspector</b>Pick any half-hour to see how its numbers were worked out. This one is final and matches the stored timeline.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: Step 5 What it cost"><img src="img/tariffscanner/6-what-it-cost.webp" alt="Step 5 What it cost: the rule, inputs (import unit 30.52 p/kWh, VAT 0%, standing 46.87 p/day, 48 half-hours) and results: grid to home 6.94p, grid to battery 9.01p, inverter loss 2.54p, standing 0.976p, total 19.46p, grid alone 35.37p, saving 15.91p" loading="lazy" width="1600" height="1075"></button>
+        <figcaption><b>Step 5 “What it cost”</b>The app's own working for the table above: the rule, the inputs (30.52p, 0% VAT, 46.87p/day, 48 half-hours) and every result (6.94p, 9.01p, 2.54p, 0.976p, total 19.46p, saving 15.91p).</figcaption>
+      </figure>
+      <div class="pair">
+        <figure>
+          <button type="button" class="frame" data-zoom aria-label="Enlarge: price panel"><img src="img/tariffscanner/7-prices.webp" alt="The prices panel: import tariff TS-331498-D-constant-E-16, unit price 30.52 p/kWh, VAT 0%, rate from raw file #10732; standing charge 46.87 p/day, 48 half-hours, share 0.976 p" loading="lazy" width="1224" height="1392"></button>
+          <figcaption><b>The prices</b>The Tariffscanner tariff code, unit price, VAT line and standing-charge share, with a link to the raw file the price came from.</figcaption>
+        </figure>
+        <figure>
+          <button type="button" class="frame" data-zoom aria-label="Enlarge: energy flows"><img src="img/tariffscanner/5-energy-flow.webp" alt="Where each kWh came from and went: solar 0.408 kWh, battery 0.492 kWh and grid 0.606 kWh feeding the house 1.127 kWh, battery charging 0.295 kWh and losses 0.083 kWh; battery stored energy cost 31.54 p/kWh" loading="lazy" width="1224" height="1380"></button>
+          <figcaption><b>Where each kWh went</b>The flows that get priced, and what the battery's stored energy cost.</figcaption>
+        </figure>
+      </div>
+    </div>
+
+    <h3 style="margin-top:6px">Every place the picked price shows up</h3>
+    <div class="uses">
+      <div class="card"><h3>My energy &amp; Home</h3><p>Today's and this period's cost and savings: the sum of <code>total_cost</code> and <code>saving</code> over the half-hours.</p></div>
+      <div class="card"><h3>Timeline &amp; Breakdown</h3><p>Cost per half-hour and per flow: grid → house, grid → battery, standing charge.</p></div>
+      <div class="card"><h3>Tariffs page</h3><p>The tariff in force with its source, and your real use re-priced on Agile to compare (below).</p></div>
+      <div class="card"><h3>Data &amp; trust</h3><p>“Import price: tariffscanner tariff” is a source row, and the coverage check says whether every half-hour had a price.</p></div>
+      <div class="card"><h3>Slot inspector</h3><p>The full working for any one half-hour, as shown above.</p></div>
+    </div>
+    <div class="wide-shot">
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: tariffs in force"><img src="img/tariffscanner/8-tariffs-in-force.webp" alt="Tariffs page, in force now: Grid import (tariff chosen by the user) TS-331498-D-constant-E-16, 100Green 100 Origin - Nov 27, flat, 30.5p/kWh, 46.9p/day, VAT 0% sourced" loading="lazy" width="1600" height="356"></button>
+        <figcaption><b>Tariffs page: in force now</b>“Grid import (tariff chosen by the user)”, labelled <i>provider</i> because the price came from Tariffscanner.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: tariff verdict"><img src="img/tariffscanner/9-tariffs-verdict.webp" alt="Verdict for Sat 31 Oct to Fri 6 Nov: your tariff cost £50.16 for electricity and Agile would have cost £60.90; you were £10.74 better off" loading="lazy" width="1600" height="194"></button>
+        <figcaption><b>Tariffs page: the verdict</b>Over 31 Oct – 6 Nov the picked tariff cost <b>£50.16</b>; the same use on Agile would have cost £60.90. This comparison only works because the real tariff is known.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 11. FINISHED VS TODAY -->
+  <section class="block" id="today">
+    <span class="eyebrow">11 · Finished day vs today</span>
+    <h2>A finished half-hour next to one from today</h2>
+    <p class="intro">The price works the same way on both days. What changes is how settled the <b>energy</b> figures are. Below, the finished half-hour from above sits next to the latest half-hour of today for the same home: <b>Fri 6 Nov 2026, 06:30–07:00</b>, the newest available when this page was made (07:09 UK time).</p>
+
+    <div class="card" style="overflow-x:auto">
+      <table class="money cmp">
+        <thead><tr><th></th><th>✅ Finished · Sun 1 Nov, 13:30–14:00</th><th>⏳ Today · Fri 6 Nov, 06:30–07:00</th></tr></thead>
+        <tbody>
+          <tr><td>State in the app</td><td><span class="tagf">Final</span></td><td><span class="tagp">Provisional</span> “the day is not over, so its figures can still change”</td></tr>
+          <tr class="same"><td>Tariff and price</td><td colspan="2">Same on both: <b>TS-331498-D-constant-E-16</b> (Tariffscanner), <b>30.52p/kWh</b>, VAT 0%, standing charge 46.87p/day → <b>0.98p</b> per half-hour</td></tr>
+          <tr><td>5-minute readings corrected to the inverter's daily totals</td><td><b>Yes.</b> Solar ×1.026, house ×0.963, grid ×1.004, battery charge ×1.066, discharge ×0.920</td><td><b>Not yet.</b> Every factor is 1 until the day ends and its totals are known</td></tr>
+          <tr><td>Checks run</td><td>Counter checks for solar, house, grid and battery all pass</td><td>Only price coverage, completeness and battery efficiency so far</td></tr>
+          <tr><td>Stored figures still up to date?</td><td>✓ A fresh calculation gives the same numbers</td><td>✗ Carbon intensity (95 g/kWh) arrived after this half-hour was built; the next sync (within 10 minutes) updates it. Money is unaffected.</td></tr>
+          <tr><td>Energy</td><td>solar 0.408 · battery → house 0.492 · grid 0.606 · house 1.127 kWh</td><td>solar 0.010 · battery → house 0.204 · grid 0 · house 0.214 kWh</td></tr>
+          <tr><td>Grid energy cost</td><td class="calc">0.606 kWh × 30.52p = 18.48p</td><td class="calc">0 kWh × 30.52p = 0p</td></tr>
+          <tr class="total"><td>Cost of the half-hour</td><td>19.46p</td><td>0.98p <span class="muted" style="font-weight:400">(standing charge only)</span></td></tr>
+          <tr><td>On grid power alone</td><td class="calc">1.127 × 30.52p + 0.98p = 35.37p</td><td class="calc">0.214 × 30.52p + 0.98p = 7.51p</td></tr>
+          <tr class="save"><td>Saved by solar and battery</td><td>15.91p</td><td>6.53p</td></tr>
+          <tr><td>Can it still change?</td><td>Only if a provider later revises its data</td><td>Yes: rebuilt on every sync until midnight, then the correction factors are applied and it becomes final</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout"><span class="ic" aria-hidden="true">🔎</span><p><b>In short:</b> the Tariffscanner price is fixed once the tariff is chosen, so today's half-hours are priced straight away. Today's <i>energy</i> figures are the raw 5-minute readings; once the day is over they are scaled to the inverter's own daily totals, which can move each half-hour's cost slightly. That's why today is “provisional” and a finished day is “final”.</p></div>
+
+    <h3 style="margin-top:6px">Side by side in the Slot inspector</h3>
+    <div class="pair">
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: finished half-hour header"><img src="img/tariffscanner/4-slot-header.webp" alt="1 Nov 13:30–14:00: Final, matches the stored timeline" loading="lazy" width="1600" height="386"></button>
+        <figcaption><b>Finished: Final ✓</b>Matches the stored timeline.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: today's half-hour header"><img src="img/tariffscanner/10-today-header.webp" alt="6 Nov 06:30–07:00: Provisional, differs from the stored timeline: carbon intensity, carbon_g and carbon_saved_g were empty when stored and are now 95, 0 and 20.34" loading="lazy" width="1600" height="673"></button>
+        <figcaption><b>Today: Provisional ✗</b>New carbon data arrived after it was built, so a fresh calculation differs until the next sync.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: finished correction step"><img src="img/tariffscanner/11-final-correction.webp" alt="Step 2 for 1 Nov: readings added up, then corrected against the inverter's daily totals with fit factors such as solar 1.026" loading="lazy" width="1600" height="1451"></button>
+        <figcaption><b>Finished: corrected</b>Step 2 scales the readings to the inverter's daily totals (solar ×1.026…).</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: today's correction step"><img src="img/tariffscanner/12-today-correction.webp" alt="Step 2 for 6 Nov: the day is not over yet, so readings are not corrected; every fit factor is 1" loading="lazy" width="1600" height="1391"></button>
+        <figcaption><b>Today: not corrected yet</b>“The day is not over yet”: every fit factor is 1.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: finished cost step"><img src="img/tariffscanner/6-what-it-cost.webp" alt="Step 5 for 1 Nov: total 19.46p, grid alone 35.37p, saving 15.91p" loading="lazy" width="1600" height="1075"></button>
+        <figcaption><b>Finished: what it cost</b>19.46p, saving 15.91p.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: today's cost step"><img src="img/tariffscanner/13-today-what-it-cost.webp" alt="Step 5 for 6 Nov: same 30.52p price and 0% VAT, no grid import, total 0.98p, grid alone 7.51p, saving 6.53p" loading="lazy" width="1600" height="1045"></button>
+        <figcaption><b>Today: what it cost</b>Same price, no grid import: 0.98p, saving 6.53p.</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: finished checks"><img src="img/tariffscanner/14-final-status.webp" alt="Step 6 for 1 Nov: this half-hour is final" loading="lazy" width="1600" height="736"></button>
+        <figcaption><b>Finished: checks and status</b>“This half-hour is final: every figure is measured.”</figcaption>
+      </figure>
+      <figure>
+        <button type="button" class="frame" data-zoom aria-label="Enlarge: today's checks"><img src="img/tariffscanner/15-today-status.webp" alt="Step 6 for 6 Nov: this half-hour is provisional, the day is not over so figures can still change" loading="lazy" width="1600" height="766"></button>
+        <figcaption><b>Today: checks and status</b>“This half-hour is provisional: the day is not over, so its figures can still change.”</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 12. DEV -->
+  <section class="block" id="dev">
+    <span class="eyebrow">12 · For developers</span>
+    <h2>Where it lives in the code</h2>
+    <div class="card">
+      <h3 style="margin-bottom:12px">The path of one price, in order</h3>
+      <ol class="codepath">
+        <li><span><code>src/adapters/tariffscanner.js</code> <code>sweepCatalogue()</code> (line 554) → <code>mapRecord()</code> (line 328) <span class="m">writes <code>tariff</code> + <code>rate_interval</code> rows, run daily by the step in <code>src/jobs/steps.js</code></span></span></li>
+        <li><span><code>GET /api/sites/:id/suppliers</code>, <code>…/suppliers/:supplier/tariffs</code> (<code>src/server.js</code> line 169) → <code>src/core/tariff-picker.js</code> <code>listSuppliers()</code>, <code>listTariffs()</code> <span class="m">screens 2 and 3</span></span></li>
+        <li><span><code>POST /api/sites/:id/tariff</code> (<code>src/server.js</code> line 171) → <code>chooseTariff()</code> (line 342) <span class="m">adds the <code>picker</code> meter and the <code>tariff_agreement</code> (line 278), then <code>markDirty()</code> (line 281)</span></span></li>
+        <li><span><code>processQueue()</code> → <code>buildSite()</code> (<code>src/core/build.js</code> lines 725, 112) → <code>loadPricing()</code> (line 306) <span class="m">reads the agreements, rate rows and VAT for the window</span></span></li>
+        <li><span>Per half-hour: <code>priceOver()</code> → <code>priceAt()</code> → <code>rateRow()</code> + <code>taxesAt()</code> (<code>src/core/pricing.js</code>) <span class="m">the unit price for the home's payment method, plus tax (build.js lines 487–490)</span></span></li>
+        <li><span><code>fixedOver()</code> (pricing.js) and the cost lines (build.js lines 531–541) <span class="m">standing share, flow costs, total, grid-only, saving → written to <code>site_hh</code> (line 572)</span></span></li>
+      </ol>
+    </div>
+    <div class="card">
+      <table class="files">
+        <tr><td><code>src/adapters/tariffscanner.js</code></td><td>The API client (token, request queue, 3 s gap, budget, 429 cooldown), the daily sweep and the record → tariff mapping. The comment at the top is the full specification.</td></tr>
+        <tr><td><code>src/jobs/steps.js</code></td><td>Registers the <code>tariffscanner</code> sync step (order 75): runs once per cycle, only when <code>sweepDue()</code>.</td></tr>
+        <tr><td><code>src/core/tariff-picker.js</code></td><td>The picker: <code>listSuppliers</code>, <code>listTariffs</code>, <code>chooseTariff</code>. Writes a <code>picker</code> import meter and a <code>tariff_agreement</code> with the payment method, then marks the days for rebuild.</td></tr>
+        <tr><td><code>src/server.js</code></td><td><code>GET /api/sites/:id/suppliers</code>, <code>…/suppliers/:supplier/tariffs</code>, <code>POST /api/sites/:id/tariff</code>, <code>GET /api/catalog?tariffs=tariffscanner</code>.</td></tr>
+        <tr><td><code>public/js/pages/auth.js</code></td><td>The sign-up screen “Who supplies your electricity?”.</td></tr>
+        <tr><td><code>src/core/pricing.js</code></td><td>Prices each half-hour at the home's own payment method and the meter's own Economy 7 hours.</td></tr>
+        <tr><td><code>src/core/suppliers.js</code>, <code>src/core/regions.js</code></td><td>Supplier names from “Supplier: Product”, and Tariffscanner region names/ids (1–14) → UK region codes 10–23.</td></tr>
+        <tr><td><code>provider_state</code> table</td><td>Sweep state (last run, cursor, last summary) and <code>next_allowed_at</code>, the saved cooldown.</td></tr>
+        <tr><td><code>.env</code></td><td><code>TARIFFSCAN_USERNAME</code>, <code>TARIFFSCAN_PASSWORD</code>, optional <code>TARIFFSCAN_BASE_URL</code> and <code>TARIFFSCAN_MIN_REQUEST_INTERVAL_MS</code> (≥ 3000).</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <footer>EnergieBee core prototype · Tariffscanner is run by Future Energy Associates · prices shown are published prices for Eastern England held on 5 Nov 2026, before VAT.</footer>
+</div>
+
+<script>
+// Real prices from our database (region 10, Eastern England, in force on 5 Nov 2026), pence before VAT.
+// single / day / night = unit price p/kWh; s = standing charge p/day.
+const DATA = {"British Gas":{"Fix and Fall Nov28 v2":{"DDM":{"single":31.08,"s":50.0}},"Standard Variable":{"CAC":{"single":28.11,"s":60.62},"DDM":{"single":26.61,"s":51.84},"DDQ":{"single":33.46,"s":37.08}},"Standard Variable (Economy 7)":{"CAC":{"day":39.21,"night":16.32,"s":50.16},"DDM":{"day":34.39,"night":14.52,"s":48.98},"DDQ":{"day":35.65,"night":14.54,"s":41.92}}},"E.ON Next":{"Next Fixed 12m v166":{"CAC":{"single":30.02,"s":55.62},"DDM":{"single":28.52,"s":46.84}},"Next Fixed 12m v166 (Economy 7)":{"CAC":{"day":35.43,"night":17.33,"s":55.55},"DDM":{"day":33.95,"night":16.03,"s":46.95}},"Next Flex":{"CAC":{"single":28.11,"s":60.62},"DDM":{"single":26.61,"s":51.84},"DDQ":{"single":26.02,"s":46.33}},"Next Flex (Economy 7)":{"CAC":{"day":33.82,"night":16.57,"s":60.55},"DDM":{"day":32.33,"night":15.27,"s":51.95},"DDQ":{"day":31.97,"night":14.91,"s":46.64},"PRE":{"day":30.66,"night":15.26,"s":46.64}}},"EDF Energy":{"Simply Fixed Nov27":{"CAC":{"single":32.65,"s":51.84},"DDM":{"single":31.21,"s":51.84}},"Simply Fixed Nov27 (Economy 7)":{"CAC":{"day":38.9,"night":17.39,"s":51.95},"DDM":{"day":37.15,"night":16.71,"s":51.95}},"Standard Variable":{"CAC":{"single":28.11,"s":60.62},"DDM":{"single":26.61,"s":51.84}},"Standard Variable (Economy 7)":{"CAC":{"day":34.43,"night":15.71,"s":60.55},"DDM":{"day":32.73,"night":14.73,"s":51.95}}},"OVO Energy":{"1 Year Fixed 29 October 2026":{"DDM":{"single":29.82,"s":57.76}},"1 Year Fixed 29 October 2026 (Economy 7)":{"DDM":{"day":32.25,"night":22.4,"s":57.81}},"Simpler Energy 01 October 2026":{"CAC":{"single":28.11,"s":60.62},"DDM":{"single":26.61,"s":51.84}},"Simpler Energy 01 October 2026 (Economy 7)":{"CAC":{"day":30.52,"night":21.12,"s":60.55},"DDM":{"day":28.9,"night":20.02,"s":51.95}}},"Octopus Energy":{"Flexible Octopus":{"DDM":{"single":26.61,"s":50.55}},"Flexible Octopus (Economy 7)":{"DDM":{"day":33.28,"night":13.96,"s":50.75}},"Octopus 12M Fixed November 2026 v1":{"DDM":{"single":30.24,"s":50.55}},"Octopus 12M Fixed November 2026 v1 (Economy 7)":{"DDM":{"day":37.22,"night":15.61,"s":50.75}}},"So Energy":{"So Flex":{"CAC":{"single":26.91,"s":56.69},"DDM":{"single":26.61,"s":51.84}},"So Flex (Economy 7)":{"CAC":{"day":28.88,"night":21.22,"s":56.66},"DDM":{"day":28.32,"night":20.81,"s":51.95}},"So Narwhal 12m":{"DDM":{"single":30.15,"s":51.65}},"So Narwhal 12m (Economy 7)":{"DDM":{"day":38.29,"night":16.32,"s":51.98}}}};
+const PM = { DDM: 'Direct Debit (monthly)', DDQ: 'Direct Debit (quarterly)', CAC: 'Cash or cheque', PRE: 'Prepayment' };
+const ORDER = ['DDM', 'DDQ', 'CAC', 'PRE'];
+// Household electricity VAT in force now (src/db/registry.js VAT_RATES: 0% from 1 Oct 2026, 5% before).
+const VAT = 0;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const p2 = (n) => n.toFixed(2);
+const state = { sup: null, tariff: null, pm: null, dn: 'day' };
+
+function renderSuppliers() {
+  $('suppliers').innerHTML = Object.keys(DATA).map((s) =>
+    `<button type="button" class="chip" aria-pressed="${s === state.sup}" data-s="${esc(s)}">${esc(s)}</button>`).join('');
+}
+function cheapest(t) {
+  const v = Object.values(t).map((p) => p.single ?? p.day);
+  return Math.min(...v);
+}
+function renderTariffs() {
+  const box = $('tariffBox');
+  box.hidden = !state.sup;
+  $('octNote').hidden = state.sup !== 'Octopus Energy';
+  if (!state.sup) return;
+  const ts = DATA[state.sup];
+  $('tariffs').innerHTML = Object.keys(ts).sort().map((name) => {
+    const e7 = name.endsWith('(Economy 7)');
+    const methods = Object.keys(ts[name]).length;
+    return `<button type="button" class="tariff" aria-pressed="${name === state.tariff}" data-t="${esc(name)}">
+      <span>${esc(name.replace(' (Economy 7)', ''))}</span>
+      <small>${e7 ? 'Day / night (Economy 7)' : 'One price all day'} · ${methods} way${methods > 1 ? 's' : ''} to pay</small>
+      <span class="from"><small>${e7 ? 'day from' : 'from'}</small>${p2(cheapest(ts[name]))}p</span></button>`;
+  }).join('');
+}
+function renderPay() {
+  const box = $('payBox');
+  box.hidden = !state.tariff;
+  if (!state.tariff) return;
+  const t = DATA[state.sup][state.tariff];
+  const methods = ORDER.filter((m) => t[m]);
+  if (!methods.includes(state.pm)) state.pm = methods.includes('DDM') ? 'DDM' : methods[0];
+  $('pay').innerHTML = methods.map((m) => `<button type="button" aria-pressed="${m === state.pm}" data-pm="${m}">${PM[m]}</button>`).join('');
+  const p = t[state.pm];
+  const cells = p.single != null
+    ? [[p2(p.single) + 'p', 'per kWh']]
+    : [[p2(p.day) + 'p', 'per kWh, day'], [p2(p.night) + 'p', 'per kWh, night']];
+  cells.push([p2(p.s) + 'p', 'per day, standing charge']);
+  $('prices').innerHTML = cells.map(([b, s]) => `<div class="price"><b>${b}</b><span>${s}</span></div>`).join('');
+}
+function renderCalc() {
+  const kwh = Number($('kwh').value);
+  $('kwhv').textContent = `${p2(kwh)} kWh`;
+  const ready = state.sup && state.tariff && state.pm;
+  const p = ready ? DATA[state.sup][state.tariff][state.pm] : null;
+  const e7 = p && p.single == null;
+  $('dayNight').hidden = !e7;
+  if (!p) { $('total').innerHTML = '–<small> this half-hour</small>'; return; }
+  const rate = e7 ? p[state.dn] : p.single;
+  const energy = kwh * rate, standing = p.s / 48, sub = energy + standing, vat = sub * VAT, total = sub + vat;
+  $('total').innerHTML = `${p2(total)}p<small> this half-hour</small>`;
+  $('sum').innerHTML = `
+    <div><span class="k">Energy: ${p2(kwh)} kWh × ${p2(rate)}p${e7 ? ` (${state.dn})` : ''}</span><span>${p2(energy)}p</span></div>
+    <div><span class="k">Standing charge: ${p2(p.s)}p ÷ 48</span><span>${p2(standing)}p</span></div>
+    <div><span class="k">VAT ${VAT * 100}% (household electricity since 1 Oct 2026)</span><span>${p2(vat)}p</span></div>
+    <div><span>Total</span><span>${p2(total)}p</span></div>`;
+}
+function steps() {
+  const n = state.tariff ? 3 : state.sup ? 2 : 1;
+  $('stepno').textContent = n;
+  $('s2').classList.toggle('on', n >= 2);
+  $('s3').classList.toggle('on', n >= 3);
+}
+function render() { renderSuppliers(); renderTariffs(); renderPay(); renderCalc(); steps(); }
+
+$('suppliers').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-s]'); if (!b) return;
+  if (state.sup !== b.dataset.s) Object.assign(state, { sup: b.dataset.s, tariff: null, pm: null });
+  render();
+});
+$('tariffs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-t]'); if (!b) return;
+  state.tariff = b.dataset.t; render();
+});
+$('pay').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-pm]'); if (!b) return;
+  state.pm = b.dataset.pm; render();
+});
+$('dn').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-v]'); if (!b) return;
+  state.dn = b.dataset.v;
+  $('dn').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  renderCalc();
+});
+$('kwh').addEventListener('input', renderCalc);
+
+// 20 ticks for "20 per minute"
+$('ticks').innerHTML = Array.from({ length: 20 }, () => '<i></i>').join('');
+
+// Click a screenshot to see it full size.
+const zoom = document.createElement('dialog');
+zoom.className = 'zoom';
+zoom.innerHTML = '<button type="button" aria-label="Close">Close ✕</button><img alt="">';
+document.body.appendChild(zoom);
+const zoomImg = zoom.querySelector('img');
+document.addEventListener('click', (e) => {
+  const f = e.target.closest('[data-zoom]');
+  if (f) { const img = f.querySelector('img'); zoomImg.src = img.src; zoomImg.alt = img.alt; zoom.showModal(); return; }
+  if (zoom.open && (e.target === zoom || e.target.closest('dialog.zoom button'))) zoom.close();
+});
+
+// Start with an example already picked so the calculator isn't empty.
+Object.assign(state, { sup: 'E.ON Next', tariff: 'Next Flex', pm: 'DDM' });
+render();
+</script>
+</body>
+</html>

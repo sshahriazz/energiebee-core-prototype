@@ -150,7 +150,7 @@ export async function init({ page, title, subtitle, periods = true, homeScoped =
       const c = b.checks || {}; const run = (c.pass || 0) + (c.warn || 0) + (c.fail || 0);
       const w = (n) => `${(n / b.halfHours) * 100}%`;
       slot.innerHTML = `<div class="basis"><span class="basis-bar" aria-hidden="true"><i style="width:${w(b.final)};background:var(--good)"></i><i style="width:${w(b.provisional)};background:var(--warn)"></i><i style="width:${w(b.missing)};background:var(--bad)"></i></span>
-        <span>Based on ${b.halfHours} ${b.halfHours === 1 ? slotNoun() : slotNouns()}: <b>${Math.round((b.final / b.halfHours) * 100)}% final</b>${b.provisional ? `, ${b.provisional} provisional (waiting for smart-meter readings)` : ''}${b.missing ? `, ${b.missing} missing` : ''}${run ? ` · ${c.pass} of ${run} cross-checks agree` : ''}</span>
+        <span>Based on ${b.halfHours} ${b.halfHours === 1 ? slotNoun() : slotNouns()}: <b>${Math.round((b.final / b.halfHours) * 100)}% final</b>${b.provisional ? `, ${b.provisional} provisional (${provisionalWhy(b.provisional, b.provisional_today)})` : ''}${b.missing ? `, ${b.missing} missing` : ''}${run ? ` · ${c.pass} of ${run} cross-checks agree` : ''}</span>
         <a href="/data?site=${state.siteId}&period=${state.period}#proof">See the proof →</a></div>`;
     } catch { slot.innerHTML = ''; }
   }
@@ -317,6 +317,15 @@ export function card(title, note = '', body = '', extra = '') {
   return `<section class="card" ${extra}><div class="card-head"><div><h2>${title}</h2>${note ? `<p>${note}</p>` : ''}</div></div>${body}</section>`;
 }
 
+// Why half-hours are provisional, in words: the day is not over yet, or a meter is expected and its readings have not
+// arrived (src/core/build.js). `today` is how many are provisional only because their day is today.
+export function provisionalWhy(provisional, today) {
+  if (today == null) return 'not final yet';
+  const waiting = provisional - today;
+  return [today ? `${provisional === today ? '' : `${today} `}the day is not over` : '', waiting ? `${provisional === waiting ? '' : `${waiting} `}waiting for meter readings` : '']
+    .filter(Boolean).join(', ');
+}
+
 export function kpi(label, value, sub = '', swatch = '') {
   return `<div class="kpi"><div class="label">${swatch ? `<i class="swatch" style="background:${swatch}"></i>` : ''}${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
 }
@@ -331,10 +340,29 @@ export function tariffRowsHtml(tariffs, { legendToo = true } = {}) {
   const current = tariffs.filter((t) => t.current);
   if (!current.length) return '<div class="skeleton">No tariff found for this home.</div>';
   const tax = (x) => `${esc(x.code)} ${x.kind === 'percent' ? fmt.pct(x.value, x.value * 100 % 1 ? 2 : 0) : x.kind === 'per_kwh' ? `${fmt.num(x.value, 3)}${minorSymbol()}/kWh` : `${fmt.num(x.value, 2)} per ${esc(x.charge_period || 'period')}`} ${originBadge(x.origin, x.origin_note)}`;
+  const c2 = (v) => `${fmt.num(v, 2)}${minorSymbol()}`;
+  // The structure, unless the tariff has one unit price all day today (a source may call a single-price offer time-of-use).
+  const shape = (t) => (t.unitPricesToday === 1 && t.structure !== 'flat' && t.structure !== 'export' ? 'one price all day' : t.structure);
+  // The unit price as it is made: before taxes, the percentage on top, the price paid.
+  const unit = (t) => (t.unitExNow != null && t.vat ? `${c2(t.unitExNow)} + ${fmt.pct(t.vat, t.vat * 100 % 1 ? 1 : 0)} VAT = ` : '');
+  const per = { day: 'a day', month: 'a month', year: 'a year' };
+  const parts = (t) => (t.direction === 'import' && t.fixedParts?.length && !(t.fixedParts.length === 1 && t.fixedParts[0].period === 'day') ? `
+    ${t.fixedParts.map((f) => `<div class="row sub"><span class="k">${esc(fixedLabel(f.register))} <small class="faint">${fmt.gbp(f.amount)} ${per[f.period] || `per ${esc(f.period)}`}</small></span><span>${c2(f.perDay)}/day</span></div>`).join('')}
+    <div class="row sub"><span class="k">Fixed charges with taxes</span><b>${fmt.p(t.standingPerDay)}/day</b></div>` : '');
   return `<div class="rows">${current.map((t) => `
     <div class="row"><span class="k">${esc(t.label || t.kind)}</span><span><span class="mono">${esc(t.tariff_code)}</span> ${originBadge(t.origin, t.origin_note)}</span></div>
-    <div class="row sub"><span class="k">${esc(t.name || t.structure)} · ${esc(t.structure)}${t.estimated ? ' · <span class="badge warn">estimated price</span>' : ''}</span>
-      <b>${fmt.pkwh(t.unitNow)} now${t.rate_origin ? ` ${originBadge(t.rate_origin)}` : ''}${t.direction === 'import' && t.standingPerDay != null ? ` · ${fmt.p(t.standingPerDay)}/day` : ''}</b></div>
+    <div class="row sub"><span class="k">${esc(t.name || t.structure)} · ${esc(shape(t))}${t.estimated ? ' · <span class="badge warn">estimated price</span>' : ''}</span>
+      <b>${unit(t)}${fmt.pkwh(t.unitNow)} now${t.rate_origin ? ` ${originBadge(t.rate_origin)}` : ''}${t.direction === 'import' && t.standingPerDay != null ? ` · ${fmt.p(t.standingPerDay)}/day` : ''}</b></div>
+    ${parts(t)}
     ${t.taxes?.length ? `<div class="row sub"><span class="k">Taxes on it</span><span>${t.taxes.map(tax).join(' · ')}</span></div>` : ''}`).join('')}</div>
     ${legendToo ? originLegend() : ''}`;
+}
+
+// A fixed charge's register (src/adapters/tounify.js mapComponents: <group>:<kind>; capacity rows: capacity:<register>) in words.
+const FIXED_LABELS = { standing: 'Standing charge', 'consumption:standing': 'Supplier subscription', 'consumption:credit': 'Credit', 'grid:standing': 'Grid management',
+  'grid:capacity': 'Grid capacity', 'grid:metering': 'Metering', 'consumption:metering': 'Metering' };
+function fixedLabel(register) {
+  if (FIXED_LABELS[register]) return FIXED_LABELS[register];
+  if (register.startsWith('capacity:')) return 'Capacity charge';
+  return register.replace(/[:_]/g, ' ');
 }

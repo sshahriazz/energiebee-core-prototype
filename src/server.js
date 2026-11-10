@@ -13,6 +13,7 @@ import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
 import { seriesId, readReadings, spanColumn, markDirty } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
+import { fixedChargeMicro } from './core/tariff-expand.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
 import { startControlScheduler, registeredDrivers } from './jobs/control.js';
 import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
@@ -420,8 +421,10 @@ app.get('/api/sites/:id/summary', (req, res) => {
     previousLabel: req.query.period === 'today' || (!req.query.period && !req.query.from) ? 'same time yesterday' : 'previous period',
     // What the figures rest on: half-hour states and check results for the same days.
     basis: {
-      ...db.prepare(`SELECT COUNT(*) AS halfHours, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing
-        FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to),
+      // provisional_today: provisional because the day is not over; the rest wait for a meter's readings (build.js).
+      ...db.prepare(`SELECT COUNT(*) AS halfHours, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
+          SUM(state = 'provisional' AND local_date >= ?) AS provisional_today
+        FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(localDate(s.timezone, nowSec()), s.id, from, to),
       checks: Object.fromEntries(db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? GROUP BY status').all(s.id, from, to).map((r) => [r.status, r.n])),
     },
     provenance: provenanceOf(s, from, to),
@@ -440,6 +443,11 @@ app.get('/api/sites/:id/tariffs', (req, res) => {
     WHERE a.site_id = ? AND a.superseded_at IS NULL ORDER BY d.kind, a.valid_from DESC`).all(s.id);
   const SLOT = slotLength(s);
   const pricing = loadPricing(s.id, now - SLOT, now + SLOT);
+  const [dayA, dayB] = dayBounds(s.timezone, localDate(s.timezone, now));
+  // How many different unit prices the tariff has today (one: "one price all day", whatever its structure says).
+  const pricesToday = db.prepare(`SELECT COUNT(DISTINCT r.price_ex_vat) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+    WHERE t.tariff_code = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND (r.site_id IS NULL OR r.site_id = ?)
+      AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ?`);
   res.json(rows.map((r) => {
     const live = r.valid_from <= now && (r.valid_to == null || r.valid_to > now);
     const p = live ? priceOver(pricing, r.kind, slotOf(s, now), SLOT) : null;
@@ -452,6 +460,14 @@ app.get('/api/sites/:id/tariffs', (req, res) => {
       ...r, currency: r.currency ?? s.currency ?? 'GBP', current: live, unitNow: p?.unitEx != null ? p.unitEx * (1 + p.vat) : null, standingPerDay: p ? fixedPerDay(p, now, s.timezone) : null, vat: p?.vat ?? null,
       rate_origin: rateInputs.length ? weakest(rateInputs.map((i) => i.origin)) : null, tax_origin: taxes.length ? weakest(taxes.map((t) => t.origin)) : null, taxes,
       ...(p?.estimated ? { estimated: true } : {}),
+      // The unit price before taxes, and each fixed charge before taxes with its share of today (standingPerDay is their
+      // sum with taxes), so the page can show how the figures are made.
+      unitExNow: p?.unitEx ?? null,
+      unitPricesToday: pricesToday.get(r.tariff_code, s.id, dayB, dayA).n,
+      fixedParts: p ? [
+        ...(p.standingEx ? [{ register: 'standing', period: 'day', amount: p.standingEx, perDay: p.standingEx }] : []),
+        ...p.fixed.map((f) => ({ register: f.register, period: f.period, amount: f.amount, perDay: fixedChargeMicro(f.amount, f.period, dayA, dayB, s.timezone) / 1e6 })),
+      ] : [],
       provenance: { worst: pv?.origin ?? null, placeholders: pv?.placeholder_inputs ?? [] },
     };
   }));

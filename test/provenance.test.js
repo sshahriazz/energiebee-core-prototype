@@ -194,6 +194,10 @@ test('API: tariffs carry the tariff\'s, the rates\' and each tax\'s origin', asy
   assert.deepEqual(t.taxes.map((x) => [x.code, x.origin, x.unverified]), [['accise', 'placeholder', true], ['tva', 'sourced', false]]);
   assert.equal(t.provenance.worst, 'placeholder');
   assert.ok(Math.abs(t.unitNow - (20.16 + 3.37) * 1.2) < 1e-9);
+  // How the figures are made: the unit price before VAT, each fixed charge with its share of today, one price all day.
+  assert.ok(Math.abs(t.unitExNow - (20.16 + 3.37)) < 1e-9);
+  assert.deepEqual(t.fixedParts, [{ register: 'standing', period: 'day', amount: 40, perDay: 40 }]);
+  assert.equal(t.unitPricesToday, 1);
   const gb = (await get(`/api/sites/${gbHome.id}/tariffs`))[0];
   assert.deepEqual([gb.origin, gb.rate_origin, gb.tax_origin, gb.provenance.worst], ['provider', 'provider', 'sourced', 'provider']);
   assert.deepEqual(gb.taxes.map((x) => [x.code, x.origin]), [['vat', 'sourced']]);

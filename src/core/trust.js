@@ -178,6 +178,8 @@ export function trustFor(siteId, fromDate, toDate) {
     .map((r) => ({ ...r, checks: JSON.parse(r.checks || '{}'), inputs: JSON.parse(r.inputs || '{}'), changed: r.changed ? JSON.parse(r.changed) : null }));
   const headline = {
     from: fromDate, to: toDate, halfHours: hh.length, final: state('final'), provisional: state('provisional'), missing: state('missing'),
+    // Provisional for two reasons (build.js): the day is not over, or a meter is expected and its readings are not in yet.
+    provisionalToday: hh.filter((r) => r.state === 'provisional' && r.local_date >= localDate(site.timezone, nowSec())).length,
     restated: hh.filter((r) => r.quality & 128).length,
     checks: { pass: tallyChecks('pass'), warn: tallyChecks('warn'), fail: tallyChecks('fail'), skip: tallyChecks('skip') },
     facts: factStats.n, factsLinked: factStats.linked, payloads: factStats.payloads,

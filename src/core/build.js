@@ -265,7 +265,11 @@ function build(siteId, fromDate, toDate, opts) {
       }
     }
     const metric = m.kind === 'meter_gas' ? 'gas_kwh' : m.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
-    meterFacts[m.kind] = intervalsFrom(meterBound, (src) => seriesId('device', m.id, metric, src), winStart, winEnd);
+    const facts = intervalsFrom(meterBound, (src) => seriesId('device', m.id, metric, src), winStart, winEnd);
+    // An account can list a second meter point of the same kind that sends nothing (an old Economy 7 MPAN whose
+    // agreement ended years ago). The device query has no order, so without this an empty meter read last would
+    // replace the live one's readings and every day would show no usage. A meter with readings always wins.
+    if (!meterFacts[m.kind]?.length || facts.length) meterFacts[m.kind] = facts;
   }
   const cvAt = (slot) => gasCv.find((f) => f.start_ts <= slot && f.end_ts > slot)?.value ?? null;
   const VOLUME_CORRECTION = 1.02264;   // Gas (Calculation of Thermal Energy) Regulations 1996

@@ -52,7 +52,7 @@
 //              standing, grid:capacity, consumption:credit ...), charge_period = resolved.interval,
 //              price = resolved.amount x 100 (credits stay negative; capacity is the resolved yearly
 //              amount, not the per-kVA rate), open-ended from the component's valid_from (else the
-//              capture day); the quantity source (contracted / fixed / defaulted) is in the note.
+//              first day the home holds a price of the tariff); the quantity source (contracted / fixed / defaulted) is in the note.
 //   VAT        applied.vat[].rate is compared with our tax_rule VAT: a mismatch is a warning in the
 //              step result, our rule is never overridden.
 //   origin     'provider', note 'tounify v3 (test token): storage licence unconfirmed' for a test
@@ -772,6 +772,12 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   });
   const zone = mp.zone || site.timezone;
   const captureDayStart = dayBounds(zone, localDate(zone, Math.floor(nowMs / 1000)))[0];
+  // A charge tounify gives no valid_from starts on the first day this home holds a price of the tariff (this read's
+  // earliest point included), not on the capture day: the first read also brings yesterday's prices, and a day priced
+  // without its subscription is short. The same day on every later read, so the stored row stays as it is.
+  const heldFrom = db.prepare(`SELECT MIN(r.valid_from) AS t FROM rate_interval r JOIN tariff x ON x.id = r.tariff_id
+    WHERE x.tariff_code = ? AND r.site_id = ? AND r.component = 'unit'`).get(mp.tariff.tariffCode, site.id)?.t;
+  const firstPriceDay = dayBounds(zone, localDate(zone, Math.min(heldFrom ?? Infinity, mp.window.from, captureDayStart)))[0];
 
   // Components (once a day too, right after the prices): refused or failing, the prices still stand.
   let mc = null;
@@ -780,7 +786,7 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   try {
     const r = await readWithEtag((etag) => getComponents(client, cc, ref, { etag }), { etag: prev.components_etag, raw: prev.components_raw }, cReq, site.id);
     if (r.body) {
-      mc = mapComponents(r.body, { currency: site.currency ?? mp.tariff.currency, zone, captureDayStart, kind, dev });
+      mc = mapComponents(r.body, { currency: site.currency ?? mp.tariff.currency, zone, captureDayStart: firstPriceDay, kind, dev });
       if (!mc.ok) {
         const reason = `unexpected shape: ${mc.problems.join('; ')}`;
         if (!r.notModified) quarantine({ source: PROVIDER, siteId: site.id, request: r.request, body: r.body, reason });

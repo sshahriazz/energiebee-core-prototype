@@ -27,6 +27,7 @@ for (const k of ['TOUNIFY_API_KEY', 'TOUNIFY_DEV', 'TOUNIFY_MAX_REQUESTS_DAY', '
 
 const { db, applyDelta } = await import('../src/db/db.js');
 const TU = await import('../src/adapters/tounify.js');
+const { dayBounds, localDate } = await import('../src/core/time.js');
 const P = await import('../src/core/providers.js');
 const C = await import('../src/core/connectors.js');
 const { syncSite, syncAll } = await import('../src/jobs/sync.js');   // registers the steps
@@ -411,6 +412,10 @@ test('daily read FR: prices and components stored once, the home agreed on the t
   ]);
   const ag = db.prepare("SELECT a.*, d.kind FROM tariff_agreement a JOIN device d ON d.id = a.device_id WHERE a.site_id = ? AND d.provider = 'tounify' AND a.superseded_at IS NULL").all(fr.id);
   assert.deepEqual(ag.map((a) => [a.kind, a.tariff_id, a.valid_from, a.valid_to]), [['meter_import', frTariff.id, 1792969200, null]]);
+  // The Abonnement has no valid_from in the answer: it starts on the first day the home holds a price (the day of the
+  // earliest price point read), not on the capture day, so that first day is not priced without its subscription.
+  const sub = db.prepare("SELECT valid_from FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND register = 'consumption:standing' AND superseded_at IS NULL").get(frTariff.id, fr.id);
+  assert.equal(sub.valid_from, dayBounds('Europe/Paris', localDate('Europe/Paris', 1792969200))[0]);
   for (const what of ['prices', 'components']) {
     assert.equal(count(`SELECT COUNT(*) n FROM raw_payload p JOIN source s ON s.id = p.source_id WHERE s.code = 'tounify' AND p.site_id = ? AND p.status = 'accepted'
       AND json_extract(p.request, '$.path') = ?`, fr.id, `/v3/FR/connections/eb-site-${fr.id}/${what}`), 1, `${what} landed raw`);

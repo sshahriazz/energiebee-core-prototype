@@ -97,6 +97,16 @@ export const SOURCES = [
     },
   },
   {
+    code: 'rte_eco2mix', name: 'RTE éCO2mix carbon intensity (France, national)',
+    traits: { expectedEveryS: 3600 },
+    channels: [{ point: 'intensity', metric: 'carbon_intensity' }],
+    contract: {
+      timeZone: 'ISO with +00:00 (date_heure)', timeRole: 'interval: 15-minute periods (real-time set) or 30-minute periods (consolidated set); a home\'s slot takes the time-weighted mean of the periods it overlaps',
+      signs: '-', units: 'gCO2/kWh (taux_co2, an integer)', missing: 'null (every future period, and any gap): skipped',
+      revisions: 'Real-time values, consolidated later in a separate set; no forecast', upstreamHistory: 'Consolidated from 2012, real time for the current months',
+    },
+  },
+  {
     code: 'open_meteo', name: 'Open-Meteo weather',
     traits: { holdS: 3600, expectedEveryS: 3600 },
     channels: [

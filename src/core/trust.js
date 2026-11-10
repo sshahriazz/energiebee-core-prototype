@@ -2,6 +2,7 @@
 // half-hour and when it arrived, how independent measurements agree, what every day's energy
 // balance is, what was corrected, and where every system detail came from. Read-only.
 import { db } from '../db/db.js';
+import { carbonSeriesOf, carbonSubjectOf } from './carbon-series.js';
 import { seriesId } from './facts.js';
 import { nowSec, dayBounds, slotsOfDay, daysBetween, localDate, slotLength, slotNoun } from './time.js';
 import { ATTRS, attributeAt, attributeHistory } from './attributes.js';
@@ -46,7 +47,8 @@ function feedsFor(site, slotS) {
   if (dev('meter_export') || db.prepare("SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.direction = 'export'").get(site.id)) {
     out.push({ key: 'export_price', label: 'Export price', source: priceSource, kind: 'served', column: 'export_rate', use: 'Credit for every exported kWh' });
   }
-  if (site.carbon_region != null) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: 'NESO', kind: 'interval', series: seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), perSlot: perHalfHour, dueS: DAY,
+  const carbonSeries = carbonSeriesOf(site);
+  if (carbonSeries) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: carbonSeries.provider, kind: 'interval', series: seriesId('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source), perSlot: perHalfHour, dueS: DAY,
     use: 'Carbon of imported power and carbon avoided' });
   out.push({ key: 'weather', label: 'Sunlight and temperature', source: 'Open-Meteo', kind: 'cover', series: sid('ghi_wm2', 'open_meteo'), dueS: DAY, use: 'Solar forecast learning and the temperature fit' });
   out.push({ key: 'forecast', label: 'Solar forecast made in advance', source: 'Quartz / EnergieBee', kind: 'served', column: 'solar_forecast', startsWithFirst: true,
@@ -173,7 +175,7 @@ export function trustFor(siteId, fromDate, toDate) {
       SELECT f.raw_id FROM interval_fact f JOIN series se ON se.id = f.series_id WHERE f.superseded_at IS NULL AND f.end_ts > ? AND f.start_ts < ?
         AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
           OR (se.subject_kind = 'region' AND se.subject_id IN (?, ?))))`)
-    .get(fromTs, toTs, String(siteId), siteId, fromTs, toTs, String(siteId), siteId, `carbon:${site.carbon_region}`, `ldz:${ldz ?? ''}`);
+    .get(fromTs, toTs, String(siteId), siteId, fromTs, toTs, String(siteId), siteId, carbonSubjectOf(site) ?? '', `ldz:${ldz ?? ''}`);
   const revisions = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, revised_at, id').all(siteId, fromDate, toDate)
     .map((r) => ({ ...r, checks: JSON.parse(r.checks || '{}'), inputs: JSON.parse(r.inputs || '{}'), changed: r.changed ? JSON.parse(r.changed) : null }));
   const headline = {

@@ -70,6 +70,7 @@ export const NOT_REPLAYABLE = {
   octopus_meter: 'The meter, its unit (kWh or m3) and the metric are decided from the home\'s devices at fetch time, and the parse is inside the adapter, not a function of the saved body alone.',
   octopus_kraken: 'The dispatch and planned-charge parse is inside the adapter and is not separated from its fetch.',
   carbon_regional: 'The parse is inline in the adapter and depends on the region it was fetched for, which the receipt does not record.',
+  rte_eco2mix: 'Its values belong to the national series carbon:FR, shared by every French home; a replay writes one home\'s own series.',
   national_gas_cv: 'The parse is inline in the adapter and depends on the gas zone it was fetched for.',
   open_meteo: 'The parse is inline in the adapter, and it splits past and future by the clock at fetch time.',
   quartz: 'The parse is inline in the adapter and snaps times in a way the receipt does not record.',

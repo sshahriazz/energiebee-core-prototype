@@ -25,6 +25,7 @@
 // values of exactly that slot (samples, fit, meter vs clamp, balance, flows, prices, stock); it only
 // reads values already computed, so no row changes. Absent, every trace line is skipped.
 import { db, tx, optimizeDb } from '../db/db.js';
+import { carbonSubjectOf } from './carbon-series.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
 import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
@@ -282,8 +283,10 @@ function build(siteId, fromDate, toDate, opts) {
     WHERE d.site_id = ? AND c.status IN ('acked', 'skipped_unchanged') AND c.window_start IS NOT NULL AND c.window_end > ? AND c.window_start < ?${asOf != null ? ' AND c.acked_at <= ?' : ''}
     ORDER BY c.id`).all(siteId, winStart, winEnd, ...(asOf != null ? [asOf * 1000] : []));
   const evFacts = intervalsFrom(evBound, (src) => sid('ev_charge_kwh', src), winStart, winEnd);
-  const carbonFacts = site.carbon_region != null
-    ? intervalsFrom(carbonBound, (src) => seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', src), winStart, winEnd) : [];
+  // The home's carbon series (a NESO region, or a country's national series: carbon-series.js), from every bound source.
+  const carbonSubject = carbonSubjectOf(site);
+  const carbonFacts = carbonSubject != null
+    ? intervalsFrom(carbonBound, (src) => seriesId('region', carbonSubject, 'carbon_intensity', src), winStart, winEnd) : [];
   const tempByHour = new Map(weatherBound.flatMap((bd) => readReadings([sid('outdoor_temp_c', bd.source)], Math.max(winStart - 3600, bd.from), Math.min(winEnd, bd.to))).map((r) => [r.ts, r.value]));
   // Solar forecast of record: for each period, the latest issue made before it started,
   // so a past slot is compared only with what was known in advance. Quartz when it

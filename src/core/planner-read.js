@@ -50,6 +50,7 @@
 // projectProfile, state, freshness (freshnessOf), window (frameFor). See docs/what-it-does.md
 // "Planner read layer" and docs/predbat-slot-compatibility.md for the Predbat / PredHeat inputs each feeds.
 import { db } from '../db/db.js';
+import { carbonSubjectOf } from './carbon-series.js';
 import * as facts from './facts.js';
 import { loadPricing, priceOver, priceAt, fixedOver, fixedPerDay } from './pricing.js';
 import { inputsProvenance } from './provenance.js';
@@ -167,7 +168,7 @@ function seriesFor(site, metric) {
   const mid = db.prepare('SELECT id FROM metric WHERE code = ?').get(metric)?.id;
   if (mid == null) return [];
   const regions = [];
-  if (site.carbon_region != null) regions.push(`carbon:${site.carbon_region}`);
+  if (carbonSubjectOf(site)) regions.push(carbonSubjectOf(site));
   for (const d of db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id)) {
     try { const ldz = JSON.parse(d.attrs || '{}').ldz; if (ldz) regions.push(`ldz:${ldz}`); } catch { /* attrs not JSON: no gas zone */ }
   }

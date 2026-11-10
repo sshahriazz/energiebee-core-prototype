@@ -34,10 +34,10 @@ const orderOk = (list) => list.every((c, i) => !i || C.CONNECTOR_STATUSES.indexO
 const gbHome = createSite({ name: 'GB home', postcode: 'BB12 9BY' });
 createSite({ name: 'FR demo', country: 'FR', isDemo: true });
 
-test('seeds: Octopus, Sunsynk, National Gas, NESO, Open-Meteo, Quartz, Tariffscanner and tounify are built; Linky, P1 and ENTSO-E are not, with their notes', () => {
+test('seeds: Octopus, Sunsynk, National Gas, NESO, RTE, Open-Meteo, Quartz, Tariffscanner and tounify are built; Linky, P1 and ENTSO-E are not, with their notes', () => {
   const r = C.connectors(db);
   const by = byAdapter(r);
-  for (const a of ['octopus', 'sunsynk', 'national_gas', 'neso', 'open_meteo', 'quartz', 'tariffscanner', 'geo', 'compare', 'manual']) {
+  for (const a of ['octopus', 'sunsynk', 'national_gas', 'neso', 'rte', 'open_meteo', 'quartz', 'tariffscanner', 'geo', 'compare', 'manual']) {
     assert.equal(by[a]?.built, true, `${a} built`);
     assert.equal(by[a].origin, a === 'manual' ? 'user' : 'provider', a);
   }
@@ -80,7 +80,7 @@ test('seeds: Octopus, Sunsynk, National Gas, NESO, Open-Meteo, Quartz, Tariffsca
   assert.match(by.manual.reason, /no home in its markets yet/, 'FR and NL hold only a demo home');
   assert.deepEqual([by.manual.homes_total_in_markets, by.manual.homes_demo], [0, 1]);
   assert.deepEqual([by.sunsynk.homes_total_in_markets, by.sunsynk.homes_demo], [1, 1], 'sunsynk is listed for every market');
-  assert.deepEqual(r.summary, { error: 0, needs_credentials: 3, connected: 0, available: 7, disabled: 1, not_built: 3, total: 14 });
+  assert.deepEqual(r.summary, { error: 0, needs_credentials: 3, connected: 0, available: 8, disabled: 1, not_built: 3, total: 15 });
   assert.deepEqual(r.homes, { total: 1, demo: 1 });
   assert.ok(orderOk(r.connectors), 'problems first, then connected, available, disabled, not built');
 });

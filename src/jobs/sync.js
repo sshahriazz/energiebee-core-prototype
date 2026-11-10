@@ -4,6 +4,7 @@
 // recorded on the connection. A provider the plan cannot use (disabled, unlicensed, owned by another
 // process, no credentials) is recorded as 'skipped: <reason>', never as an error.
 import { db } from '../db/db.js';
+import { carbonSubjectOf } from '../core/carbon-series.js';
 import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
 import { forecastSite } from '../core/forecast.js';
@@ -117,7 +118,7 @@ export function sinceWatermark(siteId, runId, syncStartMs) {
 // intervals (its own, its meters' and its regions'), and prices of its tariffs.
 export function earliestChange(siteId, site, sinceMs) {
   const gas = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean);
-  const regions = [site.carbon_region != null ? `carbon:${site.carbon_region}` : null, gas ? `ldz:${gas}` : null].filter(Boolean);
+  const regions = [carbonSubjectOf(site), gas ? `ldz:${gas}` : null].filter(Boolean);
   const ours = `(se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
     ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''}`;
   const args = [String(siteId), siteId, ...regions];

@@ -14,11 +14,13 @@ import { useDb } from './helpers.js';
 
 useDb();
 const stray = [];
-// Any request not sent to the fake tounify is refused and recorded; Open-Meteo answers empty (the
-// sync of a French home runs its weather step too).
+// Any request not sent to the fake tounify is refused and recorded; Open-Meteo and RTE answer empty (the
+// sync of a French home runs its weather and carbon steps too).
 globalThis.fetch = async (url) => {
   const u = new URL(String(url));
   if (u.host === 'api.open-meteo.com') return new Response(JSON.stringify({ hourly: { time: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  // RTE éCO2mix (a French home's carbon step): nothing published.
+  if (u.host === 'odre.opendatasoft.com' && u.pathname.includes('/exports/json')) return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
   stray.push(String(url));
   throw new Error(`no network in tests: ${url}`);
 };

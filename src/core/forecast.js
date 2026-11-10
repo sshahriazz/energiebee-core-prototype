@@ -13,6 +13,7 @@
 // Each half-hour also carries a low and a high case, and `accuracy` scores our own
 // stored forecasts (source core_forecast) against what the home then used.
 import { db } from '../db/db.js';
+import { carbonSeriesOf } from './carbon-series.js';
 import { seriesId, readForecastOfRecord, readReadings, readIntervals, spanOf } from './facts.js';
 import { loadPricing, priceOver } from './pricing.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, slotLength, slotPhase, slotFloor, slotsPerDay, slotOfDay, slotLabel, todMinute, eachSlotOverlap } from './time.js';
@@ -432,8 +433,9 @@ export function forecastSite(siteId, hours = 48) {
   // Carbon intensity is a mean: a slot takes the time-weighted mean of the periods it overlaps
   // (one half-hour period covers a 15 or 30-minute slot; two make an hour). Read from an hour
   // earlier, so a period that started before the first slot still counts.
-  const carbonFc = site.carbon_region != null
-    ? readForecastOfRecord(seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional'), from - 3600, to, now + 60) : [];
+  const carbonSeries = carbonSeriesOf(site);
+  const carbonFc = carbonSeries?.forecast
+    ? readForecastOfRecord(seriesId('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source), from - 3600, to, now + 60) : [];
   const carbonAt = (slot) => {
     const over = carbonFc.filter((f) => f.value != null && f.end_ts > slot && f.start_ts < slot + slotS);
     if (over.length === 1) return over[0].value;
@@ -601,7 +603,8 @@ export function forecastSite(siteId, hours = 48) {
       publishedUntil: pricesPublishedUntil,
     },
     carbon: {
-      method: site.carbon_region != null ? `Regional grid carbon intensity forecast from the Carbon Intensity API (region ${site.carbon_region}).` : 'No carbon forecast: the home has no grid region yet.',
+      method: carbonSeries?.forecast ? `Regional grid carbon intensity forecast from the Carbon Intensity API (region ${site.carbon_region}).`
+        : carbonSeries ? `No carbon forecast: ${carbonSeries.provider} publishes past values only (${carbonSeries.scope}).` : 'No carbon forecast: the home has no grid region yet.',
       region: site.carbon_region ?? null,
     },
     ranges: {

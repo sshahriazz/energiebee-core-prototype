@@ -213,7 +213,14 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     // readings reach back past the usual two-day window.
     const firstBuilt = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId).d;
     const allFrom = ctx.agreementsChanged && firstBuilt ? dayBounds(tz, firstBuilt)[0] : Infinity;
-    const dirtyFrom = firstRun ? fromTs : Math.min(dayBounds(tz, today)[0], allFrom, earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
+    // A day's last slot is written only once it has ended, which is already the next day. A home whose facts keep
+    // arriving rebuilds yesterday anyway; one with none (tariff only: tounify, a picked tariff, no meter or inverter)
+    // would keep yesterday one slot short for good. So yesterday is rebuilt while it holds fewer slots than it has.
+    const yesterday = addDays(today, -1);
+    const [yStart, yEnd] = dayBounds(tz, yesterday);
+    const yRows = db.prepare('SELECT COUNT(*) AS n FROM site_hh WHERE site_id = ? AND local_date = ?').get(siteId, yesterday).n;
+    const yShort = !firstRun && yRows > 0 && yRows < Math.round((yEnd - yStart) / slotLength(site)) ? yStart : Infinity;
+    const dirtyFrom = firstRun ? fromTs : Math.min(dayBounds(tz, today)[0], allFrom, yShort, earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
     markDirty(siteId, dirtyFrom, nowSec(), firstRun ? 'initial load' : ctx.agreementsChanged ? 'tariff agreements changed' : 'facts changed');
     const t0 = Date.now();
     const rebuilt = processQueue();

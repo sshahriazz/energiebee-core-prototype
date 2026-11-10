@@ -132,6 +132,8 @@ const tariffUi = { supplier: null, change: false, force: null };
 const TARIFF = { adapter: 'tariff', name: 'Your tariff', role_label: 'electricity tariff' };
 const minor = (v, cur) => (v == null ? '' : `${(+v).toFixed(2)}${cur === 'EUR' ? 'c' : 'p'}`);
 const KIND_LABEL = { one_price: 'one price', two_rate: 'day / night', dynamic: 'price changes through the day' };
+// Off-peak hours a day where the grid operator fixes them (src/core/tariff-picker.js OFF_PEAK_HOURS_PER_DAY).
+const OFF_PEAK_HOURS = { FR: 8 };
 
 async function providersStep(siteId, created = null, flash = '') {
   let p;
@@ -389,7 +391,16 @@ async function tariffStep(siteId, created, ctx) {
     if (!b.tariff) throw new Error('Pick your tariff first');
     const body = { supplier: sup.code, tariff: b.tariff };
     if (b.payment_method) body.payment_method = b.payment_method;
-    if (b.h_from || b.h_to) body.hours = { from: b.h_from, to: b.h_to };
+    if (b.h_from || b.h_to) {
+      // The same check the server makes: where the grid operator fixes the off-peak hours (France: 8 a day, as on
+      // the bill), any other total is refused upstream, so it is caught here with a plain message first.
+      if (!b.h_from || !b.h_to) throw new Error('Off-peak hours: give both a start and an end, or leave both empty');
+      const mins = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+      const len = ((mins(b.h_to) - mins(b.h_from)) + 1440) % 1440 || 1440;
+      const need = OFF_PEAK_HOURS[r.country];
+      if (need && len !== need * 60) throw new Error(`Off-peak hours must cover exactly ${need} hours a day, as on your bill: ${b.h_from} to ${b.h_to} is ${Math.floor(len / 60)} h${len % 60 ? ` ${len % 60} min` : ''}`);
+      body.hours = { from: b.h_from, to: b.h_to };
+    }
     if (b.since) body.since = b.since;
     for (const k of ['contracted_kva', 'fuse']) if (b[k]) body[k] = k === 'contracted_kva' ? Number(b[k]) : b[k];
     const res = await api(`/api/sites/${siteId}/tariff`, { method: 'POST', body: JSON.stringify(body) });

@@ -741,6 +741,9 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
     assert.equal(hphc.kind, 'two_rate');
     assert.equal(hphc.prices_known, false, 'tounify prices a tariff only for a home on it');
     assert.deepEqual(hphc.questions.map((q) => q.field), ['contracted_kva', 'off_peak_hours']);
+    // "Option Base" is one price on the bill, though tounify answers time_of_use_rates 2 for it: no off-peak question.
+    const base = t1.tariffs.find((t) => t.id === 'EDFTRVBASE');
+    assert.deepEqual([base.kind, base.questions.map((q) => q.field)], ['one_price', ['contracted_kva']]);
     // Asked again within the week: from our copy, no call.
     const before = api.calls.length;
     await PK.listSuppliers(row());
@@ -749,6 +752,13 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
     // The subscribed power is required for France.
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC' }), /Subscribed power \(kVA\): an answer is required/);
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 7 }), /must be one of 3, 6, 9/);
+    // Off-peak hours that are not exactly 8 a day (France) are refused here, before anything is sent upstream.
+    const sent = api.calls.length;
+    await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '04:43', to: '11:55' } }),
+      (e) => e.status === 400 && /exactly 8 hours a day, as on your bill: 04:43 to 11:55 is 7 h 12 min/.test(e.message));
+    await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '' } }), /HH:MM/);
+    assert.equal(api.calls.length, sent, 'nothing sent to tounify');
+    assert.deepEqual([PK.windowMinutes('22:00', '06:00'), PK.windowMinutes('01:30', '09:30'), PK.windowMinutes('12:00', '12:00'), PK.windowMinutes('9:00', '17:00')], [480, 480, 1440, null]);
     const r = await PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '06:00' } });
     assert.equal(r.source, 'tounify');
     assert.equal(r.tariff, 'TOUNIFY-FR-EDFTRVHPHC');

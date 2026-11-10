@@ -415,7 +415,8 @@ test('daily read FR: prices and components stored once, the home agreed on the t
     assert.equal(count(`SELECT COUNT(*) n FROM raw_payload p JOIN source s ON s.id = p.source_id WHERE s.code = 'tounify' AND p.site_id = ? AND p.status = 'accepted'
       AND json_extract(p.request, '$.path') = ?`, fr.id, `/v3/FR/connections/eb-site-${fr.id}/${what}`), 1, `${what} landed raw`);
   }
-  assert.deepEqual(r.vat_check, [{ from_utc: 1792969200, tounify: 0.2, ours: null, rules: [], match: false }], 'no FR VAT rule held in this database yet');
+  assert.deepEqual(r.vat_check, [{ from_utc: 1792969200, tounify: 0.2, ours: 0.2, rules: ['FR/tva'], match: true }], 'the sourced FR VAT rule (EU_VAT_RULES) agrees with tounify');
+  assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)), 'no VAT warning when the rates agree');
   // Same answer again (forced, same day): nothing written.
   const again = await TU.syncTounifyHome({ site: frSite(), client: c, force: true });
   assert.deepEqual([again.unit_rows, again.fixed_rows, again.agreements_changed, again.tariff_created], [0, 0, false, 0]);
@@ -474,17 +475,20 @@ test('at most one price read per connection a day, never before `next`; a 304 re
   api.mutate = {};
 });
 
-test('daily read NL: 24 hourly rows ex VAT, the credit negative, and the VAT cross-check warns on a different rule without touching it', async () => {
+test('daily read NL: 24 hourly rows ex VAT, the credit negative, VAT agrees with ours, and a different rule is warned about without touching it', async () => {
   fresh();
   api.etags = false;
   clock.t = Date.UTC(2026, 10, 4, 5, 0);
   const r = await TU.syncTounifyHome({ site: nlSite(), client: client() });
   assert.deepEqual([r.tariff, r.kind, r.unit_rows, r.fixed_rows, r.settlement_interval, r.resolution], ['TOUNIFY-NL-FRENS', 'dynamic', 24, 3, 3600, 900]);
   assert.equal(api.of(/\/prices$/).at(-1).query.resolution, '900', 'the home\'s quarter-hour slots');
-  assert.match(r.warnings.join('\n'), /VAT: tounify states 21 % from 2026-10-25T23:00:00Z; we hold no VAT rule for NL then/);
+  assert.deepEqual(r.vat_check.map((v) => [v.tounify, v.ours, v.match]), [[0.21, 0.21, true]], 'the sourced NL VAT rule agrees');
+  assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)));
   const t = db.prepare("SELECT id FROM tariff WHERE tariff_code = 'TOUNIFY-NL-FRENS'").get();
   assert.equal(db.prepare("SELECT price_ex_vat FROM rate_interval WHERE tariff_id = ? AND register = 'consumption:credit' AND superseded_at IS NULL").get(t.id).price_ex_vat, -51980);
-  // Our NL VAT rule says 9 %: tounify's 21 % is reported, our rule is kept as it is.
+  // Our NL VAT rule says 9 %: tounify's 21 % is reported, our rule is kept as it is. (The sourced rule is set
+  // aside for this, so the test rule does not overlap it, and put back after.)
+  db.prepare("UPDATE tax_rule SET superseded_at = -1 WHERE country = 'NL' AND code = 'btw' AND superseded_at IS NULL").run();
   db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, currency, charge_period, seq, valid_from, valid_to, source, unverified, recorded_at, origin, origin_note)
     VALUES ('NL', 'btw', 'electricity', 'import', 'domestic', 'all', 'percent', 0.09, NULL, NULL, 100, ?, NULL, 'test rule', 1, 0, 'placeholder', 'test rule')`).run(Date.UTC(2025, 11, 31, 23) / 1000);
   const again = await TU.syncTounifyHome({ site: nlSite(), client: client(), force: true });
@@ -492,6 +496,7 @@ test('daily read NL: 24 hourly rows ex VAT, the credit negative, and the VAT cro
   assert.deepEqual(again.vat_check.map((v) => [v.tounify, v.ours, v.match]), [[0.21, 0.09, false]]);
   assert.equal(db.prepare("SELECT value FROM tax_rule WHERE country = 'NL' AND code = 'btw' AND superseded_at IS NULL").get().value, 0.09, 'never silently overridden');
   db.prepare("DELETE FROM tax_rule WHERE country = 'NL' AND source = 'test rule'").run();
+  db.prepare("UPDATE tax_rule SET superseded_at = NULL WHERE country = 'NL' AND code = 'btw' AND superseded_at = -1").run();
 });
 
 test('an answer of an unexpected shape is quarantined: the step fails soft, nothing is mapped from it, the sync goes on', async () => {

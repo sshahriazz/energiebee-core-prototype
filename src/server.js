@@ -4,14 +4,14 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, dataDir, dbFile, optimizeDb, closeDb } from './db/db.js';
+import { db, dataDir, dbFile, optimizeDb, closeDb, vatRulesChanged } from './db/db.js';
 import { buildSite, processQueue, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
 import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
-import { seriesId, readReadings, spanColumn } from './core/facts.js';
+import { seriesId, readReadings, spanColumn, markDirty } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
 import { startControlScheduler, registeredDrivers } from './jobs/control.js';
@@ -903,6 +903,14 @@ export function start() {
   if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
   // Retention: a dry-run report unless RETENTION=apply (counts only; src/core/maintenance.js).
   if (maintenance.retention) console.log(retentionSummary(maintenance.retention));
+  // VAT rules for a country changed (db.js syncVatRules): every home there is rebuilt from its first built day,
+  // so days built before the change are priced with the rules as they now stand.
+  if (vatRulesChanged.length) {
+    const homes = db.prepare(`SELECT s.id, s.timezone, MIN(d.local_date) AS first FROM site s JOIN site_day d ON d.site_id = s.id
+      WHERE COALESCE(s.country, s.market_code) IN (${vatRulesChanged.map(() => '?').join(',')}) GROUP BY s.id`).all(...vatRulesChanged);
+    for (const h of homes) markDirty(h.id, dayBounds(h.timezone, h.first)[0], nowSec(), `VAT rules changed for ${vatRulesChanged.join(', ')}`);
+    console.log(`VAT rules recorded for ${vatRulesChanged.join(', ')}; ${homes.length} home(s) queued for a rebuild`);
+  }
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, () => {
     const minutes = startScheduler();

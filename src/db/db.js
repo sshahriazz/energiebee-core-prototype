@@ -12,6 +12,7 @@ import { seedAttributeDefs, attributeSeedPending } from './seed/attributes.js';
 import { seedBindings, bindingSeedPending } from './seed/bindings.js';
 import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
 import { resolveRegion } from '../core/regions.js';
+import { EU_VAT_RULES } from '../core/tax.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..');
@@ -282,6 +283,36 @@ export function syncGbVat(rates = VAT_RATES) {
   return true;
 }
 syncGbVat();
+
+// FR and NL VAT (EU_VAT_RULES in core/tax.js), kept in tax_rule the same way: per country and code, when the
+// current rows differ from the list they are superseded (kept for "as known at" rebuilds) and the list is
+// recorded now; an unchanged list writes nothing. Returns the countries changed. A home whose days were
+// already built with no VAT rule is rebuilt by the caller (start-up below), as a rule change does not
+// reach the rebuild queue on its own.
+export function syncVatRules(rules = EU_VAT_RULES) {
+  const key = (r) => [r.applies_to, r.value, r.valid_from, r.valid_to ?? null, r.source].join('|');
+  const groups = new Map();
+  for (const r of rules) {
+    const k = `${r.country}/${r.code}`;
+    (groups.get(k) || groups.set(k, []).get(k)).push(r);
+  }
+  const changed = [];
+  const now = Date.now();
+  for (const [k, list] of groups) {
+    const [country, code] = k.split('/');
+    const have = db.prepare("SELECT applies_to, value, valid_from, valid_to, source FROM tax_rule WHERE country = ? AND code = ? AND fuel = 'electricity' AND direction = 'import' AND superseded_at IS NULL").all(country, code).map(key).sort();
+    if (JSON.stringify(list.map(key).sort()) === JSON.stringify(have)) continue;
+    tx(() => {
+      db.prepare("UPDATE tax_rule SET superseded_at = ? WHERE country = ? AND code = ? AND fuel = 'electricity' AND direction = 'import' AND superseded_at IS NULL").run(now, country, code);
+      const ins = db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, currency, charge_period, seq, valid_from, valid_to, source, unverified, recorded_at, origin, origin_note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, 0, ?, ?, ?)`);
+      for (const r of list) ins.run(r.country, r.code, r.fuel, r.direction, r.customer_class, r.applies_to, r.kind, r.value, r.seq, r.valid_from, r.valid_to ?? null, r.source, now, r.origin, r.origin_note);
+    });
+    changed.push(country);
+  }
+  return changed;
+}
+export const vatRulesChanged = syncVatRules();
 // Reference rows: markets (FR, NL and the unverified stand-ins), one bidding-zone region per market,
 // the 14 GB distribution regions with their Octopus, Tariffscanner id and name aliases, and the
 // providers of each market's roles (seed/providers.js). Only missing rows are inserted, so an

@@ -69,7 +69,9 @@ test('per kVA per month: price x kVA, pro-rated by real seconds (a 23-hour day t
   const lin = JSON.parse(db.prepare('SELECT lineage FROM site_hh WHERE site_id = ? LIMIT 1').get(monthly.id).lineage);
   assert.equal(lin.capacity_unknown, undefined);
   assert.equal(lin.origin, 'placeholder');
-  assert.ok(lin.placeholder_inputs.includes('tax_rule FR/tva [placeholder]'));
+  // TVA is a sourced rule (EU_VAT_RULES); the accise is still a placeholder, so the slot stays placeholder.
+  assert.ok(lin.placeholder_inputs.includes('tax_rule FR/accise [placeholder]'), JSON.stringify(lin.placeholder_inputs));
+  assert.ok(!lin.placeholder_inputs.some((x) => /FR\/tva/.test(x)));
   assert.equal(db.prepare("SELECT COUNT(*) n FROM check_result WHERE site_id = ? AND check_code = 'capacity_charge'").get(monthly.id).n, 0);
 });
 

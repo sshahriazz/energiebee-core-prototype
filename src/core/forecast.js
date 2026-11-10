@@ -180,13 +180,16 @@ export function learnSunlight(hist, sun, wholeDays, slotS = SLOT) {
   const ma = mean(pairs.map((p) => p.a));
   const ssTot = pairs.reduce((s, p) => s + (p.a - ma) ** 2, 0);
   const ssRes = pairs.reduce((s, p, i) => s + (p.a - fitted[i]) ** 2, 0);
+  // Output that never varies (in practice: no solar at all, panels not wired to the inverter or not reported)
+  // cannot be fitted against sunlight: there is nothing to learn, so this path is not used.
+  if (!(ssTot > 0)) return { ...out, reason: `the solar output did not vary over ${days} day(s) of sunlight (${ma > 0 ? `always ${ma.toFixed(3)} kWh` : 'no solar recorded'}), so there is nothing to fit` };
   // Daily spread around the fit, whole days only. It is in-sample: it shows how this
   // home's output varies under the same sunlight, not errors in the sunlight forecast.
   const byDay = new Map();
   pairs.forEach((p, i) => { if (!wholeDays.has(p.date)) return; const d = byDay.get(p.date) || byDay.set(p.date, { a: 0, f: 0 }).get(p.date); d.a += p.a; d.f += fitted[i]; });
   const ratios = [...byDay.values()].filter((d) => d.f > 0).map((d) => d.a / d.f);
   return {
-    ...out, ok: true, r2: ssTot > 0 ? 1 - ssRes / ssTot : null, maeKwh: mean(pairs.map((p, i) => Math.abs(p.a - fitted[i]))),
+    ...out, ok: true, r2: 1 - ssRes / ssTot, maeKwh: mean(pairs.map((p, i) => Math.abs(p.a - fitted[i]))),
     range: ratios.length >= MIN_DAYS ? { basis: 'daily actual/fitted ratios on the history (in-sample)', days: ratios.length, low: Math.min(1, quantile(ratios, LOW_Q)), high: Math.max(1, quantile(ratios, HIGH_Q)) } : null,
     rangeReason: ratios.length >= MIN_DAYS ? null : `${ratios.length} whole day(s) of solar and sunlight history; needs ${MIN_DAYS}`,
   };
@@ -548,7 +551,7 @@ export function forecastSite(siteId, hours = 48) {
       method: solarPath === 'quartz'
         ? `Latest Quartz forecast for the panels${quartzCal.applied ? `, multiplied by ${quartzCal.factor.toFixed(2)} to match how this home's output compared with Quartz over the last ${HISTORY_DAYS} days` : `, used as issued (not calibrated: ${quartzCal.reason})`}.`
         : solarPath === 'sunlight'
-          ? `Open-Meteo's forecast of sunlight on flat ground, multiplied for each hour of the day by how much solar this home made per unit of that sunlight over the last ${HISTORY_DAYS} days (R² ${sunlight.r2.toFixed(2)}).`
+          ? `Open-Meteo's forecast of sunlight on flat ground, multiplied for each hour of the day by how much solar this home made per unit of that sunlight over the last ${HISTORY_DAYS} days${sunlight.r2 != null ? ` (R² ${sunlight.r2.toFixed(2)})` : ''}.`
           : `No solar forecast: ${noSolar}.`,
       issuedAt: solarIssued,
       quartz: {

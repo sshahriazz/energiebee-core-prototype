@@ -1,7 +1,7 @@
 // Trust views for the Data & trust page: why each number can be relied on, shown from the
 // facts themselves. Everything here reads /api/sites/:id/trust, /asof and /evidence.
 import { api, fmt, esc, slotNoun, slotNouns, SlotNoun, originBadge } from '../api.js';
-import { card } from '../layout.js';
+import { card, provisionalWhy } from '../layout.js';
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
@@ -25,14 +25,14 @@ export function headlineCard(t, tf) {
   return card(`Can these numbers be trusted? <span class="faint" style="font-weight:500">${tf.date(h.from)} – ${tf.date(h.to)}</span>`,
     `Four things decide it: every ${slotNoun()} built from the final source, independent measurements agreeing, every number traced to what a provider sent, and every change recorded.`, `
     <div class="proof-stats">
-      ${stat(`${pct(h.final, built)}% final`, `${h.final} of ${built} ${slotNouns()}`, `${h.provisional} provisional (waiting for smart-meter readings) · ${h.missing} missing`)}
+      ${stat(`${pct(h.final, built)}% final`, `${h.final} of ${built} ${slotNouns()}`, `${h.provisional} provisional${h.provisional ? ` (${provisionalWhy(h.provisional, h.provisionalToday)})` : ''} · ${h.missing} missing`)}
       ${stat(`${h.checks.pass} of ${run} pass`, 'cross-checks between independent measurements', `${h.checks.warn} warning${h.checks.warn === 1 ? '' : 's'} · ${h.checks.fail} failed · ${h.checks.skip} not judged yet`)}
       ${stat(h.facts ? `${pct(h.factsLinked, h.facts)}% traced` : '–', `${h.facts.toLocaleString('en-GB')} facts from ${h.payloads} provider responses`, 'Every reading links to the raw response it came from, kept unchanged.')}
       ${stat(`${h.restated}`, `${slotNouns()} changed after first shown as final`, `${h.revisedDays} day${h.revisedDays === 1 ? '' : 's'} revised in this period · ${t.corrections.length} correction${t.corrections.length === 1 ? '' : 's'} by EnergieBee`)}
     </div>
     <div class="proof-bar" role="img" aria-label="${h.final} final, ${h.provisional} provisional, ${h.missing} missing">${seg(h.final, '--good', 'Final')}${seg(h.provisional, '--warn', 'Provisional')}${seg(h.missing, '--bad', 'Missing')}</div>
-    <div class="legend" style="margin-top:8px"><span><i class="swatch" style="background:var(--good)"></i>Final: smart-meter readings in, every check run</span>
-      <span><i class="swatch" style="background:var(--warn)"></i>Provisional: inverter clamp until the meter readings arrive (about a day later)</span>
+    <div class="legend" style="margin-top:8px"><span><i class="swatch" style="background:var(--good)"></i>Final: the day is over, every expected reading in, every check run</span>
+      <span><i class="swatch" style="background:var(--warn)"></i>Provisional: the day is not over, or a meter's readings have not arrived yet (about a day later)</span>
       <span><i class="swatch" style="background:var(--bad)"></i>Missing: no grid reading from any source</span></div>`, 'id="proof"');
 }
 

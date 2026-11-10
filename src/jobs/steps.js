@@ -11,6 +11,7 @@ import { siteCredentials } from '../core/secrets.js';
 import { nowSec, localDate, addDays, dayBounds, daysBetween } from '../core/time.js';
 import { resolveSiteGeo } from '../adapters/geo.js';
 import { syncCarbon } from '../adapters/carbon.js';
+import { syncRteCarbon, REGION as RTE_REGION } from '../adapters/rte.js';
 import { syncWeather } from '../adapters/openmeteo.js';
 import { syncQuartz } from '../adapters/quartz.js';
 import { syncSunsynk } from '../adapters/sunsynk.js';
@@ -123,6 +124,20 @@ registerAdapter('neso', {
       prepare: (ctx) => ({ from: dayBounds(ctx.tz, resumeDate(ctx.siteId, 'carbon', ctx.tz, ctx.today, ctx.fromDate, 1, 60))[0] }),
       share: (ctx, a) => (ctx.site.carbon_region != null && ctx.site.outcode ? { key: `carbon:${ctx.site.carbon_region}`, from: a.from } : null),
       run: (ctx, a) => syncCarbon(ctx.site, a.from, nowSec()),
+    }],
+  },
+});
+
+// ───────────── Carbon intensity: RTE éCO2mix (FR), one national series for every French home ─────────────
+// No region to look up: the whole country is one value (carbon:FR), so every French home shares one fetch a cycle.
+
+registerAdapter('rte', {
+  roles: {
+    carbon: [{
+      step: 'carbon', order: 40, connection: 'carbon',
+      prepare: (ctx) => ({ from: dayBounds(ctx.tz, resumeDate(ctx.siteId, 'carbon', ctx.tz, ctx.today, ctx.fromDate, 1, 60))[0] }),
+      share: (ctx, a) => ({ key: RTE_REGION, from: a.from }),
+      run: (ctx, a) => syncRteCarbon(ctx.site, a.from, nowSec()),
     }],
   },
 });

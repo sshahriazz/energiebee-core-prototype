@@ -4,7 +4,7 @@
 //
 // GB lists the providers the core called before the registry, in the same roles, plus the
 // Tariffscanner catalogue (a second tariff_catalogue provider, run alongside Octopus's). FR and NL
-// list what is planned: weather works today (Open-Meteo is worldwide); the meter readers (Linky,
+// list what is planned: weather works today (Open-Meteo is worldwide), and FR grid carbon (RTE éCO2mix); the meter readers (Linky,
 // P1) and ENTSO-E are NOT built and are listed disabled, saying why; typed-in prices ('manual',
 // origin user) are always allowed. DE, BE and ES have weather only.
 // tounify v3 (src/adapters/tounify.js), an EU tariff source (not UK), is built and listed for FR and
@@ -23,6 +23,8 @@
 
 const OPEN_METEO = 'Open-Meteo hourly weather and sunlight for the home\'s coordinates (any country); the free host is for non-commercial use, production needs a paid plan';
 const NOT_BUILT = 'adapter not built';
+// RTE éCO2mix (src/adapters/rte.js): open data under Licence Ouverte v2.0 (Etalab), reuse allowed with the source credited.
+const RTE_ECO2MIX = 'RTE éCO2mix national carbon intensity (ODRÉ open data, no key): one value for France every 15 minutes, about 30 minutes behind, no forecast; Licence Ouverte v2.0 (Etalab), source to be credited';
 export const TOUNIFY = 'tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits';
 const ENTSOE = `${NOT_BUILT}: ENTSO-E day-ahead wholesale price per bidding zone (not a retail tariff); needs a registered ENTSO-E token`;
 const MANUAL = 'prices typed in by the user or installer (src/core/tariffs.js createTariff, putRateRows with origin user): always allowed, nothing to fetch';
@@ -63,6 +65,7 @@ export const PROVIDERS = Object.freeze([
   row('GB', 'solar_forecast', 'quartz', 'shared', 'provider', 'Open Climate Fix Quartz 48-hour solar forecast; called only when panel size, tilt and direction are known'),
   // FR: weather works; the meter and price sources are planned, not built.
   row('FR', 'weather', 'open_meteo', 'shared', 'provider', OPEN_METEO),
+  row('FR', 'carbon', 'rte', 'shared', 'provider', RTE_ECO2MIX),
   row('FR', 'meter', 'linky', 'home', 'placeholder', `${NOT_BUILT}: Linky meter data (Enedis with the customer's consent, or a local reader) is planned; nothing is read yet`, { enabled: 0, needs_credentials: 1 }),
   ...euTariffs('FR'),
   // NL: as FR, with a P1 port reader for the meter.

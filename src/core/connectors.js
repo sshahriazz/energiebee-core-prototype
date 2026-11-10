@@ -38,6 +38,7 @@ export const CONNECTOR_LABELS = Object.freeze({
   geo: 'Postcode look-up (postcodes.io)',
   open_meteo: 'Open-Meteo',
   neso: 'NESO Carbon Intensity',
+  rte: 'RTE éCO2mix (France)',
   octopus: 'Octopus Energy',
   national_gas: 'National Gas Data Portal',
   tariffscanner: 'Tariffscanner (FEA)',

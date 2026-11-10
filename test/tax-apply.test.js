@@ -2,7 +2,7 @@
 // and the guards against double taxes and mixed currencies.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyTaxes, rulesFor, PLACEHOLDER_TAX_RULES, SEED_TAX_RULES, GB_VAT_RULES } from '../src/core/tax.js';
+import { applyTaxes, rulesFor, PLACEHOLDER_TAX_RULES, SEED_TAX_RULES, GB_VAT_RULES, EU_VAT_RULES } from '../src/core/tax.js';
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg ?? ''} ${a} != ${b}`);
 const NL = { country: 'NL', fuel: 'electricity', direction: 'import', customer_class: 'domestic', valid_from: 0, valid_to: null };
@@ -101,11 +101,16 @@ test('rulesFor picks the rules in force, current only, in seq order', () => {
   assert.deepEqual(rulesFor(rules, { country: 'NL', fuel: 'gas', direction: 'import', ts: 1000 }), []);
 });
 
-test('FR and NL seed values are placeholders, flagged unverified, and say so in their result', () => {
+test('FR and NL VAT is sourced; every other FR and NL seed value is a placeholder, flagged unverified, and says so in its result', () => {
   assert.ok(PLACEHOLDER_TAX_RULES.length > 0);
-  for (const r of SEED_TAX_RULES.filter((x) => x.country !== 'GB')) {
+  for (const r of PLACEHOLDER_TAX_RULES) {
     assert.equal(r.unverified, true, `${r.country} ${r.code}`);
     assert.match(r.source, /^UNVERIFIED placeholder/);
+  }
+  assert.ok(!PLACEHOLDER_TAX_RULES.some((r) => r.kind === 'percent'), 'no VAT among the placeholders');
+  for (const r of EU_VAT_RULES) {
+    assert.deepEqual([r.unverified, r.origin, r.kind, r.seq], [false, 'sourced', 'percent', 100], `${r.country} ${r.code}`);
+    assert.ok(r.source.length > 20 && !/UNVERIFIED/.test(r.source));
   }
   for (const r of GB_VAT_RULES) assert.equal(r.unverified, false);
   const ts = Date.UTC(2025, 5, 1) / 1000;
@@ -113,7 +118,7 @@ test('FR and NL seed values are placeholders, flagged unverified, and say so in 
   assert.deepEqual(nl.map((r) => r.code), ['energiebelasting', 'heffingskorting', 'btw']);
   const r = applyTaxes(nl, { currency: 'EUR', unitEx: 25, kwh: 1, slotS: 900, yearLengthS: YEAR_2025 });
   assert.equal(r.unverified, true);
-  assert.ok(r.lines.every((l) => l.unverified));
+  assert.deepEqual(r.lines.map((l) => [l.code, l.unverified]), [['energiebelasting', true], ['heffingskorting', true], ['btw', false]]);
   const fr = rulesFor(SEED_TAX_RULES, { country: 'FR', fuel: 'electricity', direction: 'import', ts: Date.UTC(2026, 0, 15) / 1000 });
   assert.deepEqual(fr.map((x) => x.code), ['accise', 'tva']);
   assert.equal(applyTaxes(fr, { currency: 'EUR', unitEx: 20, kwh: 1 }).unverified, true);

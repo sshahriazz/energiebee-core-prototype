@@ -25,6 +25,7 @@
 // values of exactly that slot (samples, fit, meter vs clamp, balance, flows, prices, stock); it only
 // reads values already computed, so no row changes. Absent, every trace line is skipped.
 import { db, tx, optimizeDb } from '../db/db.js';
+import { carbonSubjectOf } from './carbon-series.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
 import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
@@ -265,7 +266,11 @@ function build(siteId, fromDate, toDate, opts) {
       }
     }
     const metric = m.kind === 'meter_gas' ? 'gas_kwh' : m.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
-    meterFacts[m.kind] = intervalsFrom(meterBound, (src) => seriesId('device', m.id, metric, src), winStart, winEnd);
+    const facts = intervalsFrom(meterBound, (src) => seriesId('device', m.id, metric, src), winStart, winEnd);
+    // An account can list a second meter point of the same kind that sends nothing (an old Economy 7 MPAN whose
+    // agreement ended years ago). The device query has no order, so without this an empty meter read last would
+    // replace the live one's readings and every day would show no usage. A meter with readings always wins.
+    if (!meterFacts[m.kind]?.length || facts.length) meterFacts[m.kind] = facts;
   }
   const cvAt = (slot) => gasCv.find((f) => f.start_ts <= slot && f.end_ts > slot)?.value ?? null;
   const VOLUME_CORRECTION = 1.02264;   // Gas (Calculation of Thermal Energy) Regulations 1996
@@ -278,8 +283,10 @@ function build(siteId, fromDate, toDate, opts) {
     WHERE d.site_id = ? AND c.status IN ('acked', 'skipped_unchanged') AND c.window_start IS NOT NULL AND c.window_end > ? AND c.window_start < ?${asOf != null ? ' AND c.acked_at <= ?' : ''}
     ORDER BY c.id`).all(siteId, winStart, winEnd, ...(asOf != null ? [asOf * 1000] : []));
   const evFacts = intervalsFrom(evBound, (src) => sid('ev_charge_kwh', src), winStart, winEnd);
-  const carbonFacts = site.carbon_region != null
-    ? intervalsFrom(carbonBound, (src) => seriesId('region', `carbon:${site.carbon_region}`, 'carbon_intensity', src), winStart, winEnd) : [];
+  // The home's carbon series (a NESO region, or a country's national series: carbon-series.js), from every bound source.
+  const carbonSubject = carbonSubjectOf(site);
+  const carbonFacts = carbonSubject != null
+    ? intervalsFrom(carbonBound, (src) => seriesId('region', carbonSubject, 'carbon_intensity', src), winStart, winEnd) : [];
   const tempByHour = new Map(weatherBound.flatMap((bd) => readReadings([sid('outdoor_temp_c', bd.source)], Math.max(winStart - 3600, bd.from), Math.min(winEnd, bd.to))).map((r) => [r.ts, r.value]));
   // Solar forecast of record: for each period, the latest issue made before it started,
   // so a past slot is compared only with what was known in advance. Quartz when it

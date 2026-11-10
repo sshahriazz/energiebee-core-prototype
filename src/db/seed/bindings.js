@@ -4,6 +4,8 @@
 export const BINDING_DEFAULTS = [
   ['inverter_5min', 'sunsynk_5min', 0], ['inverter_daily', 'sunsynk_daily', 0],
   ['meter_energy', 'octopus_meter', 0], ['gas_cv', 'national_gas_cv', 0], ['carbon', 'carbon_regional', 0],
+  // A second carbon source (delta 081): national series where no regional one covers the home (RTE éCO2mix, FR).
+  ['carbon', 'rte_eco2mix', 1],
   ['weather_temp', 'open_meteo', 0], ['ev_dispatch', 'octopus_kraken', 0],
   // Our own calibrated forecast first (the solar cases derive from it), Quartz where it has nothing.
   ['solar_forecast', 'core_forecast', 0], ['solar_forecast', 'quartz', 1],

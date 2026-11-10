@@ -14,6 +14,7 @@ globalThis.fetch = async (url) => {
   calls.push({ host: u.host, path: u.pathname, url: String(url) });
   if (u.host === 'api.carbonintensity.org.uk' && u.pathname.startsWith('/regional/intensity/')) return json({ data: [{ regionid: 3, data: [] }] });
   if (u.host === 'api.open-meteo.com') return json({ hourly: { time: [] } });
+  if (u.host === 'odre.opendatasoft.com' && u.pathname.includes('/exports/json')) return json([]);   // RTE éCO2mix (FR carbon): nothing published
   if (u.host === 'api.octopus.energy' && u.pathname === '/v1/products/') return json({ results: [] });
   if (u.host === 'api.octopus.energy' && /\/(standard-unit-rates|standing-charges|day-unit-rates|night-unit-rates)\/$/.test(u.pathname)) return json({ results: [], next: null });
   unexpected.push(String(url));
@@ -36,7 +37,7 @@ function gbHome(name, { carbon = 3, gsp = 'G' } = {}) {
   conn(s.id, 'tariff', 'weather', 'carbon', 'solar_forecast', 'compare');
   return s.id;
 }
-const kind = (c) => (c.host === 'api.carbonintensity.org.uk' ? 'carbon' : c.host === 'api.open-meteo.com' ? 'weather'
+const kind = (c) => (c.host === 'api.carbonintensity.org.uk' || c.host === 'odre.opendatasoft.com' ? 'carbon' : c.host === 'api.open-meteo.com' ? 'weather'
   : c.path === '/v1/products/' ? 'catalogue' : c.host === 'api.octopus.energy' ? 'rates' : c.host);
 const counts = () => calls.reduce((o, c) => ({ ...o, [kind(c)]: (o[kind(c)] ?? 0) + 1 }), {});
 const steps = (log) => log.map((l) => l.step);
@@ -116,18 +117,20 @@ test('missing credentials: the step is skipped with a reason, no call is made, t
   assert.deepEqual(unexpected, []);
 });
 
-test('a French home: weather runs; the unbuilt and unlicensed providers (tounify) are skipped, never called', async () => {
+test('a French home: weather and carbon (RTE) run; the unbuilt and unlicensed providers (tounify) are skipped, never called', async () => {
   const fr = createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 }).id;
   calls.length = 0;
   let r = await syncSite(fr);
   assert.deepEqual(r.log.filter((l) => !['build', 'forecast'].includes(l.step)).map((l) => [l.step, l.ok, l.skipped ?? null]), [
     ['weather', true, 'no hourly data'],
+    ['carbon', true, null],
     ['meter:linky', true, 'disabled: adapter not built: Linky meter data (Enedis with the customer\'s consent, or a local reader) is planned; nothing is read yet'],
     ['tounify', true, 'unlicensed: tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
     ['tariff_prices:entsoe', true, 'disabled: adapter not built: ENTSO-E day-ahead wholesale price per bidding zone (not a retail tariff); needs a registered ENTSO-E token'],
     ['tounify_catalogue', true, 'unlicensed: tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
   ]);
-  assert.deepEqual(calls.map(kind), ['weather'], 'only Open-Meteo is asked');
+  // Open-Meteo, then RTE: its real-time set (empty here), so the consolidated set for the window too.
+  assert.deepEqual(calls.map(kind), ['weather', 'carbon', 'carbon'], 'only Open-Meteo and RTE are asked');
   // Switched on but still unlicensed: skipped, its implementation never called.
   let called = 0;
   const restore = P.registerAdapter('tounify', { roles: { tariff_prices: [{ step: 'tounify', order: 70, run: async () => { called++; return {}; } }] } });

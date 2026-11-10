@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, dataDir } from '../db/db.js';
+import { carbonSeriesOf, carbonSubjectOf } from './carbon-series.js';
 import { QUALITY } from './facts.js';
 import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTime, findSeries, minorOf, dayWords, slotWords, pctWords } from './explain.js';
 import { series as plannerSeries } from './planner-read.js';
@@ -119,7 +120,8 @@ const kindOfUnit = (u) => KIND_OF_UNIT[u] ?? 'other';
 const FORECAST_ONLY = new Set(['core_forecast', 'quartz', 'core_solar_cases', 'core_plan']);
 function regionsOf(site) {
   const out = [];
-  if (site.carbon_region != null) out.push(`carbon:${site.carbon_region}`);
+  const carbon = carbonSubjectOf(site);
+  if (carbon) out.push(carbon);
   for (const d of db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id)) {
     try { const ldz = JSON.parse(d.attrs || '{}').ldz; if (ldz) out.push(`ldz:${ldz}`); } catch { /* attrs not JSON */ }
   }
@@ -228,6 +230,7 @@ const NOT_PURE = {
   octopus_rates: 'src/adapters/octopus.js maps rate rows inside syncTariffRates (an inner toRows) and writes them with putRates: no mapper is exported',
   octopus_kraken: 'src/adapters/octopus.js normaliseDispatches and normalisePlanned write as they parse',
   carbon_regional: 'src/adapters/carbon.js maps inline in syncCarbon (past and forward periods split by the fetch time)',
+  rte_eco2mix: 'src/adapters/rte.js mapRows: each taux_co2 for its own period (15 minutes real time, 30 minutes consolidated); nulls skipped',
   open_meteo: 'src/adapters/openmeteo.js maps inline in syncWeather (past and future hours split by the fetch time)',
   quartz: 'src/adapters/quartz.js maps inline in syncQuartz',
   national_gas_cv: 'src/adapters/nationalgas.js parses the CSV inline in syncGasCv',
@@ -347,6 +350,12 @@ const LOOKUPS = {
     plain: 'each half-hour\'s figure matched by its time',
     index(body) { const d = body?.data; const list = Array.isArray(d) ? d[0]?.data : d?.data; const m = new Map(); for (const x of list ?? []) m.set(`${parseIso(x.from)}|${parseIso(x.to)}`, x.intensity?.forecast ?? null); return m; },
     find(ix, fact) { const k = `${fact.start_ts}|${fact.end_ts}`; return ix.has(k) ? { value: ix.get(k) } : { missing: 'no period with those times' }; },
+  },
+  rte_eco2mix: {
+    how: 'the row with the same date_heure: its taux_co2',
+    plain: 'each quarter-hour\'s figure matched by its time',
+    index(body) { const m = new Map(); for (const x of Array.isArray(body) ? body : []) m.set(parseIso(x.date_heure), x.taux_co2 ?? null); return m; },
+    find(ix, fact) { return ix.has(fact.start_ts) ? { value: ix.get(fact.start_ts) } : { missing: 'no row at that time' }; },
   },
   open_meteo: {
     how: 'the hourly value at the same unix time (irradiance: the value at the end of the hour it covers)',
@@ -870,7 +879,8 @@ function loadCx(site, from, to, { slot = null } = {}) {
   const gasAttrs = gasDev ? (() => { try { return JSON.parse(gasDev.attrs || '{}'); } catch { return {}; } })() : {};
   const meters = { import: intervals(meterId('meter_import', 'grid_import_kwh')), export: intervals(meterId('meter_export', 'grid_export_kwh')),
     gas: intervals(gasDev ? meterId('meter_gas', gasAttrs.gasUnit?.unit === 'm3' ? 'gas_m3' : 'gas_kwh') : null) };
-  const carbonId = site.carbon_region != null ? findSeries('region', `carbon:${site.carbon_region}`, 'carbon_intensity', 'carbon_regional') : null;
+  const carbonSeries = carbonSeriesOf(site);
+  const carbonId = carbonSeries ? findSeries('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source) : null;
   const tempId = sidOf('outdoor_temp_c', 'open_meteo');
   const fcRows = (source) => { const id = sidOf('solar_kwh', source); return id == null ? [] : db.prepare('SELECT series_id, start_ts, end_ts, issued_at, value, raw_id FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts').all(id, a, b); };
   const carbon = intervals(carbonId);
@@ -927,7 +937,7 @@ function valWords(cx, field, v) {
   return fx(v, 4);
 }
 const fieldWords = (field) => (TIMELINE_VARS[field]?.label ?? field.replace(/_/g, ' ')).toLowerCase();
-const PROVIDER_WORDS = { sunsynk_5min: 'the inverter (Sunsynk)', sunsynk_daily: 'the inverter (Sunsynk daily totals)', octopus_meter: 'the smart meter (Octopus)', carbon_regional: 'the grid operator (Carbon Intensity)',
+const PROVIDER_WORDS = { sunsynk_5min: 'the inverter (Sunsynk)', sunsynk_daily: 'the inverter (Sunsynk daily totals)', octopus_meter: 'the smart meter (Octopus)', carbon_regional: 'the grid operator (Carbon Intensity)', rte_eco2mix: 'the French grid operator (RTE éCO2mix)',
   open_meteo: 'the weather service (Open-Meteo)', national_gas_cv: 'National Gas', octopus_rates: 'the supplier (Octopus)', tariffscanner: 'Tariffscanner', tounify: 'tounify' };
 const providerWords = (source) => PROVIDER_WORDS[source] ?? source;
 

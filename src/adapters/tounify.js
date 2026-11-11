@@ -896,7 +896,7 @@ export function homeStatus(site) {
 /** Whether the country's weekly catalogue refresh may run now. */
 export function catalogueDue(country, nowMs = clockOf(null).now()) {
   const cat = readState().catalogue?.[country];
-  if (cat?.refreshed_at && nowMs - cat.refreshed_at < policy.catalogueEveryMs) return false;
+  if (cat?.api === 'v2' && cat.refreshed_at && nowMs - cat.refreshed_at < policy.catalogueEveryMs) return false;
   return dbStore().nextAllowedAt() - nowMs <= policy.maxWaitMs;
 }
 
@@ -926,7 +926,10 @@ function companiesInUse(country) {
  */
 export async function refreshCatalogue({ country, client, force = false } = {}) {
   const nowMs = client.clock.now();
-  const cat0 = readState().catalogue?.[country] ?? {};
+  // A catalogue read from the v3 preview (no api mark) is read again from v2 at once: its supplier list was narrowed
+  // by a connection, and its lists carry v3 fields.
+  const v3cat = readState().catalogue?.[country] ?? {};
+  const cat0 = v3cat.api === 'v2' ? v3cat : { tariffs: {}, listed_at: {}, api: 'v2' };
   if (!force && cat0.refreshed_at && nowMs - cat0.refreshed_at < policy.catalogueEveryMs) {
     return { skipped: `not due: one catalogue refresh a week per country, the next after ${iso(cat0.refreshed_at + policy.catalogueEveryMs)}` };
   }
@@ -984,7 +987,8 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
 // every catalogueEveryMs (7 days), so the second and later homes of a country cost no call. Naming a company spends
 // one of a testing token's distinct companies (the allowance guard refuses it first).
 async function listCached(country, client, key, pathname, scope, names, force, siteId = null) {
-  const cat = readState().catalogue?.[country] ?? {};
+  const cat0 = readState().catalogue?.[country] ?? {};
+  const cat = cat0.api === 'v2' ? cat0 : {};   // a list read from the v3 preview is never reused
   const nowMs = client.clock.now();
   const at = cat.listed_at?.[key];
   const held = key === 'companies' ? cat.companies : cat.tariffs?.[key.slice('tariffs:'.length)];
@@ -1000,7 +1004,8 @@ async function listCached(country, client, key, pathname, scope, names, force, s
   const list = key === 'companies' ? r.body.map(compactCompany) : r.body.map(compactTariff);
   updateState((s) => {
     s.catalogue ??= {};
-    const k = (s.catalogue[country] ??= {});
+    if (s.catalogue[country]?.api !== 'v2') s.catalogue[country] = { api: 'v2' };
+    const k = s.catalogue[country];
     if (key === 'companies') k.companies = list; else (k.tariffs ??= {})[key.slice('tariffs:'.length)] = list;
     (k.listed_at ??= {})[key] = nowMs;
   });

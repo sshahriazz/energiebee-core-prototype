@@ -809,3 +809,30 @@ test('catalogue status of a market whose supplier lists were read for the picker
     db.prepare("UPDATE provider_state SET state = ? WHERE provider = 'tounify'").run(before);
   }
 });
+
+test('lists and a catalogue read from the v3 preview (no api mark) are read again from v2 at once, then kept a week', async () => {
+  fresh();
+  clock.t = Date.UTC(2026, 10, 25, 5, 0);
+  // What a v3 database holds: FR's supplier list narrowed by a connection (2 of them), refreshed yesterday.
+  db.prepare("INSERT INTO provider_state (provider, state, updated_at) VALUES ('tounify', ?, 0)").run(JSON.stringify({ catalogue: { FR: {
+    companies: [{ id: 'EDF', name: 'EDF' }, { id: 'OEF', name: 'Octopus' }], properties: [{ property: 'capacity.contracted_kva' }],
+    refreshed_at: clock.t - 86400e3, listed_at: { companies: clock.t - 86400e3 },
+  } } }));
+  const s = createSite({ name: 'v3 cache', country: 'FR', postcode: '79200' });
+  assert.equal(TU.catalogueDue('FR'), true, 'a v3 catalogue is due');
+  const l = await TU.listCompanies(s, { client: client() });
+  assert.deepEqual([l.cached, l.list.length], [false, 13], 'the national v2 list, not the narrowed v3 one');
+  assert.deepEqual((await TU.listCompanies(s, { client: client() })).cached, true, 'then kept');
+  const r = await TU.refreshCatalogue({ country: 'FR', client: client() });
+  assert.equal(r.companies, 13);
+  const cat = TU.readState().catalogue.FR;
+  assert.deepEqual([cat.api, 'properties' in cat], ['v2', false]);
+  assert.equal(TU.catalogueDue('FR'), false, 'refreshed from v2: not due for a week');
+});
+
+test('the Dutch picker asks no connection size: delta 082 removed the question (its answer priced nothing)', async () => {
+  const PK = await import('../src/core/tariff-picker.js');
+  assert.deepEqual(PK.questionsFor('NL', 'dynamic').map((q) => q.field), []);
+  assert.deepEqual(PK.questionsFor('FR', 'two_rate').map((q) => q.field), ['contracted_kva', 'off_peak_hours'], 'France unchanged');
+  assert.ok(db.prepare("SELECT 1 FROM schema_delta WHERE name = '082-nl-fuse-question'").get());
+});

@@ -1082,3 +1082,11 @@ a.btn-primary { color: var(--surface); }
   .onb-progress .onb-line { display: none; }
   .onb-progress li { font-size: 13px; min-width: 0; }
 }
+
+/* Delete this home (Your providers): out of the way, red, and only live once the name is typed. */
+.btn-danger { background: var(--bad); color: #fff; border-color: var(--bad); }
+.btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
+.onb-danger { margin-top: 18px; padding: 14px 18px; border-color: color-mix(in srgb, var(--bad) 30%, var(--border, transparent)); }
+.onb-danger summary { cursor: pointer; color: var(--bad); font-weight: 600; }
+.onb-danger-body { margin-top: 12px; }
+.onb-danger-body .btn-danger { width: 100%; justify-content: center; height: 40px; }

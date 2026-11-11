@@ -135,6 +135,39 @@ const KIND_LABEL = { one_price: 'one price', two_rate: 'day / night', dynamic: '
 // Off-peak hours a day where the grid operator fixes them (src/core/tariff-picker.js OFF_PEAK_HOURS_PER_DAY).
 const OFF_PEAK_HOURS = { FR: 8 };
 
+// Delete the home for good (DELETE /api/sites/:id, src/core/delete-home.js): what goes is shown first, then the home's
+// name is typed to confirm. After it, the home is forgotten in this browser and the first home left is opened.
+function wireDelete(siteId) {
+  const box = $('del-home');
+  if (!box) return;
+  box.addEventListener('toggle', async () => {
+    if (!box.open || box.dataset.loaded) return;
+    box.dataset.loaded = '1';
+    let pv;
+    try { pv = await api(`/api/sites/${siteId}/delete-preview`); } catch (err) { $('del-body').innerHTML = `<p class="prov-err">${esc(err.message)}</p>`; return; }
+    if (pv.env_home) { $('del-body').innerHTML = '<p class="muted">This home is set up in .env on the server, so it cannot be deleted here: remove it from .env instead.</p>'; return; }
+    const what = [
+      `${pv.days} day${pv.days === 1 ? '' : 's'} of energy data`,
+      `${pv.devices} device${pv.devices === 1 ? '' : 's'}`,
+      pv.accounts.length ? `the connected account${pv.accounts.length === 1 ? '' : 's'} (${pv.accounts.map(esc).join(', ')}) and the login${pv.logins === 1 ? '' : 's'} stored for ${pv.accounts.length === 1 ? 'it' : 'them'}` : null,
+      'your tariff for this home',
+    ].filter(Boolean);
+    $('del-body').innerHTML = `<p><b>This deletes ${esc(pv.name)} for good.</b> It cannot be undone. Gone with it: ${what.join(', ')}.</p>
+      <p class="muted">Your accounts with the providers themselves (Octopus, Sunsynk, your supplier) are not touched.</p>
+      <form class="form" id="del-form" novalidate>${errorBox('err-del')}
+        <label>Type the home's name to confirm: <b>${esc(pv.name)}</b><input name="confirm" autocomplete="off" required></label>
+        <button class="btn btn-danger" type="submit" disabled>Delete this home for good</button></form>`;
+    const f = $('del-form');
+    const btn = f.querySelector('button');
+    f.confirm.addEventListener('input', () => { btn.disabled = f.confirm.value.trim() !== pv.name.trim(); });
+    onSubmit(f, async (b) => {
+      await api(`/api/sites/${siteId}`, { method: 'DELETE', body: JSON.stringify({ confirm: b.confirm }) });
+      try { localStorage.removeItem('eb.site'); } catch { /* private mode */ }
+      location.href = '/';
+    }, 'err-del');
+  });
+}
+
 async function providersStep(siteId, created = null, flash = '') {
   let p;
   let choice = null;
@@ -223,7 +256,10 @@ async function providersStep(siteId, created = null, flash = '') {
         <a class="btn btn-primary onb-done" href="/my?site=${siteId}">${any ? 'See my energy' : 'Go to my energy'}</a>
       </section>
       ${p.automatic.length ? `<p class="auth-note">Also running for your area, with no login: ${p.automatic.map((a) => esc(a.label)).join(', ')}.</p>` : ''}
+      <section class="card onb-danger"><details id="del-home"><summary>Delete this home</summary>
+        <div class="onb-danger-body" id="del-body"><p class="muted">Loading what would be deleted…</p></div></details></section>
     </div>`;
+    wireDelete(siteId);
   }
 
   document.querySelectorAll('button[data-skip]').forEach((b) => b.addEventListener('click', () => {

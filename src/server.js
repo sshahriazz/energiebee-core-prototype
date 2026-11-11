@@ -22,6 +22,7 @@ import { providerStatus, connectProvider } from './core/providers.js';
 import { connectors } from './core/connectors.js';
 import { compatibility } from './core/compatibility.js';
 import { connectTounify, tounifyAllowance } from './adapters/tounify.js';
+import { deleteHome, homeFootprint } from './core/delete-home.js';
 import { runMaintenance, retentionSummary } from './core/maintenance.js';
 import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
@@ -162,6 +163,16 @@ app.post('/api/sites/:id/providers/:provider/plants', async (req, res) => {
 });
 // Disconnect it (a wrong login, another account): the login is forgotten and its data withdrawn.
 app.delete('/api/sites/:id/providers/:provider', (req, res) => res.json(disconnectHome(req.user, site(req), req.params.provider)));
+// Delete the home for good (src/core/delete-home.js): its owner types the home's name ({ confirm }). The preview says
+// what goes: the days of data, the devices, the connected accounts and their stored logins.
+app.get('/api/sites/:id/delete-preview', (req, res) => {
+  const s = site(req);
+  const c = homeFootprint(s.id).counts;
+  // The accounts the user connected (Sunsynk, Octopus ...), by name: not the automatic feeds (weather, carbon, catalogues).
+  const accounts = homeProviders(s).connect.filter((c) => c.connected).map((c) => c.name);
+  res.json({ id: s.id, name: s.name, days: c.site_day ?? 0, devices: c.device ?? 0, accounts, logins: c.connection_secret ?? 0, env_home: !!s.env_key });
+});
+app.delete('/api/sites/:id', (req, res) => res.json(deleteHome(req.user, site(req), { confirm: req.body?.confirm })));
 
 // Step 3 of onboarding: the home's own supplier and tariff (src/core/tariff-picker.js), from the list its country's
 // source holds (GB Tariffscanner, from our own tables; FR / NL tounify v2, lists kept 7 days, prices at the postal code).

@@ -57,7 +57,7 @@ TU.tounifyPolicy.clock = clock;
 // A fake tounify v2 serving the captured answers, with ETags on the listings, per-call overrides and a log of calls.
 const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
 const V2 = (f) => load(`v2/${f}.json`);
-const DAYAHEAD = { EDFTRVHPHC: 'fr-dayahead-edfhphc', OEFODEFB: 'fr-dayahead-oefodefb', ANWBDE: 'nl-dayahead-anwbde' };
+const DAYAHEAD = { EDFTRVHPHC: 'fr-dayahead-edfhphc', OEFODEFB: 'fr-dayahead-oefodefb', ANWBDE: 'nl-dayahead-anwbde', EDFTRVBASE: 'fr-dayahead-oefodefb' };
 const TARIFFS = { 'FR/EDF': 'fr-edf-tariffs', 'FR/OEF': 'fr-oef-tariffs', 'NL/ANWB': 'nl-anwb-tariffs' };
 function fakeApi() {
   const api = { calls: [], etags: true, override: null, mutate: {} };
@@ -83,7 +83,7 @@ function fakeApi() {
     if ((m = /^\/v2\/(FR|NL)\/dayahead$/.exec(u.pathname))) {
       const f = DAYAHEAD[call.query.consumption_tariff];
       if (!f) return json(400, { statusCode: 400, code: 'unknown_tariff', message: `unknown tariff ${call.query.consumption_tariff}` });
-      const b = V2(f);
+      const b = { ...V2(f), consumption_tariff: { ...V2(f).consumption_tariff, id: call.query.consumption_tariff } };
       return json(200, api.mutate.prices ? api.mutate.prices(b) : b, { 'x-request-id': `req-${api.calls.length}`, etag: '"not-a-validator"' });
     }
     return json(404, {});
@@ -562,7 +562,7 @@ test('taxes_in_price: a French home priced from tounify pays (energy + grid + fe
   near(q.levy, 3.37, 'the placeholder accise');
   near(q.unitEx * (1 + q.vat), (17.852 + 3.37) * 1.2, 'ordinary tariff: accise then VAT');
   assert.deepEqual(q.tax.rules.map((r) => r.code), ['accise', 'tva']);
-  db.prepare("DELETE FROM tax_rule WHERE country = 'FR'").run();
+  db.prepare("DELETE FROM tax_rule WHERE country = 'FR' AND origin <> 'sourced'").run();   // the placeholders added above; the sourced VAT stays
 });
 
 // ───────────── Registry gate, plan, sync, Connectors, API ─────────────
@@ -835,4 +835,59 @@ test('the Dutch picker asks no connection size: delta 082 removed the question (
   assert.deepEqual(PK.questionsFor('NL', 'dynamic').map((q) => q.field), []);
   assert.deepEqual(PK.questionsFor('FR', 'two_rate').map((q) => q.field), ['contracted_kva', 'off_peak_hours'], 'France unchanged');
   assert.ok(db.prepare("SELECT 1 FROM schema_delta WHERE name = '082-nl-fuse-question'").get());
+});
+
+test('the picker\'s price preview: a tariff selected is priced once for the home\'s postal code (with VAT), kept, never agreed; a dynamic one shows today\'s range', async () => {
+  fresh();
+  clock.t = Date.UTC(2026, 10, 27, 9, 0);
+  const PK = await import('../src/core/tariff-picker.js');
+  // The captured answers moved onto the test clock's day (27 Nov, Amsterdam and Paris UTC+1).
+  const day0 = Date.UTC(2026, 10, 26, 23) / 1000;
+  api.mutate.prices = (b) => ({ ...b, consumption: b.consumption.map((p) => ({ ...p, from_utc: p.from_utc - D9 + day0 })) });
+  const s = createSite({ name: 'NL preview', country: 'NL', postcode: '3071 JL' });
+  const row = () => db.prepare('SELECT * FROM site WHERE id = ?').get(s.id);
+  await withEnv(DEV, async () => {
+    const anwb = (await PK.listSuppliers(row())).suppliers.find((x) => /ANWB/.test(x.name));
+    const t0 = (await PK.listTariffs(row(), anwb.code)).tariffs.find((t) => t.id === 'ANWBDE');
+    assert.deepEqual([t0.prices_known, t0.quote, t0.vat_rate, t0.options[0].range], [false, 'on_select', 0.21, null], 'not priced until selected; VAT rate known');
+    const n = api.of(/\/dayahead$/).length;
+    const q = await PK.quoteTariff(row(), anwb.code, 'ANWBDE');
+    assert.deepEqual([q.available, q.cached, q.tariff, q.vat_rate, q.day], [true, false, 'TOUNIFY-NL-ANWBDE', 0.21, '2026-11-27']);
+    const call = api.of(/\/dayahead$/).at(-1);
+    assert.deepEqual([call.query.consumption_tariff, call.query.postal_code, call.query.historic_days], ['ANWBDE', '3071 JL', '0']);
+    // Dynamic: today's lowest, highest and time-weighted average, ex VAT (the first day of the captured answer).
+    const first = V2('nl-dayahead-anwbde').consumption.slice(0, 96).map((p) => (p.energy + p.grid + p.fees) * 100);
+    near(q.range.min, Math.min(...first), 'lowest');
+    near(q.range.max, Math.max(...first), 'highest');
+    near(q.range.avg, first.reduce((a, b) => a + b, 0) / first.length, 'average');
+    // Kept: asked again, no call; the list now shows it.
+    assert.equal((await PK.quoteTariff(row(), anwb.code, 'ANWBDE')).cached, true);
+    assert.equal(api.of(/\/dayahead$/).length, n + 1);
+    const t1 = (await PK.listTariffs(row(), anwb.code)).tariffs.find((t) => t.id === 'ANWBDE');
+    assert.equal(t1.prices_known, true);
+    near(t1.options[0].range.avg, q.range.avg, 'the list shows the same');
+    // Previewed, not chosen: the home is not priced on it.
+    assert.equal(PK.tariffChoice(row()).current, null);
+    assert.equal(count("SELECT COUNT(*) n FROM tariff_agreement WHERE site_id = ?", s.id), 0);
+    // A tariff the supplier does not list is refused before any call.
+    await assert.rejects(PK.quoteTariff(row(), anwb.code, 'NOT-A-TARIFF'), (e) => e.status === 404 && /not offered by ANWB/.test(e.message));
+    assert.equal(api.of(/\/dayahead$/).length, n + 1);
+  });
+  // France: one price (OctoEco Fixe Base) with its VAT; past the distinct-tariff cap a new one says why, without a call.
+  const f = createSite({ name: 'FR preview', country: 'FR', postcode: '79200' });
+  const frow = () => db.prepare('SELECT * FROM site WHERE id = ?').get(f.id);
+  TU.resetClients();   // a client keeps the limits it was made with
+  await withEnv({ ...DEV, TOUNIFY_MAX_TARIFFS: '2' }, async () => {
+    const oef = (await PK.listSuppliers(frow())).suppliers.find((x) => /Octopus Energy France/.test(x.name));
+    const q = await PK.quoteTariff(frow(), oef.code, 'OEFODEFB');
+    assert.deepEqual([q.available, q.unit, q.vat_rate], [true, [{ register: 'single', label: 'Price', price: 18.708333 }], 0.2]);
+    const edf = (await PK.listSuppliers(frow())).suppliers.find((x) => /Electricite de France/.test(x.name));
+    const n = api.calls.length;
+    const no = await PK.quoteTariff(frow(), edf.code, 'EDFTRVBASE');
+    assert.equal(no.available, false);
+    assert.match(no.reason, /2 of 2 distinct tariffs already named/);
+    assert.equal(api.calls.filter((x, i) => i >= n && x.path.endsWith('/dayahead')).length, 0, 'refused before the call');
+  });
+  TU.resetClients();
+  api.mutate = {};
 });

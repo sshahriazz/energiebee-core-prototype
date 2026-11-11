@@ -26,6 +26,7 @@ import { markDirty } from './facts.js';
 import { dayBounds, localDate, nowSec } from './time.js';
 import { connectable } from './providers.js';
 import { setContractedCapacity } from './sites.js';
+import { rulesFor } from './tax.js';
 import * as TU from '../adapters/tounify.js';
 
 // The device a picked tariff sits on, for a home whose meter no account reports (no Octopus login): one
@@ -186,18 +187,27 @@ registerPickerSource({
       const { list, country } = await TU.listCompanyTariffs(site, ext, { client });
       return list.filter((t) => t.available !== false).map((t) => {
         const kind = tuKind(t);
-        // Pricing a tariff spends one of a testing token's tariffs: prices are shown only where this home already holds them.
-        const held = db.prepare(`SELECT r.register, r.price_ex_vat FROM rate_interval r JOIN tariff x ON x.id = r.tariff_id WHERE x.tariff_code = ? AND r.site_id = ?
-          AND r.component = 'unit' AND r.superseded_at IS NULL ORDER BY r.valid_from DESC LIMIT 96`).all(`TOUNIFY-${country}-${t.id}`, site.id);
-        const prices = [...new Set(held.map((r) => r.price_ex_vat))].sort((a, b) => b - a);
-        const unit = prices.length === 2 ? [{ register: 'peak', label: 'Peak', price: prices[0] }, { register: 'off_peak', label: 'Off-peak', price: prices[1] }]
-          : prices.length === 1 ? [{ register: 'single', label: 'Price', price: prices[0] }] : [];
+        // Pricing a tariff spends one of a testing token's tariffs: the list shows the prices this home already holds
+        // (chosen, or previewed with quoteTariff); the others are priced when the user selects one.
+        const ps = priceSummary(site, `TOUNIFY-${country}-${t.id}`, Math.floor(client.clock.now() / 1000));
         return {
-          id: t.id, name: t.name ?? t.id, variant: null, kind, prices_known: unit.length > 0, link: t.link ?? null,
-          options: [{ payment_method: 'ANY', label: paymentLabel('ANY'), unit, standing: null }], default_payment_method: 'ANY',
+          id: t.id, name: t.name ?? t.id, variant: null, kind, prices_known: ps.unit.length > 0 || !!ps.range, link: t.link ?? null,
+          options: [{ payment_method: 'ANY', label: paymentLabel('ANY'), unit: ps.unit, range: ps.range, standing: null }], default_payment_method: 'ANY',
+          vat_rate: ps.vat_rate, price_day: ps.day, quote: 'on_select',
           hours: tuHours(market, kind), questions: questionsFor(market, kind),
         };
       });
+    } catch (err) { throw tuError(err); }
+  },
+  async quote(site, sup, tariffId) {
+    const { client, dev } = tuClient();
+    const ext = db.prepare("SELECT external_id FROM supplier_alias WHERE supplier_id = ? AND provider = 'tounify'").get(sup.id)?.external_id;
+    if (!ext) throw bad(`${sup.name} is not a tounify supplier`, 404);
+    try {
+      const { list } = await TU.listCompanyTariffs(site, ext, { client });   // kept a week: no call
+      if (!list.some((t) => t.id === tariffId && t.available !== false)) throw bad(`tariff ${tariffId} is not offered by ${sup.name}`, 404);
+      const q = await TU.quoteTariff(site, tariffId, { client, company: ext, dev });
+      return { ...q, ...priceSummary(site, q.tariff, Math.floor(client.clock.now() / 1000)) };
     } catch (err) { throw tuError(err); }
   },
   async choose(site, tariff, choice) {
@@ -217,6 +227,37 @@ registerPickerSource({
     } catch (err) { throw tuError(err); }
   },
 });
+
+// The prices of a tariff a home holds for today (its own rows: chosen or previewed), for the list: one price, or a
+// peak and an off-peak price, or (a price that changes through the day) today's lowest, highest and time-weighted
+// average; ex VAT, in minor units, with the country's VAT rate now to show what is paid.
+function vatRateNow(country, ts) {
+  const rules = rulesFor(db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL').all(country), { country, fuel: 'electricity', direction: 'import', ts })
+    .filter((r) => r.kind === 'percent' && ['unit', 'all'].includes(r.applies_to));
+  return rules.length ? rules.reduce((m, r) => m + r.value, 0) : null;
+}
+export function priceSummary(site, tariffCode, now = nowSec()) {
+  const tz = site.timezone || 'Europe/London';
+  const q = db.prepare(`SELECT r.valid_from, IFNULL(r.valid_to, ?) AS valid_to, r.price_ex_vat AS p FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+    WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ? ORDER BY r.valid_from`);
+  // Today; else the latest day the home holds (a tariff previewed or read some days ago), named in `day`.
+  let day = localDate(tz, now);
+  let [a, b] = dayBounds(tz, day);
+  let rows = q.all(b, tariffCode, site.id, b, a);
+  if (!rows.length) {
+    const last = db.prepare(`SELECT MAX(r.valid_from) AS t FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+      WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ?`).get(tariffCode, site.id, now).t;
+    if (last != null) { day = localDate(tz, last); [a, b] = dayBounds(tz, day); rows = q.all(b, tariffCode, site.id, b, a); }
+  }
+  const vat = vatRateNow(site.country ?? site.market_code, now);
+  if (!rows.length) return { unit: [], range: null, vat_rate: vat, day: null };
+  const prices = [...new Set(rows.map((r) => r.p))].sort((x, y) => y - x);
+  if (prices.length === 1) return { unit: [{ register: 'single', label: 'Price', price: prices[0] }], range: null, vat_rate: vat, day };
+  if (prices.length === 2) return { unit: [{ register: 'peak', label: 'Peak', price: prices[0] }, { register: 'off_peak', label: 'Off-peak', price: prices[1] }], range: null, vat_rate: vat, day };
+  let w = 0; let sum = 0;
+  for (const r of rows) { const d = Math.min(r.valid_to, b) - Math.max(r.valid_from, a); if (d > 0) { w += d; sum += r.p * d; } }
+  return { unit: [], range: { min: prices.at(-1), max: prices[0], avg: w ? sum / w : null }, vat_rate: vat, day };
+}
 
 // ───────────── Writing a choice on the home's own meter (any source with shared prices) ─────────────
 
@@ -337,6 +378,14 @@ export async function listTariffs(site, supplierCode) {
   const src = requireSource(site);
   const sup = supplierOf(site, supplierCode);
   return { country: site.country, source: src.code, supplier: { code: sup.code, name: sup.name }, tariffs: await src.listTariffs(site, sup) };
+}
+
+/** A tariff's price for the home before it is chosen (a source that prices on demand: tounify). */
+export async function quoteTariff(site, supplierCode, tariffId) {
+  const src = requireSource(site);
+  if (!src.quote) throw bad(`${src.label} lists its prices with its tariffs: nothing to ask`, 404);
+  const sup = supplierOf(site, supplierCode);
+  return { supplier: { code: sup.code, name: sup.name }, ...(await src.quote(site, sup, String(tariffId ?? ''))) };
 }
 
 // Off-peak hours a market's network operator assigns per day, where it fixes them: France 8 h (heures creuses, as the

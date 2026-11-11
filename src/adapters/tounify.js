@@ -881,6 +881,51 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   return out;
 }
 
+/**
+ * A tariff's prices for a home before it is chosen (the tariff picker's price preview): GET /v2/{cc}/dayahead for that
+ * tariff at the home's postal code and slot length, stored like a read (the tariff, the home's own unit rows, its
+ * supplier) but with NO agreement, so the home is not priced on it; the comparison on the Tariffs page can use them.
+ * A tariff whose prices for now the home already holds is not asked again. Pricing a new tariff spends one of a
+ * testing token's distinct tariffs (refused first by the allowance guard: { available: false, reason }).
+ * Returns { available, tariff, kind, cached, rows, reason? }.
+ */
+export async function quoteTariff(site, tariffId, { client, company = null, dev = null } = {}) {
+  if (!tariffId || typeof tariffId !== 'string') throw bad('a tounify tariff id is required');
+  const cc = countryOf(site);
+  const code = `TOUNIFY-${cc}-${tariffId}`;
+  const now = Math.floor(client.clock.now() / 1000);
+  const held = db.prepare(`SELECT COUNT(*) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.tariff_code = ? AND r.site_id = ?
+    AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ?`).get(code, site.id, now, now).n;
+  if (held) return { available: true, tariff: code, cached: true };
+  const postal = String(site.postcode ?? '').trim();
+  const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : 3600;
+  const q = dayaheadQuery({ consumption: tariffId, postalCode: postal || null, resolution, historicDays: 0 });
+  let r;
+  try { r = await getPrices(client, cc, q); } catch (err) {
+    if (['allowance', 'cooldown', 'allowance_exhausted'].includes(err.kind)) return { available: false, tariff: code, reason: err.message };
+    throw err;
+  }
+  const request = { method: 'GET', path: v2path(cc, '/dayahead'), query: q, request_id: r.requestId ?? null };
+  const kind = client.kind === 'prod' ? 'prod' : 'test';
+  const catalogue = Object.fromEntries(Object.values(readState().catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
+  const mp = mapPrices(r.body, { country: cc, currency: site.currency ?? null, catalogue, company: company ?? catalogue[tariffId]?.companyid ?? null, kind, dev });
+  if (!mp.ok) {
+    quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason: `unexpected shape: ${mp.problems.join('; ')}` });
+    return { available: false, tariff: code, reason: 'tounify answered in an unexpected shape (quarantined)' };
+  }
+  const rawId = landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body }).rawId;
+  let written = 0;
+  tx(() => {
+    const u = upsertTariff(mp.tariff);
+    if (mp.company) {
+      const listed = readState().catalogue?.[cc]?.companies?.find((x) => x.id === mp.company);
+      linkSupplier(u.row.id, { provider: PROVIDER, country: cc, externalId: mp.company, name: listed?.name ?? mp.company });
+    }
+    written = putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: `${originNote({ kind, dev })}; price preview in the tariff picker (the home is not on this tariff)` })), { component: 'unit', rawId, recordedAt: recordedNow() });
+  });
+  return { available: true, tariff: code, kind: mp.tariff.kind, cached: false, rows: written, warnings: mp.warnings };
+}
+
 /** A home's tounify status for the Providers panel and the Connectors page (no secret). */
 export function homeStatus(site) {
   const c = connectionOf(site.id);

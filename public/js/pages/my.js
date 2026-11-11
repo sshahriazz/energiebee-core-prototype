@@ -103,11 +103,25 @@ async function render(state) {
     </div>
     <div class="my-strip-key"><span><i class="cheap"></i>Cheapest</span><span><i class="mid"></i>Normal</span><span><i class="dear"></i>Most expensive</span><span class="faint">Now: ${fmt.pkwh(priceNow)}</span></div>` : '<p class="muted">Prices for the coming hours are not published yet.</p>';
   const cheapAvg = cheapest?.avg;
+  const hoursAhead = ahead.length / slotsPerHour(slotS);
+  // Now against the cheapest period ahead (a run of at least 3 slots, or the best two hours). The current price can be
+  // lower than that period: the cheap hour now may have too few slots left to count as a period of its own.
+  const nowBlock = blocks[0];
+  const nowCheaper = cheapest && priceNow != null && cheapAvg - priceNow > 0.05;
+  const nowLowest = priceNow != null && prices.length && priceNow <= lo + 0.005;
   // Only what the prices support: the difference per kWh moved. Appliances are not known to the core.
-  const nudges = cheapest && priceNow != null && priceNow - cheapAvg > 1
-    ? `<div class="my-nudges"><div class="my-nudge"><b>Every kWh moved to ${tf.time(cheapest.start)}</b><span>${fmt.pkwh(priceNow)} now → ${fmt.pkwh(cheapAvg)} then</span><em>${money(priceNow - cheapAvg)} less per kWh</em></div></div>`
-    : cheapest ? `<p class="muted">The price now (${fmt.pkwh(priceNow)}) is within 1${minorSymbol()} of the cheapest in the next ${ahead.length / slotsPerHour(slotS)} hours.</p>` : '';
-  const plan = section('What to do next', cheapest ? `Cheapest time next: <span class="my-hl">${tf.time(cheapest.start)}–${tf.time(cheapest.end)}</span> at ${fmt.pkwh(cheapAvg)}` : 'Electricity prices ahead',
+  let nudges = '';
+  if (cheapest && priceNow != null && priceNow - cheapAvg > 1) {
+    nudges = `<div class="my-nudges"><div class="my-nudge"><b>Every kWh moved to ${tf.time(cheapest.start)}</b><span>${fmt.pkwh(priceNow)} now → ${fmt.pkwh(cheapAvg)} then</span><em>${money(priceNow - cheapAvg)} less per kWh</em></div></div>`;
+  } else if (nowCheaper) {
+    nudges = `<p class="muted">The price now (${fmt.pkwh(priceNow)}) is ${nowLowest ? `the lowest in the next ${hoursAhead} hours` : `lower than the cheapest two hours ahead`}${nowBlock ? `, until ${tf.time(nowBlock.end)}` : ''}: a good time to use electricity. After that, the cheapest period is ${tf.time(cheapest.start)}–${tf.time(cheapest.end)} at ${fmt.pkwh(cheapAvg)}.</p>`;
+  } else if (cheapest && priceNow != null) {
+    nudges = `<p class="muted">The price now (${fmt.pkwh(priceNow)}) is within 1${minorSymbol()} of the cheapest period in the next ${hoursAhead} hours.</p>`;
+  }
+  const title = !cheapest ? 'Electricity prices ahead'
+    : nowCheaper ? `Cheapest time is now${nowBlock ? `, until <span class="my-hl">${tf.time(nowBlock.end)}</span>` : ''} at ${fmt.pkwh(priceNow)}`
+      : `Cheapest time next: <span class="my-hl">${tf.time(cheapest.start)}–${tf.time(cheapest.end)}</span> at ${fmt.pkwh(cheapAvg)}`;
+  const plan = section('What to do next', title,
     `${strip}${nudges}<p class="faint my-note">Prices from your tariff for the next ${ahead.length / slotsPerHour(slotS)} hours. The difference is at grid prices; when your battery is covering the house, energy is not being bought at the current price.</p>`);
 
   // ── 3. Solar and battery: are they paying off ──

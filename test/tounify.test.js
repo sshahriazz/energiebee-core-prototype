@@ -791,3 +791,21 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
     assert.deepEqual(shown.options[0].unit.map((u) => u.label), ['Peak', 'Off-peak']);
   });
 });
+
+test('catalogue status of a market whose supplier lists were read for the picker, before any weekly refresh: waiting, not a crash', () => {
+  const before = db.prepare("SELECT state FROM provider_state WHERE provider = 'tounify'").get()?.state ?? '{}';
+  const s = JSON.parse(before);
+  s.catalogue ??= {};
+  const kept = s.catalogue.NL;
+  // What the picker's supplier list leaves: companies and listed_at, no refreshed_at (a Dutch home, Nov 2026).
+  s.catalogue.NL = { companies: [{ id: 'ANWB', name: 'ANWB Energie' }], listed_at: { companies: Date.now() } };
+  db.prepare("UPDATE provider_state SET state = ? WHERE provider = 'tounify'").run(JSON.stringify(s));
+  try {
+    const st = TU.catalogueStatus('NL');
+    assert.equal(st.status, 'skipped');
+    assert.match(st.reason, /no tounify catalogue refresh for NL yet/);
+  } finally {
+    if (kept === undefined) delete s.catalogue.NL; else s.catalogue.NL = kept;
+    db.prepare("UPDATE provider_state SET state = ? WHERE provider = 'tounify'").run(before);
+  }
+});

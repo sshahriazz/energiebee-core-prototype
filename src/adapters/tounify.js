@@ -1006,6 +1006,9 @@ export function catalogueStatus(country) {
   const cat = readState().catalogue?.[country];
   if (!cat) return { status: 'skipped', reason: `no tounify catalogue refresh for ${country} yet` };
   if (cat.last_error && (cat.last_error_at ?? 0) >= (cat.refreshed_at ?? 0)) return { status: 'error', reason: cat.last_error };
+  // Only the tariff picker's supplier lists are held (catalogue[cc].companies/tariffs, listed_at): the weekly refresh
+  // (connection properties) has not run for this market yet.
+  if (!Number.isFinite(cat.refreshed_at)) return { status: 'skipped', reason: `no tounify catalogue refresh for ${country} yet (supplier lists read for the tariff picker)` };
   return { status: 'ok', reason: `${country}: ${cat.properties?.length ?? 0} properties, ${cat.companies?.length ?? 0} companies, refreshed ${iso(cat.refreshed_at)}` };
 }
 

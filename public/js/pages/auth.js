@@ -128,7 +128,7 @@ const rank = (c) => { const i = ROLE_ORDER.indexOf(c.role); return i < 0 ? ROLE_
 const skipped = new Set();   // skipped on this visit: asked again on the next one
 // The tariff step (src/core/tariff-picker.js): the supplier picked, a change asked for from the summary, and a
 // provider asked for out of turn (Octopus, picked as the supplier: its login gives the exact tariff).
-const tariffUi = { supplier: null, change: false, force: null };
+const tariffUi = { supplier: null, change: false, force: null, forceFrom: null };
 const TARIFF = { adapter: 'tariff', name: 'Your tariff', role_label: 'electricity tariff' };
 const minor = (v, cur) => (v == null ? '' : `${(+v).toFixed(2)}${cur === 'EUR' ? 'c' : 'p'}`);
 const KIND_LABEL = { one_price: 'one price', two_rate: 'day / night', dynamic: 'price changes through the day' };
@@ -192,11 +192,11 @@ async function providersStep(siteId, created = null, flash = '') {
   const why = current?.role === 'inverter' && choice?.current?.chosen
     ? `<p class="onb-why">Your tariff (${esc(choice.current.supplier?.name ?? choice.current.name)}) gives the prices. ${esc(current.name)} measures how much you use, so we can work out your costs.</p>` : '';
   if (current) {
-    content().innerHTML = `<div class="onb-flow">${steps(forced ? 2 : 3)}${banners}${progress}
+    content().innerHTML = `<div class="onb-flow">${steps(forced && tariffUi.forceFrom !== 'summary' ? 2 : 3)}${banners}${progress}
       <section class="card onb-card">
         <div class="onb-card-head"><span class="badge">${esc(current.role_label)}</span><h2>Connect ${esc(current.name)}</h2><p>${esc(current.what)}</p>${why}${where}</div>
         ${form(current)}
-        <p class="onb-skip"><button type="button" class="link-btn" data-skip="${esc(current.adapter)}">${forced ? 'Back to the tariff list' : `Skip for now${next ? ` and ${next.adapter === 'tariff' ? 'choose your tariff' : `connect ${esc(next.name)}`}` : ''}`}</button></p>
+        <p class="onb-skip"><button type="button" class="link-btn" data-skip="${esc(current.adapter)}">${forced ? (tariffUi.forceFrom === 'summary' ? '← Back' : 'Back to the tariff list') : `Skip for now${next ? ` and ${next.adapter === 'tariff' ? 'choose your tariff' : `connect ${esc(next.name)}`}` : ''}`}</button></p>
       </section>
       <p class="auth-note">Your login is checked with ${esc(current.name)}, then stored encrypted. It is never shown again.</p>
     </div>`;
@@ -227,13 +227,19 @@ async function providersStep(siteId, created = null, flash = '') {
   }
 
   document.querySelectorAll('button[data-skip]').forEach((b) => b.addEventListener('click', () => {
-    if (tariffUi.force === b.dataset.skip) tariffUi.force = null; else skipped.add(b.dataset.skip);
+    if (tariffUi.force === b.dataset.skip) Object.assign(tariffUi, { force: null, forceFrom: null }); else skipped.add(b.dataset.skip);
     providersStep(siteId, created);
   }));
   document.querySelectorAll('button[data-tariff]').forEach((b) => b.addEventListener('click', () => {
     Object.assign(tariffUi, { change: true, supplier: null, force: null }); skipped.delete('tariff'); providersStep(siteId, created);
   }));
-  document.querySelectorAll('button[data-connect]').forEach((b) => b.addEventListener('click', () => { skipped.delete(b.dataset.connect); providersStep(siteId, created); }));
+  // Connect one from the summary: its login form, whether or not the flow would ask for it (a meter account is left out
+  // of the flow once a tariff is picked from a list, so un-skipping it alone showed the summary again).
+  document.querySelectorAll('button[data-connect]').forEach((b) => b.addEventListener('click', () => {
+    skipped.delete(b.dataset.connect);
+    Object.assign(tariffUi, { force: b.dataset.connect, forceFrom: 'summary' });
+    providersStep(siteId, created);
+  }));
   document.querySelectorAll('button[data-disconnect]').forEach((b) => {
     const provider = b.dataset.disconnect;
     const name = p.connect.find((c) => c.adapter === provider)?.name || provider;
@@ -276,7 +282,7 @@ async function providersStep(siteId, created = null, flash = '') {
       const r = await api(`/api/sites/${siteId}/providers/${encodeURIComponent(provider)}`, { method: 'POST', body: JSON.stringify({ credentials }) });
       f.reset();
       skipped.delete(provider);
-      if (tariffUi.force === provider) Object.assign(tariffUi, { force: null, supplier: null, change: false });
+      if (tariffUi.force === provider) Object.assign(tariffUi, { force: null, forceFrom: null, supplier: null, change: false });
       await providersStep(siteId, created, `<b>${esc(name)} connected</b>${r.checked?.plantName ? ` (plant "${esc(r.checked.plantName)}")` : ''}${r.replaced ? ', replacing the account connected before (its data is removed)' : ''}. Your data is loading.`);
     }, `err-${provider}`);
   });
@@ -413,7 +419,7 @@ async function tariffStep(siteId, created, ctx) {
     const q = e.target.value.trim().toLowerCase();
     document.querySelectorAll('.tariff-opt').forEach((l) => { l.hidden = q && !l.dataset.name.includes(q); });
   });
-  $('t-octo')?.addEventListener('click', () => { tariffUi.force = 'octopus'; skipped.delete('octopus'); providersStep(siteId, created); });
+  $('t-octo')?.addEventListener('click', () => { Object.assign(tariffUi, { force: 'octopus', forceFrom: 'tariff' }); skipped.delete('octopus'); providersStep(siteId, created); });
   onSubmit($('t-form'), async (b) => {
     if (!b.tariff) throw new Error('Pick your tariff first');
     const body = { supplier: sup.code, tariff: b.tariff };

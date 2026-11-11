@@ -149,7 +149,7 @@ function wireDelete(siteId) {
     const what = [
       `${pv.days} day${pv.days === 1 ? '' : 's'} of energy data`,
       `${pv.devices} device${pv.devices === 1 ? '' : 's'}`,
-      pv.accounts.length ? `the connected account${pv.accounts.length === 1 ? '' : 's'} (${pv.accounts.map(esc).join(', ')}) and the login${pv.logins === 1 ? '' : 's'} stored for them` : null,
+      pv.accounts.length ? `the connected account${pv.accounts.length === 1 ? '' : 's'} (${pv.accounts.map(esc).join(', ')}) and the login${pv.logins === 1 ? '' : 's'} stored for ${pv.accounts.length === 1 ? 'it' : 'them'}` : null,
       'your tariff for this home',
     ].filter(Boolean);
     $('del-body').innerHTML = `<p><b>This deletes ${esc(pv.name)} for good.</b> It cannot be undone. Gone with it: ${what.join(', ')}.</p>

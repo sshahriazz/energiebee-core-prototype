@@ -123,6 +123,7 @@ test('over HTTP: the preview, then DELETE /api/sites/:id with the typed name; th
   };
   const pv = await call('GET', `/api/sites/${B.id}/delete-preview`);
   assert.deepEqual([pv.status, pv.json.name, pv.json.devices, pv.json.env_home], [200, 'Second home', 1, false]);
+  assert.deepEqual(pv.json.accounts, [], 'no account connected by the user (automatic feeds are not listed)');
   const no = await call('DELETE', `/api/sites/${B.id}`, { confirm: 'second home' });
   assert.equal(no.status, 400);
   const ok = await call('DELETE', `/api/sites/${B.id}`, { confirm: 'Second home' });

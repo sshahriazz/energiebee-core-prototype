@@ -168,7 +168,8 @@ app.delete('/api/sites/:id/providers/:provider', (req, res) => res.json(disconne
 app.get('/api/sites/:id/delete-preview', (req, res) => {
   const s = site(req);
   const c = homeFootprint(s.id).counts;
-  const accounts = db.prepare('SELECT provider FROM connection WHERE site_id = ? ORDER BY provider').all(s.id).map((r) => r.provider);
+  // The accounts the user connected (Sunsynk, Octopus ...), by name: not the automatic feeds (weather, carbon, catalogues).
+  const accounts = homeProviders(s).connect.filter((c) => c.connected).map((c) => c.name);
   res.json({ id: s.id, name: s.name, days: c.site_day ?? 0, devices: c.device ?? 0, accounts, logins: c.connection_secret ?? 0, env_home: !!s.env_key });
 });
 app.delete('/api/sites/:id', (req, res) => res.json(deleteHome(req.user, site(req), { confirm: req.body?.confirm })));

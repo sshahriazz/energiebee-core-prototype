@@ -17,7 +17,7 @@
 // so for GB vat is exactly the vat_rate figure and levy is 0: the numbers do not move. Without any
 // rule for a GB home, vat_rate is read as before.
 //
-// A tariff with taxes_in_price = 1 (delta 011; tounify v3) already holds the per-kWh levies and the
+// A tariff with taxes_in_price = 1 (delta 011; tounify) already holds the per-kWh levies and the
 // per-period credits in its own prices and fixed charges: only the PERCENT rules (VAT) are applied
 // on top, and the country's per_kwh and per_period rules are left out, so nothing is counted twice.
 // Every other tariff (taxes_in_price 0, the default) is taxed exactly as before.

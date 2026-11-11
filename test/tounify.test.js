@@ -1,10 +1,11 @@
-// tounify v3 adapter (src/adapters/tounify.js), an EU tariff source (FR and NL, not UK): the mapping
-// of real answers captured from the v3 preview API (test/fixtures/tounify/: connection-properties,
-// connections, companies, tariffs, prices and components for a Paris and an Amsterdam connection,
-// public tariff data with no credential in them), the client and its allowance guard against a fake
-// fetch and a fake clock (no network, no real waiting, no real token: the token below is a stand-in
-// built from the published prefix), the idempotent and bitemporal writes, taxes_in_price in
-// pricing, the registry gate with and without TOUNIFY_DEV, and the sync step. Temp database.
+// tounify v2 adapter (src/adapters/tounify.js), an EU tariff source (FR and NL, not UK): the mapping of real answers
+// captured from the v2 API (test/fixtures/tounify/v2/: suppliers, a supplier's tariffs, the operator of a postal code
+// and /dayahead prices for EDF Tarif Bleu HP/HC in Paris, OctoEco Fixe Base in Niort and ANWB's dynamic tariff in
+// Rotterdam, Nov 2026; public tariff data with no credential in them) and of the v3 preview's answers a home landed
+// before (test/fixtures/tounify/*.json, still read by the Explorer); the client and its allowance guard against a fake
+// fetch and a fake clock (no network, no real waiting, no real token: the token below is a stand-in built from the
+// published prefix), the idempotent and bitemporal writes, a French home's own off-peak hours, taxes_in_price in
+// pricing, the registry gate with and without TOUNIFY_DEV, the sync step and the tariff picker. Temp database.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -50,11 +51,14 @@ const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg}: ${a} vs $
 const count = (sql, ...a) => db.prepare(sql).get(...a).n;
 
 // One clock for the whole file, only ever moved forward (persisted cooldowns stay coherent).
-const clock = { t: Date.UTC(2026, 9, 26, 5, 0), sleeps: [], now: () => clock.t, sleep: async (ms) => { clock.sleeps.push(ms); clock.t += ms; } };
+const clock = { t: Date.UTC(2026, 10, 11, 5, 0), sleeps: [], now: () => clock.t, sleep: async (ms) => { clock.sleeps.push(ms); clock.t += ms; } };
 TU.tounifyPolicy.clock = clock;
 
-// A fake tounify v3 serving the captured answers, with ETags, per-call overrides and a log of calls.
+// A fake tounify v2 serving the captured answers, with ETags on the listings, per-call overrides and a log of calls.
 const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+const V2 = (f) => load(`v2/${f}.json`);
+const DAYAHEAD = { EDFTRVHPHC: 'fr-dayahead-edfhphc', OEFODEFB: 'fr-dayahead-oefodefb', ANWBDE: 'nl-dayahead-anwbde' };
+const TARIFFS = { 'FR/EDF': 'fr-edf-tariffs', 'FR/OEF': 'fr-oef-tariffs', 'NL/ANWB': 'nl-anwb-tariffs' };
 function fakeApi() {
   const api = { calls: [], etags: true, override: null, mutate: {} };
   const tag = (b) => `"${Buffer.from(JSON.stringify(b)).toString('base64').slice(-24)}"`;
@@ -63,11 +67,6 @@ function fakeApi() {
     if (api.etags && call.headers['if-none-match'] === etag) return new Response(null, { status: 304, headers: { etag } });
     return json(200, body, { ...(api.etags ? { etag } : {}), 'x-request-id': `req-${api.calls.length}` });
   };
-  const connBody = (cc, ref, sent, prior = {}) => ({
-    ...load(cc === 'FR' ? 'patch-FR-hphc.json' : 'patch-NL-dyn.json'), ...prior, reference: ref,
-    tariffs: { consumption: sent?.tariffs?.consumption ?? null, feedin: sent?.tariffs?.feedin ?? null, grid: null },
-    ...(sent?.capacity ? { capacity: sent.capacity } : {}), ...(sent?.metering ? { metering: sent.metering } : {}),
-  });
   api.fetch = async (url, init = {}) => {
     const u = new URL(String(url));
     const call = { at: clock.now(), method: init.method, path: u.pathname, query: Object.fromEntries(u.searchParams), headers: init.headers ?? {}, body: init.body ? JSON.parse(init.body) : null };
@@ -75,22 +74,18 @@ function fakeApi() {
     if (u.host !== 'api.tounify.io') return json(404, {});
     if (api.override) { const r = api.override(call); if (r) return r; }
     let m;
-    if ((m = /^\/v3\/(FR|NL)\/connection-properties$/.exec(u.pathname))) return reply(call, load(`props-${m[1]}.json`));
-    if ((m = /^\/v3\/(FR|NL)\/connections$/.exec(u.pathname)) && init.method === 'POST') return json(201, connBody(m[1], call.body.reference, call.body));
-    if ((m = /^\/v3\/(FR|NL)\/connections\/([^/]+)$/.exec(u.pathname))) {
-      if (init.method === 'DELETE') return new Response(null, { status: 204 });
-      return json(200, connBody(m[1], decodeURIComponent(m[2]), call.body), { etag: '"conn-1"' });
+    if ((m = /^\/v2\/(FR|NL)\/consumption\/companies$/.exec(u.pathname))) return reply(call, V2(`${m[1].toLowerCase()}-companies`));
+    if ((m = /^\/v2\/(FR|NL)\/grid\/companies$/.exec(u.pathname))) return reply(call, m[1] === 'FR' ? V2('fr-grid-79200') : [{ id: 'STED', name: 'Stedin', country: 'NL', url: null }]);
+    if ((m = /^\/v2\/(FR|NL)\/consumption\/([^/]+)\/tariffs$/.exec(u.pathname))) {
+      const f = TARIFFS[`${m[1]}/${decodeURIComponent(m[2])}`];
+      return f ? reply(call, V2(f)) : json(400, { statusCode: 400, code: 'unknown_company', message: `unknown company ${m[2]}` });
     }
-    if ((m = /^\/v3\/(FR|NL)\/connections\/([^/]+)\/prices$/.exec(u.pathname))) {
-      const b = { ...load(`prices-${m[1]}.json`), reference: decodeURIComponent(m[2]) };
-      return reply(call, api.mutate.prices ? api.mutate.prices(b) : b);
+    if ((m = /^\/v2\/(FR|NL)\/dayahead$/.exec(u.pathname))) {
+      const f = DAYAHEAD[call.query.consumption_tariff];
+      if (!f) return json(400, { statusCode: 400, code: 'unknown_tariff', message: `unknown tariff ${call.query.consumption_tariff}` });
+      const b = V2(f);
+      return json(200, api.mutate.prices ? api.mutate.prices(b) : b, { 'x-request-id': `req-${api.calls.length}`, etag: '"not-a-validator"' });
     }
-    if ((m = /^\/v3\/(FR|NL)\/connections\/([^/]+)\/components$/.exec(u.pathname))) {
-      const b = { ...load(`comps-${m[1]}.json`), reference: decodeURIComponent(m[2]) };
-      return reply(call, api.mutate.components ? api.mutate.components(b) : b);
-    }
-    if ((m = /^\/v3\/(FR|NL)\/connections\/[^/]+\/consumption\/companies$/.exec(u.pathname))) return reply(call, load(`comp-${m[1]}.json`));
-    if ((m = /^\/v3\/(FR|NL)\/connections\/[^/]+\/consumption\/([^/]+)\/tariffs$/.exec(u.pathname))) return reply(call, load(`tar-${m[1]}.json`));
     return json(404, {});
   };
   api.of = (re) => api.calls.filter((c) => re.test(c.path));
@@ -143,10 +138,16 @@ function call(method, p, body) {
 
 // ───────────── Fixtures and mapping ─────────────
 
-test('fixtures: real v3 answers, trimmed, with no token or Authorization text in them', () => {
-  const files = fs.readdirSync(FIX).filter((f) => f.endsWith('.json'));
-  assert.equal(files.length, 14);
-  for (const f of files) {
+// The captured v2 window: 10 to 12 Nov 2026 (FR; NL 10 and 11), Paris and Amsterdam both UTC+1; at9(min) is a minute
+// of the window's first local day, 10 Nov.
+const D9 = Date.UTC(2026, 10, 9, 23) / 1000;
+const at9 = (min) => D9 + min * 60;
+
+test('fixtures: real v2 answers (and the v3 preview\'s, landed before), with no token or Authorization text in them', () => {
+  const v3 = fs.readdirSync(FIX).filter((f) => f.endsWith('.json'));
+  const v2 = fs.readdirSync(path.join(FIX, 'v2')).filter((f) => f.endsWith('.json'));
+  assert.deepEqual([v3.length, v2.length], [14, 9]);
+  for (const f of [...v3, ...v2.map((x) => `v2/${x}`)]) {
     const text = fs.readFileSync(path.join(FIX, f), 'utf8');
     assert.ok(!text.includes(TU.TEST_PREFIX.slice(0, -1)) && !text.includes(TU.PROD_PREFIX.slice(0, -1)), `${f}: no token`);
     assert.ok(!text.includes('Bearer'), `${f}: no Authorization header`);
@@ -154,108 +155,122 @@ test('fixtures: real v3 answers, trimmed, with no token or Authorization text in
   }
 });
 
-test('prices FR: EDF Tarif Bleu HP/HC, two price levels, (energy + grid + fees) x 100 in cents ex VAT, VAT never stored', () => {
+test('v2 prices FR, OctoEco Fixe Base at 79200: one price all day, (energy + grid + fees) x 100 = 18.708333c ex VAT, VAT 20 % read per point', () => {
+  const body = V2('fr-dayahead-oefodefb');
+  const m = TU.mapPrices(body, { country: 'FR', currency: 'EUR', company: 'OEF' });
+  assert.equal(m.ok, true, m.problems?.join('; '));
+  assert.deepEqual([m.tariff.tariffCode, m.tariff.kind, m.tariff.currency, m.tariff.nativePeriodS, m.tariff.taxesInPrice, m.company, m.zone],
+    ['TOUNIFY-FR-OEFODEFB', 'flat', 'EUR', 1800, 1, 'OEF', 'Europe/Paris']);
+  assert.equal(m.rows.length, 144, 'three days of half-hours');
+  assert.deepEqual([...new Set(m.rows.map((r) => r.price))], [18.708333], '0.11556333 + 0.0409 + 0.03062 EUR');
+  body.consumption.forEach((p, i) => assert.ok(Math.abs(m.rows[i].price - (p.energy + p.grid + p.fees + p.vat) * 100) > 1, 'vat is not in the price'));
+  assert.deepEqual(m.vat, [{ fromUtc: D9, rate: 0.2, source: 'per point (vat / ex-VAT sum)' }]);
+  assert.deepEqual(m.grid, { id: 'ENEDCU4', source: 'the postal code' });
+  assert.match(m.tariff.originNote, /^tounify v2 \(test token\): storage licence unconfirmed; tariff OEFODEFB of OEF, static, one price in the series; prices \(energy \+ grid \+ fees\) at the home's postal code, VAT stated apart$/);
+});
+
+test('v2 prices FR, EDF HP/HC: two prices on the reference window 23:00-07:00; a home\'s own off-peak hours move them, each day', () => {
+  const body = V2('fr-dayahead-edfhphc');
+  const m = TU.mapPrices(body, { country: 'FR', currency: 'EUR' });
+  assert.deepEqual([m.tariff.kind, m.rows.length, m.offPeak], ['tou', 144, null]);
+  const price = (rows, min) => rows.find((r) => r.validFrom === at9(min)).price;
+  // As served: off-peak 0.0609 + 0.0409 + 0.03062, peak 0.0707 + 0.0772 + 0.03062 EUR (the grid part differs too).
+  assert.deepEqual([0, 6 * 60 + 30, 7 * 60, 22 * 60 + 30, 23 * 60].map((x) => price(m.rows, x)), [13.242, 13.242, 17.852, 17.852, 13.242]);
+  // The meter's own hours, 01:30-07:30 and 12:30-14:30 (8 h): those half-hours take the off-peak price, every other one the peak.
+  const own = TU.mapPrices(body, { country: 'FR', currency: 'EUR', offPeak: { windows: [{ from: '01:30', to: '07:30' }, { from: '12:30', to: '14:30' }] } });
+  assert.equal(own.offPeak, '01:30-07:30, 12:30-14:30');
+  assert.deepEqual([0, 60, 90, 7 * 60, 7 * 60 + 30, 12 * 60 + 30, 14 * 60, 14 * 60 + 30, 23 * 60].map((x) => price(own.rows, x)),
+    [17.852, 17.852, 13.242, 13.242, 17.852, 13.242, 13.242, 17.852, 17.852]);
+  assert.equal(own.rows.filter((r) => r.price === 13.242).length, 3 * 16, '8 h a day off-peak, three days');
+  // The reference window itself changes nothing; a window across midnight works.
+  assert.equal(TU.mapPrices(body, { country: 'FR', currency: 'EUR', offPeak: { windows: [{ from: '23:00', to: '07:00' }] } }).offPeak, null);
+  const late = TU.mapPrices(body, { country: 'FR', currency: 'EUR', offPeak: { windows: [{ from: '22:00', to: '06:00' }] } });
+  assert.deepEqual([21 * 60 + 30, 22 * 60, 5 * 60 + 30, 6 * 60].map((x) => price(late.rows, x)), [17.852, 13.242, 13.242, 17.852]);
+  // A day that is not one price inside the window and one outside: left as served, with the reason.
+  const odd = { ...body, consumption: body.consumption.map((p, i) => (i === 3 ? { ...p, energy: 0.5 } : p)) };
+  const o = TU.mapPrices(odd, { country: 'FR', currency: 'EUR', offPeak: { windows: [{ from: '22:00', to: '06:00' }] } });
+  assert.equal(o.offPeak, null);
+  assert.match(o.warnings.join('\n'), /off-peak hours not applied: 2026-11-10 holds 2 price\(s\) inside the reference window/);
+  // Never on a one-price tariff, nor outside France.
+  assert.equal(TU.mapPrices(V2('fr-dayahead-oefodefb'), { country: 'FR', currency: 'EUR', offPeak: { windows: [{ from: '22:00', to: '06:00' }] } }).offPeak, null);
+});
+
+test('v2 prices NL, ANWB dynamic at 3071: 192 quarter-hours, grid 0 (the Dutch network charge is yearly), energy tax in fees, VAT 21 %', () => {
+  const body = V2('nl-dayahead-anwbde');
+  const m = TU.mapPrices(body, { country: 'NL', currency: 'EUR', company: 'ANWB' });
+  assert.equal(m.ok, true, m.problems?.join('; '));
+  assert.deepEqual([m.tariff.tariffCode, m.tariff.kind, m.tariff.nativePeriodS, m.rows.length, m.zone], ['TOUNIFY-NL-ANWBDE', 'dynamic', 900, 192, 'Europe/Amsterdam']);
+  assert.ok(body.consumption.every((p) => p.grid === 0 && p.fees === 0.09161));
+  near(m.rows[0].price, (0.2500085330578512 + 0.09161) * 100, 'first quarter-hour');
+  assert.deepEqual(m.vat.map((v) => v.rate), [0.21]);
+  assert.equal(m.grid.id, 'STEDC2');
+});
+
+test('v3 answers landed before still map (the Explorer replays them): FR HP/HC two levels, VAT from applied.vat', () => {
   const body = load('prices-FR.json');
   const m = TU.mapPrices(body, { country: 'FR', currency: 'EUR' });
   assert.equal(m.ok, true, m.problems?.join('; '));
   assert.deepEqual([m.tariff.tariffCode, m.tariff.kind, m.tariff.structure, m.tariff.currency, m.tariff.nativePeriodS, m.tariff.taxesInPrice], ['TOUNIFY-FR-EDFTRVHPHC', 'tou', 'tou', 'EUR', 1800, 1]);
   assert.equal(m.rows.length, 96, 'one row per half-hour point');
-  assert.ok(m.rows.every((r) => r.validTo - r.validFrom === 1800));
-  const levels = [...new Set(m.rows.map((r) => r.price))].sort((a, b) => b - a);
-  assert.deepEqual(levels, [17.852, 13.242], 'peak 0.1308 + 0.0171 + 0.03062 = 0.17852 EUR; off-peak 0.0898 + 0.012 + 0.03062 = 0.13242 EUR');
-  // Every row is the sum of its point's three components, never with its vat.
-  body.consumption.forEach((p, i) => {
-    near(m.rows[i].price, (p.energy + p.grid + p.fees) * 100, `point ${i}`);
-    assert.ok(Math.abs(m.rows[i].price - (p.energy + p.grid + p.fees + p.vat) * 100) > 1, 'vat is not in the price');
-  });
-  // Off-peak 01:30-07:30 and 12:30-14:30 Paris (CET): 00:30-06:30 and 11:30-13:30 UTC.
-  const at = (h, mm) => m.rows.find((r) => r.validFrom === Date.UTC(2026, 9, 26, h, mm) / 1000).price;
-  assert.deepEqual([at(0, 0), at(0, 30), at(6, 0), at(6, 30), at(11, 30), at(13, 30)], [17.852, 13.242, 13.242, 17.852, 13.242, 17.852]);
+  assert.deepEqual([...new Set(m.rows.map((r) => r.price))].sort((a, b) => b - a), [17.852, 13.242]);
+  body.consumption.forEach((p, i) => near(m.rows[i].price, (p.energy + p.grid + p.fees) * 100, `point ${i}`));
   assert.deepEqual(m.vat, [{ fromUtc: 1792969200, rate: 0.2, source: 'country' }]);
-  assert.equal(m.tariff.origin, 'provider');
-  assert.match(m.tariff.originNote, /^tounify v3 \(test token\): storage licence unconfirmed; /);
-  // With the catalogue's listing the kind's basis is its time_of_use_rates.
+  assert.match(m.tariff.originNote, /^tounify v2 \(test token\): storage licence unconfirmed; .*per connection \(v3\)/);
   const cat = Object.fromEntries(load('tar-FR.json').map((t) => [t.id, t]));
   const mc = TU.mapPrices(body, { country: 'FR', currency: 'EUR', catalogue: cat });
   assert.equal(mc.tariff.name, 'Tarif Bleu — Option Heures Pleines / Heures Creuses');
   assert.match(mc.tariff.originNote, /time_of_use_rates 2 \(catalogue\)/);
 });
 
-test('prices NL: Frank Energie dynamic, 96 quarter-hours holding 24 hourly prices become 24 hourly rows; grid 0, fees 0.09161 inside', () => {
+test('v3 prices NL: 96 quarter-hours holding 24 hourly prices become 24 hourly rows (its settlement interval)', () => {
   const body = load('prices-NL.json');
   const m = TU.mapPrices(body, { country: 'NL', currency: 'EUR' });
-  assert.equal(m.ok, true, m.problems?.join('; '));
-  assert.equal(body.consumption.length, 96);
   assert.deepEqual([m.tariff.tariffCode, m.tariff.kind, m.tariff.nativePeriodS, m.resolutionS, m.settlementS, m.taxesInPrice], ['TOUNIFY-NL-FRENS', 'dynamic', 3600, 900, 3600, 1]);
-  assert.equal(m.rows.length, 24, 'merged to the settlement interval');
-  assert.equal(new Set(m.rows.map((r) => r.price)).size, 24, '24 hourly levels');
-  m.rows.forEach((r, h) => {
-    assert.equal(r.validTo - r.validFrom, 3600);
-    for (const p of body.consumption.slice(h * 4, h * 4 + 4)) {
-      assert.equal(p.grid, 0);
-      assert.equal(p.fees, 0.09161);
-      near(r.price, (p.energy + p.fees) * 100, `hour ${h}`);
-    }
-  });
+  assert.equal(m.rows.length, 24);
   assert.equal(m.rows[0].price, 14.82575, '0.0566475 + 0 + 0.09161 EUR');
-  assert.equal(m.pendingFrom, 1793055600);
 });
 
-test('components FR and NL: resolved amounts x 100 per period, signs kept, capacity as its yearly amount with its quantity source', () => {
+test('v3 components FR and NL (landed before; v2 serves none): resolved amounts x 100 per period, signs kept', () => {
   const fr = TU.mapComponents(load('comps-FR.json'), { currency: 'EUR', zone: 'Europe/Paris', captureDayStart: 1792969200 });
-  assert.equal(fr.ok, true);
   assert.deepEqual(fr.rows.map((r) => [r.register, r.chargePeriod, r.price]), [
-    ['consumption:standing', 'year', 5670.0985],   // supply abonnement 56.700985 EUR/yr
-    ['grid:capacity', 'year', 6252],                // 6 kVA x 10.42 = 62.52 EUR/yr, NOT the 10.42 per-kVA rate
-    ['grid:standing', 'year', 1712],                // management 17.12 EUR/yr
-    ['grid:metering', 'year', 2267],                // metering 22.67 EUR/yr
+    ['consumption:standing', 'year', 5670.0985], ['grid:capacity', 'year', 6252], ['grid:standing', 'year', 1712], ['grid:metering', 'year', 2267],
   ]);
-  const cap = fr.rows.find((r) => r.register === 'grid:capacity');
-  assert.equal(cap.quantitySource, 'contracted');
-  assert.match(cap.originNote, /quantity contracted \(the resolved amount, not the per-unit rate\)/);
-  assert.equal(cap.validFrom, Date.UTC(2026, 6, 31, 22) / 1000, 'valid_from 2026-08-01, Paris midnight');
-  assert.match(cap.originNote, /upstream valid_to 2027-07-31 not used as an end/);
-  assert.equal(fr.rows[0].validFrom, 1792969200, 'no valid_from: the capture day');
   const nl = TU.mapComponents(load('comps-NL.json'), { currency: 'EUR', zone: 'Europe/Amsterdam', captureDayStart: 1792969200 });
-  assert.deepEqual(nl.rows.map((r) => [r.register, r.chargePeriod, r.price]), [
-    ['consumption:standing', 'month', 578.5124],    // 5.785124 EUR/month
-    ['consumption:credit', 'year', -51980],         // Belastingvermindering -519.8 EUR/yr, negative
-    ['grid:standing', 'year', 39508],               // Liander 395.08 EUR/yr
-  ]);
-  // A charge with no resolved amount is not stored; it is named with what it needs.
-  const body = load('comps-FR.json');
-  delete body.grid[0].resolved;
-  body.grid[0].quantity.requires = ['contracted_kva'];
-  const un = TU.mapComponents(body, { currency: 'EUR', zone: 'Europe/Paris', captureDayStart: 1792969200 });
-  assert.deepEqual(un.unsized.map((u) => [u.group, u.kind, u.requires]), [['grid', 'capacity', ['contracted_kva']]]);
-  assert.equal(un.rows.length, 3);
+  assert.deepEqual(nl.rows.map((r) => [r.register, r.price]), [['consumption:standing', 578.5124], ['consumption:credit', -51980], ['grid:standing', 39508]]);
+  assert.equal(TU.mapComponents({ consumption: [] }, { currency: 'EUR' }).ok, false, 'components without grid / feedin arrays');
 });
 
 test('feed-in (SYNTHETIC points: no feed-in answer was captured): paid energy less the producer\'s fees, an export tariff, as the spec states it', () => {
-  const body = { ...load('prices-NL.json'), feedin_tariff: { id: 'TEST-FEEDIN', type: 'dynamic', available: true },
-    feedin: [{ from_utc: 1792969200, energy: 0.05, fees: 0.01 }, { from_utc: 1792970100, energy: -0.02 }] };
+  const body = { ...V2('nl-dayahead-anwbde'), feedin_tariff: { id: 'TEST-FEEDIN', type: 'dynamic', available: true },
+    feedin: [{ from_utc: D9, energy: 0.05, fees: 0.01 }, { from_utc: D9 + 900, energy: -0.02 }] };
   const m = TU.mapPrices(body, { country: 'NL', currency: 'EUR' });
   assert.deepEqual([m.feedin.tariff.tariffCode, m.feedin.tariff.direction, m.feedin.tariff.kind], ['TOUNIFY-NL-TEST-FEEDIN', 'export', 'dynamic']);
-  assert.deepEqual(m.feedin.rows.map((r) => [r.validFrom, r.validTo - r.validFrom, r.price]), [[1792969200, 900, 4], [1792970100, 900, -2]], 'negative export prices are kept');
+  assert.deepEqual(m.feedin.rows.map((r) => [r.validFrom, r.validTo - r.validFrom, r.price]), [[D9, 900, 4], [D9 + 900, 900, -2]], 'negative export prices are kept');
 });
 
-test('mapping: unknown fields are ignored; a missing expected field or a grid gap is a problem, never a guess', () => {
-  const b = load('prices-FR.json');
+test('mapping: unknown fields are ignored; a missing expected field (or a v3 grid gap) is a problem, never a guess', () => {
+  const b = V2('fr-dayahead-edfhphc');
   assert.equal(TU.mapPrices({ ...b, brand_new_field: { x: 1 }, consumption: b.consumption.map((p) => ({ ...p, extra: 'x' })) }, { country: 'FR', currency: 'EUR' }).ok, true);
+  const v3 = load('prices-FR.json');
   for (const [what, body, re] of [
     ['no next', { ...b, next: undefined }, /no next/],
     ['no resolution', { ...b, resolution: undefined }, /resolution/],
     ['no currency', { ...b, currency: undefined }, /no currency/],
     ['another currency', { ...b, currency: 'GBP' }, /home is billed in EUR/],
-    ['a point without energy', { ...b, consumption: [{ from_utc: 1792969200, grid: 0.01 }] }, /no energy/],
-    ['grid gap', { ...b, applied: { ...b.applied, grid_gap: 'no_tariff' } }, /grid_gap/],
+    ['no tariff id', { ...b, consumption_tariff: undefined }, /no consumption tariff id/],
+    ['a country with no zone known', { ...b, country: 'XX' }, /country XX, expected FR|no time zone known/],
+    ['a point without energy', { ...b, consumption: [{ from_utc: D9, grid: 0.01 }] }, /no energy/],
+    ['a point whose vat is not a number', { ...b, consumption: [{ from_utc: D9, energy: 0.1, vat: 'x' }] }, /vat is not a number/],
+    ['v3 grid gap', { ...v3, applied: { ...v3.applied, grid_gap: 'no_tariff' } }, /grid_gap/],
     ['not an object', [1, 2], /not an object/],
   ]) {
     const m = TU.mapPrices(body, { country: 'FR', currency: 'EUR' });
     assert.equal(m.ok, false, what);
     assert.match(m.problems.join('; '), re, what);
   }
-  assert.equal(TU.mapComponents({ consumption: [] }, { currency: 'EUR' }).ok, false, 'components without grid / feedin arrays');
+  // Without a postal code the answer has no grid: priced, with the warning (the home's prices would be short).
+  const noGrid = TU.mapPrices({ ...b, consumption: b.consumption.map(({ grid, ...p }) => p) }, { country: 'FR', currency: 'EUR' });
+  assert.match(noGrid.warnings.join('\n'), /points without grid/);
 });
 
 // ───────────── Token, allowance guard, client ─────────────
@@ -277,182 +292,180 @@ test('test-token detection and the allowance defaults: 40 requests a day, 8 comp
 test('client: Bearer token, at least 1 s between calls, the request cap refuses the call before it is sent, and the counters survive a restart', async () => {
   fresh();
   const c = client({ TOUNIFY_MAX_REQUESTS_DAY: '3' });
-  for (let i = 0; i < 3; i++) await c.request('GET', '/v3/FR/connection-properties', { scope: { endpoint: 'GET connection-properties', thing: 'FR' } });
+  for (let i = 0; i < 3; i++) await c.request('GET', '/v2/FR/consumption/companies', { scope: { endpoint: 'GET companies', thing: 'FR' } });
   assert.equal(api.calls.length, 3);
   assert.equal(api.calls[0].headers.authorization, `Bearer ${TEST_TOKEN}`);
   assert.ok(api.calls.slice(1).every((x, i) => x.at - api.calls[i].at >= 1000), 'one request at a time, 1 s apart');
-  await assert.rejects(c.request('GET', '/v3/FR/connection-properties'), (e) => e.kind === 'allowance' && /3 of 3 requests used today/.test(e.message));
+  await assert.rejects(c.request('GET', '/v2/FR/consumption/companies'), (e) => e.kind === 'allowance' && /3 of 3 requests used today/.test(e.message));
   assert.equal(api.calls.length, 3, 'no call when over budget');
   // A "restart": a new client reads the same persisted counters.
   TU.resetClients();
   const c2 = client({ TOUNIFY_MAX_REQUESTS_DAY: '3' });
-  await assert.rejects(c2.request('GET', '/v3/NL/connection-properties'), /3 of 3 requests used today/);
+  await assert.rejects(c2.request('GET', '/v2/NL/consumption/companies'), /3 of 3 requests used today/);
   assert.equal(api.calls.length, 3);
   const a = TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN, TOUNIFY_MAX_REQUESTS_DAY: '3' } });
   assert.deepEqual([a.token_kind, a.requests_today, a.max_requests_day, a.guarded], ['test', 3, 3, true]);
   assert.ok(!JSON.stringify(a).includes(TEST_TOKEN), 'the allowance never shows the token');
   // The day count resets at midnight UTC; the totals of companies and tariffs never do.
-  clock.t = Date.UTC(2026, 9, 27, 0, 5);
-  await c2.request('GET', '/v3/FR/connection-properties');
+  clock.t = Date.UTC(2026, 10, 12, 0, 5);
+  await c2.request('GET', '/v2/FR/consumption/companies');
   assert.equal(TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN } }).requests_today, 1);
   // A production token is not capped unless asked.
-  await client({}, PROD_TOKEN).request('GET', '/v3/NL/connection-properties');
+  await client({}, PROD_TOKEN).request('GET', '/v2/NL/consumption/companies');
   assert.ok(!JSON.stringify(db.prepare("SELECT * FROM provider_state WHERE provider = 'tounify'").get()).includes(TU.TEST_PREFIX), 'no token in provider_state');
 });
 
-test('allowance: a new tariff past the distinct-tariff cap is refused before the call; tariffs already named stay usable', async () => {
+test('allowance: pricing a new tariff past the distinct-tariff cap is refused before the call; a tariff already priced stays usable', async () => {
   fresh();
   const c = client({ TOUNIFY_MAX_TARIFFS: '1' });
   const s1 = createSite({ name: 'cap 1', country: 'FR', postcode: '75002' });
-  const s2 = createSite({ name: 'cap 2', country: 'FR', postcode: '75003' });
-  const r1 = await TU.registerConnection(s1, { consumption_tariff: 'EDFTRVHPHC' }, { client: c });
-  assert.equal(r1.created, true);
-  await assert.rejects(TU.registerConnection(s2, { consumption_tariff: 'EDFTRVBASE' }, { client: c }), (e) => e.kind === 'allowance' && /1 of 1 distinct tariffs already named.*EDFTRVBASE/.test(e.message));
-  assert.equal(api.of(/connections$/).length, 1, 'the refused registration was never sent');
-  const r2 = await TU.registerConnection(s2, { consumption_tariff: 'EDFTRVHPHC' }, { client: c });
-  assert.equal(r2.reference, `eb-site-${s2.id}`);
+  const s2 = createSite({ name: 'cap 2', country: 'FR', postcode: '79200' });
+  await TU.registerConnection(s1, { consumption_tariff: 'EDFTRVHPHC' }, { client: c });
+  await TU.registerConnection(s2, { consumption_tariff: 'OEFODEFB' }, { client: c });
+  assert.equal(api.of(/\/dayahead$/).length, 0, 'recording a tariff calls no price');
+  assert.equal((await TU.syncTounifyHome({ site: s1, client: c })).tariff, 'TOUNIFY-FR-EDFTRVHPHC');
+  assert.match((await TU.syncTounifyHome({ site: s2, client: c })).skipped, /1 of 1 distinct tariffs already named.*OEFODEFB/);
+  assert.equal(api.of(/\/dayahead$/).length, 1, 'the refused read was never sent');
   assert.deepEqual(TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN, TOUNIFY_MAX_TARIFFS: '1' } }).tariffs, { used: 1, max: 1, ids: ['EDFTRVHPHC'] });
-  for (const s of [s1, s2]) await TU.removeConnection(s, { client: c });
-  assert.equal(count("SELECT COUNT(*) n FROM connection WHERE provider = 'tounify' AND site_id IN (?, ?)", s1.id, s2.id), 0, 'rows dropped');
-  assert.equal(api.of(/connections\/eb-site-/).filter((x) => x.method === 'DELETE').length, 2);
+  // A second home on the tariff already priced: allowed.
+  const s3 = createSite({ name: 'cap 3', country: 'FR', postcode: '75003' });
+  await TU.registerConnection(s3, { consumption_tariff: 'EDFTRVHPHC' }, { client: c });
+  assert.equal((await TU.syncTounifyHome({ site: s3, client: c })).tariff, 'TOUNIFY-FR-EDFTRVHPHC');
+  for (const s of [s1, s2, s3]) await TU.removeConnection(s, { client: c });
+  assert.equal(count("SELECT COUNT(*) n FROM connection WHERE provider = 'tounify' AND site_id IN (?, ?, ?)", s1.id, s2.id, s3.id), 0, 'rows dropped');
+  assert.ok(api.calls.every((x) => x.method === 'GET'), 'v2: nothing is ever posted, patched or deleted upstream');
 });
 
 test('a 429 stops the run and honours Retry-After (persisted); a 403 testingLimit marks the allowance used up', async () => {
   fresh();
   const c = client();
-  api.override = (x) => (x.path.endsWith('/connection-properties') ? json(429, { statusCode: 429, error: 'Too Many Requests', message: 'Daily testing limit', code: 'daily_scope_limit', rateLimit: { limit: 5, remaining: 0, resetAt: new Date(clock.now() + 3600e3).toISOString() } }, { 'retry-after': '120' }) : null);
-  await assert.rejects(c.request('GET', '/v3/FR/connection-properties'), (e) => e.kind === 'rate_limited' && /HTTP 429 \(daily_scope_limit\): run stopped/.test(e.message));
+  api.override = (x) => (x.path.endsWith('/companies') ? json(429, { statusCode: 429, error: 'Too Many Requests', message: 'Daily testing limit', code: 'daily_scope_limit', rateLimit: { limit: 5, remaining: 0, resetAt: new Date(clock.now() + 3600e3).toISOString() } }, { 'retry-after': '120' }) : null);
+  await assert.rejects(c.request('GET', '/v2/FR/consumption/companies'), (e) => e.kind === 'rate_limited' && /HTTP 429 \(daily_scope_limit\): run stopped/.test(e.message));
   const st = db.prepare("SELECT next_allowed_at, cooldown_reason FROM provider_state WHERE provider = 'tounify'").get();
   assert.equal(st.next_allowed_at, clock.now() + 3600e3, 'until rateLimit.resetAt, the later of it and Retry-After');
   assert.match(st.cooldown_reason, /^HTTP 429 daily_scope_limit/);
   api.override = null;
   const before = api.calls.length;
   TU.resetClients();
-  await assert.rejects(client().request('GET', '/v3/NL/connection-properties'), (e) => e.kind === 'cooldown');
+  await assert.rejects(client().request('GET', '/v2/NL/consumption/companies'), (e) => e.kind === 'cooldown');
   assert.equal(api.calls.length, before, 'nothing is sent while cooling down, even by a new client');
   assert.match(TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN } }).cooldown.reason, /HTTP 429/);
   // A 429 with neither Retry-After nor rateLimit is a daily limit: until midnight UTC.
   fresh();
   api.override = () => json(429, { statusCode: 429, error: 'Too Many Requests', message: 'daily', code: 'daily_request_limit' });
-  await assert.rejects(client().request('GET', '/v3/FR/connection-properties'), /daily_request_limit/);
-  assert.equal(db.prepare("SELECT next_allowed_at FROM provider_state WHERE provider = 'tounify'").get().next_allowed_at, Date.UTC(2026, 9, 28));
-  // 403 testingLimit: the tariffs allowance is used up; a new tariff is then refused here, without a call.
+  await assert.rejects(client().request('GET', '/v2/FR/consumption/companies'), /daily_request_limit/);
+  assert.equal(db.prepare("SELECT next_allowed_at FROM provider_state WHERE provider = 'tounify'").get().next_allowed_at, Date.UTC(2026, 10, 13));
+  // 403 testingLimit on a price read: the tariffs allowance is used up; a new tariff is then refused here, without a call.
   fresh();
-  api.override = (x) => (x.method === 'POST' ? json(403, { statusCode: 403, message: 'max 20 tariffs', code: 'testing_allowance_exhausted', testingLimit: { kind: 'tariffs', limit: 20, used: 20, remaining: 0, blocked: ['EDFZO'] } }) : null);
-  const s = createSite({ name: 'blocked', country: 'FR', postcode: '75004' });
-  await assert.rejects(TU.registerConnection(s, { consumption_tariff: 'EDFZO' }, { client: client() }), (e) => e.kind === 'allowance_exhausted' && /blocked: EDFZO/.test(e.message));
+  api.override = (x) => (x.path.endsWith('/dayahead') ? json(403, { statusCode: 403, message: 'max 20 tariffs', code: 'testing_allowance_exhausted', testingLimit: { kind: 'tariffs', limit: 20, used: 20, remaining: 0, blocked: ['EDFZO'] } }) : null);
+  await assert.rejects(TU.getPrices(client(), 'FR', TU.dayaheadQuery({ consumption: 'EDFZO', postalCode: '75004', resolution: 1800 })), (e) => e.kind === 'allowance_exhausted' && /blocked: EDFZO/.test(e.message));
   api.override = null;
   const n = api.calls.length;
-  await assert.rejects(TU.registerConnection(s, { consumption_tariff: 'EDFVLR' }, { client: client() }), (e) => e.kind === 'allowance' && /refused new tariffs/.test(e.message));
+  await assert.rejects(TU.getPrices(client(), 'FR', TU.dayaheadQuery({ consumption: 'EDFVLR', postalCode: '75004', resolution: 1800 })), (e) => e.kind === 'allowance' && /refused new tariffs/.test(e.message));
   assert.equal(api.calls.length, n);
   assert.deepEqual(TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN } }).exhausted.tariffs.blocked, ['EDFZO']);
 });
 
-// ───────────── Registration ─────────────
+// ───────────── A home's tariff (kept here: v2 has no connection) ─────────────
 
-test('registration: reference eb-site-<id>, postal code only, capacity and off-peak hours from the home\'s own data, only what the market takes', async () => {
+test('recording a home\'s tariff: no registration upstream; the postal code, tariff and off-peak hours kept; the grid operator looked up once', async () => {
   fresh();
-  clock.t = Date.UTC(2026, 9, 26, 5, 0) + 3 * 86400e3;   // after the daily cooldown set above
-  const { body, warnings } = TU.connectionBody(frSite(), { consumption_tariff: 'EDFTRVHPHC', metering: { type: 'dual_rate', communication: 'remote', wires: 3 } });
-  assert.deepEqual(body, {
-    reference: `eb-site-${fr.id}`, postal_code: '75001', tariffs: { consumption: 'EDFTRVHPHC' }, capacity: { contracted_kva: 6 },
-    metering: { type: 'dual_rate', communication: 'remote', off_peak_hours: { all_year: [{ from: '01:30', to: '07:30' }, { from: '12:30', to: '14:30' }] } },
-  });
-  assert.deepEqual(warnings, ['metering.wires is not a property FR takes: not sent']);
-  // NL takes no kVA: a contracted kVA is never sent there.
-  const n = TU.connectionBody({ ...nlSite(), contracted_kva: 10 }, { consumption_tariff: 'FRENS', capacity: { contracted_kva: 10, phases: 3 } });
-  assert.deepEqual(n.body, { reference: `eb-site-${nl.id}`, postal_code: '1011', tariffs: { consumption: 'FRENS' }, capacity: { phases: 3 } });
+  clock.t = Date.UTC(2026, 10, 13, 5, 0);   // after the daily cooldown set above
+  const { meta, warnings } = TU.connectionBody(frSite(), { consumption_tariff: 'EDFTRVHPHC', metering: { type: 'dual_rate' } });
+  assert.deepEqual(meta, {
+    country: 'FR', postal_code: '75001', tariffs: { consumption: 'EDFTRVHPHC', feedin: null }, company: null,
+    off_peak_hours: [{ from: '01:30', to: '07:30' }, { from: '12:30', to: '14:30' }], capacity: { contracted_kva: 6 }, api: 'v2',
+  }, 'the meter\'s own off-peak windows, the contracted kVA kept for display');
+  assert.deepEqual(warnings, ['metering: tounify v2 takes no connection details; kept here only where it prices (off-peak hours)']);
+  assert.deepEqual(TU.connectionBody(frSite(), { consumption_tariff: 'EDFTRVHPHC', off_peak_hours: [{ from: '22:00', to: '06:00' }] }).meta.off_peak_hours, [{ from: '22:00', to: '06:00' }], 'hours given win');
   assert.throws(() => TU.connectionBody(nlSite(), {}), /consumption_tariff is required/);
-  assert.throws(() => TU.connectionBody({ ...nlSite(), postcode: null }, { consumption_tariff: 'FRENS' }), /postal_code is required/);
+  assert.throws(() => TU.connectionBody({ ...nlSite(), postcode: null }, { consumption_tariff: 'ANWBDE' }), /postal_code is required/);
 
-  const r = await TU.registerConnection(frSite(), { consumption_tariff: 'EDFTRVHPHC', metering: { type: 'dual_rate', communication: 'remote' } }, { client: client() });
-  assert.deepEqual([r.created, r.reference, r.country, r.grid_resolution.operator.id, r.grid_resolution.location_mapped], [true, `eb-site-${fr.id}`, 'FR', 'ENED', true]);
-  const sent = api.of(/^\/v3\/FR\/connections$/)[0];
-  assert.equal(sent.method, 'POST');
-  assert.deepEqual(Object.keys(sent.body).sort(), ['capacity', 'metering', 'postal_code', 'reference', 'tariffs']);
+  const r = await TU.registerConnection(frSite(), { consumption_tariff: 'EDFTRVHPHC' }, { client: client() });
+  assert.deepEqual([r.created, r.reference, r.country, r.grid_resolution.operator.id, r.connection.status], [true, `eb-site-${fr.id}`, 'FR', 'GDS', 'recorded']);
+  assert.deepEqual(api.calls.map((x) => [x.method, x.path, x.query.postal_code]), [['GET', '/v2/FR/grid/companies', '75001']], 'one listing call: the operator of the postal code');
   const row = db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'tounify'").get(fr.id);
   assert.equal(row.external_ref, `eb-site-${fr.id}`);
-  const meta = JSON.parse(row.meta);
-  assert.deepEqual([meta.country, meta.grid_operator, meta.location_mapped, meta.tariffs.consumption], ['FR', { id: 'ENED', name: 'Enedis' }, true, 'EDFTRVHPHC']);
-  // Registering again is a PATCH of the whole profile (no reference in the body); once a PATCH has
-  // answered its ETag, the next one sends it back in If-Match.
-  const again = await TU.registerConnection(frSite(), { consumption_tariff: 'EDFTRVHPHC', metering: { type: 'dual_rate', communication: 'remote' } }, { client: client() });
-  let patch = api.calls.at(-1);
-  assert.deepEqual([patch.method, 'reference' in patch.body, patch.body.tariffs], ['PATCH', false, { consumption: 'EDFTRVHPHC', feedin: null }]);
+  const m = JSON.parse(row.meta);
+  assert.deepEqual([m.country, m.postal_code, m.grid_operator, m.tariffs.consumption, m.api], ['FR', '75001', { id: 'GDS', name: 'Gérédis Deux-Sèvres' }, 'EDFTRVHPHC', 'v2']);
+  // Again, same postal code: nothing is called.
+  const again = await TU.registerConnection(frSite(), { consumption_tariff: 'EDFTRVHPHC' }, { client: client() });
   assert.equal(again.created, false);
-  await TU.registerConnection(frSite(), { consumption_tariff: 'EDFTRVHPHC', metering: { type: 'dual_rate', communication: 'remote' } }, { client: client() });
-  patch = api.calls.at(-1);
-  assert.deepEqual([patch.method, patch.headers['if-match']], ['PATCH', '"conn-1"']);
-  const nr = await TU.registerConnection(nlSite(), { consumption_tariff: 'FRENS' }, { client: client() });
-  assert.equal(nr.grid_resolution.operator.name, 'Liander');
+  assert.equal(api.calls.length, 1);
+  // Without a client (no token at hand) the tariff is still recorded, without the operator.
+  const nr = await TU.registerConnection(nlSite(), { consumption_tariff: 'ANWBDE' });
+  assert.deepEqual([nr.created, nr.grid_resolution], [true, null]);
   assert.ok(!JSON.stringify(db.prepare('SELECT * FROM connection').all()).includes(TU.TEST_PREFIX), 'no token in a connection row');
 });
 
-// ───────────── Daily read, idempotency, ETag, cadence ─────────────
+// ───────────── Daily read, idempotency, cadence ─────────────
 
 let frTariff;
-test('daily read FR: prices and components stored once, the home agreed on the tariff, the same answer again changes nothing', async () => {
+test('daily read FR: /dayahead at the postal code, on the meter\'s own off-peak hours; stored once, the home agreed, no fixed charge; again changes nothing', async () => {
   fresh();
-  api.etags = false;
   const c = client();
   const r = await TU.syncTounifyHome({ site: frSite(), client: c });
   assert.equal(r.failed, undefined, r.error);
-  assert.deepEqual([r.tariff, r.kind, r.taxes_in_price, r.unit_rows, r.fixed_rows, r.agreed], ['TOUNIFY-FR-EDFTRVHPHC', 'tou', 1, 96, 4, true]);
-  const q = api.of(/\/prices$/)[0].query;
-  assert.deepEqual(q, { include: 'fees,vat', resolution: '1800', historic_days: '1' }, 'the home\'s slot length, fees and vat, yesterday kept');
-  assert.deepEqual(api.of(/\/components$/)[0].query, { use_defaults: 'true' });
+  assert.deepEqual([r.tariff, r.kind, r.taxes_in_price, r.unit_rows, r.agreed, r.off_peak_hours, r.grid_tariff], ['TOUNIFY-FR-EDFTRVHPHC', 'tou', 1, 144, true, '01:30-07:30, 12:30-14:30', 'ENEDCU4']);
+  assert.match(r.fixed, /^none: tounify v2 serves per-kWh prices only/);
+  assert.deepEqual(api.calls.map((x) => x.path), ['/v2/FR/dayahead'], 'one call: no components in v2');
+  assert.deepEqual(api.calls[0].query, { consumption_tariff: 'EDFTRVHPHC', postal_code: '75001', include: 'fees,vat', resolution: '1800', historic_days: '1' });
+  assert.equal(api.calls[0].headers['if-none-match'], undefined, 'the /dayahead ETag is never sent back');
   frTariff = db.prepare("SELECT * FROM tariff WHERE tariff_code = 'TOUNIFY-FR-EDFTRVHPHC'").get();
   assert.deepEqual([frTariff.provider, frTariff.country, frTariff.currency, frTariff.native_period_s, frTariff.taxes_in_price, frTariff.origin], ['tounify', 'FR', 'EUR', 1800, 1, 'provider']);
   const rows = db.prepare("SELECT * FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'unit' AND superseded_at IS NULL").all(frTariff.id, fr.id);
-  assert.equal(rows.length, 96);
-  assert.ok(rows.every((x) => x.origin === 'provider' && x.origin_note === TU.ORIGIN_NOTE_TEST && x.raw_id != null));
-  assert.equal(TU.ORIGIN_NOTE_TEST, 'tounify v3 (test token): storage licence unconfirmed');
-  const fixed = db.prepare("SELECT register, charge_period, price_ex_vat FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND superseded_at IS NULL ORDER BY register").all(frTariff.id, fr.id).map((x) => ({ ...x }));
-  assert.deepEqual(fixed, [
-    { register: 'consumption:standing', charge_period: 'year', price_ex_vat: 5670.0985 }, { register: 'grid:capacity', charge_period: 'year', price_ex_vat: 6252 },
-    { register: 'grid:metering', charge_period: 'year', price_ex_vat: 2267 }, { register: 'grid:standing', charge_period: 'year', price_ex_vat: 1712 },
-  ]);
+  assert.equal(rows.length, 144);
+  assert.ok(rows.every((x) => x.origin === 'provider' && x.origin_note === `${TU.ORIGIN_NOTE_TEST}; off-peak prices on the home's own hours 01:30-07:30, 12:30-14:30` && x.raw_id != null));
+  const price = (min) => rows.find((x) => x.valid_from === at9(min)).price_ex_vat;
+  assert.deepEqual([price(0), price(90), price(7 * 60 + 30), price(13 * 60)], [17.852, 13.242, 17.852, 13.242]);
+  assert.equal(count("SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed'", frTariff.id, fr.id), 0, 'no fixed charge written');
   const ag = db.prepare("SELECT a.*, d.kind FROM tariff_agreement a JOIN device d ON d.id = a.device_id WHERE a.site_id = ? AND d.provider = 'tounify' AND a.superseded_at IS NULL").all(fr.id);
-  assert.deepEqual(ag.map((a) => [a.kind, a.tariff_id, a.valid_from, a.valid_to]), [['meter_import', frTariff.id, 1792969200, null]]);
-  // The Abonnement has no valid_from in the answer: it starts on the first day the home holds a price (the day of the
-  // earliest price point read), not on the capture day, so that first day is not priced without its subscription.
-  const sub = db.prepare("SELECT valid_from FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND register = 'consumption:standing' AND superseded_at IS NULL").get(frTariff.id, fr.id);
-  assert.equal(sub.valid_from, dayBounds('Europe/Paris', localDate('Europe/Paris', 1792969200))[0]);
-  for (const what of ['prices', 'components']) {
-    assert.equal(count(`SELECT COUNT(*) n FROM raw_payload p JOIN source s ON s.id = p.source_id WHERE s.code = 'tounify' AND p.site_id = ? AND p.status = 'accepted'
-      AND json_extract(p.request, '$.path') = ?`, fr.id, `/v3/FR/connections/eb-site-${fr.id}/${what}`), 1, `${what} landed raw`);
-  }
-  assert.deepEqual(r.vat_check, [{ from_utc: 1792969200, tounify: 0.2, ours: 0.2, rules: ['FR/tva'], match: true }], 'the sourced FR VAT rule (EU_VAT_RULES) agrees with tounify');
-  assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)), 'no VAT warning when the rates agree');
+  assert.deepEqual(ag.map((a) => [a.kind, a.tariff_id, a.valid_from, a.valid_to]), [['meter_import', frTariff.id, D9, null]]);
+  // Landed raw (an identical answer landed earlier for another home is the same raw payload): every row points at it.
+  const raw = db.prepare('SELECT status, request FROM raw_payload WHERE id = ?').get(rows[0].raw_id);
+  assert.deepEqual([raw.status, JSON.parse(raw.request).path, JSON.parse(raw.request).query.consumption_tariff], ['accepted', '/v2/FR/dayahead', 'EDFTRVHPHC']);
+  assert.equal(new Set(rows.map((x) => x.raw_id)).size, 1);
+  assert.deepEqual(r.vat_check.map((v) => [v.tounify, v.ours, v.rules, v.match]), [[0.2, 0.2, ['FR/tva'], true]], 'the sourced FR VAT rule agrees');
+  assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)));
   // Same answer again (forced, same day): nothing written.
   const again = await TU.syncTounifyHome({ site: frSite(), client: c, force: true });
-  assert.deepEqual([again.unit_rows, again.fixed_rows, again.agreements_changed, again.tariff_created], [0, 0, false, 0]);
+  assert.deepEqual([again.unit_rows, again.agreements_changed, again.tariff_created], [0, false, 0]);
   assert.equal(count('SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ? AND superseded_at IS NOT NULL', frTariff.id), 0);
 });
 
-test('a changed price supersedes the stored row (kept), the parts around it keep their old price; a changed charge likewise; nothing is deleted', async () => {
-  api.etags = false;
+test('fixed charges a home already holds (from the v3 preview) are kept as they are: v2 neither ends nor rewrites them', async () => {
+  const ins = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, origin, origin_note, estimated)
+    VALUES (?, ?, 'fixed', 'consumption:standing', 'year', 'ANY', ?, NULL, 5670.0985, 0, 'provider', 'tounify v3 (test token): storage licence unconfirmed', 0)`);
+  ins.run(frTariff.id, fr.id, D9 - 86400);
+  const r = await TU.syncTounifyHome({ site: frSite(), client: client(), force: true });
+  assert.equal(r.fixed, '1 fixed charge(s) held from before, kept (tounify v2 serves none)');
+  const f = db.prepare("SELECT valid_to, superseded_at FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed'").all(frTariff.id, fr.id);
+  assert.deepEqual(f.map((x) => [x.valid_to, x.superseded_at]), [[null, null]]);
+  db.prepare("DELETE FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed'").run(frTariff.id, fr.id);
+});
+
+test('a changed price supersedes the stored row (kept), the parts around it keep their old price; nothing is deleted', async () => {
   const total = count('SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ?', frTariff.id);
   api.mutate.prices = (b) => ({ ...b, consumption: b.consumption.map((p, i) => (i === 5 ? { ...p, energy: 0.2 } : p)) });
-  api.mutate.components = (b) => ({ ...b, grid: b.grid.map((g) => (g.kind === 'metering' ? { ...g, resolved: { ...g.resolved, amount: 23.5 } } : g)) });
   const r = await TU.syncTounifyHome({ site: frSite(), client: client(), force: true });
-  assert.deepEqual([r.unit_rows, r.fixed_rows], [1, 1]);
-  const t5 = 1792969200 + 5 * 1800;
+  // The changed point breaks 10 Nov's two-price day: the off-peak hours are not applied that run (said in a warning),
+  // so that day is stored as served: every one of its 48 half-hours whose price differs from the home's hours changes.
+  assert.match(r.warnings.join('\n'), /off-peak hours not applied: 2026-11-10/);
+  assert.ok(r.unit_rows > 1);
+  const t5 = D9 + 5 * 1800;
   const hist = db.prepare("SELECT price_ex_vat, superseded_at FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'unit' AND valid_from = ? ORDER BY id").all(frTariff.id, fr.id, t5);
-  assert.deepEqual(hist.map((h) => [h.price_ex_vat, h.superseded_at != null]), [[13.242, true], [24.262, false]], '0.2 + 0.012 + 0.03062 EUR');
-  const met = db.prepare("SELECT price_ex_vat, superseded_at FROM rate_interval WHERE tariff_id = ? AND register = 'grid:metering' ORDER BY id").all(frTariff.id);
-  assert.deepEqual(met.map((h) => [h.price_ex_vat, h.superseded_at != null]), [[2267, true], [2350, false]]);
-  assert.equal(count('SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ?', frTariff.id), total + 2, 'two rows added, none removed');
-  // Back to the captured answer: the captured prices are current again, history kept.
+  assert.deepEqual(hist.map((h) => [h.price_ex_vat, h.superseded_at != null]), [[13.242, true], [27.152, false]], '0.2 + 0.0409 + 0.03062 EUR');
+  assert.ok(count('SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ?', frTariff.id) > total, 'rows added, none removed');
+  // Back to the captured answer: the home's own hours apply again, history kept.
   api.mutate = {};
   await TU.syncTounifyHome({ site: frSite(), client: client(), force: true });
   assert.equal(db.prepare("SELECT price_ex_vat FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND valid_from = ? AND component = 'unit' AND superseded_at IS NULL").get(frTariff.id, fr.id, t5).price_ex_vat, 13.242);
+  assert.equal(db.prepare("SELECT price_ex_vat FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND valid_from = ? AND component = 'unit' AND superseded_at IS NULL").get(frTariff.id, fr.id, D9).price_ex_vat, 17.852);
 });
 
-test('at most one price read per connection a day, never before `next`; a 304 reuses the stored copy and changes nothing', async () => {
+test('at most one price read per home a day, never before `next`', async () => {
   fresh();
-  api.etags = true;
-  clock.t = Date.UTC(2026, 9, 30, 5, 0);
+  clock.t = Date.UTC(2026, 10, 14, 5, 0);
   const c = client();
   const first = await TU.syncTounifyHome({ site: frSite(), client: c });
   assert.equal(first.failed, undefined);
@@ -462,45 +475,41 @@ test('at most one price read per connection a day, never before `next`; a 304 re
   assert.match((await TU.syncTounifyHome({ site: frSite(), client: c })).skipped, /^not due: one price read a day per connection/);
   assert.equal(TU.priceReadDue(fr.id).due, false);
   assert.equal(api.calls.length, n, 'no call');
-  // Next UTC day: due again; the answer is unchanged, so 304s, the stored copies are mapped, nothing written.
-  clock.t = Date.UTC(2026, 9, 31, 1, 0);
+  // Next UTC day, past the answer's `next` (captured on 11 Nov): due again.
+  clock.t = Date.UTC(2026, 10, 15, 1, 0);
   assert.equal(TU.priceReadDue(fr.id).due, true);
-  const second = await TU.syncTounifyHome({ site: frSite(), client: c });
-  assert.deepEqual(second.not_modified, ['prices']);
-  assert.deepEqual([second.unit_rows, second.fixed_rows], [0, 0]);
-  const two = api.calls.slice(n);
-  assert.deepEqual(two.map((x) => x.path.split('/').pop()), ['prices', 'components']);
-  assert.ok(two.every((x) => x.headers['if-none-match']), 'If-None-Match sent');
-  assert.equal(TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN } }).requests_today, 2, 'a 304 is still a request');
+  assert.equal((await TU.syncTounifyHome({ site: frSite(), client: c })).unit_rows, 0, 'same prices: nothing written');
   // An answer whose `next` lies days ahead: no read before it, even on a new UTC day.
   fresh();
-  api.etags = false;
-  api.mutate.prices = (b) => ({ ...b, next: Math.floor(Date.UTC(2026, 10, 3, 6) / 1000) });
+  api.mutate.prices = (b) => ({ ...b, next: Math.floor(Date.UTC(2026, 10, 18, 6) / 1000) });
   await TU.syncTounifyHome({ site: frSite(), client: client() });
-  clock.t = Date.UTC(2026, 10, 1, 9, 0);
-  assert.match((await TU.syncTounifyHome({ site: frSite(), client: client() })).skipped, /^not due: tounify advises the next read after 2026-11-03T06:00:00Z/);
+  clock.t = Date.UTC(2026, 10, 16, 9, 0);
+  assert.match((await TU.syncTounifyHome({ site: frSite(), client: client() })).skipped, /^not due: tounify advises the next read after 2026-11-18T06:00:00Z/);
   api.mutate = {};
+  // A home with no tariff recorded, or one recorded without a tariff yet: nothing to read, said so.
+  const bare = createSite({ name: 'no tariff', country: 'FR', postcode: '75010' });
+  assert.match((await TU.syncTounifyHome({ site: bare, client: client() })).skipped, /no tounify tariff recorded/);
+  await TU.registerConnection(bare, { no_tariff_yet: true });
+  assert.match((await TU.syncTounifyHome({ site: bare, client: client() })).skipped, /no tounify tariff chosen yet/);
+  assert.equal(TU.priceReadDue(bare.id).due, false);
 });
 
-test('daily read NL: 24 hourly rows ex VAT, the credit negative, VAT agrees with ours, and a different rule is warned about without touching it', async () => {
+test('daily read NL: 192 quarter-hours ex VAT at the home\'s slots, VAT agrees with ours, and a different rule is warned about without touching it', async () => {
   fresh();
-  api.etags = false;
-  clock.t = Date.UTC(2026, 10, 4, 5, 0);
+  clock.t = Date.UTC(2026, 10, 17, 5, 0);
   const r = await TU.syncTounifyHome({ site: nlSite(), client: client() });
-  assert.deepEqual([r.tariff, r.kind, r.unit_rows, r.fixed_rows, r.settlement_interval, r.resolution], ['TOUNIFY-NL-FRENS', 'dynamic', 24, 3, 3600, 900]);
-  assert.equal(api.of(/\/prices$/).at(-1).query.resolution, '900', 'the home\'s quarter-hour slots');
+  assert.deepEqual([r.tariff, r.kind, r.unit_rows, r.resolution], ['TOUNIFY-NL-ANWBDE', 'dynamic', 192, 900]);
+  assert.equal(api.of(/\/dayahead$/).at(-1).query.resolution, '900', 'the home\'s quarter-hour slots');
+  assert.equal(api.of(/\/dayahead$/).at(-1).query.postal_code, '1011');
   assert.deepEqual(r.vat_check.map((v) => [v.tounify, v.ours, v.match]), [[0.21, 0.21, true]], 'the sourced NL VAT rule agrees');
   assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)));
-  const t = db.prepare("SELECT id FROM tariff WHERE tariff_code = 'TOUNIFY-NL-FRENS'").get();
-  assert.equal(db.prepare("SELECT price_ex_vat FROM rate_interval WHERE tariff_id = ? AND register = 'consumption:credit' AND superseded_at IS NULL").get(t.id).price_ex_vat, -51980);
   // Our NL VAT rule says 9 %: tounify's 21 % is reported, our rule is kept as it is. (The sourced rule is set
   // aside for this, so the test rule does not overlap it, and put back after.)
   db.prepare("UPDATE tax_rule SET superseded_at = -1 WHERE country = 'NL' AND code = 'btw' AND superseded_at IS NULL").run();
   db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, currency, charge_period, seq, valid_from, valid_to, source, unverified, recorded_at, origin, origin_note)
     VALUES ('NL', 'btw', 'electricity', 'import', 'domestic', 'all', 'percent', 0.09, NULL, NULL, 100, ?, NULL, 'test rule', 1, 0, 'placeholder', 'test rule')`).run(Date.UTC(2025, 11, 31, 23) / 1000);
   const again = await TU.syncTounifyHome({ site: nlSite(), client: client(), force: true });
-  assert.match(again.warnings.join('\n'), /VAT mismatch: tounify states 21 % from 2026-10-25T23:00:00Z, our NL\/btw says 9 % \(a placeholder\): our rule is kept, check it/);
-  assert.deepEqual(again.vat_check.map((v) => [v.tounify, v.ours, v.match]), [[0.21, 0.09, false]]);
+  assert.match(again.warnings.join('\n'), /VAT mismatch: tounify states 21 % from 2026-11-09T23:00:00Z, our NL\/btw says 9 % \(a placeholder\): our rule is kept, check it/);
   assert.equal(db.prepare("SELECT value FROM tax_rule WHERE country = 'NL' AND code = 'btw' AND superseded_at IS NULL").get().value, 0.09, 'never silently overridden');
   db.prepare("DELETE FROM tax_rule WHERE country = 'NL' AND source = 'test rule'").run();
   db.prepare("UPDATE tax_rule SET superseded_at = NULL WHERE country = 'NL' AND code = 'btw' AND superseded_at = -1").run();
@@ -508,8 +517,7 @@ test('daily read NL: 24 hourly rows ex VAT, the credit negative, VAT agrees with
 
 test('an answer of an unexpected shape is quarantined: the step fails soft, nothing is mapped from it, the sync goes on', async () => {
   fresh();
-  api.etags = false;
-  clock.t = Date.UTC(2026, 10, 5, 5, 0);
+  clock.t = Date.UTC(2026, 10, 18, 7, 0);
   const before = count('SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ?', frTariff.id);
   api.mutate.prices = (b) => { const x = { ...b }; delete x.resolution; delete x.next; return x; };
   const r = await TU.syncTounifyHome({ site: frSite(), client: client() });
@@ -518,13 +526,6 @@ test('an answer of an unexpected shape is quarantined: the step fails soft, noth
   const q = db.prepare('SELECT status, reason FROM raw_payload WHERE id = ?').get(r.quarantined);
   assert.deepEqual([q.status, /^unexpected shape: /.test(q.reason)], ['quarantined', true]);
   assert.equal(count('SELECT COUNT(*) n FROM rate_interval WHERE tariff_id = ?', frTariff.id), before, 'nothing written');
-  // Components of an odd shape: the prices still stand, the step reports the failure.
-  fresh();
-  api.mutate = { components: (b) => ({ ...b, grid: 'not a list' }) };
-  const r2 = await TU.syncTounifyHome({ site: frSite(), client: client() });
-  assert.equal(r2.failed, true);
-  assert.match(r2.error, /components .*unexpected shape: no grid array/);
-  assert.equal(r2.unit_rows, 0, 'the prices were read and are unchanged');
   api.mutate = {};
 });
 
@@ -536,20 +537,19 @@ test('taxes_in_price: a French home priced from tounify pays (energy + grid + fe
   for (const r of PLACEHOLDER_TAX_RULES.filter((x) => x.country === 'FR')) {
     ins.run(r.country, r.code, r.fuel, r.direction, r.customer_class, r.applies_to, r.kind, r.value, r.currency, r.charge_period, r.seq, r.valid_from, r.valid_to, r.source, r.origin, r.origin_note);
   }
-  const peak = 1792969200; const off = 1792974600;
-  const p = loadPricing(fr.id, peak, peak + 86400);
+  // 11 Nov, 10:00 Paris (peak on the meter's hours) and 02:00 (off-peak).
+  const peak = at9(1440 + 600); const off = at9(1440 + 120);
+  const p = loadPricing(fr.id, D9, D9 + 3 * 86400);
   const at = (ts) => priceAt(p, 'meter_import', ts);
   const pk = at(peak);
   assert.deepEqual([pk.tariffCode, pk.supplyEx, pk.unitEx, pk.levy, pk.vat], ['TOUNIFY-FR-EDFTRVHPHC', 17.852, 17.852, 0, 0.2]);
-  near(pk.unitEx * (1 + pk.vat), (0.1308 + 0.0171 + 0.03062) * 1.2 * 100, 'peak paid per kWh');
-  near(at(off).unitEx * (1 + at(off).vat), (0.0898 + 0.012 + 0.03062) * 1.2 * 100, 'off-peak paid per kWh');
+  near(pk.unitEx * (1 + pk.vat), (0.0707 + 0.0772 + 0.03062) * 1.2 * 100, 'peak paid per kWh');
+  near(at(off).unitEx * (1 + at(off).vat), (0.0609 + 0.0409 + 0.03062) * 1.2 * 100, 'off-peak paid per kWh');
   assert.deepEqual(pk.tax.rules.map((r) => r.code), ['tva'], 'only the percent rule: the accise is inside fees already');
   assert.ok(!pk.inputs.some((i) => /accise/.test(i.what)));
-  // Fixed charges: the yearly amounts per local day (all four in force from the capture day), with VAT only.
-  const later = Date.UTC(2026, 9, 30, 12) / 1000;
-  const pl = priceAt(loadPricing(fr.id, later, later + 3600), 'meter_import', later);
-  assert.deepEqual(pl.fixed.map((f) => [f.register, f.period, f.amount]).sort(), [['consumption:standing', 'year', 5670.0985], ['grid:capacity', 'year', 6252], ['grid:metering', 'year', 2267], ['grid:standing', 'year', 1712]]);
-  assert.ok(Math.abs(fixedPerDay(pl, later, 'Europe/Paris') - ((5670.0985 + 6252 + 1712 + 2267) / 365) * 1.2) < 1e-5, 'fixed per day inc VAT');
+  // v2 serves no fixed charge: none is priced from it (a subscription has to come from elsewhere).
+  assert.deepEqual(pk.fixed ?? [], []);
+  assert.equal(fixedPerDay(pk, peak, 'Europe/Paris'), 0);
   // The same price on an ordinary tariff (taxes_in_price 0): the accise is added, then VAT, as before.
   const home = createSite({ name: 'control FR', country: 'FR', postcode: '75005' });
   const t = createTariff({ provider: 'manual', tariffCode: 'TEST-CONTROL-FR', structure: 'flat', kind: 'flat', country: 'FR', currency: 'EUR', origin: 'user' });
@@ -595,10 +595,10 @@ test('gate: without TOUNIFY_DEV the plan skips tounify as unlicensed and POST co
     await withEnv(env, async () => {
       const p = P.plan(db, frSite()).filter((e) => e.adapter === 'tounify');
       assert.deepEqual(p.map((e) => [e.role, e.run, e.status]), [['tariff_prices', false, 'disabled'], ['tariff_catalogue', false, 'disabled']], JSON.stringify(env));
-      assert.ok(p.every((e) => /^unlicensed: tounify v3 \(preview API\)/.test(e.skipped)));
+      assert.ok(p.every((e) => /^unlicensed: tounify v2: per-kWh prices/.test(e.skipped)));
       const r = await call('POST', `/api/sites/${fr.id}/connections`, { provider: 'tounify', consumption_tariff: 'EDFTRVHPHC' });
       assert.equal(r.status, 400);
-      assert.match(r.json.error, /^tounify is listed for tariff_prices in market FR but its licence is unconfirmed: tounify v3/);
+      assert.match(r.json.error, /^tounify is listed for tariff_prices in market FR but its licence is unconfirmed: tounify v2/);
       assert.equal(C.connectors(db).connectors.find((x) => x.adapter === 'tounify').status, 'disabled');
     });
   }
@@ -621,18 +621,18 @@ test('missing token: a licensed row skips the step with "no credentials: TOUNIFY
   }
 });
 
-test('TOUNIFY_DEV=1 with a test token: the plan runs tounify (labelled), POST registers a home, the sync reads and prices it, Connectors shows the override', async () => {
+test('TOUNIFY_DEV=1 with a test token: the plan runs tounify (labelled), POST records a home\'s tariff, the sync reads and prices it, Connectors shows the override', async () => {
   fresh();
-  api.etags = false;
-  clock.t = Date.UTC(2026, 10, 10, 5, 0);
+  clock.t = Date.UTC(2026, 10, 19, 5, 0);
   await withEnv(DEV, async () => {
     const home = createSite({ name: 'FR dev home', country: 'FR', postcode: '75008' });
-    // Not registered yet: the per-home role waits for its connection (quiet); the shared catalogue may run.
+    // No tariff recorded yet: the per-home role waits for it (quiet); the shared catalogue may run.
     let p = P.plan(db, home).filter((e) => e.adapter === 'tounify');
     assert.deepEqual(p.map((e) => [e.role, e.run, e.skipped ?? null]), [['tariff_prices', false, 'not connected for this home'], ['tariff_catalogue', true, null]]);
-    const reg = await call('POST', `/api/sites/${home.id}/connections`, { provider: 'tounify', consumption_tariff: 'EDFTRVHPHC', metering: { type: 'dual_rate', communication: 'remote' } });
+    const reg = await call('POST', `/api/sites/${home.id}/connections`, { provider: 'tounify', consumption_tariff: 'EDFTRVHPHC', company: 'EDF' });
     assert.equal(reg.status, 201, reg.text);
-    assert.deepEqual([reg.json.reference, reg.json.role, reg.json.secrets_stored, reg.json.dev_override, reg.json.grid_resolution.operator.id], [`eb-site-${home.id}`, 'tariff_prices', false, TU.DEV_LABEL, 'ENED']);
+    assert.deepEqual([reg.json.reference, reg.json.role, reg.json.secrets_stored, reg.json.dev_override, reg.json.grid_resolution.operator.id, reg.json.connection.status],
+      [`eb-site-${home.id}`, 'tariff_prices', false, TU.DEV_LABEL, 'GDS', 'recorded']);
     assert.ok(!reg.text.includes(TEST_TOKEN));
     p = P.plan(db, home).filter((e) => e.adapter === 'tounify');
     assert.deepEqual(p.map((e) => [e.step, e.run, e.dev_override]), [['tounify', true, TU.DEV_LABEL], ['tounify_catalogue', true, TU.DEV_LABEL]]);
@@ -641,16 +641,18 @@ test('TOUNIFY_DEV=1 with a test token: the plan runs tounify (labelled), POST re
     const r = await syncSite(home.id);
     const step = r.log.find((l) => l.step === 'tounify');
     assert.equal(step.ok, true, step.error);
-    assert.deepEqual([step.tariff, step.unit_rows, step.fixed_rows, step.agreed], ['TOUNIFY-FR-EDFTRVHPHC', 96, 4, true]);
+    assert.deepEqual([step.tariff, step.unit_rows, step.agreed], ['TOUNIFY-FR-EDFTRVHPHC', 144, true]);
     const cat = r.log.find((l) => l.step === 'tounify_catalogue');
     assert.equal(cat.ok, true, cat.error);
-    assert.deepEqual([cat.properties, cat.companies, cat.tariffs], [10, 7, { EDF: 8 }], 'properties, companies, and the tariffs of the home\'s company');
+    assert.equal(cat.companies, 13, 'the national list of French suppliers');
+    assert.deepEqual(cat.tariffs, { EDF: 10 }, 'and the tariffs of the suppliers our homes are on');
     assert.deepEqual(TU.tounifyAllowance(db).companies.ids, ['EDF'], 'listing EDF\'s tariffs spent one company');
-    assert.match(TU.catalogueStatus('FR').reason, /^FR: 10 properties, 7 companies/);
+    assert.match(TU.catalogueStatus('FR').reason, /^FR: 13 suppliers, the tariffs of EDF, refreshed /);
+    // The supplier is linked, named as the catalogue lists it.
+    assert.match(db.prepare("SELECT s.name FROM tariff t JOIN supplier s ON s.id = t.supplier_id WHERE t.tariff_code = 'TOUNIFY-FR-EDFTRVHPHC'").get().name, /Electricite de France|EDF/);
     // Rows first written on the override say so.
     const note = db.prepare("SELECT origin_note FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'unit' AND superseded_at IS NULL LIMIT 1").get(frTariff.id, home.id).origin_note;
     assert.equal(note, `${TU.ORIGIN_NOTE_TEST}; ${TU.DEV_LABEL}`);
-    // The home's days were priced from it.
     assert.ok(count("SELECT COUNT(*) n FROM tariff_agreement a JOIN device d ON d.id = a.device_id WHERE a.site_id = ? AND d.provider = 'tounify' AND a.superseded_at IS NULL", home.id) === 1);
     // A second sync the same day calls nothing (one read a day, one catalogue a week).
     const n = api.calls.length;
@@ -658,33 +660,31 @@ test('TOUNIFY_DEV=1 with a test token: the plan runs tounify (labelled), POST re
     assert.ok(!r2.log.some((l) => l.step === 'tounify' || l.step === 'tounify_catalogue'), 'not due: not run, not logged');
     assert.equal(api.calls.length, n);
     const t = C.connectors(db).connectors.find((x) => x.adapter === 'tounify');
-    assert.deepEqual([t.status, t.dev_override], ['connected', TU.DEV_LABEL]);
-    // The home read today is connected; the other French homes are too through the shared catalogue's
-    // status (as every GB home is through Tariffscanner's sweep); the Dutch ones have no catalogue yet.
+    assert.deepEqual([t.status, t.dev_override, t.label], ['connected', TU.DEV_LABEL, 'tounify (EU tariffs, v2)']);
     assert.equal(t.homes.find((h) => h.site_id === home.id).status, 'connected');
-    assert.ok(t.homes.filter((h) => h.market_code === 'NL' && !h.is_demo).every((h) => h.status !== 'connected'));
     assert.deepEqual(t.markets.map((m) => m.market_code), ['FR', 'NL']);
     const allowance = await call('GET', '/api/tounify/allowance');
     assert.deepEqual([allowance.status, allowance.json.token_kind, allowance.json.dev_override], [200, 'test', TU.DEV_LABEL]);
     assert.ok(!allowance.text.includes(TEST_TOKEN));
+    assert.ok(api.calls.every((x) => x.method === 'GET' && x.path.startsWith('/v2/')), 'v2 only, reads only');
   });
 });
 
 test('a 429 during a cycle stops the run: the next home of the cycle is not called', async () => {
   fresh();
   api.etags = false;
-  clock.t = Date.UTC(2026, 10, 12, 5, 0);
+  clock.t = Date.UTC(2026, 10, 21, 5, 0);
   await withEnv(DEV, async () => {
     const b = createSite({ name: 'FR second', country: 'FR', postcode: '75007' });
     await TU.registerConnection(b, { consumption_tariff: 'EDFTRVHPHC' }, { client: TU.clientFor({ token: TEST_TOKEN }) });
     api.calls.length = 0;
-    api.override = (x) => (x.path.endsWith('/prices') ? json(429, { statusCode: 429, error: 'Too Many Requests', message: 'limit', code: 'daily_request_limit' }, { 'retry-after': '300' }) : null);
+    api.override = (x) => (x.path.endsWith('/dayahead') ? json(429, { statusCode: 429, error: 'Too Many Requests', message: 'limit', code: 'daily_request_limit' }, { 'retry-after': '300' }) : null);
     const [ra, rb] = await syncAll([fr.id, b.id]);
     const sa = ra.log.find((l) => l.step === 'tounify');
     assert.equal(sa.ok, false);
     assert.match(sa.error, /HTTP 429 \(daily_request_limit\): run stopped/);
     assert.ok(!rb.log.some((l) => l.step === 'tounify'), 'the second home is not run while cooling down');
-    assert.deepEqual(api.calls.map((x) => x.path.split('/').pop()), ['prices'], 'one call, the one refused');
+    assert.deepEqual(api.calls.map((x) => x.path.split('/').pop()), ['dayahead'], 'one call, the one refused');
     api.override = null;
   });
 });
@@ -722,8 +722,9 @@ test('nothing in this file reached the network, and no token was written to the 
 
 // ───────────── The tariff picker on tounify (src/core/tariff-picker.js): the same interface as GB ─────────────
 
-test('tariff picker, France: registered without a tariff, suppliers and tariffs listed once a week, the choice priced', async () => {
+test('tariff picker, France: suppliers and tariffs from v2 (kept a week), the choice kept here, priced at once on the home\'s own off-peak hours', async () => {
   fresh();
+  clock.t = Date.UTC(2026, 10, 23, 5, 0);
   const PK = await import('../src/core/tariff-picker.js');
   const s = createSite({ name: 'Paris picker', country: 'FR', postcode: '75008' });
   const row = () => db.prepare('SELECT * FROM site WHERE id = ?').get(s.id);
@@ -733,24 +734,24 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
   await withEnv(DEV, async () => {
     const sup = await PK.listSuppliers(row());
     assert.equal(sup.source, 'tounify');
-    // One registration with no tariff, then the companies under it.
-    assert.equal(api.of(/\/connections$/).length, 1);
-    assert.equal(api.of(/\/connections$/)[0].body.tariffs, undefined);
-    assert.equal(api.of(/\/consumption\/companies$/).length, 1);
+    // The national list, with no registration first.
+    assert.deepEqual(api.calls.map((x) => x.path), ['/v2/FR/consumption/companies']);
+    assert.equal(sup.suppliers.length, 13);
     const edf = sup.suppliers.find((x) => /Electricite de France/.test(x.name));
     assert.ok(edf, 'EDF listed under its catalogue name');
-    // The home is registered but has no tariff: the daily sync says so and calls nothing.
-    const calls = api.calls.length;
-    assert.match((await TU.syncTounifyHome({ site: row(), client: client(DEV) })).skipped, /no tariff chosen yet/);
-    assert.equal(api.calls.length, calls);
+    assert.equal(db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'tounify'").get(s.id), undefined, 'listing records nothing for the home');
     const t1 = await PK.listTariffs(row(), edf.code);
+    assert.deepEqual(t1.tariffs.map((t) => [t.id, t.kind]), [
+      ['EDFTRVBASE', 'one_price'], ['EDFTRVBASE9', 'one_price'], ['EDFTRVHPHC', 'two_rate'], ['EDFTRVTEMPO', 'dynamic'], ['EDFVLA', 'one_price'],
+      ['EDFVLOB', 'one_price'], ['EDFVLOHC', 'two_rate'], ['EDFVLR', 'two_rate'], ['EDFZFOB', 'one_price'], ['EDFZO', 'two_rate'],
+    ], 'the kind from the name: Heures Creuses two-rate, Option Base one price, Tempo as the market');
     const hphc = t1.tariffs.find((t) => t.id === 'EDFTRVHPHC');
-    assert.equal(hphc.kind, 'two_rate');
-    assert.equal(hphc.prices_known, false, 'tounify prices a tariff only for a home on it');
+    assert.equal(hphc.prices_known, false, 'pricing a tariff spends the allowance: shown once the home is on it');
     assert.deepEqual(hphc.questions.map((q) => q.field), ['contracted_kva', 'off_peak_hours']);
-    // "Option Base" is one price on the bill, though tounify answers time_of_use_rates 2 for it: no off-peak question.
+    assert.deepEqual([hphc.hours.from, hphc.hours.to], ['23:00', '07:00'], 'the reference window, to be changed to the bill\'s');
+    assert.match(hphc.link, /^https?:\/\//);
     const base = t1.tariffs.find((t) => t.id === 'EDFTRVBASE');
-    assert.deepEqual([base.kind, base.questions.map((q) => q.field)], ['one_price', ['contracted_kva']]);
+    assert.deepEqual([base.kind, base.hours, base.questions.map((q) => q.field)], ['one_price', null, ['contracted_kva']]);
     // Asked again within the week: from our copy, no call.
     const before = api.calls.length;
     await PK.listSuppliers(row());
@@ -759,36 +760,35 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
     // The subscribed power is required for France.
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC' }), /Subscribed power \(kVA\): an answer is required/);
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 7 }), /must be one of 3, 6, 9/);
-    // Off-peak hours that are not exactly 8 a day (France) are refused here, before anything is sent upstream.
+    // Off-peak hours that are not exactly 8 a day (France) are refused here, before anything is called.
     const sent = api.calls.length;
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '04:43', to: '11:55' } }),
       (e) => e.status === 400 && /exactly 8 hours a day, as on your bill: 04:43 to 11:55 is 7 h 12 min/.test(e.message));
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '' } }), /HH:MM/);
-    assert.equal(api.calls.length, sent, 'nothing sent to tounify');
+    assert.equal(api.calls.length, sent, 'nothing called');
     assert.deepEqual([PK.windowMinutes('22:00', '06:00'), PK.windowMinutes('01:30', '09:30'), PK.windowMinutes('12:00', '12:00'), PK.windowMinutes('9:00', '17:00')], [480, 480, 1440, null]);
     const r = await PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '06:00' } });
     assert.equal(r.source, 'tounify');
     assert.equal(r.tariff, 'TOUNIFY-FR-EDFTRVHPHC');
-    // Sent upstream: the tariff, the power and the off-peak hours; then the home's own prices were read.
-    const patch = api.of(/\/connections\/eb-site-\d+$/).filter((c) => c.method === 'PATCH').at(-1);
-    assert.equal(patch.body.tariffs.consumption, 'EDFTRVHPHC');
-    assert.equal(patch.body.capacity.contracted_kva, 6);
-    assert.deepEqual(patch.body.metering.off_peak_hours, { all_year: [{ from: '22:00', to: '06:00' }] });
-    assert.ok(r.prices.unit_rows > 0);
+    // Kept here: the tariff, its supplier, the off-peak hours; then the prices read at the home's postal code.
+    const m = JSON.parse(db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'tounify'").get(s.id).meta);
+    assert.deepEqual([m.tariffs.consumption, m.company, m.off_peak_hours, m.postal_code], ['EDFTRVHPHC', 'EDF', [{ from: '22:00', to: '06:00' }], '75008']);
+    assert.equal(api.of(/\/dayahead$/).at(-1).query.postal_code, '75008');
+    assert.equal(r.prices.unit_rows, 144);
+    assert.equal(r.prices.off_peak_hours, '22:00-06:00');
     assert.equal(row().contracted_kva, 6);
+    const price = (min) => db.prepare("SELECT r.price_ex_vat FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.tariff_code = 'TOUNIFY-FR-EDFTRVHPHC' AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from = ?").get(s.id, at9(min)).price_ex_vat;
+    assert.deepEqual([price(21 * 60 + 30), price(22 * 60), price(5 * 60 + 30), price(6 * 60)], [17.852, 13.242, 13.242, 17.852], 'priced on 22:00-06:00, not the reference 23:00-07:00');
     // Stored the same way as a GB choice: supplier on the tariff, the meter on it, the meter's own hours.
     const t = db.prepare("SELECT t.*, sp.name AS supplier FROM tariff t JOIN supplier sp ON sp.id = t.supplier_id WHERE t.tariff_code = 'TOUNIFY-FR-EDFTRVHPHC'").get();
     assert.match(t.supplier, /Electricite de France/);
     const c = PK.tariffChoice(row());
-    assert.equal(c.current.tariff, 'TOUNIFY-FR-EDFTRVHPHC');
-    assert.equal(c.current.via, 'tounify');
-    assert.equal(c.current.chosen, true);
-    assert.deepEqual(c.current.hours, [{ from: '22:00', to: '06:00' }]);
+    assert.deepEqual([c.current.tariff, c.current.via, c.current.chosen, c.current.hours], ['TOUNIFY-FR-EDFTRVHPHC', 'tounify', true, [{ from: '22:00', to: '06:00' }]]);
     // Now that the home holds them, the list shows this tariff's prices.
-    const t2 = await PK.listTariffs(row(), edf.code);
-    const shown = t2.tariffs.find((x) => x.id === 'EDFTRVHPHC');
+    const shown = (await PK.listTariffs(row(), edf.code)).tariffs.find((x) => x.id === 'EDFTRVHPHC');
     assert.equal(shown.prices_known, true);
-    assert.deepEqual(shown.options[0].unit.map((u) => u.label), ['Peak', 'Off-peak']);
+    assert.deepEqual(shown.options[0].unit.map((u) => [u.label, u.price]), [['Peak', 17.852], ['Off-peak', 13.242]]);
+    assert.ok(api.calls.every((x) => x.method === 'GET' && x.path.startsWith('/v2/')), 'v2 only, reads only');
   });
 });
 

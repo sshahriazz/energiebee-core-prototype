@@ -2,9 +2,9 @@
 // One interface for every country; the source is chosen from the home's market:
 //   GB      Tariffscanner, the UK catalogue the core already holds (src/adapters/tariffscanner.js): every
 //           list is read from our own tables, no call is made.
-//   FR, NL  tounify v3 (src/adapters/tounify.js): the home is registered upstream first (v3 lists suppliers and
-//           tariffs only under a connection), the lists are kept 7 days, the choice is sent upstream and the
-//           home's own prices are read once.
+//   FR, NL  tounify v2 (src/adapters/tounify.js): the country's suppliers and a supplier's tariffs (kept 7 days);
+//           the choice is kept here (v2 has no connection to register) and the home's prices are read right away
+//           at its postal code, on its own off-peak hours for a French heures creuses tariff.
 // Every source answers in the same shape, so the onboarding screen never knows which one it shows:
 //   listSuppliers(site)            -> { country, source, available, reason?, suppliers: [{ code, name, tariffs }] }
 //   listTariffs(site, supplier)    -> { country, source, supplier: { code, name }, tariffs: [TariffOption] }
@@ -134,7 +134,7 @@ registerPickerSource({
   },
 });
 
-// ───────────── FR / NL: tounify (registered first, lists kept 7 days) ─────────────
+// ───────────── FR / NL: tounify v2 (lists kept 7 days, the choice kept here) ─────────────
 
 const tuClient = () => {
   const c = TU.credentialsFromEnv(process.env);
@@ -148,17 +148,17 @@ const tuError = (err) => {
   const status = ['allowance', 'cooldown', 'rate_limited', 'allowance_exhausted'].includes(err.kind) ? 429 : err.kind === 'upstream' && err.status >= 400 && err.status < 500 ? 400 : 502;
   return Object.assign(new Error(err.message), { status });
 };
-async function ensureRegistered(site, client) {
-  if (db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'tounify' AND external_ref IS NOT NULL").get(site.id)) return;
-  await TU.registerConnection(site, { no_tariff_yet: true }, { client });
-}
-// A French "Option Base" offer is one supplier price at every hour, and its bill prints no off-peak hours. tounify v3
-// still answers time_of_use_rates 2 for every static FR offer, Base included (seen on EDF Tarif Bleu Base, Zen Fixe
-// Base, Octopus France OctoEco Fixe Base, Nov 2026): probably the grid part of the per-connection price, which can
-// differ peak / off-peak. So a Base offer is listed as one price and asks no off-peak hours; how it is priced is
-// unchanged (the home's own prices, as tounify sends them after the choice).
-const isFrBase = (t) => /\bbase\b/i.test(t.name ?? '') && !/heures creuses|\bhp\s*\/\s*hc\b|tempo/i.test(t.name ?? '');
-const tuKind = (t) => (t.type === 'dynamic' ? 'dynamic' : isFrBase(t) ? 'one_price' : (t.time_of_use_rates ?? 1) >= 2 ? 'two_rate' : 'one_price');
+// A tariff's kind from its listing: v2 lists { type: static | dynamic } and a name, no count of rates. A dynamic one
+// follows the market; a static one is two-rate where its name says so (France: Heures Creuses, HP/HC; the Netherlands:
+// dubbel / dag-nacht / normaal-dal), else one price. A French "Option Base" is one price at every hour, and its bill
+// prints no off-peak hours. Tempo (six prices by day colour) is listed as one price per period, priced as served.
+const TWO_RATE_NAME = /heures?\s+creuses|\bhp\s*\/\s*hc\b|\bhphc\b|\bhc\b|dubbel|dag\s*\/?\s*nacht|normaal\s*\/?\s*dal|\bdal\b/i;
+const isFrBase = (t) => /\bbase\b/i.test(t.name ?? '') && !TWO_RATE_NAME.test(t.name ?? '') && !/tempo/i.test(t.name ?? '');
+const tuKind = (t) => (t.type === 'dynamic' ? 'dynamic' : isFrBase(t) ? 'one_price' : TWO_RATE_NAME.test(t.name ?? '') ? 'two_rate' : 'one_price');
+// The off-peak hours a French two-rate tariff is priced on by default: tounify's reference window, which the user
+// changes to the hours on the bill (the grid operator assigns each meter its own 8 hours).
+const tuHours = (market, kind) => (market === 'FR' && kind === 'two_rate'
+  ? { ...TU.FR_REFERENCE_OFF_PEAK, source: 'the usual off-peak hours (23:00 to 07:00): change them to the hours on your bill' } : null);
 
 registerPickerSource({
   code: 'tounify', markets: ['FR', 'NL'], label: 'tounify',
@@ -170,7 +170,6 @@ registerPickerSource({
   async listSuppliers(site) {
     const { client } = tuClient();
     try {
-      await ensureRegistered(site, client);
       const { list, country } = await TU.listCompanies(site, { client });
       const held = new Map(db.prepare(`SELECT a.external_id, COUNT(t.id) AS n FROM supplier_alias a LEFT JOIN tariff t ON t.supplier_id = a.supplier_id
         WHERE a.provider = 'tounify' AND a.country = ? GROUP BY a.external_id`).all(country).map((r) => [r.external_id, r.n]));
@@ -187,16 +186,16 @@ registerPickerSource({
       const { list, country } = await TU.listCompanyTariffs(site, ext, { client });
       return list.filter((t) => t.available !== false).map((t) => {
         const kind = tuKind(t);
-        // tounify prices a tariff only for a home on it: prices are shown only where this home already holds them.
+        // Pricing a tariff spends one of a testing token's tariffs: prices are shown only where this home already holds them.
         const held = db.prepare(`SELECT r.register, r.price_ex_vat FROM rate_interval r JOIN tariff x ON x.id = r.tariff_id WHERE x.tariff_code = ? AND r.site_id = ?
           AND r.component = 'unit' AND r.superseded_at IS NULL ORDER BY r.valid_from DESC LIMIT 96`).all(`TOUNIFY-${country}-${t.id}`, site.id);
         const prices = [...new Set(held.map((r) => r.price_ex_vat))].sort((a, b) => b - a);
         const unit = prices.length === 2 ? [{ register: 'peak', label: 'Peak', price: prices[0] }, { register: 'off_peak', label: 'Off-peak', price: prices[1] }]
           : prices.length === 1 ? [{ register: 'single', label: 'Price', price: prices[0] }] : [];
         return {
-          id: t.id, name: t.name ?? t.id, variant: null, kind, prices_known: unit.length > 0,
+          id: t.id, name: t.name ?? t.id, variant: null, kind, prices_known: unit.length > 0, link: t.link ?? null,
           options: [{ payment_method: 'ANY', label: paymentLabel('ANY'), unit, standing: null }], default_payment_method: 'ANY',
-          hours: null, questions: questionsFor(market, kind),
+          hours: tuHours(market, kind), questions: questionsFor(market, kind),
         };
       });
     } catch (err) { throw tuError(err); }
@@ -204,10 +203,9 @@ registerPickerSource({
   async choose(site, tariff, choice) {
     const { client, dev } = tuClient();
     const market = site.market_code ?? site.country;
-    const input = { consumption_tariff: tariff.id };
-    if (choice.contracted_kva != null) input.capacity = { contracted_kva: Number(choice.contracted_kva) };
-    const hours = tariff.kind === 'two_rate' ? (choice.hours ?? null) : null;
-    if (hours && market === 'FR') input.metering = { off_peak_hours: { all_year: [{ from: hours.from, to: hours.to }] } };
+    const ext = db.prepare("SELECT a.external_id FROM supplier_alias a JOIN supplier s ON s.id = a.supplier_id WHERE a.provider = 'tounify' AND s.code = ? AND a.country = ?").get(String(choice.supplier ?? ''), market)?.external_id ?? null;
+    const hours = tariff.kind === 'two_rate' ? (choice.hours ?? (tariff.hours ? { from: tariff.hours.from, to: tariff.hours.to } : null)) : null;
+    const input = { consumption_tariff: tariff.id, company: ext, ...(hours ? { off_peak_hours: [{ from: hours.from, to: hours.to }] } : {}) };
     try {
       if (choice.contracted_kva != null) setContractedCapacity(site.id, Number(choice.contracted_kva), { origin: 'user', note: 'stated in onboarding (tariff picker)' });
       const reg = await TU.registerConnection(db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), input, { client });
@@ -341,9 +339,8 @@ export async function listTariffs(site, supplierCode) {
   return { country: site.country, source: src.code, supplier: { code: sup.code, name: sup.name }, tariffs: await src.listTariffs(site, sup) };
 }
 
-// Off-peak hours a market's network operator assigns per day, where it fixes them: France 8 h (heures creuses, as the bill
-// prints them; tounify refuses any other total with property_not_accepted). tounify's own figure, when its catalogue
-// holds one (connection-properties: metering.off_peak_hours.values.hours_per_day), wins over this default.
+// Off-peak hours a market's network operator assigns per day, where it fixes them: France 8 h (heures creuses, as the
+// bill prints them; the operator assigns each meter its own eight hours).
 const OFF_PEAK_HOURS_PER_DAY = Object.freeze({ FR: 8 });
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const minutesOf = (hhmm) => { const m = HHMM.exec(hhmm ?? ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
@@ -357,8 +354,7 @@ export function windowMinutes(from, to) {
 export function checkOffPeakHours(market, hours) {
   const mins = windowMinutes(hours?.from, hours?.to);
   if (mins == null || hours.from === hours.to) throw bad('Off-peak hours must be { from: "HH:MM", to: "HH:MM" }, two different times, e.g. 22:00 to 06:00');
-  let need = OFF_PEAK_HOURS_PER_DAY[market] ?? null;
-  try { need = TU.readState().catalogue?.[market]?.properties?.find((x) => x.property === 'metering.off_peak_hours')?.values?.hours_per_day ?? need; } catch { /* no catalogue: the default */ }
+  const need = OFF_PEAK_HOURS_PER_DAY[market] ?? null;
   if (need != null && mins !== need * 60) {
     const h = Math.floor(mins / 60); const m = mins % 60;
     throw bad(`Off-peak hours must cover exactly ${need} hours a day, as on your bill: ${hours.from} to ${hours.to} is ${h} h${m ? ` ${m} min` : ''}`);

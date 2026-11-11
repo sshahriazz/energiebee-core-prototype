@@ -300,9 +300,9 @@ export function connectable(db, site, { provider, role = null } = {}) {
 
 export function connectProvider(db, site, { provider, role = null, credentials = null } = {}) {
   const { row, impl, market } = connectable(db, site, { provider, role });
-  // A provider that registers the home upstream (tounify: one connection per home, billed per
-  // connection) is connected by its own registration, never by a bare row here.
-  if (impl.registers) throw bad(`${provider} connects a home by registering it upstream: ${impl.registers}`);
+  // A provider with its own registration (tounify: the home's tariff and postal code, recorded by
+  // its adapter) is connected by it, never by a bare row here.
+  if (impl.registers) throw bad(`${provider} connects a home through its own registration: ${impl.registers}`);
   const given = credentials && typeof credentials === 'object' && !Array.isArray(credentials) ? credentials : {};
   const ref = impl.externalRef?.(given) ?? null;
   const notStored = Object.keys(given).filter((k) => !(impl.publicFields ?? []).includes(k));

@@ -125,9 +125,9 @@ test('a French home: weather and carbon (RTE) run; the unbuilt and unlicensed pr
     ['weather', true, 'no hourly data'],
     ['carbon', true, null],
     ['meter:linky', true, 'disabled: adapter not built: Linky meter data (Enedis with the customer\'s consent, or a local reader) is planned; nothing is read yet'],
-    ['tounify', true, 'unlicensed: tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
+    ['tounify', true, 'unlicensed: tounify v2: per-kWh prices of a tariff at a postal code, no fixed charges; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
     ['tariff_prices:entsoe', true, 'disabled: adapter not built: ENTSO-E day-ahead wholesale price per bidding zone (not a retail tariff); needs a registered ENTSO-E token'],
-    ['tounify_catalogue', true, 'unlicensed: tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
+    ['tounify_catalogue', true, 'unlicensed: tounify v2: per-kWh prices of a tariff at a postal code, no fixed charges; storage and reuse licence not confirmed in writing; free test token has tiny limits'],
   ]);
   // Open-Meteo, then RTE: its real-time set (empty here), so the consolidated set for the window too.
   assert.deepEqual(calls.map(kind), ['weather', 'carbon', 'carbon'], 'only Open-Meteo and RTE are asked');

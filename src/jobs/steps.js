@@ -300,13 +300,13 @@ registerAdapter('tariffscanner', {
   },
 });
 
-// ───────────── tounify v3 (FR, NL; an EU tariff source, not UK): per-home prices, shared catalogue ─────────────
+// ───────────── tounify v2 (FR, NL; an EU tariff source, not UK): per-home prices, shared catalogue ─────────────
 
 // Listed switched on but unlicensed (src/db/seed/providers.js), so the plan skips both roles with
 // 'unlicensed: ...' until the licence is confirmed; TOUNIFY_DEV=1 with a test token overrides that
 // for development (licenceOverride; the plan entry and every row it writes say so).
-// tariff_prices runs for a home with a tounify connection (registered by POST /api/sites/:id/connections,
-// one connection per home), at most once a UTC day and never before tounify's `next`; the catalogue
+// tariff_prices runs for a home with a tounify tariff recorded (the tariff picker, or POST /api/sites/:id/connections;
+// kept here: v2 has no connection upstream), at most once a UTC day and never before tounify's `next`; the catalogue
 // runs for the first home of a market each cycle, once a week per market. The core's own token from
 // .env (TOUNIFY_API_KEY), with the allowance guard of src/adapters/tounify.js.
 const tounifyCatalogueKey = (ctx) => `tariff_catalogue:tounify:${ctx.site.market_code ?? ctx.site.country}`;
@@ -314,7 +314,7 @@ const tounifyCatalogueKey = (ctx) => `tariff_catalogue:tounify:${ctx.site.market
 registerAdapter('tounify', {
   connection: 'tounify',
   label: TU.LABEL,
-  registers: 'POST /api/sites/:id/connections with { provider: "tounify", postal_code, consumption_tariff, feedin_tariff?, capacity?, metering?, grid_operator? }',
+  registers: 'POST /api/sites/:id/connections with { provider: "tounify", consumption_tariff, postal_code?, feedin_tariff?, company?, off_peak_hours? } (or the tariff picker)',
   credentials: () => TU.credentialsFromEnv(),
   licenceOverride: (row, e) => (row.adapter === 'tounify' ? TU.devOverrideLabel(e) : null),
   roles: {

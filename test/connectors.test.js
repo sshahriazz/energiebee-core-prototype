@@ -51,11 +51,11 @@ test('seeds: Octopus, Sunsynk, National Gas, NESO, RTE, Open-Meteo, Quartz, Tari
   }
   assert.match(by.linky.note, /Linky meter data/);
   assert.match(by.p1.note, /P1 port reader/);
-  // tounify v3: built, switched on in FR and NL only (an EU tariff source, not UK), its licence unconfirmed: disabled.
+  // tounify v2: built, switched on in FR and NL only (an EU tariff source, not UK), its licence unconfirmed: disabled.
   assert.deepEqual([by.tounify.built, by.tounify.status, by.tounify.enabled, by.tounify.licence_confirmed, by.tounify.auth, by.tounify.origin],
     [true, 'disabled', true, false, 'credentials', 'provider']);
-  assert.match(by.tounify.reason, /^unlicensed: tounify v3 \(preview API\).*licence not confirmed in writing/);
-  assert.equal(by.tounify.label, 'tounify (EU tariffs, v3 preview)');
+  assert.match(by.tounify.reason, /^unlicensed: tounify v2: per-kWh prices.*licence not confirmed in writing/);
+  assert.equal(by.tounify.label, 'tounify (EU tariffs, v2)');
   assert.deepEqual(by.tounify.markets.map((m) => m.market_code), ['FR', 'NL']);
   assert.deepEqual(by.tounify.roles, ['tariff_prices', 'tariff_catalogue']);
   assert.ok(!('dev_override' in by.tounify), 'no development override without TOUNIFY_DEV');

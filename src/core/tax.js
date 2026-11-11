@@ -42,7 +42,7 @@ export const GB_VAT_RULES = Object.freeze([
 ]);
 
 // FR and NL VAT on household electricity bought from the grid, checked against the sources named in each
-// rule (and matching what tounify v3 states in applied.vat on every price read: 20 % FR, 21 % NL). They are
+// rule (and matching the VAT tounify states on every price read: 20 % FR, 21 % NL). They are
 // written to tax_rule on every open (db.js syncVatRules) like GB VAT, so a French or Dutch home is never
 // priced at 0 % VAT. Times are local midnight of the day the rate changed. Only VAT is here: the per-kWh
 // levies (FR accise, NL energiebelasting) and the NL yearly credit stay placeholders below; a tounify

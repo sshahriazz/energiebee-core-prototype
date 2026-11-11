@@ -59,7 +59,7 @@ test('registry seed: GB lists exactly the providers synced before, FR and NL the
     assert.equal(by[`meter/${meter}`].enabled, 0);
     assert.match(by[`meter/${meter}`].note, /^adapter not built/);
     assert.equal(by[`meter/${meter}`].origin, 'placeholder');
-    // tounify v3 is built (src/adapters/tounify.js): switched on, its licence unconfirmed, prices per home, catalogue shared.
+    // tounify v2 is built (src/adapters/tounify.js): switched on, its licence unconfirmed, prices per home, catalogue shared.
     for (const [role, scope] of [['tariff_prices', 'home'], ['tariff_catalogue', 'shared']]) {
       const t = by[`${role}/tounify`];
       assert.deepEqual([t.enabled, t.licence_confirmed, t.needs_credentials, t.scope, t.origin], [1, 0, 1, scope, 'provider'], `${m} ${role}`);
@@ -118,8 +118,8 @@ test('a French home: weather and carbon (RTE), with the unbuilt and unlicensed p
   assert.deepEqual(Object.keys(logged).sort(), ['meter:linky', 'tariff_prices:entsoe', 'tounify', 'tounify_catalogue']);
   assert.match(logged['meter:linky'], /^disabled: adapter not built/);
   // tounify is built and switched on, but its licence is unconfirmed: skipped, prices and catalogue alike.
-  assert.match(logged.tounify, /^unlicensed: tounify v3 \(preview API\)/);
-  assert.match(logged.tounify_catalogue, /^unlicensed: tounify v3 \(preview API\)/);
+  assert.match(logged.tounify, /^unlicensed: tounify v2: per-kWh prices/);
+  assert.match(logged.tounify_catalogue, /^unlicensed: tounify v2: per-kWh prices/);
   assert.match(logged['tariff_prices:entsoe'], /^disabled: adapter not built.*token/);
   const quiet = p.filter((e) => !e.run && !e.log).map((e) => [e.step, e.skipped]);
   assert.deepEqual(quiet, [['sunsynk', 'not connected for this home'], ['tariff_prices:manual', 'typed in by the user or installer: nothing to fetch']]);

@@ -1,0 +1,182 @@
+[
+ {
+  "id": "ANWB",
+  "name": "ANWB Energie",
+  "country": "NL",
+  "url": "https://www.anwb.nl"
+ },
+ {
+  "id": "BUE",
+  "name": "Budget Energie",
+  "country": "NL",
+  "url": "https://www.budgetthuis.nl/"
+ },
+ {
+  "id": "CLEN",
+  "name": "Clean Energy",
+  "country": "NL",
+  "url": "https://www.cleanenergy.nl/"
+ },
+ {
+  "id": "DELT",
+  "name": "DELTA Energie",
+  "country": "NL",
+  "url": "https://www.deltaenergie.nl/"
+ },
+ {
+  "id": "ENED",
+  "name": "Energie Direct",
+  "country": "NL",
+  "url": "https://www.energiedirect.nl/"
+ },
+ {
+  "id": "ENEN",
+  "name": "Eneco",
+  "country": "NL",
+  "url": "https://www.eneco.nl/"
+ },
+ {
+  "id": "ENGK",
+  "name": "Energiek",
+  "country": "NL",
+  "url": "https://www.energiek.nl/"
+ },
+ {
+  "id": "ENGN",
+  "name": "Engie Electrabel Nederland",
+  "country": "NL",
+  "url": "https://www.engie.nl/"
+ },
+ {
+  "id": "ESNT",
+  "name": "Essent",
+  "country": "NL",
+  "url": "https://www.essent.nl/"
+ },
+ {
+  "id": "EVO",
+  "name": "Energie VanOns",
+  "country": "NL",
+  "url": "https://energie.vanons.org/"
+ },
+ {
+  "id": "FREN",
+  "name": "Frank Energie",
+  "country": "NL",
+  "url": "https://www.frankenergie.nl/"
+ },
+ {
+  "id": "GREE",
+  "name": "Greenchoice",
+  "country": "NL",
+  "url": "https://www.greenchoice.nl"
+ },
+ {
+  "id": "GRPD",
+  "name": "Groenpand Energie",
+  "country": "NL",
+  "url": "https://www.groenpand.nl/"
+ },
+ {
+  "id": "GWE",
+  "name": "Gewoon Energie",
+  "country": "NL",
+  "url": "https://gewoonenergie.nl/"
+ },
+ {
+  "id": "HOLE",
+  "name": "Holland Energie",
+  "country": "NL",
+  "url": "https://holland-energie.nl/"
+ },
+ {
+  "id": "INVE",
+  "name": "Innova Energie",
+  "country": "NL",
+  "url": "https://www.innovaenergie.nl/"
+ },
+ {
+  "id": "MEG",
+  "name": "Mega Energie",
+  "country": "NL",
+  "url": "https://www.mega.nl/"
+ },
+ {
+  "id": "NOEN",
+  "name": "Noord Energie",
+  "country": "NL",
+  "url": "https://noordenergie.nl/"
+ },
+ {
+  "id": "NXTN",
+  "name": "Next energy",
+  "country": "NL",
+  "url": "https://www.nextenergy.nl/"
+ },
+ {
+  "id": "OMNE",
+  "name": "om | nieuwe energie",
+  "country": "NL",
+  "url": "https://www.samenom.nl/"
+ },
+ {
+  "id": "OXX",
+  "name": "Oxxio",
+  "country": "NL",
+  "url": "https://www.oxxio.nl/"
+ },
+ {
+  "id": "PPE",
+  "name": "Powerpeers Energie",
+  "country": "NL",
+  "url": "https://powerpeers.nl/"
+ },
+ {
+  "id": "PUE",
+  "name": "Pure Energie",
+  "country": "NL",
+  "url": "https://pure-energie.nl/"
+ },
+ {
+  "id": "TIBN",
+  "name": "Tibber Nederlands",
+  "country": "NL",
+  "url": "https://tibber.com/nl"
+ },
+ {
+  "id": "UCN",
+  "name": "United Consumers",
+  "country": "NL",
+  "url": "https://www.unitedconsumers.com/"
+ },
+ {
+  "id": "VATN",
+  "name": "Vattenfall Nederlands",
+  "country": "NL",
+  "url": "https://www.vattenfall.nl/"
+ },
+ {
+  "id": "VDB",
+  "name": "Vandebron",
+  "country": "NL",
+  "url": "https://www.vandebron.nl/"
+ },
+ {
+  "id": "VENT",
+  "name": "Ventum",
+  "country": "NL",
+  "url": "https://ventum.nl/"
+ },
+ {
+  "id": "ZON",
+  "name": "Zonneplan Energie",
+  "country": "NL",
+  "url": "https://www.zonneplan.nl/"
+ },
+ {
+  "id": "ZOPN",
+  "name": "Zonopnaam Energie",
+  "country": "NL",
+  "url": "https://www.zonopnaam.nl/"
+ }
+]

@@ -4,6 +4,7 @@
 // recorded on the connection. A provider the plan cannot use (disabled, unlicensed, owned by another
 // process, no credentials) is recorded as 'skipped: <reason>', never as an error.
 import { db } from '../db/db.js';
+import { carbonSubjectOf } from '../core/carbon-series.js';
 import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
 import { forecastSite } from '../core/forecast.js';
@@ -117,7 +118,7 @@ export function sinceWatermark(siteId, runId, syncStartMs) {
 // intervals (its own, its meters' and its regions'), and prices of its tariffs.
 export function earliestChange(siteId, site, sinceMs) {
   const gas = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean);
-  const regions = [site.carbon_region != null ? `carbon:${site.carbon_region}` : null, gas ? `ldz:${gas}` : null].filter(Boolean);
+  const regions = [carbonSubjectOf(site), gas ? `ldz:${gas}` : null].filter(Boolean);
   const ours = `(se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
     ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''}`;
   const args = [String(siteId), siteId, ...regions];
@@ -213,7 +214,14 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     // readings reach back past the usual two-day window.
     const firstBuilt = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId).d;
     const allFrom = ctx.agreementsChanged && firstBuilt ? dayBounds(tz, firstBuilt)[0] : Infinity;
-    const dirtyFrom = firstRun ? fromTs : Math.min(dayBounds(tz, today)[0], allFrom, earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
+    // A day's last slot is written only once it has ended, which is already the next day. A home whose facts keep
+    // arriving rebuilds yesterday anyway; one with none (tariff only: tounify, a picked tariff, no meter or inverter)
+    // would keep yesterday one slot short for good. So yesterday is rebuilt while it holds fewer slots than it has.
+    const yesterday = addDays(today, -1);
+    const [yStart, yEnd] = dayBounds(tz, yesterday);
+    const yRows = db.prepare('SELECT COUNT(*) AS n FROM site_hh WHERE site_id = ? AND local_date = ?').get(siteId, yesterday).n;
+    const yShort = !firstRun && yRows > 0 && yRows < Math.round((yEnd - yStart) / slotLength(site)) ? yStart : Infinity;
+    const dirtyFrom = firstRun ? fromTs : Math.min(dayBounds(tz, today)[0], allFrom, yShort, earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
     markDirty(siteId, dirtyFrom, nowSec(), firstRun ? 'initial load' : ctx.agreementsChanged ? 'tariff agreements changed' : 'facts changed');
     const t0 = Date.now();
     const rebuilt = processQueue();

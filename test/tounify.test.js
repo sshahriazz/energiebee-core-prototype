@@ -14,11 +14,13 @@ import { useDb } from './helpers.js';
 
 useDb();
 const stray = [];
-// Any request not sent to the fake tounify is refused and recorded; Open-Meteo answers empty (the
-// sync of a French home runs its weather step too).
+// Any request not sent to the fake tounify is refused and recorded; Open-Meteo and RTE answer empty (the
+// sync of a French home runs its weather and carbon steps too).
 globalThis.fetch = async (url) => {
   const u = new URL(String(url));
   if (u.host === 'api.open-meteo.com') return new Response(JSON.stringify({ hourly: { time: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  // RTE éCO2mix (a French home's carbon step): nothing published.
+  if (u.host === 'odre.opendatasoft.com' && u.pathname.includes('/exports/json')) return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
   stray.push(String(url));
   throw new Error(`no network in tests: ${url}`);
 };
@@ -27,6 +29,7 @@ for (const k of ['TOUNIFY_API_KEY', 'TOUNIFY_DEV', 'TOUNIFY_MAX_REQUESTS_DAY', '
 
 const { db, applyDelta } = await import('../src/db/db.js');
 const TU = await import('../src/adapters/tounify.js');
+const { dayBounds, localDate } = await import('../src/core/time.js');
 const P = await import('../src/core/providers.js');
 const C = await import('../src/core/connectors.js');
 const { syncSite, syncAll } = await import('../src/jobs/sync.js');   // registers the steps
@@ -411,11 +414,16 @@ test('daily read FR: prices and components stored once, the home agreed on the t
   ]);
   const ag = db.prepare("SELECT a.*, d.kind FROM tariff_agreement a JOIN device d ON d.id = a.device_id WHERE a.site_id = ? AND d.provider = 'tounify' AND a.superseded_at IS NULL").all(fr.id);
   assert.deepEqual(ag.map((a) => [a.kind, a.tariff_id, a.valid_from, a.valid_to]), [['meter_import', frTariff.id, 1792969200, null]]);
+  // The Abonnement has no valid_from in the answer: it starts on the first day the home holds a price (the day of the
+  // earliest price point read), not on the capture day, so that first day is not priced without its subscription.
+  const sub = db.prepare("SELECT valid_from FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND register = 'consumption:standing' AND superseded_at IS NULL").get(frTariff.id, fr.id);
+  assert.equal(sub.valid_from, dayBounds('Europe/Paris', localDate('Europe/Paris', 1792969200))[0]);
   for (const what of ['prices', 'components']) {
     assert.equal(count(`SELECT COUNT(*) n FROM raw_payload p JOIN source s ON s.id = p.source_id WHERE s.code = 'tounify' AND p.site_id = ? AND p.status = 'accepted'
       AND json_extract(p.request, '$.path') = ?`, fr.id, `/v3/FR/connections/eb-site-${fr.id}/${what}`), 1, `${what} landed raw`);
   }
-  assert.deepEqual(r.vat_check, [{ from_utc: 1792969200, tounify: 0.2, ours: null, rules: [], match: false }], 'no FR VAT rule held in this database yet');
+  assert.deepEqual(r.vat_check, [{ from_utc: 1792969200, tounify: 0.2, ours: 0.2, rules: ['FR/tva'], match: true }], 'the sourced FR VAT rule (EU_VAT_RULES) agrees with tounify');
+  assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)), 'no VAT warning when the rates agree');
   // Same answer again (forced, same day): nothing written.
   const again = await TU.syncTounifyHome({ site: frSite(), client: c, force: true });
   assert.deepEqual([again.unit_rows, again.fixed_rows, again.agreements_changed, again.tariff_created], [0, 0, false, 0]);
@@ -474,17 +482,20 @@ test('at most one price read per connection a day, never before `next`; a 304 re
   api.mutate = {};
 });
 
-test('daily read NL: 24 hourly rows ex VAT, the credit negative, and the VAT cross-check warns on a different rule without touching it', async () => {
+test('daily read NL: 24 hourly rows ex VAT, the credit negative, VAT agrees with ours, and a different rule is warned about without touching it', async () => {
   fresh();
   api.etags = false;
   clock.t = Date.UTC(2026, 10, 4, 5, 0);
   const r = await TU.syncTounifyHome({ site: nlSite(), client: client() });
   assert.deepEqual([r.tariff, r.kind, r.unit_rows, r.fixed_rows, r.settlement_interval, r.resolution], ['TOUNIFY-NL-FRENS', 'dynamic', 24, 3, 3600, 900]);
   assert.equal(api.of(/\/prices$/).at(-1).query.resolution, '900', 'the home\'s quarter-hour slots');
-  assert.match(r.warnings.join('\n'), /VAT: tounify states 21 % from 2026-10-25T23:00:00Z; we hold no VAT rule for NL then/);
+  assert.deepEqual(r.vat_check.map((v) => [v.tounify, v.ours, v.match]), [[0.21, 0.21, true]], 'the sourced NL VAT rule agrees');
+  assert.ok(!(r.warnings ?? []).some((w) => /VAT/.test(w)));
   const t = db.prepare("SELECT id FROM tariff WHERE tariff_code = 'TOUNIFY-NL-FRENS'").get();
   assert.equal(db.prepare("SELECT price_ex_vat FROM rate_interval WHERE tariff_id = ? AND register = 'consumption:credit' AND superseded_at IS NULL").get(t.id).price_ex_vat, -51980);
-  // Our NL VAT rule says 9 %: tounify's 21 % is reported, our rule is kept as it is.
+  // Our NL VAT rule says 9 %: tounify's 21 % is reported, our rule is kept as it is. (The sourced rule is set
+  // aside for this, so the test rule does not overlap it, and put back after.)
+  db.prepare("UPDATE tax_rule SET superseded_at = -1 WHERE country = 'NL' AND code = 'btw' AND superseded_at IS NULL").run();
   db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, currency, charge_period, seq, valid_from, valid_to, source, unverified, recorded_at, origin, origin_note)
     VALUES ('NL', 'btw', 'electricity', 'import', 'domestic', 'all', 'percent', 0.09, NULL, NULL, 100, ?, NULL, 'test rule', 1, 0, 'placeholder', 'test rule')`).run(Date.UTC(2025, 11, 31, 23) / 1000);
   const again = await TU.syncTounifyHome({ site: nlSite(), client: client(), force: true });
@@ -492,6 +503,7 @@ test('daily read NL: 24 hourly rows ex VAT, the credit negative, and the VAT cro
   assert.deepEqual(again.vat_check.map((v) => [v.tounify, v.ours, v.match]), [[0.21, 0.09, false]]);
   assert.equal(db.prepare("SELECT value FROM tax_rule WHERE country = 'NL' AND code = 'btw' AND superseded_at IS NULL").get().value, 0.09, 'never silently overridden');
   db.prepare("DELETE FROM tax_rule WHERE country = 'NL' AND source = 'test rule'").run();
+  db.prepare("UPDATE tax_rule SET superseded_at = NULL WHERE country = 'NL' AND code = 'btw' AND superseded_at = -1").run();
 });
 
 test('an answer of an unexpected shape is quarantined: the step fails soft, nothing is mapped from it, the sync goes on', async () => {
@@ -736,6 +748,9 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
     assert.equal(hphc.kind, 'two_rate');
     assert.equal(hphc.prices_known, false, 'tounify prices a tariff only for a home on it');
     assert.deepEqual(hphc.questions.map((q) => q.field), ['contracted_kva', 'off_peak_hours']);
+    // "Option Base" is one price on the bill, though tounify answers time_of_use_rates 2 for it: no off-peak question.
+    const base = t1.tariffs.find((t) => t.id === 'EDFTRVBASE');
+    assert.deepEqual([base.kind, base.questions.map((q) => q.field)], ['one_price', ['contracted_kva']]);
     // Asked again within the week: from our copy, no call.
     const before = api.calls.length;
     await PK.listSuppliers(row());
@@ -744,6 +759,13 @@ test('tariff picker, France: registered without a tariff, suppliers and tariffs 
     // The subscribed power is required for France.
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC' }), /Subscribed power \(kVA\): an answer is required/);
     await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 7 }), /must be one of 3, 6, 9/);
+    // Off-peak hours that are not exactly 8 a day (France) are refused here, before anything is sent upstream.
+    const sent = api.calls.length;
+    await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '04:43', to: '11:55' } }),
+      (e) => e.status === 400 && /exactly 8 hours a day, as on your bill: 04:43 to 11:55 is 7 h 12 min/.test(e.message));
+    await assert.rejects(PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '' } }), /HH:MM/);
+    assert.equal(api.calls.length, sent, 'nothing sent to tounify');
+    assert.deepEqual([PK.windowMinutes('22:00', '06:00'), PK.windowMinutes('01:30', '09:30'), PK.windowMinutes('12:00', '12:00'), PK.windowMinutes('9:00', '17:00')], [480, 480, 1440, null]);
     const r = await PK.chooseTariff(row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '06:00' } });
     assert.equal(r.source, 'tounify');
     assert.equal(r.tariff, 'TOUNIFY-FR-EDFTRVHPHC');

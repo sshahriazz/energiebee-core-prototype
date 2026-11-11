@@ -91,8 +91,9 @@ test('seeds carry the right origins: FR/NL/DE/BE/ES placeholder, GB VAT and GB r
   const gbVat = db.prepare("SELECT origin, origin_note FROM tax_rule WHERE country = 'GB' AND code = 'vat'").all();
   assert.equal(gbVat.length, GB_VAT_RULES.length);
   assert.ok(gbVat.every((r) => r.origin === 'sourced' && /HMRC/.test(r.origin_note) && /Octopus published prices/.test(r.origin_note)));
-  // The FR and NL rules the scenario wrote are placeholders.
-  assert.deepEqual(db.prepare("SELECT DISTINCT origin FROM tax_rule WHERE country IN ('FR', 'NL')").all().map((r) => r.origin), ['placeholder']);
+  // FR and NL: VAT is sourced (EU_VAT_RULES, written on open); every other rule the scenario wrote is a placeholder.
+  assert.deepEqual(db.prepare("SELECT DISTINCT origin FROM tax_rule WHERE country IN ('FR', 'NL') AND code NOT IN ('tva', 'btw')").all().map((r) => r.origin), ['placeholder']);
+  assert.deepEqual(db.prepare("SELECT DISTINCT origin FROM tax_rule WHERE country IN ('FR', 'NL') AND code IN ('tva', 'btw') AND superseded_at IS NULL").all().map((r) => r.origin), ['sourced']);
   // GB distribution regions: sourced, with the files named; bidding zones follow their market.
   assert.equal(db.prepare("SELECT COUNT(*) n FROM region WHERE scheme = 'gb_dno' AND origin = 'sourced' AND origin_note = ?").get(GB_REGION_NOTE).n, 14);
   assert.match(GB_REGION_NOTE, /Octopus GSP letters/);
@@ -132,7 +133,7 @@ test('a slot priced with a placeholder tax rule has lineage origin placeholder a
     assert.equal(l.origin, 'placeholder');
     assert.equal(l.data_origin, 'provider');
     assert.ok(l.placeholder_inputs.includes('tax_rule FR/accise [placeholder]'), JSON.stringify(l.placeholder_inputs));
-    assert.ok(l.placeholder_inputs.includes('tax_rule FR/tva [placeholder]'));
+    assert.ok(!l.placeholder_inputs.some((x) => /FR\/tva/.test(x)), 'TVA is a sourced rule');
     assert.ok(!l.placeholder_inputs.some((x) => /USER-FR-BASE/.test(x)), 'the user-typed tariff is not a placeholder');
   }
   // Numbers are untouched by the labels: (20.16 + 3.37) x 1.2 per kWh.
@@ -190,9 +191,13 @@ test('API: tariffs carry the tariff\'s, the rates\' and each tax\'s origin', asy
   for (const k of ['kind', 'tariff_code', 'structure', 'currency', 'current', 'unitNow', 'standingPerDay', 'vat']) assert.ok(k in t, k);
   assert.equal(t.current, true);
   assert.deepEqual([t.origin, t.origin_note, t.rate_origin, t.tax_origin], ['user', 'typed in from the contract', 'user', 'placeholder']);
-  assert.deepEqual(t.taxes.map((x) => [x.code, x.origin, x.unverified]), [['accise', 'placeholder', true], ['tva', 'placeholder', true]]);
+  assert.deepEqual(t.taxes.map((x) => [x.code, x.origin, x.unverified]), [['accise', 'placeholder', true], ['tva', 'sourced', false]]);
   assert.equal(t.provenance.worst, 'placeholder');
   assert.ok(Math.abs(t.unitNow - (20.16 + 3.37) * 1.2) < 1e-9);
+  // How the figures are made: the unit price before VAT, each fixed charge with its share of today, one price all day.
+  assert.ok(Math.abs(t.unitExNow - (20.16 + 3.37)) < 1e-9);
+  assert.deepEqual(t.fixedParts, [{ register: 'standing', period: 'day', amount: 40, perDay: 40 }]);
+  assert.equal(t.unitPricesToday, 1);
   const gb = (await get(`/api/sites/${gbHome.id}/tariffs`))[0];
   assert.deepEqual([gb.origin, gb.rate_origin, gb.tax_origin, gb.provenance.worst], ['provider', 'provider', 'sourced', 'provider']);
   assert.deepEqual(gb.taxes.map((x) => [x.code, x.origin]), [['vat', 'sourced']]);
@@ -214,7 +219,7 @@ test('API: day and summary responses carry a provenance block', async () => {
   const ev = await get(`/api/sites/${homes.nl.site.id}/evidence?slot=${dayBounds(m.NL.tz, m.NL.from)[0]}`);
   assert.equal(ev.row.lineage.origin, 'synthetic');
   assert.ok(ev.rates.every((r) => r.origin === 'synthetic'));
-  assert.ok(ev.taxRules.every((r) => r.origin === 'placeholder'));
+  assert.ok(ev.taxRules.every((r) => r.origin === (r.code === 'btw' ? 'sourced' : 'placeholder')), JSON.stringify(ev.taxRules.map((r) => [r.code, r.origin])));
 });
 
 test('a demo home is never synced: the API says there is nothing to fetch', async () => {

@@ -152,7 +152,13 @@ async function ensureRegistered(site, client) {
   if (db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'tounify' AND external_ref IS NOT NULL").get(site.id)) return;
   await TU.registerConnection(site, { no_tariff_yet: true }, { client });
 }
-const tuKind = (t) => (t.type === 'dynamic' ? 'dynamic' : (t.time_of_use_rates ?? 1) >= 2 ? 'two_rate' : 'one_price');
+// A French "Option Base" offer is one supplier price at every hour, and its bill prints no off-peak hours. tounify v3
+// still answers time_of_use_rates 2 for every static FR offer, Base included (seen on EDF Tarif Bleu Base, Zen Fixe
+// Base, Octopus France OctoEco Fixe Base, Nov 2026): probably the grid part of the per-connection price, which can
+// differ peak / off-peak. So a Base offer is listed as one price and asks no off-peak hours; how it is priced is
+// unchanged (the home's own prices, as tounify sends them after the choice).
+const isFrBase = (t) => /\bbase\b/i.test(t.name ?? '') && !/heures creuses|\bhp\s*\/\s*hc\b|tempo/i.test(t.name ?? '');
+const tuKind = (t) => (t.type === 'dynamic' ? 'dynamic' : isFrBase(t) ? 'one_price' : (t.time_of_use_rates ?? 1) >= 2 ? 'two_rate' : 'one_price');
 
 registerPickerSource({
   code: 'tounify', markets: ['FR', 'NL'], label: 'tounify',
@@ -200,7 +206,7 @@ registerPickerSource({
     const market = site.market_code ?? site.country;
     const input = { consumption_tariff: tariff.id };
     if (choice.contracted_kva != null) input.capacity = { contracted_kva: Number(choice.contracted_kva) };
-    const hours = choice.hours ?? null;
+    const hours = tariff.kind === 'two_rate' ? (choice.hours ?? null) : null;
     if (hours && market === 'FR') input.metering = { off_peak_hours: { all_year: [{ from: hours.from, to: hours.to }] } };
     try {
       if (choice.contracted_kva != null) setContractedCapacity(site.id, Number(choice.contracted_kva), { origin: 'user', note: 'stated in onboarding (tariff picker)' });
@@ -335,6 +341,31 @@ export async function listTariffs(site, supplierCode) {
   return { country: site.country, source: src.code, supplier: { code: sup.code, name: sup.name }, tariffs: await src.listTariffs(site, sup) };
 }
 
+// Off-peak hours a market's network operator assigns per day, where it fixes them: France 8 h (heures creuses, as the bill
+// prints them; tounify refuses any other total with property_not_accepted). tounify's own figure, when its catalogue
+// holds one (connection-properties: metering.off_peak_hours.values.hours_per_day), wins over this default.
+const OFF_PEAK_HOURS_PER_DAY = Object.freeze({ FR: 8 });
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const minutesOf = (hhmm) => { const m = HHMM.exec(hhmm ?? ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+/** Length of a from-to window in minutes, across midnight when `to` is not after `from` (22:00-06:00 is 480). */
+export function windowMinutes(from, to) {
+  const a = minutesOf(from); const b = minutesOf(to);
+  if (a == null || b == null) return null;
+  return b > a ? b - a : b + 1440 - a;
+}
+/** Refuses off-peak hours that are not HH:MM, or (where the market fixes it) not the day's exact number of hours. */
+export function checkOffPeakHours(market, hours) {
+  const mins = windowMinutes(hours?.from, hours?.to);
+  if (mins == null || hours.from === hours.to) throw bad('Off-peak hours must be { from: "HH:MM", to: "HH:MM" }, two different times, e.g. 22:00 to 06:00');
+  let need = OFF_PEAK_HOURS_PER_DAY[market] ?? null;
+  try { need = TU.readState().catalogue?.[market]?.properties?.find((x) => x.property === 'metering.off_peak_hours')?.values?.hours_per_day ?? need; } catch { /* no catalogue: the default */ }
+  if (need != null && mins !== need * 60) {
+    const h = Math.floor(mins / 60); const m = mins % 60;
+    throw bad(`Off-peak hours must cover exactly ${need} hours a day, as on your bill: ${hours.from} to ${hours.to} is ${h} h${m ? ` ${m} min` : ''}`);
+  }
+  return mins;
+}
+
 /**
  * choice: { supplier, tariff (an id from listTariffs), payment_method?, hours?: { from, to }, since?: 'YYYY-MM-DD',
  * contracted_kva? }. The tariff must be one listTariffs offers now; required questions must be answered.
@@ -352,6 +383,7 @@ export async function chooseTariff(site, choice = {}) {
     if (v == null || v === '') throw bad(`${q.label}: an answer is required`);
     if (q.allowed && q.field !== 'off_peak_hours' && !q.allowed.map(String).includes(String(v))) throw bad(`${q.label} must be one of ${q.allowed.join(', ')}`);
   }
+  if (choice.hours != null && tariff.kind === 'two_rate') checkOffPeakHours(site.market_code ?? site.country, choice.hours);
   const r = await src.choose(site, tariff, choice);
   return { supplier: { code: sup.code, name: sup.name }, kind: tariff.kind, ...r };
 }

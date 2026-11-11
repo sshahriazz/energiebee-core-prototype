@@ -22,6 +22,7 @@
 //   never    the source has no data at all for this home
 // A role with no provider in force now has status 'unbound'.
 import { db } from '../db/db.js';
+import { carbonSubjectOf } from './carbon-series.js';
 import { nowSec } from './time.js';
 
 export const DEFAULT_EVERY_S = Object.freeze({ instant: 300, counter: 300, forecast: 3600, interval: 1800 });
@@ -53,7 +54,7 @@ function seriesOf(site, binding) {
       WHERE so.code = ? AND se.subject_kind = 'device' AND se.subject_id = ?`).all(binding.source, String(binding.deviceId));
   }
   const ldz = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id).map((d) => parseJson(d.attrs)?.ldz).find(Boolean);
-  const regions = [site.carbon_region != null ? `carbon:${site.carbon_region}` : null, ldz ? `ldz:${ldz}` : null].filter(Boolean);
+  const regions = [carbonSubjectOf(site), ldz ? `ldz:${ldz}` : null].filter(Boolean);
   return db.prepare(`SELECT se.id, m.code AS metric, m.time_role AS time_role FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
     WHERE so.code = ? AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
       ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''})`)

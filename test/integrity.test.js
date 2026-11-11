@@ -56,7 +56,7 @@ test('tariff_agreement: an UPDATE that would overlap is refused; supersedeAgreem
 
 test('tax_rule: an UPDATE that would charge the same tax twice is refused; syncGbVat still supersedes', () => {
   const ins = db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, applies_to, kind, value, valid_from, valid_to, source, recorded_at)
-    VALUES ('FR', 'tva', 'electricity', 'import', 'all', 'percent', 0.2, ?, ?, 'test', 1)`);
+    VALUES ('BE', 'btw', 'electricity', 'import', 'all', 'percent', 0.2, ?, ?, 'test', 1)`);   // BE: no seeded VAT rule (FR and NL have sourced ones)
   const a = id(ins.run(1000, 2000));
   const b = id(ins.run(2000, null));
   assert.throws(() => run('UPDATE tax_rule SET valid_to = 2001 WHERE id = ?', a), /overlapping current tax rule/);
@@ -67,7 +67,7 @@ test('tax_rule: an UPDATE that would charge the same tax twice is refused; syncG
   assert.equal(syncGbVat([{ fuel: 'electricity', direction: 'import', rate: 0.05, validFrom: 0 }]), true);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tax_rule WHERE country = 'GB' AND superseded_at IS NULL").get().n, 1);
   assert.ok(gb >= 1);
-  db.prepare("DELETE FROM tax_rule WHERE country = 'FR'").run();
+  db.prepare("DELETE FROM tax_rule WHERE country = 'BE'").run();
 });
 
 test('register_window: two registers covering the same minute of one window set are refused; everything the expander accepts is not', () => {

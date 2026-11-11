@@ -113,8 +113,12 @@ test('the real colour replaces the estimate: estimated rows superseded (kept), s
   buildSite(site.id, '2026-01-12', '2026-01-13');
   const day = db.prepare("SELECT quality, lineage, import_rate_ex FROM site_hh WHERE site_id = ? AND local_date = '2026-01-13' ORDER BY slot_start").all(site.id);
   assert.ok(day.every((r) => !(r.quality & QUALITY.ESTIMATED) && !JSON.parse(r.lineage).estimated));
-  assert.equal(day[20].import_rate_ex, 14.9, '10:00 is blue_hp now (no tax rule for FR: taxes taken as 0)');
-  assert.ok(JSON.parse(day[20].lineage).placeholder_inputs.includes('no tax rule for FR (taxes taken as 0) [placeholder]'));
+  assert.equal(day[20].import_rate_ex, 14.9, '10:00 is blue_hp now (price ex VAT)');
+  // FR VAT is a sourced rule (EU_VAT_RULES): 20 % on top, and no "taxes taken as 0" placeholder.
+  const l20 = JSON.parse(day[20].lineage);
+  assert.equal(l20.tax, 'tax_rule');
+  assert.ok(!l20.placeholder_inputs.some((x) => /no tax rule/.test(x)), JSON.stringify(l20.placeholder_inputs));
+  assert.equal(db.prepare("SELECT import_vat FROM site_hh WHERE site_id = ? AND local_date = '2026-01-13' ORDER BY slot_start LIMIT 1 OFFSET 20").get(site.id).import_vat, 0.2);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM check_result WHERE site_id = ? AND check_code = 'price_estimated'").get(site.id).n, 0);
 });
 

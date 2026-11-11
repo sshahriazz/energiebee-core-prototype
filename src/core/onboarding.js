@@ -14,6 +14,7 @@
 //  - a source added from the screen (createSource) is marked created_by 'user' in its traits, so it is plain data like any
 //    other and the registry seed (db.js seedRegistry, which writes only the code-defined SOURCES) never touches it.
 import { db, tx } from '../db/db.js';
+import { carbonSubjectOf } from './carbon-series.js';
 import * as inputs from './inputs.js';
 import { previewImpact } from './impact.js';
 import { defineChannel } from './channels.js';
@@ -125,7 +126,7 @@ function dataOf(site, sourceCode) {
   const siteId = site.id;
   // The home's own series, its devices' series and the series of its regions (carbon and gas calorific value live under a region).
   const ldz = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => parseJson(d.attrs)?.ldz).find(Boolean);
-  const regions = [site.carbon_region != null ? `carbon:${site.carbon_region}` : null, ldz ? `ldz:${ldz}` : null].filter(Boolean);
+  const regions = [carbonSubjectOf(site), ldz ? `ldz:${ldz}` : null].filter(Boolean);
   const ids = db.prepare(`SELECT se.id FROM series se JOIN source so ON so.id = se.source_id
     WHERE so.code = ? AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
       ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''})`)

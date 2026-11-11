@@ -41,6 +41,36 @@ export const GB_VAT_RULES = Object.freeze([
   gbVat('gas', 'import', 0.05, 0, null),
 ]);
 
+// FR and NL VAT on household electricity bought from the grid, checked against the sources named in each
+// rule (and matching what tounify v3 states in applied.vat on every price read: 20 % FR, 21 % NL). They are
+// written to tax_rule on every open (db.js syncVatRules) like GB VAT, so a French or Dutch home is never
+// priced at 0 % VAT. Times are local midnight of the day the rate changed. Only VAT is here: the per-kWh
+// levies (FR accise, NL energiebelasting) and the NL yearly credit stay placeholders below; a tounify
+// price already holds them (tariff.taxes_in_price = 1), so it takes only these percentage rules.
+// Not covered: export (feed-in) and gas, which keep no rule; FR CTA (a levy on the transport part of the
+// subscription), as the placeholders below also leave it out.
+const FR_TVA_2014 = Date.UTC(2013, 11, 31, 23) / 1000;     // 1 Jan 2014, Paris: normal rate 20 %
+const FR_TVA_FROM = Date.UTC(2025, 6, 31, 22) / 1000;      // 1 Aug 2025, Paris
+const NL_BTW_2012 = Date.UTC(2012, 8, 30, 22) / 1000;      // 1 Oct 2012, Amsterdam: general rate 21 %
+const NL_BTW_9_FROM = Date.UTC(2022, 5, 30, 22) / 1000;    // 1 Jul 2022, Amsterdam
+const NL_BTW_9_TO = Date.UTC(2022, 11, 31, 23) / 1000;     // 1 Jan 2023, Amsterdam
+const FR_TVA_SOURCE = 'CGI art. 278 (taux normal 20 %); loi n° 2025-127 du 14 février 2025 de finances pour 2025, art. 20: the 5.5 % reduced rate on the electricity subscription ends on 1 Aug 2025, from then 20 % on subscription and consumption alike';
+const NL_BTW_SOURCE = 'Wet op de omzetbelasting 1968 (algemeen tarief 21 % from 1 Oct 2012); energy at the reduced 9 % from 1 Jul to 31 Dec 2022 (Belastingdienst, Staatscourant 2022-17972), back to 21 % from 1 Jan 2023';
+const euVat = (country, code, appliesTo, value, validFrom, validTo, source) => Object.freeze({
+  country, code, fuel: 'electricity', direction: 'import', customer_class: 'domestic', applies_to: appliesTo,
+  kind: 'percent', value, currency: null, charge_period: null, seq: 100,
+  valid_from: validFrom, valid_to: validTo, source, unverified: false,
+  origin: 'sourced', origin_note: source,
+});
+export const EU_VAT_RULES = Object.freeze([
+  euVat('FR', 'tva', 'unit', 0.20, FR_TVA_2014, FR_TVA_FROM, FR_TVA_SOURCE),
+  euVat('FR', 'tva', 'fixed', 0.055, FR_TVA_2014, FR_TVA_FROM, FR_TVA_SOURCE),
+  euVat('FR', 'tva', 'all', 0.20, FR_TVA_FROM, null, FR_TVA_SOURCE),
+  euVat('NL', 'btw', 'all', 0.21, NL_BTW_2012, NL_BTW_9_FROM, NL_BTW_SOURCE),
+  euVat('NL', 'btw', 'all', 0.09, NL_BTW_9_FROM, NL_BTW_9_TO, NL_BTW_SOURCE),
+  euVat('NL', 'btw', 'all', 0.21, NL_BTW_9_TO, null, NL_BTW_SOURCE),
+]);
+
 // ── PLACEHOLDERS, NOT AUTHORITATIVE ──
 // The FR and NL values below were written from memory to exercise the rule shapes (per-kWh
 // levy, then VAT on top; a negative yearly credit). Every one is marked unverified: true and
@@ -51,7 +81,6 @@ export const GB_VAT_RULES = Object.freeze([
 // here); FR CTA is a percentage of the transport part of the fixed charge only (left out).
 const NL_2025 = { from: Date.UTC(2024, 11, 31, 23) / 1000, to: Date.UTC(2025, 11, 31, 23) / 1000 };
 const FR_ACCISE_FROM = Date.UTC(2025, 0, 31, 23) / 1000;   // 1 Feb 2025, Paris
-const FR_TVA_FROM = Date.UTC(2025, 6, 31, 22) / 1000;      // 1 Aug 2025, Paris
 const placeholder = (r) => Object.freeze({
   customer_class: 'domestic', currency: null, charge_period: null, valid_to: null, ...r, unverified: true,
   origin: 'placeholder', origin_note: r.source,
@@ -69,23 +98,13 @@ export const PLACEHOLDER_TAX_RULES = Object.freeze([
     source: 'UNVERIFIED placeholder (vermindering energiebelasting, ex BTW); verify against Belastingdienst "Tabellen tarieven milieubelastingen"',
   }),
   placeholder({
-    country: 'NL', code: 'btw', fuel: 'electricity', direction: 'import', applies_to: 'all',
-    kind: 'percent', value: 0.21, seq: 100, valid_from: NL_2025.from, valid_to: NL_2025.to,
-    source: 'UNVERIFIED placeholder; verify against Belastingdienst (btw-tarieven)',
-  }),
-  placeholder({
     country: 'FR', code: 'accise', fuel: 'electricity', direction: 'import', applies_to: 'unit',
     kind: 'per_kwh', value: 3.37, currency: 'EUR', seq: 10, valid_from: FR_ACCISE_FROM,
     source: 'UNVERIFIED placeholder (accise sur l\'electricite, menages); verify against douane.gouv.fr / Legifrance (CIBS)',
   }),
-  placeholder({
-    country: 'FR', code: 'tva', fuel: 'electricity', direction: 'import', applies_to: 'all',
-    kind: 'percent', value: 0.20, seq: 100, valid_from: FR_TVA_FROM,
-    source: 'UNVERIFIED placeholder (TVA on subscription and consumption); verify against impots.gouv.fr / Legifrance (CGI)',
-  }),
 ]);
 
-export const SEED_TAX_RULES = Object.freeze([...GB_VAT_RULES, ...PLACEHOLDER_TAX_RULES]);
+export const SEED_TAX_RULES = Object.freeze([...GB_VAT_RULES, ...EU_VAT_RULES, ...PLACEHOLDER_TAX_RULES]);
 
 // ───── Selecting and applying ─────
 

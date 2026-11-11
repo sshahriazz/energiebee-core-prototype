@@ -52,7 +52,9 @@ test('registry seed: GB lists exactly the providers synced before, FR and NL the
   assert.deepEqual(rowsOf('*').map((r) => [r.role, r.adapter, r.scope, r.enabled, r.needs_credentials]), [['inverter', 'sunsynk', 'home', 1, 1]]);
   for (const [m, meter] of [['FR', 'linky'], ['NL', 'p1']]) {
     const by = Object.fromEntries(rowsOf(m).map((r) => [`${r.role}/${r.adapter}`, r]));
-    assert.deepEqual(Object.keys(by).sort(), ['meter/' + meter, 'tariff_catalogue/tounify', 'tariff_prices/entsoe', 'tariff_prices/manual', 'tariff_prices/tounify', 'weather/open_meteo'].sort(), m);
+    // Grid carbon: France has RTE éCO2mix (national); the Netherlands has no carbon source yet.
+    assert.deepEqual(Object.keys(by).sort(), ['meter/' + meter, 'tariff_catalogue/tounify', 'tariff_prices/entsoe', 'tariff_prices/manual', 'tariff_prices/tounify', 'weather/open_meteo',
+      ...(m === 'FR' ? ['carbon/rte'] : [])].sort(), m);
     assert.equal(by['weather/open_meteo'].enabled, 1);
     assert.equal(by[`meter/${meter}`].enabled, 0);
     assert.match(by[`meter/${meter}`].note, /^adapter not built/);
@@ -66,7 +68,8 @@ test('registry seed: GB lists exactly the providers synced before, FR and NL the
     assert.deepEqual([by['tariff_prices/entsoe'].enabled, by['tariff_prices/entsoe'].needs_credentials], [0, 1]);
     assert.match(by['tariff_prices/entsoe'].note, /token/);
     assert.deepEqual([by['tariff_prices/manual'].enabled, by['tariff_prices/manual'].origin], [1, 'user']);
-    assert.equal(P.providersFor(db, m, 'carbon').length, 0, `${m}: no carbon provider`);
+    assert.deepEqual(P.providersFor(db, m, 'carbon').map((r) => [r.adapter, r.scope, r.enabled, r.needs_credentials, r.licence_confirmed, r.origin]),
+      m === 'FR' ? [['rte', 'shared', 1, 0, 1, 'provider']] : [], `${m}: carbon providers`);
   }
   for (const m of ['DE', 'BE', 'ES']) assert.deepEqual(rowsOf(m).map((r) => [r.role, r.adapter, r.enabled]), [['weather', 'open_meteo', 1]], m);
   // providersFor: the market's own rows and the '*' ones, in priority order.
@@ -107,10 +110,10 @@ test('a GB home with no account or inverter runs only the shared steps, as befor
   assert.deepEqual(runSteps(s), ['geo', 'weather', 'carbon', 'gas_cv', 'compare', 'solar_forecast']);
 });
 
-test('a French home: weather only, with the unbuilt and unlicensed providers listed as skipped', () => {
+test('a French home: weather and carbon (RTE), with the unbuilt and unlicensed providers listed as skipped', () => {
   const fr = createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 });
   const p = P.plan(db, fr);
-  assert.deepEqual(p.filter((e) => e.run).map((e) => e.step), ['weather']);
+  assert.deepEqual(p.filter((e) => e.run).map((e) => e.step), ['weather', 'carbon']);
   const logged = Object.fromEntries(p.filter((e) => !e.run && e.log).map((e) => [e.step, e.skipped]));
   assert.deepEqual(Object.keys(logged).sort(), ['meter:linky', 'tariff_prices:entsoe', 'tounify', 'tounify_catalogue']);
   assert.match(logged['meter:linky'], /^disabled: adapter not built/);
@@ -215,7 +218,8 @@ test('/api/sites: every home lists a provider per role with a status word, and n
   assert.deepEqual(env.gas_cv, ['national_gas', 'skipped', 'runs once the home has a gas meter']);
   assert.deepEqual(env.solar_forecast, ['quartz', 'skipped', 'panel size, tilt or direction unknown']);
   const fr = Object.fromEntries(r.json.find((s) => s.name === 'Maison').providers.map((x) => [x.role, x]));
-  assert.deepEqual([fr.carbon.status, fr.carbon.adapter, fr.carbon.note], ['none', null, P.NO_PROVIDER]);
+  assert.deepEqual([fr.carbon.status, fr.carbon.adapter], ['skipped', 'rte'], 'RTE éCO2mix, not run for this home yet');
+  assert.match(fr.carbon.note, /^RTE éCO2mix national carbon intensity/);
   assert.deepEqual([fr.meter.status, fr.meter.adapter], ['disabled', 'linky']);
   assert.deepEqual([fr.tariff_prices.adapter, fr.tariff_prices.status, fr.tariff_prices.origin], ['manual', 'skipped', 'user']);
   assert.deepEqual(fr.tariff_prices.alternatives.map((a) => [a.adapter, a.status]), [['tounify', 'disabled'], ['entsoe', 'disabled']]);
@@ -271,6 +275,6 @@ test('the .env home takes its market from SITE_COUNTRY and only the connections 
   delete process.env.SITE_COUNTRY;
   const s = db.prepare('SELECT * FROM site WHERE id = ?').get(id);
   assert.deepEqual([s.market_code, s.currency, s.timezone], ['FR', 'EUR', 'Europe/Paris']);
-  assert.deepEqual(db.prepare('SELECT provider FROM connection WHERE site_id = ? ORDER BY provider').all(id).map((c) => c.provider), ['sunsynk', 'weather']);
+  assert.deepEqual(db.prepare('SELECT provider FROM connection WHERE site_id = ? ORDER BY provider').all(id).map((c) => c.provider), ['carbon', 'sunsynk', 'weather']);
   assert.deepEqual(calls, [], 'no network call anywhere in this file');
 });

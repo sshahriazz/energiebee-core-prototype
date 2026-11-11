@@ -4,15 +4,17 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, dataDir, dbFile, optimizeDb, closeDb } from './db/db.js';
+import { db, dataDir, dbFile, optimizeDb, closeDb, vatRulesChanged } from './db/db.js';
+import { carbonSubjectOf } from './core/carbon-series.js';
 import { buildSite, processQueue, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
 import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
-import { seriesId, readReadings, spanColumn } from './core/facts.js';
+import { seriesId, readReadings, spanColumn, markDirty } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
+import { fixedChargeMicro } from './core/tariff-expand.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
 import { startControlScheduler, registeredDrivers } from './jobs/control.js';
 import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
@@ -295,11 +297,17 @@ app.get('/api/sites/:id/now', (req, res) => {
   // The latest forecast for the period that holds the start of the current slot (by overlap,
   // so a 15-minute slot at :15 reads the half-hour that began at :00).
   // Bounded below by the series' longest period (series.max_span_s): the same row, without reading the whole history.
-  const carbon = s.carbon_region != null ? db.prepare(
+  const carbonSubject = carbonSubjectOf(s);
+  let carbon = carbonSubject != null ? db.prepare(
     `SELECT f.value, f.issued_at FROM forecast_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
      WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.start_ts <= ? AND f.end_ts > ?
        ${spanColumn() ? 'AND f.start_ts >= ? - IFNULL(se.max_span_s, 9000000000)' : ''}
-     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(`carbon:${s.carbon_region}`, slot, slot, ...(spanColumn() ? [slot] : [])) : null;
+     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(carbonSubject, slot, slot, ...(spanColumn() ? [slot] : [])) : null;
+  // No forecast (RTE publishes none): the latest published value, if it is at most an hour old.
+  if (!carbon && carbonSubject != null) carbon = db.prepare(
+    `SELECT f.value FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
+     WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.superseded_at IS NULL AND f.start_ts <= ? AND f.end_ts > ?
+     ORDER BY f.start_ts DESC LIMIT 1`).get(carbonSubject, now, now - 3600) ?? null;
   const today = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date = ?').get(s.id, localDate(s.timezone, now));
   res.json({ at: now, live, price: priceRow(slot), next: Array.from({ length: 10800 / SLOT }, (_, i) => priceRow(slot + (i + 1) * SLOT)), carbon: carbon?.value ?? null, today: today || null, ...ledgerOf(s) });
 });
@@ -420,8 +428,10 @@ app.get('/api/sites/:id/summary', (req, res) => {
     previousLabel: req.query.period === 'today' || (!req.query.period && !req.query.from) ? 'same time yesterday' : 'previous period',
     // What the figures rest on: half-hour states and check results for the same days.
     basis: {
-      ...db.prepare(`SELECT COUNT(*) AS halfHours, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing
-        FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to),
+      // provisional_today: provisional because the day is not over; the rest wait for a meter's readings (build.js).
+      ...db.prepare(`SELECT COUNT(*) AS halfHours, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
+          SUM(state = 'provisional' AND local_date >= ?) AS provisional_today
+        FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(localDate(s.timezone, nowSec()), s.id, from, to),
       checks: Object.fromEntries(db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? GROUP BY status').all(s.id, from, to).map((r) => [r.status, r.n])),
     },
     provenance: provenanceOf(s, from, to),
@@ -440,6 +450,11 @@ app.get('/api/sites/:id/tariffs', (req, res) => {
     WHERE a.site_id = ? AND a.superseded_at IS NULL ORDER BY d.kind, a.valid_from DESC`).all(s.id);
   const SLOT = slotLength(s);
   const pricing = loadPricing(s.id, now - SLOT, now + SLOT);
+  const [dayA, dayB] = dayBounds(s.timezone, localDate(s.timezone, now));
+  // How many different unit prices the tariff has today (one: "one price all day", whatever its structure says).
+  const pricesToday = db.prepare(`SELECT COUNT(DISTINCT r.price_ex_vat) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+    WHERE t.tariff_code = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND (r.site_id IS NULL OR r.site_id = ?)
+      AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ?`);
   res.json(rows.map((r) => {
     const live = r.valid_from <= now && (r.valid_to == null || r.valid_to > now);
     const p = live ? priceOver(pricing, r.kind, slotOf(s, now), SLOT) : null;
@@ -452,6 +467,14 @@ app.get('/api/sites/:id/tariffs', (req, res) => {
       ...r, currency: r.currency ?? s.currency ?? 'GBP', current: live, unitNow: p?.unitEx != null ? p.unitEx * (1 + p.vat) : null, standingPerDay: p ? fixedPerDay(p, now, s.timezone) : null, vat: p?.vat ?? null,
       rate_origin: rateInputs.length ? weakest(rateInputs.map((i) => i.origin)) : null, tax_origin: taxes.length ? weakest(taxes.map((t) => t.origin)) : null, taxes,
       ...(p?.estimated ? { estimated: true } : {}),
+      // The unit price before taxes, and each fixed charge before taxes with its share of today (standingPerDay is their
+      // sum with taxes), so the page can show how the figures are made.
+      unitExNow: p?.unitEx ?? null,
+      unitPricesToday: pricesToday.get(r.tariff_code, s.id, dayB, dayA).n,
+      fixedParts: p ? [
+        ...(p.standingEx ? [{ register: 'standing', period: 'day', amount: p.standingEx, perDay: p.standingEx }] : []),
+        ...p.fixed.map((f) => ({ register: f.register, period: f.period, amount: f.amount, perDay: fixedChargeMicro(f.amount, f.period, dayA, dayB, s.timezone) / 1e6 })),
+      ] : [],
       provenance: { worst: pv?.origin ?? null, placeholders: pv?.placeholder_inputs ?? [] },
     };
   }));
@@ -671,7 +694,7 @@ app.get('/api/sites/:id/evidence', (req, res) => {
      WHERE (se.subject_kind = 'site' AND se.subject_id = ? OR se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?)
             OR se.subject_kind = 'region' AND se.subject_id = ?)
        AND f.start_ts < ? AND f.end_ts > ? AND f.end_ts - f.start_ts <= 7200
-    ORDER BY metric, start_ts, recorded_at`).all(String(s.id), slot - pad, slot + row.dur_s, String(s.id), s.id, `carbon:${s.carbon_region}`, slot + row.dur_s, slot)
+    ORDER BY metric, start_ts, recorded_at`).all(String(s.id), slot - pad, slot + row.dur_s, String(s.id), s.id, carbonSubjectOf(s) ?? '', slot + row.dur_s, slot)
     .filter((f) => f.subject_kind !== 'device' || f.kind === 'interval');
   const rates = db.prepare(`SELECT t.tariff_code, t.direction, r.component, r.register, r.charge_period, r.payment_method, r.valid_from, r.valid_to, r.price_ex_vat, r.recorded_at, r.superseded_at, r.raw_id,
       r.origin, r.origin_note, r.estimated, t.origin AS tariff_origin
@@ -903,6 +926,14 @@ export function start() {
   if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
   // Retention: a dry-run report unless RETENTION=apply (counts only; src/core/maintenance.js).
   if (maintenance.retention) console.log(retentionSummary(maintenance.retention));
+  // VAT rules for a country changed (db.js syncVatRules): every home there is rebuilt from its first built day,
+  // so days built before the change are priced with the rules as they now stand.
+  if (vatRulesChanged.length) {
+    const homes = db.prepare(`SELECT s.id, s.timezone, MIN(d.local_date) AS first FROM site s JOIN site_day d ON d.site_id = s.id
+      WHERE COALESCE(s.country, s.market_code) IN (${vatRulesChanged.map(() => '?').join(',')}) GROUP BY s.id`).all(...vatRulesChanged);
+    for (const h of homes) markDirty(h.id, dayBounds(h.timezone, h.first)[0], nowSec(), `VAT rules changed for ${vatRulesChanged.join(', ')}`);
+    console.log(`VAT rules recorded for ${vatRulesChanged.join(', ')}; ${homes.length} home(s) queued for a rebuild`);
+  }
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, () => {
     const minutes = startScheduler();

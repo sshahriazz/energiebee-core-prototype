@@ -1,0 +1,29 @@
+[
+ {
+  "id": "OEFODECF2",
+  "name": "Offre d’électricité - Eco-conso fixe -2%",
+  "companyid": "OEF",
+  "available": false,
+  "link": "https://a.storyblok.com/f/151412/x/a5a79d71c2/grille-tarifaire-eco_conso_fixe_2_b_mars26.pdf",
+  "description": null,
+  "type": "static"
+ },
+ {
+  "id": "OEFODECF2OB",
+  "name": "Offre d’électricité - Eco-conso fixe -2% - Option Base",
+  "companyid": "OEF",
+  "available": false,
+  "link": "https://a.storyblok.com/f/151412/x/96f1905bf6/fiche-descriptive-de-l-offre-d-electricite-eco-conso-fixe-2-mai-26.pdf",
+  "description": null,
+  "type": "static"
+ },
+ {
+  "id": "OEFODEFB",
+  "name": "Offre OctoEco Fixe - Option Base",
+  "companyid": "OEF",
+  "available": true,
+  "link": "https://a.storyblok.com/f/151412/x/f9e6edf063/grille-tarifaire-eco-fixe-aout-26-base.pdf",
+  "description": null,
+  "type": "static"
+ }
+]

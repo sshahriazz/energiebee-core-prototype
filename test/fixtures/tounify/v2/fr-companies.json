@@ -1,0 +1,80 @@
+[
+ {
+  "id": "EDF",
+  "name": "Electricite de France",
+  "country": "FR",
+  "url": "https://www.edf.fr/"
+ },
+ {
+  "id": "EKW",
+  "name": "ekWateur",
+  "country": "FR",
+  "url": "https://ekwateur.fr/"
+ },
+ {
+  "id": "ENE",
+  "name": "Engie",
+  "country": "FR",
+  "url": "https://www.engie.fr/"
+ },
+ {
+  "id": "ENI",
+  "name": "Eni Plenitude",
+  "country": "FR",
+  "url": "https://www.eniplenitude.fr/"
+ },
+ {
+  "id": "ILEK",
+  "name": "ILEK ele",
+  "country": "FR",
+  "url": "https://www.ilek.fr/"
+ },
+ {
+  "id": "LBE",
+  "name": "La Bell Energie",
+  "country": "FR",
+  "url": "https://labellenergie.fr/"
+ },
+ {
+  "id": "MINTE",
+  "name": "MINT Energy",
+  "country": "FR",
+  "url": "https://www.mint-energie.com/"
+ },
+ {
+  "id": "OEF",
+  "name": "Octopus Energy France",
+  "country": "FR",
+  "url": "https://octopusenergy.fr/"
+ },
+ {
+  "id": "OHM",
+  "name": "OHM Energie",
+  "country": "FR",
+  "url": "https://ohm-energie.com/"
+ },
+ {
+  "id": "SOF",
+  "name": "Sorégies",
+  "country": "FR",
+  "url": "https://www.soregies.fr/"
+ },
+ {
+  "id": "TOEN",
+  "name": "TotalEnergies",
+  "country": "FR",
+  "url": "https://www.totalenergies.fr/"
+ },
+ {
+  "id": "UEMM",
+  "name": "UEM de Metz",
+  "country": "FR",
+  "url": "https://www.uem-metz.fr/"
+ },
+ {
+  "id": "WEKI",
+  "name": "WEKIWI",
+  "country": "FR",
+  "url": "https://www.wekiwi.fr/"
+ }
+]

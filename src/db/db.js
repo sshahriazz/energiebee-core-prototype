@@ -183,7 +183,7 @@ export const DELTAS = ['002-money-tax.sql', '003-market-region.sql', '004-tariff
   '079-pin-auth.sql',
   // A home picks its own supplier and tariff: suppliers, the payment method, onboarding questions (080).
   // Grid carbon for France: RTE éCO2mix as a second default source of the carbon role (081).
-  '080-tariff-choice.sql', '081-carbon-rte.sql'];
+  '080-tariff-choice.sql', '081-carbon-rte.sql', '082-nl-fuse-question.sql'];
 
 export function deltaStatements(sql) {
   const out = [];

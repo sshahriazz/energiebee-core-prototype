@@ -77,7 +77,7 @@ test('delta 080: supplier tables, payment method on agreements and the onboardin
   assert.deepEqual(PK.questionsFor('GB', 'two_rate').map((q) => [q.field, q.required]), [['off_peak_hours', true]]);
   assert.deepEqual(PK.questionsFor('FR', 'two_rate').map((q) => q.field), ['contracted_kva', 'off_peak_hours']);
   assert.deepEqual(PK.questionsFor('FR', 'one_price').find((q) => q.field === 'contracted_kva').allowed, [3, 6, 9, 12, 15, 18, 24, 30, 36]);
-  assert.equal(PK.questionsFor('NL', 'dynamic')[0].field, 'fuse');
+  assert.deepEqual(PK.questionsFor('NL', 'dynamic'), [], 'the NL connection size 080 asked is gone (delta 082: it priced nothing)');
 });
 
 test('suppliers: our own code, one row per supplier and country, the source\'s name as an alias', () => {

@@ -7,8 +7,8 @@
 // list what is planned: weather works today (Open-Meteo is worldwide), and FR grid carbon (RTE éCO2mix); the meter readers (Linky,
 // P1) and ENTSO-E are NOT built and are listed disabled, saying why; typed-in prices ('manual',
 // origin user) are always allowed. DE, BE and ES have weather only.
-// tounify v3 (src/adapters/tounify.js), an EU tariff source (not UK), is built and listed for FR and
-// NL only: tariff_prices per home (one tounify connection per home, billed per connection) and
+// tounify v2 (src/adapters/tounify.js), an EU tariff source (not UK), is built and listed for FR and
+// NL only: tariff_prices per home (the home's tariff priced at its postal code) and
 // tariff_catalogue shared, both switched on but with licence_confirmed = 0, so the plan skips them
 // ('unlicensed: ...') until the storage and reuse licence is confirmed in writing (TOUNIFY_DEV=1 with
 // a test token lets a developer run them, labelled). GB keeps Octopus and Tariffscanner only. DE, BE
@@ -25,7 +25,7 @@ const OPEN_METEO = 'Open-Meteo hourly weather and sunlight for the home\'s coord
 const NOT_BUILT = 'adapter not built';
 // RTE éCO2mix (src/adapters/rte.js): open data under Licence Ouverte v2.0 (Etalab), reuse allowed with the source credited.
 const RTE_ECO2MIX = 'RTE éCO2mix national carbon intensity (ODRÉ open data, no key): one value for France every 15 minutes, about 30 minutes behind, no forecast; Licence Ouverte v2.0 (Etalab), source to be credited';
-export const TOUNIFY = 'tounify v3 (preview API): per-connection billing; storage and reuse licence not confirmed in writing; free test token has tiny limits';
+export const TOUNIFY = 'tounify v2: per-kWh prices of a tariff at a postal code, no fixed charges; storage and reuse licence not confirmed in writing; free test token has tiny limits';
 const ENTSOE = `${NOT_BUILT}: ENTSO-E day-ahead wholesale price per bidding zone (not a retail tariff); needs a registered ENTSO-E token`;
 const MANUAL = 'prices typed in by the user or installer (src/core/tariffs.js createTariff, putRateRows with origin user): always allowed, nothing to fetch';
 export const TARIFFSCANNER = 'Tariffscanner (FEA) UK domestic tariff catalogue, queried with the core\'s own credential; contract terms not read by us.';
@@ -35,7 +35,7 @@ const row = (market_code, role, adapter, scope, origin, note, extra = {}) => ({
 });
 
 // tounify: built, switched on, licence unconfirmed (delta 011 switches on the rows an older seed
-// inserted disabled). Prices per home (its own connection), the catalogue shared per market.
+// inserted disabled). Prices per home (its own tariff at its postal code), the catalogue shared per market.
 const tounify = (m, note, priority) => [
   row(m, 'tariff_prices', 'tounify', 'home', 'provider', note, { priority, enabled: 1, licence_confirmed: 0, needs_credentials: 1 }),
   row(m, 'tariff_catalogue', 'tounify', 'shared', 'provider', note, { priority, enabled: 1, licence_confirmed: 0, needs_credentials: 1 }),

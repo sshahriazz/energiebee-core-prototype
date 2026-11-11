@@ -298,7 +298,7 @@ function tariffRow(choice, pickerOn) {
 
 async function tariffStep(siteId, created, ctx) {
   const shell = (body) => `<div class="onb-flow">${steps(2)}${ctx.banners}${ctx.progress}<section class="card onb-card">${body}</section>
-    <p class="auth-note">Prices are the supplier's published prices for your area, before VAT. Change your tariff any time from "Your providers".</p></div>`;
+    <p class="auth-note">Prices are the supplier's published prices per kWh for your area, before VAT and with VAT. Change your tariff any time from "Your providers".</p></div>`;
   const skipLabel = tariffUi.change ? 'Keep my current tariff' : `Skip for now${ctx.next ? ` and connect ${esc(ctx.next.name)}` : ''}`;
   const skip = `<p class="onb-skip"><button type="button" class="link-btn" id="t-skip">${skipLabel}</button></p>`;
   const wire = () => {
@@ -344,11 +344,37 @@ async function tariffStep(siteId, created, ctx) {
     return wire();
   }
   const cur = r.country === 'GB' ? 'GBP' : 'EUR';
+  // A price with VAT where the source gives the rate (tounify): 18.71c/kWh, 22.45c with 20 % VAT.
+  const withVat = (v, t) => (t.vat_rate != null ? v * (1 + t.vat_rate) : null);
+  const vatPct = (t) => `${Math.round(t.vat_rate * 1000) / 10} % VAT`;
   const priceText = (t, pm) => {
     const o = t.options.find((x) => x.payment_method === pm) || t.options[0];
-    if (!o || !o.unit.length) return 'price after you choose it';
+    if (o?.range) {
+      const { min, max, avg } = o.range;
+      const inc = t.vat_rate != null ? ` · with ${vatPct(t)}: ${minor(withVat(min, t), cur)} to ${minor(withVat(max, t), cur)}, average ${minor(withVat(avg, t), cur)}` : '';
+      return `Today ${minor(min, cur)} to ${minor(max, cur)}/kWh, average ${minor(avg, cur)}${inc}`;
+    }
+    if (!o || !o.unit.length) return t.quote === 'on_select' ? 'Select it to see its price for your area' : 'price after you choose it';
     const u = o.unit.map((x) => (o.unit.length > 1 ? `${esc(x.label)} ${minor(x.price, cur)}` : `${minor(x.price, cur)}/kWh`)).join(' · ');
-    return `${u}${o.standing ? ` · ${minor(o.standing.price, cur)}/${o.standing.per}` : ''}`;
+    const inc = t.vat_rate != null ? ` · with ${vatPct(t)}: ${o.unit.map((x) => `${o.unit.length > 1 ? `${esc(x.label)} ` : ''}${minor(withVat(x.price, t), cur)}`).join(' · ')}${o.unit.length > 1 ? '' : '/kWh'}` : '';
+    return `${u}${o.unit.length > 1 ? ' /kWh' : ''}${inc}${o.standing ? ` · ${minor(o.standing.price, cur)}/${o.standing.per}` : ''}`;
+  };
+  // tounify: a tariff not priced yet is priced when selected (one read for this home's postal code, kept).
+  const quote = async (t) => {
+    if (t.prices_known || t.quote !== 'on_select' || t.quoting) return;
+    const el = document.querySelector(`[data-price="${CSS.escape(t.id)}"]`);
+    t.quoting = true;
+    if (el) el.textContent = 'Getting its price for your area…';
+    try {
+      const q = await api(`/api/sites/${siteId}/suppliers/${encodeURIComponent(sup.code)}/tariffs/${encodeURIComponent(t.id)}/price`);
+      if (q.available === false) { if (el) el.textContent = `Price not available now: ${q.reason}`; return; }
+      Object.assign(t.options[0], { unit: q.unit ?? [], range: q.range ?? null });
+      t.vat_rate = q.vat_rate ?? t.vat_rate;
+      t.prices_known = (q.unit?.length ?? 0) > 0 || !!q.range;
+      if (el) el.innerHTML = t.prices_known ? priceText(t, t.default_payment_method) : 'No price published for today yet';
+    } catch (err) {
+      if (el) el.textContent = `Price not available now: ${err.message}`;
+    } finally { t.quoting = false; }
   };
   content().innerHTML = shell(`<div class="onb-card-head"><span class="badge">electricity tariff</span><h2>Which ${esc(r.supplier.name)} tariff?</h2>
       <p>${r.tariffs.length} tariff${r.tariffs.length === 1 ? '' : 's'} for your area.</p>${ctx.where}</div>
@@ -380,8 +406,9 @@ async function tariffStep(siteId, created, ctx) {
     $('t-details').innerHTML = `${pmSel}${hours}${others}${since}`;
     $('t-pm')?.addEventListener('change', (e) => { const el = document.querySelector(`[data-price="${CSS.escape(t.id)}"]`); if (el) el.innerHTML = priceText(t, e.target.value); });
   };
-  $('t-form').addEventListener('change', (e) => { if (e.target.name === 'tariff') details(); });
+  $('t-form').addEventListener('change', (e) => { if (e.target.name === 'tariff') { details(); quote(r.tariffs.find((x) => x.id === e.target.value)); } });
   details();
+  { const pre = r.tariffs.find((x) => x.id === $('t-form').querySelector('input[name="tariff"]:checked')?.value); if (pre) quote(pre); }
   $('t-filter')?.addEventListener('input', (e) => {
     const q = e.target.value.trim().toLowerCase();
     document.querySelectorAll('.tariff-opt').forEach((l) => { l.hidden = q && !l.dataset.name.includes(q); });
@@ -402,7 +429,7 @@ async function tariffStep(siteId, created, ctx) {
       body.hours = { from: b.h_from, to: b.h_to };
     }
     if (b.since) body.since = b.since;
-    for (const k of ['contracted_kva', 'fuse']) if (b[k]) body[k] = k === 'contracted_kva' ? Number(b[k]) : b[k];
+    if (b.contracted_kva) body.contracted_kva = Number(b.contracted_kva);
     const res = await api(`/api/sites/${siteId}/tariff`, { method: 'POST', body: JSON.stringify(body) });
     Object.assign(tariffUi, { change: false, supplier: null });
     skipped.delete('tariff');

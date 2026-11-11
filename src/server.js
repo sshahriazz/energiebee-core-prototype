@@ -27,7 +27,7 @@ import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
 import { resolveRegion } from './core/regions.js';
-import { listSuppliers, listTariffs, chooseTariff, tariffChoice } from './core/tariff-picker.js';
+import { listSuppliers, listTariffs, chooseTariff, tariffChoice, quoteTariff } from './core/tariff-picker.js';
 import { userOf, loginRequired, canSee, visibleSiteIds, listUsers, giveHome, publicUser, switcherOn, signUp, signIn, startSession, endSession, cookieOf, sessionCookie } from './core/users.js';
 import { addHome, homeProviders, connectHome, disconnectHome, findPlants, COUNTRIES } from './core/signup.js';
 import * as onboardingCore from './core/onboarding.js';
@@ -164,12 +164,15 @@ app.post('/api/sites/:id/providers/:provider/plants', async (req, res) => {
 app.delete('/api/sites/:id/providers/:provider', (req, res) => res.json(disconnectHome(req.user, site(req), req.params.provider)));
 
 // Step 3 of onboarding: the home's own supplier and tariff (src/core/tariff-picker.js), from the list its country's
-// source holds (GB Tariffscanner, from our own tables; FR / NL tounify, registered upstream, lists kept 7 days).
+// source holds (GB Tariffscanner, from our own tables; FR / NL tounify v2, lists kept 7 days, prices at the postal code).
 // The same answers for every country. Choosing puts the home's meter on the tariff from a start day (the first day
 // of data unless given), with its payment method and, for a day / night tariff, the meter's own night hours.
 app.get('/api/sites/:id/tariff-choice', (req, res) => res.json(tariffChoice(site(req))));
 app.get('/api/sites/:id/suppliers', async (req, res) => res.json(await listSuppliers(site(req))));
 app.get('/api/sites/:id/suppliers/:supplier/tariffs', async (req, res) => res.json(await listTariffs(site(req), req.params.supplier)));
+// A tariff's price for this home before it is chosen (FR / NL tounify: one price read for the home's postal code, kept;
+// on a testing token each new tariff priced spends one of its tariffs, so the list asks only for the one selected).
+app.get('/api/sites/:id/suppliers/:supplier/tariffs/:tariff/price', async (req, res) => res.json(await quoteTariff(site(req), req.params.supplier, req.params.tariff)));
 app.post('/api/sites/:id/tariff', async (req, res) => {
   const s = site(req);
   const r = await chooseTariff(s, req.body || {});
@@ -230,10 +233,10 @@ app.post('/api/sites/:id/slot', (req, res) => {
 // licensed and owned by the core. Only the non-secret reference is stored (account number, plant
 // id): the core has no secret store, so keys and passwords stay in .env (for the .env home), and
 // the reply names the fields not stored without echoing any value.
-// tounify (an EU tariff source, FR and NL) registers the home upstream, one connection per home (billed
-// per connection): { provider: 'tounify', postal_code?, consumption_tariff, feedin_tariff?, capacity?,
-// metering?, grid_operator? }, after the same registry check (listed for the market, switched on,
-// licensed or TOUNIFY_DEV=1 with a test token, built) and only with TOUNIFY_API_KEY set.
+// tounify (an EU tariff source, FR and NL) records the home's tariff here (v2 has no connection upstream):
+// { provider: 'tounify', consumption_tariff, postal_code?, feedin_tariff?, company?, off_peak_hours? }, after the
+// same registry check (listed for the market, switched on, licensed or TOUNIFY_DEV=1 with a test token, built) and
+// only with TOUNIFY_API_KEY set. Its prices are read at the next daily sync.
 app.post('/api/sites/:id/connections', async (req, res) => {
   const s = site(req);
   const b = req.body || {};

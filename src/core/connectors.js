@@ -47,7 +47,7 @@ export const CONNECTOR_LABELS = Object.freeze({
   manual: 'Manual entry',
   linky: 'Linky (Enedis)',
   p1: 'P1 port reader (DSMR)',
-  tounify: 'tounify (EU tariffs, v3 preview)',
+  tounify: 'tounify (EU tariffs, v2)',
   entsoe: 'ENTSO-E',
 });
 

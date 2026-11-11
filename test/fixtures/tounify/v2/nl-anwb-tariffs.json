@@ -1,0 +1,11 @@
+[
+ {
+  "id": "ANWBDE",
+  "name": "Dynamisch energiecontract",
+  "companyid": "ANWB",
+  "available": true,
+  "link": "https://www.anwb.nl/energie/actuele-tarieven",
+  "description": null,
+  "type": "dynamic"
+ }
+]

@@ -1,27 +1,31 @@
-// tounify v3 adapter (PREVIEW API): EU retail tariffs per connection: the per-kWh series (energy,
-// grid, fees, vat) and every charge that is not per kWh (standing, capacity, metering, credits).
-// An EU tariff source (not UK): registered for FR and NL only (src/db/seed/providers.js:
-// tariff_prices per home, tariff_catalogue shared), switched on but UNLICENSED: the plan skips it until the storage and reuse licence is
-// confirmed in writing; TOUNIFY_DEV=1 with a TEST token runs it for development, labelled.
+// tounify v2 adapter: EU retail electricity prices per kWh (energy, grid, fees and VAT as separate components) for a
+// home's tariff at its postal code. An EU tariff source (not UK): registered for FR and NL only
+// (src/db/seed/providers.js: tariff_prices per home, tariff_catalogue shared), switched on but UNLICENSED: the plan
+// skips it until the storage and reuse licence is confirmed in writing; TOUNIFY_DEV=1 with a TEST token runs it for
+// development, labelled.
 //
-// The API, as its v3 OpenAPI document (info.description: 'Working order', 'Billing, and changes per
-// connection', 'Rate limits', 'Errors') and the answers captured in test/fixtures/tounify/ show it:
-//   base https://api.tounify.io, header Authorization: Bearer <token> (env TOUNIFY_API_KEY). A token
-//   starting tounify_test_sk_ is a free TESTING token, tounify_prod_sk_ a production one.
-//   GET    /v3/{cc}/connection-properties                     what a connection can state (no connection needed)
-//   POST   /v3/{cc}/connections                               register one connection per end customer (billed per connection)
-//   PATCH  /v3/{cc}/connections/{ref}                         change it (each object replaced wholesale)
-//   DELETE /v3/{cc}/connections/{ref}
-//   GET    /v3/{cc}/connections/{ref}/{sector}/companies      the catalogue, narrowed by the connection
-//   GET    /v3/{cc}/connections/{ref}/{sector}/{company}/tariffs
-//   GET    /v3/{cc}/connections/{ref}/prices?include=fees,vat&resolution=900|1800|3600&historic_days=0-3
-//   GET    /v3/{cc}/connections/{ref}/components?use_defaults=true
-//   Reads answer an ETag; If-None-Match on an unchanged answer is a 304 with no body.
-//   Errors carry a stable `code` (branch on it, never on `message`); 403 testing_allowance_exhausted
-//   carries testingLimit { kind, limit, used, remaining, blocked }; a 429 may carry rateLimit
-//   { resetAt } and Retry-After; a 429 without rateLimit is a daily limit (stop until midnight UTC).
-//   A testing token: one request at a time, at most 5 new things per endpoint per day, 100 requests
-//   a day, 20 companies and 20 tariffs in TOTAL (never reset), 25 connections in total.
+// The API, as its OpenAPI document (https://api.tounify.io/openapi/v2.json, info.description) and the answers captured
+// in test/fixtures/tounify/v2/ show it (Nov 2026):
+//   base https://api.tounify.io, header Authorization: Bearer <token> (env TOUNIFY_API_KEY). A token starting
+//   tounify_test_sk_ is a free TESTING token, tounify_prod_sk_ a production one. Every answer carries X-Request-Id.
+//   GET /v2/{cc}/consumption/companies                  the country's suppliers (national, no address needed)
+//   GET /v2/{cc}/grid/companies?postal_code=            the network operator serving a postal code
+//   GET /v2/{cc}/consumption/{company}/tariffs          a supplier's household tariffs: { id, name, type, available, link }
+//   GET /v2/{cc}/dayahead?consumption_tariff=&postal_code=&include=fees,vat&resolution=900|1800|3600&historic_days=0-3
+//        today and tomorrow (once published) and up to 3 days back, in the country's own time zone; each point
+//        { from_utc, energy, grid, fees, vat } per kWh in the major unit; `next` is when to ask again. Its ETag is not
+//        a validator (the spec says never to send it back): it is read in full each time.
+//   There is no connection to register in v2: a price is asked for a tariff id and a postal code. What v3 kept per
+//   connection (capacity, metering, off-peak hours) is not taken: v2 prices France's heures creuses on the reference
+//   window 23:00-07:00 Paris; the home's own off-peak hours are applied here (mapPrices, offPeak).
+//   NO FIXED CHARGES: capacity, standing, subscription and per-connection levies or credits are in no v2 answer. Fixed
+//   rows a home already holds (from the v3 preview, or typed in) are kept as they are; none is written or ended here.
+//   Errors: an unknown id is a 400 (never a 404); a 403 testingLimit { kind, limit, used, remaining, blocked } means a
+//   testing token's total allowance is used up; a 429 may carry rateLimit { resetAt } and Retry-After, and a 429
+//   without rateLimit is a daily limit (stop until midnight UTC).
+//   A testing token: one request at a time, at most 5 new things per endpoint per day (the country on /companies, the
+//   company on /tariffs, the tariff combination on /dayahead), 100 requests a day, 20 companies and 20 tariffs in
+//   TOTAL (never reset: a company is spent when its tariffs are listed, a tariff when it is priced on /dayahead).
 //
 // Client: Bearer token from the environment, never stored, logged or put in a message (scrubbed).
 // One request at a time, at least 1 s apart, never before provider_state.next_allowed_at (a 429's
@@ -36,27 +40,24 @@
 // (kind 'allowance': the step is skipped with the reason). A 429 or a 403 testingLimit stops the
 // whole run (kind 'rate_limited' / 'allowance_exhausted'); the cooldown or the exhausted allowance
 // is persisted, so the next homes of the cycle are not called either.
-// Cadence: at most ONE price read (and one components read) per connection per UTC day, and never
-// before the answer's `next`; one catalogue refresh per country per 7 days (with ETags).
+// Cadence: at most ONE price read per home per UTC day, and never before the answer's `next`; one catalogue refresh
+// (suppliers, and the tariffs of the suppliers our homes are on) per country per 7 days, with ETags.
 //
-// Mapping (one home = one connection, reference eb-site-<site id>; no personal data, postal code only):
-//   tariff     TOUNIFY-<cc>-<tariff id>, provider 'tounify', the answer's currency; static -> flat or
-//              tou (catalogue time_of_use_rates, else whether the series holds more than one price),
-//              dynamic -> dynamic (no day colour is given in the answer, so Tempo is stored as its
-//              series); native_period_s = applied.consumption.settlement_interval, else resolution;
-//              taxes_in_price = 1 when every point carries `fees` and applied.vat states the VAT.
-//   unit rows  one per price point (merged up to settlement_interval when the answer repeats an
-//              hourly price at a finer resolution), home-specific (site_id), price in MINOR units
-//              per kWh ex VAT = (energy + grid + fees) x 100; vat is never stored as a price.
-//   fixed rows one per component with a resolved amount: register <group>:<kind> (consumption:
-//              standing, grid:capacity, consumption:credit ...), charge_period = resolved.interval,
-//              price = resolved.amount x 100 (credits stay negative; capacity is the resolved yearly
-//              amount, not the per-kVA rate), open-ended from the component's valid_from (else the
-//              first day the home holds a price of the tariff); the quantity source (contracted / fixed / defaulted) is in the note.
-//   VAT        applied.vat[].rate is compared with our tax_rule VAT: a mismatch is a warning in the
-//              step result, our rule is never overridden.
-//   origin     'provider', note 'tounify v3 (test token): storage licence unconfirmed' for a test
-//              token (and the TOUNIFY_DEV override named when it applies).
+// A home's tariff is kept here, not upstream: the connection row (provider 'tounify', external_ref eb-site-<site id>,
+// a local reference only) holds in meta the country, the postal code, the tariff ids, the supplier and the off-peak
+// hours (registerConnection). No personal data is ever sent: the postal code and the tariff id only.
+//
+// Mapping:
+//   tariff     TOUNIFY-<cc>-<tariff id>, provider 'tounify', the answer's currency; static -> flat or tou (whether the
+//              series holds more than one price), dynamic -> dynamic; native_period_s = the resolution asked;
+//              taxes_in_price = 1 when every point carries `fees` and `vat`.
+//   unit rows  one per price point, home-specific (site_id), price in MINOR units per kWh ex VAT =
+//              (energy + grid + fees) x 100; vat is never stored as a price.
+//   VAT        each point's rate (vat / (energy + grid + fees)) is compared with our tax_rule VAT: a mismatch is a
+//              warning in the step result, our rule is never overridden.
+//   origin     'provider', note 'tounify v2 (test token): storage licence unconfirmed' for a test token (and the
+//              TOUNIFY_DEV override named when it applies).
+// mapPrices and mapComponents also read the v3 preview's answers a home landed before (the Explorer replays them).
 // Writes are idempotent (the same answer twice changes nothing), a changed price supersedes the
 // stored row (kept as history), nothing is deleted, and every answer is landed raw (landRaw); an
 // answer missing an expected field is quarantined ('unexpected shape') and the step fails soft.
@@ -77,11 +78,16 @@ export const PROVIDER = 'tounify';
 export const BASE_URL = 'https://api.tounify.io';
 export const TEST_PREFIX = 'tounify_test_sk_';
 export const PROD_PREFIX = 'tounify_prod_sk_';
-export const LABEL = 'tounify (EU tariffs, v3 preview)';
-export const ORIGIN_NOTE_TEST = 'tounify v3 (test token): storage licence unconfirmed';
-export const ORIGIN_NOTE_PROD = 'tounify v3 (preview API)';
+export const LABEL = 'tounify (EU tariffs, v2)';
+export const ORIGIN_NOTE_TEST = 'tounify v2 (test token): storage licence unconfirmed';
+export const ORIGIN_NOTE_PROD = 'tounify v2';
 export const DEV_LABEL = 'TOUNIFY_DEV=1: development override of the unconfirmed licence (test token only)';
 export const RESOLUTIONS = Object.freeze([900, 1800, 3600]);
+// Each country's day, as /dayahead bounds it (the spec's historic_days; the answer does not state it).
+export const COUNTRY_ZONE = Object.freeze({ AT: 'Europe/Vienna', BE: 'Europe/Brussels', DE: 'Europe/Berlin', ES: 'Europe/Madrid', FR: 'Europe/Paris', GB: 'Europe/London', IT: 'Europe/Rome', NL: 'Europe/Amsterdam', PT: 'Europe/Lisbon' });
+// France's heures creuses as /dayahead prices them: the reference window 23:00-07:00 Paris (the spec: "the network operator
+// assigns each meter its own eight off-peak hours ... apply the served off-peak and peak prices to its own window").
+export const FR_REFERENCE_OFF_PEAK = Object.freeze({ from: '23:00', to: '07:00' });
 const DAY_MS = 86400000;
 // What a TESTING token may do, as the API publishes it (info.description, Rate limits).
 export const PUBLISHED_TEST_LIMITS = Object.freeze({ requestsPerDay: 100, companies: 20, tariffs: 20, newPerEndpointDay: 5 });
@@ -385,43 +391,85 @@ export const resetClients = () => clients.clear();
 
 // ───────────── Requests ─────────────
 
-const cpath = (cc, ref, rest = '') => `/v3/${encodeURIComponent(cc)}/connections/${encodeURIComponent(ref)}${rest}`;
 export const referenceOf = (site) => `eb-site-${site.id}`;
+const v2path = (cc, rest) => `/v2/${encodeURIComponent(cc)}${rest}`;
 
-export function getPrices(client, cc, ref, { resolution, historicDays = policy.historicDays, etag = null } = {}) {
-  return client.request('GET', cpath(cc, ref, '/prices'), {
-    query: { include: 'fees,vat', resolution, historic_days: historicDays }, etag, scope: { endpoint: 'GET prices', thing: ref },
-  });
+/** The price query for a home's tariff: GET /v2/{cc}/dayahead with fees and VAT, at the home's slot length. */
+export function dayaheadQuery({ consumption, feedin = null, postalCode, resolution, historicDays = policy.historicDays }) {
+  return { consumption_tariff: consumption, ...(feedin ? { feedin_tariff: feedin } : {}), ...(postalCode ? { postal_code: postalCode } : {}), include: 'fees,vat', resolution, historic_days: historicDays };
 }
-export function getComponents(client, cc, ref, { etag = null } = {}) {
-  return client.request('GET', cpath(cc, ref, '/components'), { query: { use_defaults: 'true' }, etag, scope: { endpoint: 'GET components', thing: ref } });
+/** Prices of a tariff at a postal code. Each tariff id named spends one of a testing token's distinct tariffs (once). */
+export function getPrices(client, cc, q) {
+  const ids = [q.consumption_tariff, q.feedin_tariff].filter(Boolean);
+  return client.request('GET', v2path(cc, '/dayahead'), { query: q, scope: { endpoint: 'GET dayahead', thing: ids.join('+') }, names: { tariffs: ids } });
 }
 
 // ───────────── Mapping (pure) ─────────────
 
 const SECTOR_GROUPS = ['consumption', 'feedin', 'grid'];
 
+const hm = (s) => { const m = /^(\d{2}):(\d{2})$/.exec(s ?? ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const inWindow = (min, a, b) => (a < b ? min >= a && min < b : min >= a || min < b);
+const localMinute = (zone, ts) => { const [h, m] = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ts * 1000)).split(':').map(Number); return h * 60 + m; };
+
 /**
- * A /prices answer -> { ok: true, tariff, rows, feedin, vat, window, next, pendingFrom, forecastFrom,
- * resolutionS, settlementS, taxesInPrice, company, warnings } or { ok: false, problems }. Rows are
- * { validFrom, validTo, price (minor per kWh ex VAT), estimated }. Unknown fields are ignored; a
+ * A home's own off-peak hours on a French heures creuses tariff: /dayahead prices it on the reference window
+ * (FR_REFERENCE_OFF_PEAK); each day's off-peak price is moved to the home's own windows and its peak price to the
+ * rest of the day. Only where every day holds one price inside the reference window and one outside it; otherwise
+ * the rows are left as served and a warning says why. Returns { rows, applied }.
+ */
+export function applyOffPeak(rows, { zone, windows, reference = FR_REFERENCE_OFF_PEAK, resolution }) {
+  const ref = [hm(reference.from), hm(reference.to)];
+  const own = (windows ?? []).map((w) => [hm(w.from), hm(w.to)]).filter(([a, b]) => a != null && b != null && a !== b);
+  if (!own.length) return { rows, applied: null };
+  const same = own.length === 1 && own[0][0] === ref[0] && own[0][1] === ref[1];
+  if (same) return { rows, applied: null };
+  const days = new Map();
+  for (const r of rows) {
+    const d = localDate(zone, r.validFrom);
+    const e = days.get(d) ?? { off: new Set(), peak: new Set() };
+    (inWindow(localMinute(zone, r.validFrom), ref[0], ref[1]) ? e.off : e.peak).add(r.price);
+    days.set(d, e);
+  }
+  for (const [d, e] of days) if (e.off.size !== 1 || e.peak.size !== 1) return { rows, applied: null, warning: `off-peak hours not applied: ${d} holds ${e.off.size} price(s) inside the reference window ${reference.from}-${reference.to} and ${e.peak.size} outside it, not one each` };
+  const misaligned = own.some(([a, b]) => a % (resolution / 60) || b % (resolution / 60));
+  const out = rows.map((r) => {
+    const e = days.get(localDate(zone, r.validFrom));
+    const min = localMinute(zone, r.validFrom);
+    const off = own.some(([a, b]) => inWindow(min, a, b));
+    return { ...r, price: [...(off ? e.off : e.peak)][0] };
+  });
+  return { rows: out, applied: own.map(([a, b]) => `${hhmmOf(a)}-${hhmmOf(b)}`).join(', '), ...(misaligned ? { warning: `the off-peak hours do not fall on ${resolution / 60}-minute boundaries: each period takes the price of its start` } : {}) };
+}
+const hhmmOf = (min) => `${String(Math.floor((min % 1440) / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+
+/**
+ * A /dayahead answer (v2; or a v3 /prices answer landed earlier) -> { ok: true, tariff, rows, feedin, vat, window,
+ * next, resolutionS, settlementS, taxesInPrice, company, grid, offPeak, warnings } or { ok: false, problems }. Rows
+ * are { validFrom, validTo, price (minor per kWh ex VAT), estimated }. Options: country, currency, catalogue (tariff
+ * id -> listing: its name), company (the supplier's id, which a v2 answer does not name), offPeak ({ windows:
+ * [{ from, to }] }: a French home's own heures creuses), kind / dev (the origin note). Unknown fields are ignored; a
  * missing expected field is a problem (the caller quarantines the answer). Pure.
  */
-export function mapPrices(body, { country = null, currency = null, catalogue = null, kind = 'test', dev = null } = {}) {
+export function mapPrices(body, { country = null, currency = null, catalogue = null, company: companyIn = null, offPeak = null, kind = 'test', dev = null } = {}) {
   const problems = [];
   const warnings = [];
   const no = (p) => { problems.push(p); return { ok: false, problems }; };
   if (!isObj(body)) return no('the answer is not an object');
+  const v3 = isObj(body.applied);
   if (typeof body.currency !== 'string' || !body.currency) problems.push('no currency');
   else if (!CURRENCIES[body.currency]) problems.push(`currency ${body.currency} is not one the core holds`);
   else if (currency && body.currency !== currency) problems.push(`currency ${body.currency}, but the home is billed in ${currency} (no FX)`);
   if (!RESOLUTIONS.includes(body.resolution)) problems.push(`resolution ${body.resolution ?? 'missing'} is not 900, 1800 or 3600`);
   if (!num(body.next)) problems.push('no next');
-  if (!isObj(body.applied) || typeof body.applied.zone !== 'string') problems.push('no applied.zone');
   if (country && body.country !== undefined && body.country !== country) problems.push(`country ${body.country}, expected ${country}`);
-  if (isObj(body.applied) && body.applied.grid_gap) problems.push(`applied.grid_gap ${body.applied.grid_gap}: no network charge held, an incomplete price is never summed`);
-  const id = (isObj(body.consumption_tariff) && typeof body.consumption_tariff.id === 'string' && body.consumption_tariff.id) || (typeof body.applied?.consumption?.id === 'string' && body.applied.consumption.id) || null;
-  if (!id) problems.push('no consumption tariff id (consumption_tariff.id or applied.consumption.id)');
+  const cc = typeof body.country === 'string' ? body.country : country;
+  const zone = v3 ? (typeof body.applied.zone === 'string' ? body.applied.zone : null) : COUNTRY_ZONE[cc] ?? null;
+  if (!zone) problems.push(v3 ? 'no applied.zone' : `no time zone known for country ${cc ?? '(none)'}`);
+  if (v3 && body.applied.grid_gap) problems.push(`applied.grid_gap ${body.applied.grid_gap}: no network charge held, an incomplete price is never summed`);
+  const id = (isObj(body.consumption_tariff) && typeof body.consumption_tariff.id === 'string' && body.consumption_tariff.id)
+    || (typeof body.consumption_tariff === 'string' && body.consumption_tariff) || (typeof body.applied?.consumption?.id === 'string' && body.applied.consumption.id) || null;
+  if (!id) problems.push('no consumption tariff id (consumption_tariff.id)');
   if (!Array.isArray(body.consumption) || !body.consumption.length) problems.push('no consumption series');
   if (problems.length) return { ok: false, problems };
 
@@ -433,47 +481,68 @@ export function mapPrices(body, { country = null, currency = null, catalogue = n
     if (!num(p.energy)) { problems.push(`point ${i}: no energy`); return; }
     if (p.grid !== undefined && !num(p.grid)) { problems.push(`point ${i}: grid is not a number`); return; }
     if (p.fees !== undefined && !num(p.fees)) { problems.push(`point ${i}: fees is not a number`); return; }
+    if (p.vat !== undefined && !num(p.vat)) { problems.push(`point ${i}: vat is not a number`); return; }
     pts.push(p);
   });
   if (problems.length) return { ok: false, problems: problems.slice(0, 10) };
   pts.sort((a, b) => a.from_utc - b.from_utc);
   for (let i = 1; i < pts.length; i++) if (pts[i].from_utc - pts[i - 1].from_utc < res) return no(`points ${i - 1} and ${i} overlap at resolution ${res} s`);
-  if (pts.some((p) => p.grid === undefined)) warnings.push('points without grid (and no grid_gap): the network charge is taken as 0');
+  if (pts.some((p) => p.grid === undefined)) warnings.push('points without grid: the network charge is taken as 0 (no postal code or grid tariff priced it)');
   const withFees = pts.every((p) => num(p.fees));
   if (!withFees) warnings.push('points without fees: the levies are left to our own tax rules (taxes_in_price 0)');
-  const vat = Array.isArray(body.applied.vat) ? body.applied.vat.filter((v) => isObj(v) && num(v.rate) && num(v.from_utc)).map((v) => ({ fromUtc: v.from_utc, rate: v.rate, source: v.source ?? null })) : [];
+  const exOf = (p) => p.energy + (p.grid ?? 0) + (p.fees ?? 0);
+  // VAT: v3 states its rates (applied.vat); v2 gives each point's VAT amount, so its rate is vat / (energy + grid + fees),
+  // kept where it changes (rounded to 0.01 %), and only on points whose sum is not ~0.
+  let vat;
+  if (v3) vat = Array.isArray(body.applied.vat) ? body.applied.vat.filter((v) => isObj(v) && num(v.rate) && num(v.from_utc)).map((v) => ({ fromUtc: v.from_utc, rate: v.rate, source: v.source ?? null })) : [];
+  else {
+    vat = [];
+    for (const p of pts) {
+      if (!num(p.vat) || Math.abs(exOf(p)) < 1e-6) continue;
+      const rate = Math.round((p.vat / exOf(p)) * 10000) / 10000;
+      if (vat.at(-1)?.rate !== rate) vat.push({ fromUtc: p.from_utc, rate, source: 'per point (vat / ex-VAT sum)' });
+    }
+  }
   const taxesInPrice = withFees && vat.length > 0 ? 1 : 0;
   const cur = body.currency;
-  const total = (p) => toMinor(p.energy + (p.grid ?? 0) + (p.fees ?? 0), cur);
+  const total = (p) => toMinor(exOf(p), cur);
   const forecastFrom = num(body.forecast_from) ? body.forecast_from : null;
-  const settlementS = num(body.applied.consumption?.settlement_interval) ? body.applied.consumption.settlement_interval : null;
-  const rows = seriesRows(pts, res, settlementS, total, forecastFrom, warnings);
+  const settlementS = num(body.applied?.consumption?.settlement_interval) ? body.applied.consumption.settlement_interval : null;
+  let rows = seriesRows(pts, res, settlementS, total, forecastFrom, warnings);
 
-  // Kind: the catalogue's time_of_use_rates where it is held, else what the series shows.
-  const type = body.consumption_tariff?.type ?? null;
+  // Kind: dynamic as the answer types it; a static tariff by its series (one price or more).
+  const type = (isObj(body.consumption_tariff) ? body.consumption_tariff.type : null) ?? null;
   const listing = catalogue?.[id] ?? null;
   let tKind;
   let basis;
-  if (type === 'dynamic') { tKind = 'dynamic'; basis = 'dynamic (a published series; no day colour is given in the answer)'; }
-  else if (Number.isInteger(listing?.time_of_use_rates)) { tKind = listing.time_of_use_rates >= 2 ? 'tou' : 'flat'; basis = `static, time_of_use_rates ${listing.time_of_use_rates} (catalogue)`; }
-  else { tKind = new Set(rows.map((r) => r.price)).size > 1 ? 'tou' : 'flat'; basis = `static${type ? '' : ' (type not given)'}, ${tKind === 'tou' ? 'more than one price' : 'one price'} in the series (no catalogue listing held)`; }
-  const company = typeof body.applied.consumption?.company === 'string' ? body.applied.consumption.company : null;
-  const cc = typeof body.country === 'string' ? body.country : country;
+  if (type === 'dynamic') { tKind = 'dynamic'; basis = 'dynamic (a published series)'; }
+  else if (v3 && Number.isInteger(listing?.time_of_use_rates)) { tKind = listing.time_of_use_rates >= 2 ? 'tou' : 'flat'; basis = `static, time_of_use_rates ${listing.time_of_use_rates} (catalogue)`; }
+  else { tKind = new Set(rows.map((r) => r.price)).size > 1 ? 'tou' : 'flat'; basis = `static${type ? '' : ' (type not given)'}, ${tKind === 'tou' ? 'more than one price' : 'one price'} in the series`; }
+  // A French heures creuses tariff: the home's own off-peak hours (v2 prices the reference window only).
+  let offPeakApplied = null;
+  if (!v3 && cc === 'FR' && tKind === 'tou' && offPeak?.windows?.length) {
+    const op = applyOffPeak(rows, { zone, windows: offPeak.windows, resolution: res });
+    rows = op.rows;
+    offPeakApplied = op.applied;
+    if (op.warning) warnings.push(op.warning);
+  }
+  const company = companyIn ?? (typeof body.applied?.consumption?.company === 'string' ? body.applied.consumption.company : null) ?? (typeof listing?.companyid === 'string' ? listing.companyid : null);
+  const api = v3 ? 'per connection (v3)' : 'at the home\'s postal code';
   const tariff = {
     provider: PROVIDER, tariffCode: `TOUNIFY-${cc}-${id}`, productCode: id, fuel: 'electricity', direction: 'import',
     structure: tKind, kind: tKind, country: cc, currency: cur, nativePeriodS: settlementS ?? res,
     name: typeof listing?.name === 'string' ? listing.name : `${company ? `${company} ` : ''}${id}`,
-    origin: 'provider', originNote: `${originNote({ kind, dev })}; tariff ${id}${company ? ` of ${company}` : ''}, ${basis}; prices (energy + grid + fees) per connection, VAT ${taxesInPrice ? 'stated apart' : 'not stated'}`,
+    origin: 'provider', originNote: `${originNote({ kind, dev })}; tariff ${id}${company ? ` of ${company}` : ''}, ${basis}; prices (energy + grid + fees) ${api}, VAT ${taxesInPrice ? 'stated apart' : 'not stated'}`,
     taxesInPrice,
   };
   // Feed-in: what the producer is paid, net of the producer's own levy (energy - fees); no grid, no vat.
   let feedin = null;
-  const fid = isObj(body.feedin_tariff) && typeof body.feedin_tariff.id === 'string' ? body.feedin_tariff.id : null;
+  const fid = (isObj(body.feedin_tariff) && typeof body.feedin_tariff.id === 'string' && body.feedin_tariff.id) || (typeof body.feedin_tariff === 'string' && body.feedin_tariff) || null;
   if (fid && Array.isArray(body.feedin) && body.feedin.length) {
     const fpts = body.feedin.filter((p) => isObj(p) && Number.isInteger(p.from_utc) && !(p.from_utc % 300) && num(p.energy) && (p.fees === undefined || num(p.fees))).sort((a, b) => a.from_utc - b.from_utc);
     if (fpts.length !== body.feedin.length) warnings.push(`feed-in: ${body.feedin.length - fpts.length} points without from_utc or energy left out`);
-    const fSettle = num(body.applied.feedin?.settlement_interval) ? body.applied.feedin.settlement_interval : null;
-    const fKind = body.feedin_tariff.type === 'dynamic' ? 'dynamic' : 'flat';
+    const fSettle = num(body.applied?.feedin?.settlement_interval) ? body.applied.feedin.settlement_interval : null;
+    const fKind = body.feedin_tariff?.type === 'dynamic' ? 'dynamic' : 'flat';
     feedin = {
       tariff: {
         ...tariff, tariffCode: `TOUNIFY-${cc}-${fid}`, productCode: fid, direction: 'export', structure: fKind, kind: fKind, nativePeriodS: fSettle ?? res,
@@ -483,13 +552,15 @@ export function mapPrices(body, { country = null, currency = null, catalogue = n
       rows: seriesRows(fpts, res, fSettle, (p) => toMinor(p.energy - (p.fees ?? 0), cur), forecastFrom, warnings),
     };
   }
+  const gridId = (isObj(body.grid_tariff) && typeof body.grid_tariff.id === 'string' && body.grid_tariff.id) || (typeof body.grid_tariff === 'string' && body.grid_tariff) || null;
   return {
-    ok: true, tariff, rows, feedin, vat, company, warnings, taxesInPrice,
+    ok: true, tariff, rows, feedin, vat, company, warnings, taxesInPrice, offPeak: offPeakApplied,
     window: { from: rows[0].validFrom, to: rows[rows.length - 1].validTo },
     next: body.next, pendingFrom: num(body.pending_from) ? body.pending_from : null, forecastFrom,
-    resolutionS: res, settlementS, zone: body.applied.zone,
-    grid: isObj(body.applied.grid) ? { id: body.applied.grid.id ?? null, version: body.applied.grid.version ?? null, source: body.applied.grid.source ?? null } : null,
-    version: body.applied.consumption?.version ?? null,
+    resolutionS: res, settlementS, zone,
+    grid: v3 ? (isObj(body.applied.grid) ? { id: body.applied.grid.id ?? null, version: body.applied.grid.version ?? null, source: body.applied.grid.source ?? null } : null)
+      : (gridId ? { id: gridId, source: 'the postal code' } : null),
+    version: body.applied?.consumption?.version ?? null,
   };
 }
 
@@ -517,7 +588,7 @@ function seriesRows(pts, res, settlementS, priceOf, forecastFrom, warnings) {
 }
 
 /**
- * A /components answer -> { ok: true, rows, unsized, defaultsUsed, defaults, warnings } or { ok: false,
+ * A v3 /components answer (landed by the v3 preview; v2 serves no fixed charge) -> { ok: true, rows, unsized, defaultsUsed, defaults, warnings } or { ok: false,
  * problems }. Rows: { register: '<group>:<kind>', chargePeriod, price (minor per period, signed),
  * validFrom, quantitySource, originNote }, one per charge with a resolved amount. Pure.
  */
@@ -609,21 +680,6 @@ export function putRates(tariffId, siteId, rows, { component = 'unit', rawId = n
   return changed;
 }
 
-// A fixed charge the latest answer no longer carries ends at the capture day (a change, kept as
-// history), so a withdrawn charge is not billed on for ever. Returns the rows ended.
-function endMissingFixed(tariffId, siteId, keep, fromTs, recordedAt) {
-  const open = db.prepare(`SELECT * FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND superseded_at IS NULL AND valid_to IS NULL`).all(tariffId, siteId);
-  let n = 0;
-  for (const o of open) {
-    if (keep.has(`${o.register}|${o.charge_period}`) || o.valid_from >= fromTs) continue;
-    db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?').run(recordedAt, o.id);
-    db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin, origin_note, estimated)
-      VALUES (?, ?, 'fixed', ?, ?, 'ANY', ?, ?, ?, ?, ?, 'provider', ?, 0)`).run(tariffId, siteId, o.register, o.charge_period, o.valid_from, fromTs, o.price_ex_vat, recordedAt, o.raw_id, `${o.origin_note ?? ''}; no longer in the tounify answer from this day`);
-    n++;
-  }
-  return n;
-}
-
 // The home's meter on the tariff (device provider 'tounify', external_ref the reference). Not agreed
 // when another meter of the same kind already prices the home (an Octopus or typed-in tariff): the
 // rates are stored, the warning says why they do not price it. A changed tariff ends the old
@@ -699,7 +755,8 @@ function dueOf(cs, nowMs) {
 /** Whether the home's daily price read may run now ({ due, reason }): registered, read at most once a UTC day, not before `next`, not cooling down. */
 export function priceReadDue(siteId, nowMs = clockOf(null).now()) {
   const c = connectionOf(siteId);
-  if (!c?.external_ref) return { due: false, reason: 'not registered with tounify: no connection reference for this home' };
+  if (!c?.external_ref) return { due: false, reason: 'no tounify tariff recorded for this home' };
+  if (!c.meta.tariffs?.consumption) return { due: false, reason: 'no tounify tariff chosen yet for this home' };
   const d = dueOf(readState().connections?.[c.external_ref] ?? {}, nowMs);
   if (!d.due) return d;
   const until = dbStore().nextAllowedAt();
@@ -713,99 +770,67 @@ function rawBody(rawId) {
   try { return JSON.parse(fs.readFileSync(path.join(dataDir, r.file), 'utf8')); } catch { return null; }
 }
 
-// Reads one answer (or reuses the stored copy on a 304): { body, rawId, notModified, requestId }.
-async function readWithEtag(call, prev, request, siteId) {
-  const stored = prev.raw ? rawBody(prev.raw) : null;
-  const r = await call(stored && prev.etag ? prev.etag : null);
-  if (r.notModified) return { body: stored, rawId: prev.raw, notModified: true, etag: r.etag ?? prev.etag, requestId: r.requestId };
-  return { body: r.body, rawId: null, notModified: false, etag: r.etag ?? null, requestId: r.requestId, request: { ...request, request_id: r.requestId ?? null } };
+// The home's own off-peak hours on a French heures creuses tariff: what the choice stored on the connection, else
+// the meter's own windows. [{ from, to }] or null.
+function offPeakWindowsOf(site, meta) {
+  const stated = Array.isArray(meta?.off_peak_hours) ? meta.off_peak_hours.filter((w) => isObj(w) && typeof w.from === 'string' && typeof w.to === 'string') : [];
+  if (stated.length) return stated;
+  return offPeakOf(site.id)?.all_year ?? null;
 }
 
 /**
- * One home's read: GET prices, then GET components, at most once a UTC day per connection and
- * never before the last answer's `next` (force skips only that gate, never the allowance), mapped
- * and stored. Returns a compact report; { skipped } when not due, refused by the allowance or
- * cooling down; { failed: true, error } (never a throw) for an answer of an unexpected shape, which
- * is quarantined. A 429, an exhausted testing allowance or an auth failure is thrown: it stops the run.
+ * One home's read: GET /v2/{cc}/dayahead for the home's tariff at its postal code, at most once a UTC day and never
+ * before the last answer's `next` (force skips only that gate, never the allowance), mapped and stored. v2 serves
+ * per-kWh prices only: no fixed charge is read, written or ended here (rows the home holds are kept). Returns a
+ * compact report; { skipped } when not due, refused by the allowance or cooling down; { failed: true, error } (never
+ * a throw) for an answer of an unexpected shape, which is quarantined. A 429, an exhausted testing allowance or an
+ * auth failure is thrown: it stops the run.
  */
 export async function syncTounifyHome({ site, client, dev = null, force = false } = {}) {
   const c = connectionOf(site.id);
-  if (!c?.external_ref) return { skipped: 'not registered with tounify: no connection reference for this home' };
+  if (!c?.external_ref) return { skipped: 'no tounify tariff recorded for this home (the tariff picker records it)' };
   const ref = c.external_ref;
-  if (c.meta.tariffs && !c.meta.tariffs.consumption) return { skipped: 'registered with tounify, no tariff chosen yet (the tariff picker sets it)' };
+  const consumption = c.meta.tariffs?.consumption ?? null;
+  if (!consumption) return { skipped: 'no tounify tariff chosen yet for this home (the tariff picker sets it)' };
   const cc = c.meta.country ?? site.country ?? site.market_code;
+  const postal = String(c.meta.postal_code ?? site.postcode ?? '').trim();
   const nowMs = client.clock.now();
   const prev = readState().connections?.[ref] ?? {};
   if (!force) { const d = dueOf(prev, nowMs); if (!d.due) return { skipped: d.reason }; }
   const kind = client.kind === 'prod' ? 'prod' : 'test';
   const out = { reference: ref, country: cc, warnings: [] };
   const saveConn = (patch) => updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, ...patch }; });
-  const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : (prev.settlement_interval ?? 3600);
+  const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : 3600;
   const catalogue = Object.fromEntries(Object.values(readState().catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
+  const company = c.meta.company ?? catalogue[consumption]?.companyid ?? null;
+  if (!postal) out.warnings.push('no postal code: priced without the grid operator\'s charge and local levies');
 
   // Prices.
-  const pReq = { method: 'GET', path: cpath(cc, ref, '/prices'), query: { include: 'fees,vat', resolution, historic_days: policy.historicDays } };
-  let p;
+  const q = dayaheadQuery({ consumption, feedin: c.meta.tariffs?.feedin ?? null, postalCode: postal || null, resolution });
+  const pReq = { method: 'GET', path: v2path(cc, '/dayahead'), query: q };
+  let r;
   try {
-    p = await readWithEtag((etag) => getPrices(client, cc, ref, { resolution, etag }), { etag: prev.prices_etag, raw: prev.prices_raw }, pReq, site.id);
+    r = await getPrices(client, cc, q);
   } catch (err) {
     if (err.kind === 'allowance' || err.kind === 'cooldown') return { skipped: err.message };
     throw err;
   }
   const today = utcDay(nowMs);
-  if (p.notModified && !p.body) {
-    saveConn({ last_price_day: today, prices_etag: null });
-    return { skipped: 'tounify answered 304 but the stored copy is missing: read in full next time', ...out };
-  }
-  const mp = mapPrices(p.body, { country: cc, currency: site.currency ?? null, catalogue, kind, dev });
+  const request = { ...pReq, request_id: r.requestId ?? null };
+  const offPeak = { windows: offPeakWindowsOf(site, c.meta) };
+  const mp = mapPrices(r.body, { country: cc, currency: site.currency ?? null, catalogue, company, offPeak, kind, dev });
   if (!mp.ok) {
     const reason = `unexpected shape: ${mp.problems.join('; ')}`;
-    const q = p.notModified ? { rawId: p.rawId } : quarantine({ source: PROVIDER, siteId: site.id, request: p.request, body: p.body, reason });
-    saveConn({ last_price_day: today, last_read_at: iso(nowMs), prices_etag: null, last_error: reason });
-    return { ...out, failed: true, error: `tounify prices for ${ref}: ${reason}`, quarantined: q.rawId };
+    const qr = quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason });
+    saveConn({ last_price_day: today, last_read_at: iso(nowMs), last_error: reason });
+    return { ...out, failed: true, error: `tounify prices for ${ref}: ${reason}`, quarantined: qr.rawId };
   }
-  const pRaw = p.notModified ? p.rawId : landRaw({ source: PROVIDER, siteId: site.id, request: p.request, body: p.body }).rawId;
-  saveConn({
-    last_price_day: today, last_read_at: iso(nowMs), next_at: p.notModified ? (prev.next_at ?? null) : mp.next * 1000,
-    prices_etag: p.etag ?? null, prices_raw: pRaw, settlement_interval: mp.settlementS, company: mp.company ?? prev.company ?? null,
-    pending_from: mp.pendingFrom, last_error: null,
-  });
+  const pRaw = landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body }).rawId;
+  saveConn({ last_price_day: today, last_read_at: iso(nowMs), next_at: mp.next * 1000, prices_raw: pRaw, company: mp.company ?? prev.company ?? null, last_error: null, api: 'v2' });
   const zone = mp.zone || site.timezone;
   const captureDayStart = dayBounds(zone, localDate(zone, Math.floor(nowMs / 1000)))[0];
-  // A charge tounify gives no valid_from starts on the first day this home holds a price of the tariff (this read's
-  // earliest point included), not on the capture day: the first read also brings yesterday's prices, and a day priced
-  // without its subscription is short. The same day on every later read, so the stored row stays as it is.
-  const heldFrom = db.prepare(`SELECT MIN(r.valid_from) AS t FROM rate_interval r JOIN tariff x ON x.id = r.tariff_id
-    WHERE x.tariff_code = ? AND r.site_id = ? AND r.component = 'unit'`).get(mp.tariff.tariffCode, site.id)?.t;
-  const firstPriceDay = dayBounds(zone, localDate(zone, Math.min(heldFrom ?? Infinity, mp.window.from, captureDayStart)))[0];
 
-  // Components (once a day too, right after the prices): refused or failing, the prices still stand.
-  let mc = null;
-  let cRaw = null;
-  const cReq = { method: 'GET', path: cpath(cc, ref, '/components'), query: { use_defaults: 'true' } };
-  try {
-    const r = await readWithEtag((etag) => getComponents(client, cc, ref, { etag }), { etag: prev.components_etag, raw: prev.components_raw }, cReq, site.id);
-    if (r.body) {
-      mc = mapComponents(r.body, { currency: site.currency ?? mp.tariff.currency, zone, captureDayStart: firstPriceDay, kind, dev });
-      if (!mc.ok) {
-        const reason = `unexpected shape: ${mc.problems.join('; ')}`;
-        if (!r.notModified) quarantine({ source: PROVIDER, siteId: site.id, request: r.request, body: r.body, reason });
-        out.failed = true;
-        out.error = `tounify components for ${ref}: ${reason}`;
-        saveConn({ components_etag: null });
-        mc = null;
-      } else {
-        cRaw = r.notModified ? r.rawId : landRaw({ source: PROVIDER, siteId: site.id, request: r.request, body: r.body }).rawId;
-        saveConn({ components_etag: r.etag ?? null, components_raw: cRaw });
-      }
-    } else { out.warnings.push('components: 304 without a stored copy; read in full next time'); saveConn({ components_etag: null }); }
-  } catch (err) {
-    if (err.kind === 'allowance' || err.kind === 'cooldown') out.components_skipped = err.message;
-    else if (['rate_limited', 'allowance_exhausted', 'auth'].includes(err.kind)) { out.stopped = err.message; }
-    else { out.failed = true; out.error = err.message; }
-  }
-
-  // Write: tariff, unit rows, fixed rows, the meter's agreement, the connection's applied info.
+  // Write: tariff, unit rows, the meter's agreement, the connection's applied info.
   const recordedAt = recordedNow();
   tx(() => {
     const u = upsertTariff(mp.tariff);
@@ -818,33 +843,29 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
     out.kind = mp.tariff.kind;
     out.taxes_in_price = mp.taxesInPrice;
     out.tariff_created = u.created;
-    out.unit_rows = putRates(u.row.id, site.id, mp.rows.map((r) => ({ ...r, originNote: originNote({ kind, dev }) })), { component: 'unit', rawId: pRaw, recordedAt });
-    out.points = p.body.consumption.length;
+    const note = `${originNote({ kind, dev })}${mp.offPeak ? `; off-peak prices on the home's own hours ${mp.offPeak}` : ''}`;
+    out.unit_rows = putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: note })), { component: 'unit', rawId: pRaw, recordedAt });
+    out.points = r.body.consumption.length;
     out.rows = mp.rows.length;
-    const ag = ensureAgreement(site, u.row.id, { kind: 'meter_import', externalRef: ref, label: `tounify connection ${ref} (import)`, fromTs: mp.window.from, captureDayStart });
+    if (mp.offPeak) out.off_peak_hours = mp.offPeak;
+    const ag = ensureAgreement(site, u.row.id, { kind: 'meter_import', externalRef: ref, label: `tounify tariff ${consumption} (import)`, fromTs: mp.window.from, captureDayStart });
     if (ag.warning) out.warnings.push(ag.warning);
     out.agreed = ag.agreed;
     out.agreements_changed = ag.changed;
     if (mp.feedin) {
       const f = upsertTariff(mp.feedin.tariff);
       out.feedin_tariff = mp.feedin.tariff.tariffCode;
-      out.feedin_rows = putRates(f.row.id, site.id, mp.feedin.rows.map((r) => ({ ...r, originNote: originNote({ kind, dev }) })), { component: 'unit', rawId: pRaw, recordedAt });
-      const fa = ensureAgreement(site, f.row.id, { kind: 'meter_export', externalRef: `${ref}:export`, label: `tounify connection ${ref} (export)`, fromTs: mp.window.from, captureDayStart });
+      out.feedin_rows = putRates(f.row.id, site.id, mp.feedin.rows.map((x) => ({ ...x, originNote: originNote({ kind, dev }) })), { component: 'unit', rawId: pRaw, recordedAt });
+      const fa = ensureAgreement(site, f.row.id, { kind: 'meter_export', externalRef: `${ref}:export`, label: `tounify tariff ${mp.feedin.tariff.productCode} (export)`, fromTs: mp.window.from, captureDayStart });
       if (fa.warning) out.warnings.push(fa.warning);
       out.agreements_changed = out.agreements_changed || fa.changed;
     }
-    if (mc) {
-      out.fixed_rows = putRates(u.row.id, site.id, mc.rows, { component: 'fixed', rawId: cRaw, recordedAt });
-      out.fixed_rows += endMissingFixed(u.row.id, site.id, new Set(mc.rows.map((r) => `${r.register}|${r.chargePeriod}`)), captureDayStart, recordedAt);
-      out.components = mc.rows.map((r) => `${r.register}/${r.chargePeriod} ${r.price}${r.kind === 'capacity' ? ` (${r.quantitySource})` : ''}`);
-      if (mc.unsized.length) out.unsized = mc.unsized;
-      if (mc.defaultsUsed) out.defaults_used = mc.defaultsUsed;
-      out.warnings.push(...mc.warnings);
-    }
+    // Fixed charges: none in v2. Say whether the home holds any (kept as they are) or has none.
+    const held = db.prepare("SELECT COUNT(*) AS n FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND superseded_at IS NULL AND valid_to IS NULL").get(u.row.id, site.id).n;
+    out.fixed = held ? `${held} fixed charge(s) held from before, kept (tounify v2 serves none)` : 'none: tounify v2 serves per-kWh prices only (subscription and standing charges are not in it)';
     const applied = {
-      ...c.meta, country: cc, consumption_tariff: mp.tariff.productCode, company: mp.company, version: mp.version, grid_tariff: mp.grid,
-      resolution: mp.resolutionS, settlement_interval: mp.settlementS, taxes_in_price: mp.taxesInPrice,
-      ...(mc ? { defaults_used: mc.defaultsUsed ?? null } : {}),
+      ...c.meta, country: cc, consumption_tariff: mp.tariff.productCode, company: mp.company ?? c.meta.company ?? null, grid_tariff: mp.grid,
+      resolution: mp.resolutionS, taxes_in_price: mp.taxesInPrice, api: 'v2',
     };
     db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'tounify'").run(JSON.stringify(applied), site.id);
   });
@@ -853,23 +874,66 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   out.warnings.push(...mp.warnings, ...v.warnings);
   out.window = { from: iso(mp.window.from * 1000), to: iso(mp.window.to * 1000) };
   out.resolution = mp.resolutionS;
-  if (mp.settlementS) out.settlement_interval = mp.settlementS;
-  if (mp.pendingFrom) out.pending_from = iso(mp.pendingFrom * 1000);
+  if (mp.grid?.id) out.grid_tariff = mp.grid.id;
   out.next = iso(mp.next * 1000);
-  if (p.notModified) out.not_modified = ['prices'];
+  if (r.requestId) out.request_id = r.requestId;
   if (!out.warnings.length) delete out.warnings;
-  if (out.stopped) throw new TounifyError(`${out.stopped} (the prices of ${ref} were stored first)`, { kind: 'rate_limited' });
   return out;
+}
+
+/**
+ * A tariff's prices for a home before it is chosen (the tariff picker's price preview): GET /v2/{cc}/dayahead for that
+ * tariff at the home's postal code and slot length, stored like a read (the tariff, the home's own unit rows, its
+ * supplier) but with NO agreement, so the home is not priced on it; the comparison on the Tariffs page can use them.
+ * A tariff whose prices for now the home already holds is not asked again. Pricing a new tariff spends one of a
+ * testing token's distinct tariffs (refused first by the allowance guard: { available: false, reason }).
+ * Returns { available, tariff, kind, cached, rows, reason? }.
+ */
+export async function quoteTariff(site, tariffId, { client, company = null, dev = null } = {}) {
+  if (!tariffId || typeof tariffId !== 'string') throw bad('a tounify tariff id is required');
+  const cc = countryOf(site);
+  const code = `TOUNIFY-${cc}-${tariffId}`;
+  const now = Math.floor(client.clock.now() / 1000);
+  const held = db.prepare(`SELECT COUNT(*) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.tariff_code = ? AND r.site_id = ?
+    AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ?`).get(code, site.id, now, now).n;
+  if (held) return { available: true, tariff: code, cached: true };
+  const postal = String(site.postcode ?? '').trim();
+  const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : 3600;
+  const q = dayaheadQuery({ consumption: tariffId, postalCode: postal || null, resolution, historicDays: 0 });
+  let r;
+  try { r = await getPrices(client, cc, q); } catch (err) {
+    if (['allowance', 'cooldown', 'allowance_exhausted'].includes(err.kind)) return { available: false, tariff: code, reason: err.message };
+    throw err;
+  }
+  const request = { method: 'GET', path: v2path(cc, '/dayahead'), query: q, request_id: r.requestId ?? null };
+  const kind = client.kind === 'prod' ? 'prod' : 'test';
+  const catalogue = Object.fromEntries(Object.values(readState().catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
+  const mp = mapPrices(r.body, { country: cc, currency: site.currency ?? null, catalogue, company: company ?? catalogue[tariffId]?.companyid ?? null, kind, dev });
+  if (!mp.ok) {
+    quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason: `unexpected shape: ${mp.problems.join('; ')}` });
+    return { available: false, tariff: code, reason: 'tounify answered in an unexpected shape (quarantined)' };
+  }
+  const rawId = landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body }).rawId;
+  let written = 0;
+  tx(() => {
+    const u = upsertTariff(mp.tariff);
+    if (mp.company) {
+      const listed = readState().catalogue?.[cc]?.companies?.find((x) => x.id === mp.company);
+      linkSupplier(u.row.id, { provider: PROVIDER, country: cc, externalId: mp.company, name: listed?.name ?? mp.company });
+    }
+    written = putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: `${originNote({ kind, dev })}; price preview in the tariff picker (the home is not on this tariff)` })), { component: 'unit', rawId, recordedAt: recordedNow() });
+  });
+  return { available: true, tariff: code, kind: mp.tariff.kind, cached: false, rows: written, warnings: mp.warnings };
 }
 
 /** A home's tounify status for the Providers panel and the Connectors page (no secret). */
 export function homeStatus(site) {
   const c = connectionOf(site.id);
-  if (!c?.external_ref) return { status: 'skipped', reason: 'not registered with tounify yet (POST /api/sites/:id/connections with provider tounify)' };
+  if (!c?.external_ref) return { status: 'skipped', reason: 'no tounify tariff recorded for this home yet (choose it in onboarding, or POST /api/sites/:id/connections with provider tounify)' };
   const cs = readState().connections?.[c.external_ref] ?? {};
   if (cs.last_error) return { status: 'error', reason: cs.last_error };
   if (cs.last_read_at) return { status: 'ok', reason: `read ${cs.last_read_at}; ${dueOf(cs, clockOf(null).now()).reason ?? 'due now'}` };
-  return { status: 'skipped', reason: 'registered, not read yet' };
+  return { status: 'skipped', reason: c.meta.tariffs?.consumption ? 'tariff recorded, prices not read yet' : 'no tariff chosen yet' };
 }
 
 // ───────────── Catalogue (shared, per country, once a week) ─────────────
@@ -877,36 +941,56 @@ export function homeStatus(site) {
 /** Whether the country's weekly catalogue refresh may run now. */
 export function catalogueDue(country, nowMs = clockOf(null).now()) {
   const cat = readState().catalogue?.[country];
-  if (cat?.refreshed_at && nowMs - cat.refreshed_at < policy.catalogueEveryMs) return false;
+  if (cat?.api === 'v2' && cat.refreshed_at && nowMs - cat.refreshed_at < policy.catalogueEveryMs) return false;
   return dbStore().nextAllowedAt() - nowMs <= policy.maxWaitMs;
 }
 
 const compactCompany = (x) => ({ id: x.id, name: typeof x.name === 'string' ? x.name : null });
-const compactTariff = (x) => ({ id: x.id, name: typeof x.name === 'string' ? x.name : null, companyid: x.companyid ?? null, type: x.type ?? null, time_of_use_rates: Number.isInteger(x.time_of_use_rates) ? x.time_of_use_rates : null, available: x.available ?? null });
+const compactTariff = (x) => ({ id: x.id, name: typeof x.name === 'string' ? x.name : null, companyid: x.companyid ?? null, type: x.type ?? null, available: x.available ?? null, link: typeof x.link === 'string' ? x.link : null });
+const listOfIds = (what) => (b) => (Array.isArray(b) && b.every((x) => isObj(x) && typeof x.id === 'string') ? null : `not a list of ${what} with ids`);
+
+// The suppliers our homes in a country are on (each one's tariffs are listed in the weekly refresh; a company is
+// spent once on a testing token, so only these are named).
+function companiesInUse(country) {
+  const st = readState().connections ?? {};
+  const out = new Set();
+  for (const r of db.prepare("SELECT c.external_ref, c.meta, s.country FROM connection c JOIN site s ON s.id = c.site_id WHERE c.provider = 'tounify' AND c.external_ref IS NOT NULL").all()) {
+    let meta = {};
+    try { meta = JSON.parse(r.meta || '{}'); } catch { meta = {}; }
+    if ((meta.country ?? r.country) !== country) continue;
+    const co = meta.company ?? st[r.external_ref]?.company;
+    if (co) out.add(co);
+  }
+  return [...out].sort();
+}
 
 /**
- * The country's catalogue, once a week at most (ETags): connection-properties; then, under one of
- * the country's registered connections (v3 lists the catalogue only under a connection), the
- * consumption companies and the tariffs of the companies the homes' tariffs belong to (each company
- * named spends one of the testing token's distinct companies). Kept in provider_state (and landed
- * raw); used to word a tariff's kind and name, and to send only properties the market takes.
+ * The country's catalogue, once a week at most (ETags): its suppliers (GET /v2/{cc}/consumption/companies, national),
+ * and the tariffs of the suppliers our homes are on (each company named spends one of a testing token's distinct
+ * companies, once). Kept in provider_state (and landed raw); used to name a tariff and to list the picker's suppliers.
  */
 export async function refreshCatalogue({ country, client, force = false } = {}) {
   const nowMs = client.clock.now();
-  const cat0 = readState().catalogue?.[country] ?? {};
+  // A catalogue read from the v3 preview (no api mark) is read again from v2 at once: its supplier list was narrowed
+  // by a connection, and its lists carry v3 fields.
+  const v3cat = readState().catalogue?.[country] ?? {};
+  const cat0 = v3cat.api === 'v2' ? v3cat : { tariffs: {}, listed_at: {}, api: 'v2' };
   if (!force && cat0.refreshed_at && nowMs - cat0.refreshed_at < policy.catalogueEveryMs) {
     return { skipped: `not due: one catalogue refresh a week per country, the next after ${iso(cat0.refreshed_at + policy.catalogueEveryMs)}` };
   }
   const cat = structuredClone(cat0);
+  delete cat.properties;   // a v3 list: v2 takes no connection properties
   cat.etags ??= {};
   cat.raw ??= {};
+  cat.listed_at ??= {};
   const out = { country, read: [], not_modified: [], warnings: [] };
-  const step = async (key, method, pathname, opts, accept) => {
+  const step = async (key, pathname, opts, accept) => {
     const stored = cat.raw[key] ? rawBody(cat.raw[key]) : null;
-    const r = await client.request(method, pathname, { ...opts, etag: stored && cat.etags[key] ? cat.etags[key] : null });
+    const r = await client.request('GET', pathname, { ...opts, etag: stored && cat.etags[key] ? cat.etags[key] : null });
+    cat.listed_at[key] = nowMs;
     if (r.notModified) { out.not_modified.push(key); return stored; }
     const problem = accept(r.body);
-    const request = { method, path: pathname, request_id: r.requestId ?? null };
+    const request = { method: 'GET', path: pathname, request_id: r.requestId ?? null };
     if (problem) {
       quarantine({ source: PROVIDER, siteId: null, request, body: r.body, reason: `unexpected shape: ${problem}` });
       out.warnings.push(`${key}: unexpected shape (${problem}): quarantined`);
@@ -917,26 +1001,15 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
     out.read.push(key);
     return r.body;
   };
-  const listOf = (field) => (b) => (Array.isArray(b) && b.every((x) => isObj(x) && typeof x.id === 'string') ? null : `not a list of ${field} with ids`);
   try {
-    const props = await step('properties', 'GET', `/v3/${encodeURIComponent(country)}/connection-properties`, { scope: { endpoint: 'GET connection-properties', thing: country } },
-      (b) => (isObj(b) && Array.isArray(b.properties) ? null : 'no properties list'));
-    if (props) cat.properties = props.properties.filter((x) => isObj(x) && typeof x.property === 'string').map((x) => ({ property: x.property, values: isObj(x.values) ? x.values : null }));
-    const refs = db.prepare("SELECT c.external_ref, c.meta, s.country FROM connection c JOIN site s ON s.id = c.site_id WHERE c.provider = 'tounify' AND c.external_ref IS NOT NULL ORDER BY c.id").all()
-      .filter((r) => { try { return (JSON.parse(r.meta || '{}').country ?? r.country) === country; } catch { return r.country === country; } }).map((r) => r.external_ref);
-    if (refs.length) {
-      const ref = refs[0];
-      const comps = await step('companies', 'GET', cpath(country, ref, '/consumption/companies'), { scope: { endpoint: 'GET companies', thing: ref } }, listOf('companies'));
-      if (comps) cat.companies = comps.map(compactCompany);
-      const st = readState().connections ?? {};
-      const wanted = [...new Set(refs.map((r) => st[r]?.company).filter(Boolean))];
-      cat.tariffs ??= {};
-      for (const company of wanted) {
-        const list = await step(`tariffs:${company}`, 'GET', cpath(country, ref, `/consumption/${encodeURIComponent(company)}/tariffs`),
-          { scope: { endpoint: 'GET tariffs', thing: company }, names: { companies: [company] } }, listOf('tariffs'));
-        if (list) cat.tariffs[company] = list.map(compactTariff);
-      }
-    } else out.warnings.push(`no home in ${country} is registered with tounify: companies and tariffs are listed only under a connection`);
+    const comps = await step('companies', v2path(country, '/consumption/companies'), { scope: { endpoint: 'GET companies', thing: country } }, listOfIds('companies'));
+    if (comps) cat.companies = comps.map(compactCompany);
+    cat.tariffs ??= {};
+    for (const company of companiesInUse(country)) {
+      const list = await step(`tariffs:${company}`, v2path(country, `/consumption/${encodeURIComponent(company)}/tariffs`),
+        { scope: { endpoint: 'GET tariffs', thing: company }, names: { companies: [company] } }, listOfIds('tariffs'));
+      if (list) cat.tariffs[company] = list.map(compactTariff);
+    }
   } catch (err) {
     updateState((s) => { s.catalogue ??= {}; s.catalogue[country] = { ...cat, last_error: err.message, last_error_at: nowMs }; });
     if (err.kind === 'allowance' || err.kind === 'cooldown') return { skipped: err.message, ...out };
@@ -945,7 +1018,6 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
   cat.refreshed_at = nowMs;
   cat.last_error = null;
   updateState((s) => { s.catalogue ??= {}; s.catalogue[country] = cat; });
-  out.properties = cat.properties?.length ?? 0;
   out.companies = cat.companies?.length ?? 0;
   out.tariffs = Object.fromEntries(Object.entries(cat.tariffs ?? {}).map(([k, v]) => [k, v.length]));
   out.next_refresh_after = iso(nowMs + policy.catalogueEveryMs);
@@ -955,50 +1027,57 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
 
 // ───────────── Supplier and tariff lists for the tariff picker (src/core/tariff-picker.js) ─────────────
 
-// v3 lists companies and tariffs only under a registered connection. Each list is kept in provider_state
-// (catalogue[country].companies / .tariffs[company], with the moment read) and asked again at most once
-// every catalogueEveryMs (7 days), so the second and later homes of a country cost no call. Naming a
-// company spends one of a testing token's distinct companies (the allowance guard refuses it first).
-async function listUnder(site, client, key, pathname, scope, names, accept, force) {
-  const c = connectionOf(site.id);
-  if (!c?.external_ref) throw bad('the home is not registered with tounify yet');
-  const cc = c.meta.country ?? site.country ?? site.market_code;
-  const cat = readState().catalogue?.[cc] ?? {};
+// v2 lists a country's suppliers and a supplier's tariffs with no address and no registration. Each list is kept in
+// provider_state (catalogue[country].companies / .tariffs[company], with the moment read) and asked again at most once
+// every catalogueEveryMs (7 days), so the second and later homes of a country cost no call. Naming a company spends
+// one of a testing token's distinct companies (the allowance guard refuses it first).
+async function listCached(country, client, key, pathname, scope, names, force, siteId = null) {
+  const cat0 = readState().catalogue?.[country] ?? {};
+  const cat = cat0.api === 'v2' ? cat0 : {};   // a list read from the v3 preview is never reused
   const nowMs = client.clock.now();
   const at = cat.listed_at?.[key];
   const held = key === 'companies' ? cat.companies : cat.tariffs?.[key.slice('tariffs:'.length)];
-  if (!force && held && at && nowMs - at < policy.catalogueEveryMs) return { list: held, cached: true, country: cc, listed_at: iso(at) };
-  const path = cpath(cc, c.external_ref, pathname);
-  const r = await client.request('GET', path, { scope, names });
-  const problem = accept(r.body);
-  const request = { method: 'GET', path, request_id: r.requestId ?? null };
+  if (!force && held && at && nowMs - at < policy.catalogueEveryMs) return { list: held, cached: true, country, listed_at: iso(at) };
+  const r = await client.request('GET', pathname, { scope, names });
+  const request = { method: 'GET', path: pathname, request_id: r.requestId ?? null };
+  const problem = listOfIds(key === 'companies' ? 'companies' : 'tariffs')(r.body);
   if (problem) {
-    quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason: `unexpected shape: ${problem}` });
+    quarantine({ source: PROVIDER, siteId, request, body: r.body, reason: `unexpected shape: ${problem}` });
     throw new TounifyError(`tounify ${key}: unexpected answer (quarantined)`, { kind: 'shape' });
   }
-  landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body });
+  landRaw({ source: PROVIDER, siteId, request, body: r.body });
   const list = key === 'companies' ? r.body.map(compactCompany) : r.body.map(compactTariff);
   updateState((s) => {
     s.catalogue ??= {};
-    const k = (s.catalogue[cc] ??= {});
+    if (s.catalogue[country]?.api !== 'v2') s.catalogue[country] = { api: 'v2' };
+    const k = s.catalogue[country];
     if (key === 'companies') k.companies = list; else (k.tariffs ??= {})[key.slice('tariffs:'.length)] = list;
     (k.listed_at ??= {})[key] = nowMs;
   });
-  return { list, cached: false, country: cc, listed_at: iso(nowMs) };
+  return { list, cached: false, country, listed_at: iso(nowMs) };
 }
-const listOfIds = (what) => (b) => (Array.isArray(b) && b.every((x) => isObj(x) && typeof x.id === 'string') ? null : `not a list of ${what} with ids`);
+const countryOf = (site) => site.country ?? site.market_code;
 
 /** The electricity suppliers (consumption companies) of the home's country: { list: [{ id, name }], cached, country }. */
 export function listCompanies(site, { client, force = false } = {}) {
-  const ref = connectionOf(site.id)?.external_ref;
-  return listUnder(site, client, 'companies', '/consumption/companies', { endpoint: 'GET companies', thing: ref ?? 'none' }, undefined, listOfIds('companies'), force);
+  const cc = countryOf(site);
+  return listCached(cc, client, 'companies', v2path(cc, '/consumption/companies'), { endpoint: 'GET companies', thing: cc }, undefined, force, site.id);
 }
 
-/** One supplier's consumption tariffs: { list: [{ id, name, companyid, type, time_of_use_rates, available }], cached, country }. */
+/** One supplier's consumption tariffs: { list: [{ id, name, companyid, type, available, link }], cached, country }. */
 export function listCompanyTariffs(site, company, { client, force = false } = {}) {
   if (!company || typeof company !== 'string') throw bad('a supplier (tounify company id) is required');
-  return listUnder(site, client, `tariffs:${company}`, `/consumption/${encodeURIComponent(company)}/tariffs`, { endpoint: 'GET tariffs', thing: company },
-    { companies: [company] }, listOfIds('tariffs'), force);
+  const cc = countryOf(site);
+  return listCached(cc, client, `tariffs:${company}`, v2path(cc, `/consumption/${encodeURIComponent(company)}/tariffs`), { endpoint: 'GET tariffs', thing: company },
+    { companies: [company] }, force, site.id);
+}
+
+/** The network operator serving a postal code (GET /v2/{cc}/grid/companies?postal_code=): { id, name } or null (not mapped). */
+export async function gridOperatorAt(cc, postalCode, { client } = {}) {
+  const r = await client.request('GET', v2path(cc, '/grid/companies'), { query: { postal_code: postalCode }, scope: { endpoint: 'GET grid companies', thing: `${cc}:${postalCode}` } });
+  if (!Array.isArray(r.body)) return null;
+  const op = r.body.find((x) => isObj(x) && typeof x.id === 'string');
+  return op ? { id: op.id, name: typeof op.name === 'string' ? op.name : op.id } : null;
 }
 
 /** The catalogue's state for a market (status hook). */
@@ -1006,27 +1085,18 @@ export function catalogueStatus(country) {
   const cat = readState().catalogue?.[country];
   if (!cat) return { status: 'skipped', reason: `no tounify catalogue refresh for ${country} yet` };
   if (cat.last_error && (cat.last_error_at ?? 0) >= (cat.refreshed_at ?? 0)) return { status: 'error', reason: cat.last_error };
-  return { status: 'ok', reason: `${country}: ${cat.properties?.length ?? 0} properties, ${cat.companies?.length ?? 0} companies, refreshed ${iso(cat.refreshed_at)}` };
+  // Only the tariff picker's supplier lists are held (catalogue[cc].companies/tariffs, listed_at): the weekly refresh
+  // has not run for this market yet.
+  if (!Number.isFinite(cat.refreshed_at)) return { status: 'skipped', reason: `no tounify catalogue refresh for ${country} yet (supplier lists read for the tariff picker)` };
+  const tariffs = Object.keys(cat.tariffs ?? {});
+  return { status: 'ok', reason: `${country}: ${cat.companies?.length ?? 0} suppliers${tariffs.length ? `, the tariffs of ${tariffs.join(', ')}` : ''}, refreshed ${iso(cat.refreshed_at)}` };
 }
 
-// ───────────── Registering a home (one connection per home, billed per connection) ─────────────
+// ───────────── A home's tariff (kept here: v2 has no connection to register) ─────────────
 
-// The properties FR and NL connections take, as GET /v3/{cc}/connection-properties answered when
-// captured (test/fixtures/tounify/props-*.json). A refreshed catalogue replaces them. A market with
-// neither sends only what every market takes: the postal code, the operator and the tariff ids.
-export const KNOWN_PROPERTIES = Object.freeze({
-  FR: Object.freeze({ 'capacity.contracted_kva': { allowed: Array.from({ length: 34 }, (_, i) => i + 3) }, 'metering.type': {}, 'metering.communication': {}, 'metering.off_peak_hours': { hours_per_day: 8 }, voltage_level: {} }),
-  NL: Object.freeze({ 'capacity.fuse_ampere': {}, 'capacity.phases': {}, 'consumption.annual_kwh': {}, 'metering.type': {}, customer_class: {}, voltage_level: {} }),
-});
-function propertiesOf(cc) {
-  const cached = readState().catalogue?.[cc]?.properties;
-  if (Array.isArray(cached) && cached.length) return Object.fromEntries(cached.map((p) => [p.property, p.values ?? {}]));
-  return KNOWN_PROPERTIES[cc] ?? {};
-}
 const hhmm = (min) => `${String(Math.floor((min % 1440) / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
-// The off-peak hours a home's own meter windows state (register hc / off-peak / night, every day,
-// local clock), as tounify's metering.off_peak_hours, or null.
+// The off-peak hours a home's own meter windows state (register hc / off-peak / night, every day, local clock), or null.
 function offPeakOf(siteId) {
   const ws = db.prepare(`SELECT w.start_min, w.end_min FROM register_window w JOIN device d ON d.id = w.device_id
     WHERE d.site_id = ? AND d.retired_at IS NULL AND w.superseded_at IS NULL AND w.calendar IS NULL AND w.clock = 'local' AND w.weekdays = 127
@@ -1037,124 +1107,75 @@ function offPeakOf(siteId) {
 }
 
 /**
- * The registration body for a home: reference eb-site-<id>, the postal code, the tariffs, and only
- * the properties the market takes (capacity from site.contracted_kva, off-peak hours from the
- * meter's own windows, unless given). Returns { body, warnings, names }. No personal data.
+ * What is kept for a home's tariff (connection.meta): { country, postal_code, tariffs: { consumption, feedin },
+ * company, off_peak_hours, capacity }. The postal code is the home's unless given; the tariff is required unless
+ * no_tariff_yet. Off-peak hours: those given (metering.off_peak_hours.all_year, or off_peak_hours), else the meter's
+ * own windows. Returns { meta, warnings, names }. Pure on the database; no personal data beyond the postal code.
  */
-export function connectionBody(site, input = {}, cc = site.country ?? site.market_code) {
+export function connectionBody(site, input = {}, cc = countryOf(site)) {
   const warnings = [];
-  const props = propertiesOf(cc);
-  const listed = (p) => Object.prototype.hasOwnProperty.call(props, p);
   const postal = String(input.postal_code ?? site.postcode ?? '').trim();
   if (!postal) throw bad('postal_code is required: the postal code selects the network operator, the local levies and the time-of-use clock (it is the only address detail sent)');
   const consumption = typeof input.consumption_tariff === 'string' ? input.consumption_tariff.trim() : '';
-  // A home is registered before its tariff is chosen (no_tariff_yet: the tariff picker, which lists the
-  // suppliers and tariffs only under a connection); otherwise the tariff is required.
   if (!consumption && input.no_tariff_yet !== true) throw bad('consumption_tariff is required: the tounify tariff id the home buys its energy on (for example EDFTRVHPHC)');
   const feedin = typeof input.feedin_tariff === 'string' && input.feedin_tariff.trim() ? input.feedin_tariff.trim() : null;
-  const body = { reference: referenceOf(site), postal_code: postal, ...(consumption ? { tariffs: { consumption, ...(feedin ? { feedin } : {}) } } : {}) };
-  if (typeof input.grid_operator === 'string' && input.grid_operator.trim()) body.grid_operator = input.grid_operator.trim();
-  // Capacity: what the caller gave (only properties the market lists), else the home's contracted kVA.
-  const capacity = {};
-  for (const [k, v] of Object.entries(isObj(input.capacity) ? input.capacity : {})) {
-    if (listed(`capacity.${k}`)) capacity[k] = v; else warnings.push(`capacity.${k} is not a property ${cc} takes: not sent`);
-  }
-  if (capacity.contracted_kva == null && listed('capacity.contracted_kva') && site.contracted_kva > 0) {
-    const allowed = props['capacity.contracted_kva']?.allowed;
-    if (!Array.isArray(allowed) || allowed.includes(site.contracted_kva)) capacity.contracted_kva = site.contracted_kva;
-    else warnings.push(`contracted ${site.contracted_kva} kVA is not a power ${cc} takes (${allowed[0]}-${allowed[allowed.length - 1]}): not sent`);
-  }
-  if (Object.keys(capacity).length) body.capacity = capacity;
-  // Metering: what the caller gave, and the meter's own off-peak hours where the market takes them.
-  const metering = {};
-  for (const [k, v] of Object.entries(isObj(input.metering) ? input.metering : {})) {
-    if (listed(`metering.${k}`)) metering[k] = v; else warnings.push(`metering.${k} is not a property ${cc} takes: not sent`);
-  }
-  if (metering.off_peak_hours == null && listed('metering.off_peak_hours')) {
-    const op = offPeakOf(site.id);
-    const need = props['metering.off_peak_hours']?.hours_per_day;
-    if (op && need && op.minutes !== need * 60) warnings.push(`the meter's off-peak windows hold ${op.minutes / 60} h a day, ${cc} takes exactly ${need} h: not sent (the operator's reference window is used)`);
-    else if (op) metering.off_peak_hours = { all_year: op.all_year };
-  }
-  if (Object.keys(metering).length) body.metering = metering;
-  return { body, warnings, names: { tariffs: [consumption, feedin].filter(Boolean) } };
-}
-
-function storeConnection(site, ref, cc, conn, warnings) {
-  const gr = isObj(conn?.grid_resolution) ? conn.grid_resolution : null;
+  const given = input.off_peak_hours ?? input.metering?.off_peak_hours?.all_year ?? null;
+  const hours = Array.isArray(given) ? given.filter((w) => isObj(w) && typeof w.from === 'string' && typeof w.to === 'string').map((w) => ({ from: w.from, to: w.to }))
+    : isObj(given) && typeof given.from === 'string' ? [{ from: given.from, to: given.to }] : (offPeakOf(site.id)?.all_year ?? null);
+  for (const k of ['capacity', 'metering', 'grid_operator']) if (input[k] != null && !(k === 'metering' && given)) warnings.push(`${k}: tounify v2 takes no connection details; kept here only where it prices (off-peak hours)`);
   const meta = {
-    country: cc, tariffs: isObj(conn?.tariffs) ? conn.tariffs : null,
-    grid_operator: gr?.operator ? { id: gr.operator.id ?? null, name: gr.operator.name ?? null } : null,
-    location_mapped: gr?.location_mapped ?? null, assumed: gr?.assumed ?? null, grid_source: gr?.source ?? null,
-    capacity: isObj(conn?.capacity) ? conn.capacity : null, metering: isObj(conn?.metering) ? conn.metering : null,
-    updated_at: conn?.updated_at ?? null,
+    country: cc, postal_code: postal, tariffs: { consumption: consumption || null, feedin },
+    company: typeof input.company === 'string' && input.company ? input.company : null,
+    off_peak_hours: hours?.length ? hours : null,
+    capacity: site.contracted_kva > 0 ? { contracted_kva: site.contracted_kva } : null,
+    api: 'v2',
   };
-  if (!gr) warnings.push('grid_resolution is null: the postal code resolves to no network operator (name it in grid_operator)');
-  else if (gr.assumed) warnings.push(`the operator ${gr.operator?.id ?? '?'} was assumed among several: confirm it against the bill and send grid_operator`);
-  else if (gr.location_mapped === false) warnings.push('location_mapped is false: the operator named was checked against nothing');
-  const existed = !!db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'tounify'").get(site.id);
-  db.prepare(`INSERT INTO connection (site_id, provider, external_ref, meta) VALUES (?, 'tounify', ?, ?)
-    ON CONFLICT (site_id, provider) DO UPDATE SET external_ref = excluded.external_ref, meta = excluded.meta`).run(site.id, ref, JSON.stringify(meta));
-  return { existed, meta };
+  return { meta, warnings, names: { tariffs: [consumption, feedin].filter(Boolean) } };
 }
 
 /**
- * Register (POST) or update (PATCH) the home's tounify connection: reference eb-site-<site id>,
- * the postal code and the tariffs, plus the capacity and off-peak hours the home's data states
- * where the market takes them. Stores the connection row (provider 'tounify', external_ref the
- * reference, meta the non-secret applied info) and returns the grid resolution. A new tariff id
- * spends one of the testing token's distinct tariffs (refused before the call when over the cap).
+ * Record the home's tounify tariff (no call: v2 has no connection): the connection row (provider 'tounify',
+ * external_ref eb-site-<site id>, a local reference) with the tariff, postal code, supplier and off-peak hours. With
+ * a client, the network operator serving the postal code is looked up (one listing request, nothing spent) and kept
+ * for display; a failure there is a warning. The tariff's prices are read by the next daily sync (or right away by
+ * the tariff picker). Returns { created, reference, country, grid_resolution, tariffs, connection, warnings }.
  */
-export async function registerConnection(site, input = {}, { client } = {}) {
-  const cc = site.country ?? site.market_code;
+export async function registerConnection(site, input = {}, { client = null } = {}) {
+  const cc = countryOf(site);
   const ref = referenceOf(site);
-  const { body, warnings, names } = connectionBody(site, input, cc);
+  const { meta, warnings } = connectionBody(site, input, cc);
   const prior = connectionOf(site.id);
-  const st = readState().connections?.[ref] ?? {};
-  const patchBody = { ...body };
-  delete patchBody.reference;
-  if (body.tariffs) patchBody.tariffs = { consumption: body.tariffs.consumption, feedin: body.tariffs.feedin ?? null };
-  let r;
-  let created = false;
-  const patch = () => client.request('PATCH', cpath(cc, ref), { body: patchBody, ifMatch: st.conn_etag ?? null, scope: { endpoint: 'PATCH connection', thing: ref }, names });
-  if (prior?.external_ref === ref) r = await patch();
-  else {
-    try {
-      r = await client.request('POST', `/v3/${encodeURIComponent(cc)}/connections`, { body, scope: { endpoint: 'POST connections', thing: 'registrations' }, names });
-      created = true;
-    } catch (err) {
-      if (err.code !== 'connection_exists') throw err;
-      r = await patch();
+  let operator = prior?.meta?.postal_code === meta.postal_code ? prior.meta.grid_operator ?? null : null;
+  if (!operator && client) {
+    try { operator = await gridOperatorAt(cc, meta.postal_code, { client }); if (!operator) warnings.push(`the postal code ${meta.postal_code} maps to no network operator in tounify: prices may lack the grid charge`); } catch (err) {
+      if (['rate_limited', 'allowance_exhausted', 'auth'].includes(err.kind)) throw err;
+      warnings.push(`network operator not looked up: ${err.message}`);
     }
   }
-  const conn = r.body;
-  if (!isObj(conn) || conn.reference !== ref) {
-    quarantine({ source: PROVIDER, siteId: site.id, request: { method: created ? 'POST' : 'PATCH', path: created ? `/v3/${cc}/connections` : cpath(cc, ref) }, body: conn, reason: 'unexpected shape: no connection with our reference in the answer' });
-    throw new TounifyError(`tounify registration of ${ref}: unexpected answer (quarantined)`, { kind: 'shape' });
-  }
-  landRaw({ source: PROVIDER, siteId: site.id, request: { method: created ? 'POST' : 'PATCH', path: created ? `/v3/${cc}/connections` : cpath(cc, ref), request_id: r.requestId ?? null }, body: conn });
-  const { existed, meta } = storeConnection(site, ref, cc, conn, warnings);
-  updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, conn_etag: r.etag ?? null, registered_at: conn.created_at ?? null }; });
+  meta.grid_operator = operator ?? null;
+  meta.updated_at = iso(client?.clock?.now() ?? Date.now());
+  const keep = prior?.meta ?? {};
+  const full = { ...keep, ...meta, company: meta.company ?? (keep.tariffs?.consumption === meta.tariffs.consumption ? keep.company ?? null : null) };
+  db.prepare(`INSERT INTO connection (site_id, provider, external_ref, meta) VALUES (?, 'tounify', ?, ?)
+    ON CONFLICT (site_id, provider) DO UPDATE SET external_ref = excluded.external_ref, meta = excluded.meta`).run(site.id, ref, JSON.stringify(full));
+  // A new tariff is read in full at the next read (the daily gate is per tariff choice, not per day alone).
+  if (keep.tariffs?.consumption !== meta.tariffs.consumption) updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, last_price_day: null, next_at: null }; });
   return {
-    created: created || !existed, reference: ref, country: cc, grid_resolution: conn.grid_resolution ?? null, tariffs: meta.tariffs,
-    connection: { provider: PROVIDER, status: 'registered', external_ref: ref }, sent: Object.keys(body).filter((k) => k !== 'reference'),
-    note: 'billed per connection on a production token; prices are read at the next daily sync', ...(warnings.length ? { warnings } : {}),
+    created: !prior, reference: ref, country: cc,
+    grid_resolution: operator ? { operator, location_mapped: true, source: 'postal_code' } : null,
+    tariffs: full.tariffs, connection: { provider: PROVIDER, status: 'recorded', external_ref: ref },
+    note: 'tounify v2 has no connection: the tariff and postal code are kept here; prices are read at the next daily sync',
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 
-/** Delete the home's tounify connection upstream, end its agreements now (kept as history) and drop the row. */
-export async function removeConnection(site, { client } = {}) {
+/** Forget the home's tounify tariff: end its agreements now (kept as history) and drop the row. No call. */
+export async function removeConnection(site, { client = null } = {}) {
   const c = connectionOf(site.id);
-  if (!c?.external_ref) return { removed: false, reason: 'not registered with tounify' };
+  if (!c?.external_ref) return { removed: false, reason: 'no tounify tariff recorded for this home' };
   const ref = c.external_ref;
-  const cc = c.meta.country ?? site.country ?? site.market_code;
-  const st = readState().connections?.[ref] ?? {};
-  try {
-    await client.request('DELETE', cpath(cc, ref), { ifMatch: st.conn_etag ?? null, scope: { endpoint: 'DELETE connection', thing: ref } });
-  } catch (err) {
-    if (err.code !== 'connection_not_found') throw err;
-  }
-  const now = Math.floor(client.clock.now() / 1000);
+  const cc = c.meta.country ?? countryOf(site);
+  const now = Math.floor((client?.clock?.now() ?? Date.now()) / 1000);
   tx(() => {
     for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'tounify' AND retired_at IS NULL").all(site.id)) {
       const cur = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(d.id);
@@ -1171,7 +1192,7 @@ export async function removeConnection(site, { client } = {}) {
 /**
  * POST /api/sites/:id/connections with provider 'tounify': the registry gate first (listed for the
  * home's market in a per-home role, switched on, licensed or on TOUNIFY_DEV with a test token, built,
- * owned by the core), then the core's token, then the registration.
+ * owned by the core), then the core's token, then the home's tariff recorded.
  */
 export async function connectTounify(d, site, input = {}, { env = process.env, client = null } = {}) {
   const { row, market } = connectable(d, site, { provider: PROVIDER, role: input.role ?? null });

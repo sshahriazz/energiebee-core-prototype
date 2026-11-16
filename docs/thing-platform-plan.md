@@ -127,7 +127,7 @@ Give every thing its own timeline on the shared grid, and roll them up.
 | 4.2 | `control_request(thing_id, capability, desired, priority safety/manual/schedule/optimiser, valid_from, valid_until, source)`: the highest current request wins, and a lower one returns when it expires. The winner becomes the `command`, as today. | L |
 | 4.3 | `control_limit` on any thing: a device (battery reserve), a room (comfort 18–22 °C), a circuit or space (garage ≤ 32 A across its members), the home (export limit). Sum limits are checked across members. | M |
 | 4.4 | Group commands: a command on a room or system splits into one command per member with the capability, each checked against its own limits, linked by `parent_command_id`. The result shows each member's outcome. | M |
-| 4.5 | `execute()` / `readback()` on adapters whose manifest lists write actions. **The first real driver is the Sunsynk inverter (decided 16 Nov: it is the only controllable device the owner has).** Steps: (a) read the current settings only, as state points, for a week; (b) battery reserve %, within installer limits, confirmed by read-back; (c) charge and discharge windows. Every change has a manual revert and expires. Before (b), check whether the Sunsynk login may be used for automated writes: the provider note says a production system needs a partner key. Second candidate: the BMW 530e already discovered through Octopus Kraken, if it charges on Intelligent Octopus (bump charge, target level). | L |
+| 4.5 | `execute()` / `readback()` on adapters whose manifest lists write actions. **The first real driver is the Sunsynk inverter (decided 16 Nov: it is the only controllable device the owner has).** Steps: (a) read the current settings only, as state points, for a week; (b) battery reserve %, within installer limits, confirmed by read-back; (c) charge and discharge windows. Every change has a manual revert and expires. Before (b), check whether the Sunsynk login may be used for automated writes: the provider note says a production system needs a partner key. Fallback if Sunsynk writes are not allowed: the BMW 530e already discovered through Octopus Kraken, if it charges on Intelligent Octopus (bump charge, target level). Check this only when Phase 4 starts. | L |
 | 4.6 | Scenes and schedules: named sets of desired states, sent through `control_request` with priority `schedule`. | M |
 
 **Exit:** a manual override beats the optimiser and expires correctly; a group command on the garage reaches every capable member; one real device completes send → read-back → verified.
@@ -186,7 +186,4 @@ Made by the owner on 16 November 2026:
 | First real device to control | The Sunsynk inverter (the only controllable device the owner has) | Phase 4.5 |
 | `site` vs the home thing | Fold `site` into the home thing | Phase 1.3b |
 
-Still open:
-
-1. Does the BMW 530e charge on Intelligent Octopus? If yes, it is the second control candidate.
-2. Where are the inverter and battery physically (optional, for maintenance only)?
+Nothing is open that blocks Phases 0–3.

@@ -47,7 +47,7 @@ export const GB_REGION_ALIASES = Object.freeze(GB_DNO.flatMap(([code, letter, ts
   { scheme: 'gb_dno', code, alias_scheme: 'tariffscan_name', alias_code: tsName },
 ].map((a) => Object.freeze(a))));
 
-// Writes the rows into a database that has delta 003 applied (any node:sqlite DatabaseSync).
+// Writes the rows through db (src/db/db.js), awaiting each.
 // Inserts only the regions and aliases that are missing. An existing row is never changed: a
 // region's name, or the region an alias points to, stays as an operator set it (an alias is never
 // moved to another region silently). Returns the number of rows written.

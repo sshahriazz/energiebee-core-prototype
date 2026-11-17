@@ -4,7 +4,7 @@
 //
 // A database is cloned from a template, built once per set of migrations: `energiebee_tpl_<hash>_empty`
 // (the migrations only) or `_fixture` (the migrations with the frozen, identifier-free GB home of
-// test/fixtures/gb-home.db copied in after them, scripts/sqlite-to-postgres.js). The first test process
+// test/fixtures/gb-home.json.gz loaded after them, scripts/lib/databases.js). The first test process
 // that needs a template builds it under an advisory lock; the others wait for it. Test databases are
 // dropped when their process ends; `npm test` also drops any left by an interrupted run (pretest).
 //
@@ -15,8 +15,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { copySqliteToPostgres } from '../scripts/sqlite-to-postgres.js';
-import { applyMigrations, createDatabase, dropDatabaseSync, migrationsHash, quoteId, urlFor, withClient } from '../scripts/lib/databases.js';
+import { applyMigrations, createDatabase, dropDatabaseSync, dumpTables, loadTables, migrationsHash, quoteId, urlFor, withClient } from '../scripts/lib/databases.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 // Tests never read .env (its credentials and tariff codes would leak into them): only TEST_DATABASE_URL is taken from it.
@@ -30,11 +29,11 @@ export const adminUrl = process.env.TEST_DATABASE_URL || 'postgresql://localhost
 
 // The frozen, identifier-free real GB home (scripts/make-fixture.js). Tests that need real shapes start
 // from it, so a repopulated development database cannot turn them red.
-export const fixtureDb = path.join(root, 'test', 'fixtures', 'gb-home.db');
+export const fixtureDb = path.join(root, 'test', 'fixtures', 'gb-home.json.gz');
 export const hasLive = fs.existsSync(fixtureDb);
 
 // The template's name changes with every migration and with the fixture, so a stale template is never used.
-const templateHash = () => migrationsHash([...(hasLive ? [fixtureDb] : []), path.join(root, 'scripts', 'sqlite-to-postgres.js'), path.join(root, 'scripts', 'lib', 'databases.js')]);
+const templateHash = () => migrationsHash([...(hasLive ? [fixtureDb] : []), path.join(root, 'scripts', 'lib', 'databases.js')]);
 
 async function ensureTemplate(kind) {
   const name = `energiebee_tpl_${templateHash()}_${kind}`;
@@ -52,7 +51,7 @@ async function ensureTemplate(kind) {
       await c.query(`DROP DATABASE IF EXISTS ${quoteId(building)} WITH (FORCE)`);
       await createDatabase(building, adminUrl);
       await applyMigrations(urlFor(building, adminUrl));
-      if (kind === 'fixture') await copySqliteToPostgres(fixtureDb, urlFor(building, adminUrl));
+      if (kind === 'fixture') await loadTables(urlFor(building, adminUrl), dumpTables(fixtureDb));
       await c.query(`ALTER DATABASE ${quoteId(building)} RENAME TO ${quoteId(name)}`);
     } finally {
       await c.query('SELECT pg_advisory_unlock(hashtext($1))', [name]);

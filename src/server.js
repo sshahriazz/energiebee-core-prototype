@@ -964,7 +964,7 @@ export async function start() {
   });
 
   // Stop cleanly when asked (Ctrl+C, the supervisor, launchd): stop taking requests and close
-  // the database. SQLite's write-ahead log keeps it consistent even if a write was cut short.
+  // the database connections. A write cut short is rolled back by Postgres with its transaction.
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, async () => {
       server.close();

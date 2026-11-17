@@ -24,7 +24,7 @@ export const MARKETS = Object.freeze([
 
 export const MARKET_COLUMNS = Object.freeze(['code', 'country', 'timezone', 'currency', 'price_interval_s', 'meter_interval_s', 'default_slot_s', 'bidding_zone', 'origin', 'origin_note']);
 
-// Writes the rows into a database that has delta 003 applied (any node:sqlite DatabaseSync).
+// Writes the rows through db (src/db/db.js), awaiting each.
 // Inserts only the markets that are missing: a row that exists is never changed, so an operator's
 // correction (an interval, a zone, a note) is kept. A changed seed value reaches an existing
 // database only through a delta. Returns the number of rows written.

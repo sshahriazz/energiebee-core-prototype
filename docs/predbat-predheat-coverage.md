@@ -55,7 +55,7 @@ PB-OTHER holds the PB-OTH-* ids and PB-PLAN-OUT the PB-PLAN-* ids, as in the cat
 
 ## Where the items are kept
 
-1092 targets in all: device_action 22, metric 112, read_function 69, registry_key 358, source 24, table_column 495, view 12. Every one is checked to exist by the test (a column by `PRAGMA table_info`, a registry key, metric, source, device action or view by its row, a read function by the export of `src/core/planner-read.js`).
+1092 targets in all: device_action 22, metric 112, read_function 69, registry_key 358, source 24, table_column 495, view 12. Every one is checked to exist by the test (a column by `information_schema.columns`, a registry key, metric, source, device action or view by its row, a read function by the export of `src/core/planner-read.js`).
 
 - **Documented JSON keys** (20 items: PB-CAR-13, PB-CAR-23, PB-CTRL-17, PB-DIAG-05, PB-LOAD-30, PB-OTH-18, PB-OTH-75, PB-PLAN-18, PB-PLAN-25, PB-PLAN-26, PB-PLAN-27, PB-PLAN-29, PB-PLAN-32, PB-PLAN-36, PB-PLAN-38, PB-PLAN-39, PB-RATE-42, PB-RATE-43, PB-RATE-44, PH-STATE-01): plan totals and checkpoints in `plan_run.summary`, state carried between runs in `plan_run.carry_state`, the write count in `command_log.detail`. The keys are listed in `docs/database.md` and the test checks each target against that list; a JSON key is documented, not typed or constrained by the database.
 - **Vendor wiring in `connection.meta`** (17 items: PB-CAR-24, PB-CTRL-14, PB-CTRL-23, PB-INV-43, PB-INV-44, PB-INV-45, PB-INV-46, PB-INV-47, PB-LOAD-04, PB-OTH-21, PB-PV-03, PB-PV-05, PB-PV-07, PB-RATE-31, PB-RATE-37, PD-03, PD-04): endpoints, integration switches, poll and refresh settings of an adapter, as JSON keys the vendor adapter names. Secret values (API keys, passwords, tokens) are kept out of the database by design; the connection row records which account they open.
@@ -147,4 +147,4 @@ None. No schema gap remains, and no item needed the allow-list.
 node scripts/build-coverage-matrix.js && npm test
 ```
 
-`node scripts/build-coverage-matrix.js --draft` prints the automatic proposals of every item (for reviewing a new catalogue row); `--check` exits 1 when the matrix or this report is out of date. The script opens a fresh temporary database (never `data/core.db`).
+`node scripts/build-coverage-matrix.js --draft` prints the automatic proposals of every item (for reviewing a new catalogue row); `--check` exits 1 when the matrix or this report is out of date. The script opens a fresh temporary database on the server of DATABASE_URL (never the application database).

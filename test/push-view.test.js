@@ -4,7 +4,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
-const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
+const skip = hasLive ? false : 'no test/fixtures/gb-home.json.gz (node scripts/make-fixture.js)';
 if (hasLive) await useDb({ snapshot: true });
 const { app } = await import('../src/server.js');
 const V = await import('../public/js/devices-view.js');

@@ -1,8 +1,8 @@
 // Live smoke check of the Tariffscanner adapter (NOT part of npm test). At most 3 requests: the
 // token, then one page of limit=5 with active=true (the client's budget is set to 3, the 3 s gap
 // holds). Prints the record field names found and one record as the adapter maps it; never a
-// credential or the token. Writes nothing to data/core.db: the adapter's database is a temporary
-// file deleted at exit.
+// credential or the token. Writes nothing to the app's database: the adapter's database is a throwaway
+// Postgres database on the same server, dropped at exit.
 //   node --env-file=.env scripts/tariffscanner-smoke.js
 import fs from 'node:fs';
 import os from 'node:os';

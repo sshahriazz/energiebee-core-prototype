@@ -8,7 +8,7 @@ import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 import { everyAsync } from "../src/core/async.js";
 
-const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
+const skip = hasLive ? false : 'no test/fixtures/gb-home.json.gz (node scripts/make-fixture.js)';
 if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');

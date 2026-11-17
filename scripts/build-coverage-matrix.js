@@ -9,7 +9,7 @@
 //   node scripts/build-coverage-matrix.js --check   exit 1 if either file is not what it would write
 //
 // Semi-automatic. The script PROPOSES targets from the database as built (a fresh temporary database
-// opened through src/db/db.js: schema.sql, every delta, every seed; data/core.db is never opened):
+// on the server of DATABASE_URL, migrated and seeded through src/db/db.js; the app's own database is never opened):
 //   refs      attribute_def / setting_def rows whose `refs` name the id (the registries' own claim)
 //   name      the Predbat or PredHeat key in the item's origin cell matched to a registry key, exactly or
 //             with a unit suffix (_kw, _min ...) or a vendor prefix (octopus_, inverter_) dropped
@@ -348,7 +348,7 @@ export function renderReport(m) {
   L.push(row('verified (Predbat and PredHeat)', verified), row('unverified (PB-DIAG-04 and Appendix A)', unverified), '');
   L.push(`"verified" carries the catalogue's own flag: the item was read in a fetched source (docs, code or both). It includes ${verified.filter((i) => /code only/.test(i.catalogue_status)).length} capability flags found only in code and ${verified.filter((i) => /archived/.test(i.catalogue_status)).length} PredHeat rows that apply only to the archived standalone PredHeat (${verified.filter((i) => /archived/.test(i.catalogue_status)).map((i) => i.id).join(', ')}, both excluded).`, '');
   L.push('## Where the items are kept', '');
-  L.push(`${targets.length} targets in all: ${byKind.join(', ')}. Every one is checked to exist by the test (a column by \`PRAGMA table_info\`, a registry key, metric, source, device action or view by its row, a read function by the export of \`src/core/planner-read.js\`).`, '');
+  L.push(`${targets.length} targets in all: ${byKind.join(', ')}. Every one is checked to exist by the test (a column by \`information_schema.columns\`, a registry key, metric, source, device action or view by its row, a read function by the export of \`src/core/planner-read.js\`).`, '');
   L.push(`- **Documented JSON keys** (${jsonItems.length} items: ${jsonItems.map((i) => i.id).join(', ')}): plan totals and checkpoints in \`plan_run.summary\`, state carried between runs in \`plan_run.carry_state\`, the write count in \`command_log.detail\`. The keys are listed in \`docs/database.md\` and the test checks each target against that list; a JSON key is documented, not typed or constrained by the database.`);
   L.push(`- **Vendor wiring in \`connection.meta\`** (${metaItems.length} items: ${metaItems.map((i) => i.id).join(', ')}): endpoints, integration switches, poll and refresh settings of an adapter, as JSON keys the vendor adapter names. Secret values (API keys, passwords, tokens) are kept out of the database by design; the connection row records which account they open.`);
   L.push(`- **Derived on read only** (${fnOnly.length} items: ${fnOnly.map((i) => i.id).join(', ') || 'none'}): covered by a read-layer function over stored facts, nothing extra stored.`, '');
@@ -391,7 +391,7 @@ export function renderReport(m) {
   L.push('- **Unverified items**: PB-DIAG-04 rests on an assumption the catalogue could not check; the Appendix A fields are planning-design ideas with no Predbat source, covered as described there (PD-01 by a minimal `tenant` table, PD-02 by our own attributes).');
   L.push('- **Excluded items are a judgement**: each reason cites the catalogue (section 5, the Dir "rule" rows, the archived status); a reader who disagrees with one can turn it into a gap in `scripts/coverage-review.js` and the test will demand a home for it.', '');
   L.push('## Re-run', '', '```sh', 'node scripts/build-coverage-matrix.js && npm test', '```', '');
-  L.push('`node scripts/build-coverage-matrix.js --draft` prints the automatic proposals of every item (for reviewing a new catalogue row); `--check` exits 1 when the matrix or this report is out of date. The script opens a fresh temporary database (never `data/core.db`).', '');
+  L.push('`node scripts/build-coverage-matrix.js --draft` prints the automatic proposals of every item (for reviewing a new catalogue row); `--check` exits 1 when the matrix or this report is out of date. The script opens a fresh temporary database on the server of DATABASE_URL (never the application database).', '');
   return L.join('\n');
 }
 

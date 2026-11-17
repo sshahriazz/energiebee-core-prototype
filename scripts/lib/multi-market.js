@@ -7,8 +7,8 @@
 // price with a negative quarter, GB flat and day/night. The FR and NL taxes are the
 // PLACEHOLDER rules of src/core/tax.js, marked unverified: not real rates.
 //
-// Import this module only after DB_FILE points at a throwaway database (db.js opens it on
-// import). It writes homes, devices, tariffs, rates, tax rules and facts into that database.
+// Import this module only after DATABASE_URL points at a throwaway database (db.js connects on
+// import; scripts/lib/databases.js scriptDatabase makes one). It writes homes, devices, tariffs, rates, tax rules and facts into that database.
 //
 // The build engine reads inverter samples from the 'sunsynk_5min' series and meter readings
 // from the 'octopus_meter' series (the only inputs it knows today), so the synthetic values are

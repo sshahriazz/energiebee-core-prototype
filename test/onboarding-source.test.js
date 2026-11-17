@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 
-const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
+const skip = hasLive ? false : 'no test/fixtures/gb-home.json.gz (node scripts/make-fixture.js)';
 const dbFile = hasLive ? await useDb({ snapshot: true }) : null;
 const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');

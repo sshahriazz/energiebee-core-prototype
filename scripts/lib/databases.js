@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
+import zlib from 'node:zlib';
 
 const root = path.resolve(import.meta.dirname, '..', '..');
 export const migrationsDir = path.join(root, 'prisma', 'migrations');
@@ -145,6 +146,7 @@ export async function scriptDatabase({ prefix = 'energiebee_tmp', keep = null, d
   if (!base) throw new Error('DATABASE_URL is not set (see .env.example): it names the Postgres server to use');
   let db;
   if (keep) {
+    if (keep === databaseName(base)) throw new Error(`refusing to replace ${keep}: it is the database DATABASE_URL names (the app's own)`);
     await dropDatabase(keep, base);
     db = { name: keep, url: await createDatabase(keep, base) };
     await applyMigrations(db.url);
@@ -155,4 +157,29 @@ export async function scriptDatabase({ prefix = 'energiebee_tmp', keep = null, d
   process.env.DATA_DIR = dir;
   if (!dataDir) process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...db, dataDir: dir };
+}
+
+// ───────────── dumps (the test fixture) ─────────────
+// A dump is gzipped JSON: { format: 1, tables: [{ table, columns, rows: [[values in column order]] }] }. Integers come back
+// as numbers (all within 2^53), bytea as { $bytes: base64 }. Only tables with rows are written.
+const enc = (v) => (Buffer.isBuffer(v) ? { $bytes: v.toString('base64') } : v);
+const dec = (v) => (v && typeof v === 'object' && typeof v.$bytes === 'string' ? Buffer.from(v.$bytes, 'base64') : v);
+
+export async function writeDump(url, file) {
+  const tables = [];
+  for await (const t of postgresTables(url)) {
+    if (!t.rows.length) continue;
+    const ints = new Set(await withClient(url, async (c) => (await c.query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND data_type = 'bigint'", [t.table])).rows.map((r) => r.column_name)));
+    tables.push({ table: t.table, columns: t.columns, rows: t.rows.map((r) => t.columns.map((c) => (ints.has(c) && r[c] != null ? Number(r[c]) : enc(r[c])))) });
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, zlib.gzipSync(JSON.stringify({ format: 1, tables }), { level: 9 }));
+  return tables.reduce((n, t) => n + t.rows.length, 0);
+}
+
+// The tables of a dump as a source for loadTables.
+export function* dumpTables(file) {
+  const { format, tables } = JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8'));
+  if (format !== 1) throw new Error(`${file}: unknown dump format ${format}`);
+  for (const t of tables) yield { table: t.table, columns: t.columns, rows: t.rows.map((r) => Object.fromEntries(t.columns.map((c, i) => [c, dec(r[i])]))) };
 }

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 
-const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
+const skip = hasLive ? false : 'no test/fixtures/gb-home.json.gz (node scripts/make-fixture.js)';
 if (hasLive) await useDb({ snapshot: true });
 const { onboarding } = await import('../src/core/onboarding.js');
 const { health } = await import('../src/core/health.js');

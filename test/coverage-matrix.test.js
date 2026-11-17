@@ -2,7 +2,7 @@
 // catalogue (docs/predbat-predheat-requirements.md) to where the database design keeps it. On a fresh
 // database opened through db.js (schema, every delta, every seed) this fails when
 //   (a) a catalogue id has no matrix entry, (b) a matrix entry is not in the catalogue,
-//   (c) a covered item has no target, (d) a target does not exist (a column by PRAGMA table_info, a
+//   (c) a covered item has no target, (d) a target does not exist (a column by information_schema.columns, a
 //       registry key by its row, a metric, source, device action or view by its row, a read function by
 //       the export of src/core/planner-read.js, a JSON key by its list in docs/database.md: the check is
 //       src/core/coverage.js, shared with GET /api/compatibility),

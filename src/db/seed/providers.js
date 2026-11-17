@@ -90,7 +90,7 @@ async function pendingProviders(db, providers) {
   return providers.filter((p) => { const r = have.get(keyOf(p)); return !r || DESCRIPTIVE.some((c) => r[c] !== (p[c] ?? null)); });
 }
 
-// Writes the rows into a database that has delta 008 applied (any node:sqlite DatabaseSync): the
+// Writes the rows through db (src/db/db.js), awaiting each: the
 // missing rows in full, and on existing rows only the descriptive columns that differ.
 // Returns the number of rows written.
 export async function seedProviders(db, providers = PROVIDERS) {

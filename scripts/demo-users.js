@@ -1,30 +1,32 @@
-// A database to try the prototype's users in (src/core/users.js, delta 070): the homes of
-// scripts/demo-ui.js (the REAL GB home copied from data/core.db, a SYNTHETIC French and a SYNTHETIC
-// Dutch home) and one user per scenario, each seeing only their own homes.
+// A database to try the prototype's users in (src/core/users.js): the homes of scripts/demo-ui.js (the REAL GB home
+// copied from the app's database, a SYNTHETIC French and a SYNTHETIC Dutch home) and one user per scenario, each
+// seeing only their own homes.
 //
-//   npm run demo:users            (or: node --disable-warning=ExperimentalWarning scripts/demo-users.js [out.db])
+//   npm run demo:users            (or: node --disable-warning=ExperimentalWarning scripts/demo-users.js [database])
 //   npm run demo:start            serves it on http://localhost:4101, without .env
 //
-// Never changes data/core.db or data/raw: the database is a copy (data/demo/core.db by default) and the
-// raw payloads are copied next to it (a clone on APFS, so no extra space), so the Data & trust page can
-// still open them. Run again to start afresh. The demo server is started without .env, so it holds no
+// Never changes the app's database or data/raw: the demo is a separate database on the same server (energiebee_demo by
+// default) and the raw payloads are copied to data/demo/raw (a clone on APFS, so no extra space), so the Data & trust
+// page can still open them. Run again to start afresh. The demo server is started without .env, so it holds no
 // credential and never syncs the GB home with its providers' logins.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { urlFor } from './lib/databases.js';
 
 const root = path.resolve(import.meta.dirname, '..');
-const out = path.resolve(process.argv[2] || path.join(root, 'data', 'demo', 'core.db'));
-const live = path.join(root, 'data', 'core.db');
-if (out === live) { console.error('refusing to write the demo users into data/core.db'); process.exit(1); }
+try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides DATABASE_URL */ }
+const name = process.argv[2] || 'energiebee_demo';
+const dataDir = path.join(root, 'data', 'demo');
 
-// The homes: demo-ui.js copies the live database and adds the synthetic French and Dutch homes.
-execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts', 'demo-ui.js'), out], { stdio: 'inherit' });
-const rawFrom = path.join(root, 'data', 'raw'); const rawTo = path.join(path.dirname(out), 'raw');
+// The homes: demo-ui.js copies the app's database into the demo one and adds the synthetic French and Dutch homes.
+execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts', 'demo-ui.js'), name], { stdio: 'inherit', env: { ...process.env, DEMO_DATA_DIR: dataDir } });
+const rawFrom = path.join(root, process.env.DATA_DIR || 'data', 'raw'); const rawTo = path.join(dataDir, 'raw');
 fs.rmSync(rawTo, { recursive: true, force: true });
 if (fs.existsSync(rawFrom)) fs.cpSync(rawFrom, rawTo, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
 
-process.env.DB_FILE = out;
+process.env.DATABASE_URL = urlFor(name, process.env.DATABASE_URL);
+process.env.DATA_DIR = dataDir;
 const { db, closeDb } = await import('../src/db/db.js');
 const { createUser, giveHome, listUsers } = await import('../src/core/users.js');
 
@@ -56,4 +58,4 @@ for (const u of await listUsers()) {
   console.log(`  user ${u.id}  ${u.name.padEnd(15)} ${u.role.padEnd(9)} ${u.role === 'admin' ? 'every home' : homes.join(', ') || '(no home)'}  — ${u.note}`);
 }
 await closeDb();
-console.log(`\nStart it with: npm run demo:start   (http://localhost:4101; DB_FILE=${path.relative(root, out)})`);
+console.log(`\nStart it with: npm run demo:start   (http://localhost:4101; database ${name})`);

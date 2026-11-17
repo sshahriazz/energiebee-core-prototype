@@ -136,7 +136,7 @@ function list(v, lo, hi, each) {
 
 const parseList = (s) => { if (s == null) return null; try { return JSON.parse(s); } catch { return null; } };
 
-// A registry row as read from SQLite (attribute_def or setting_def), with its JSON columns parsed.
+// A registry row as read from the database (attribute_def or setting_def), with its JSON columns parsed.
 export function parseDef(row) {
   if (!row) return null;
   return { ...row, allowed_values: parseList(row.allowed_values), applies_to: parseList(row.applies_to) ?? row.applies_to, origins: parseList(row.origins) ?? null, refs: parseList(row.refs) ?? [] };

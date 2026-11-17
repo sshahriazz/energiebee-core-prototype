@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { useDb, hasLive } from './helpers.js';
 
-const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
+const skip = hasLive ? false : 'no test/fixtures/gb-home.json.gz (node scripts/make-fixture.js)';
 if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { sourceId } = await import('../src/db/db.js');

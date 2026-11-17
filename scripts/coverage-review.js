@@ -6,7 +6,7 @@
 //   node scripts/build-coverage-matrix.js && npm test
 //
 // Target shorthand (parseTarget):
-//   col:table.column        a column of a table or view (PRAGMA table_info)
+//   col:table.column        a column of a table or view (information_schema.columns)
 //   col:table.column#key    a documented key of a JSON column (listed under "JSON keys of" in docs/database.md)
 //   attr:key  set:key  kind:x    a row of attribute_def, setting_def, device_kind
 //   met:code  src:code      a metric (facts are series of it) and a source

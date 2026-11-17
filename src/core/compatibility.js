@@ -7,12 +7,12 @@
 //   docs/predbat-predheat-coverage.md       the generated report: the schema's choice for each conflict
 //   docs/database.md                        the documented keys of JSON columns
 // and every target is checked to exist in the RUNNING database at request time, with the same check as
-// test/coverage-matrix.test.js (src/core/coverage.js): a column by PRAGMA table_info, a registry key,
+// test/coverage-matrix.test.js (src/core/coverage.js): a column by information_schema.columns, a registry key,
 // metric, source, device action or view by its row, a read function by the module's exports. The
 // result is cached for 60 s (CACHE_MS).
 //
 // Holds no credential and no home's data: the check reads the schema and the registry tables only
-// (attribute_def, setting_def, device_kind, metric, source, device_action, sqlite_master), never a
+// (attribute_def, setting_def, device_kind, metric, source, device_action, information_schema), never a
 // site, a reading, a connection or the environment. Nothing is written.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -370,7 +370,7 @@ export async function buildCompatibility(db, { now = Date.now(), ...given } = {}
       how_targets_checked: howChecked, how_targets_missing: howMissing.length, how_missing: howMissing,
       catalogue_matches_matrix: catalogueSha === matrix.catalogue_sha256,
       ok: !missing.length && !howMissing.length && catalogueSha === matrix.catalogue_sha256,
-      method: 'Each target is looked up in the running database: a column by PRAGMA table_info, a registry key, metric, source, device action or view by its row, a read function by the exports of its module, a JSON key by its list in docs/database.md. The same check runs in test/coverage-matrix.test.js on a fresh database.',
+      method: 'Each target is looked up in the running database: a column by information_schema.columns, a registry key, metric, source, device action or view by its row, a read function by the exports of its module, a JSON key by its list in docs/database.md. The same check runs in test/coverage-matrix.test.js on a fresh database.',
     },
     headline: {
       question: 'Is our database ready for Predbat and PredHeat?',

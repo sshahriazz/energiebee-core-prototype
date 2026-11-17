@@ -1,12 +1,12 @@
 // The coverage check (plan item B11), shared by test/coverage-matrix.test.js and GET /api/compatibility
 // (src/core/compatibility.js): does a target of docs/coverage-matrix.json exist in a database?
 //
-//   table_column   `table.column` by PRAGMA table_info (a view's columns too); with a json_key, the key must
+//   table_column   `table.column` by information_schema.columns (a view's columns too); with a json_key, the key must
 //                  also be listed for that column in docs/database.md ("JSON keys of `table.column`: `a`, `b`")
 //   registry_key   `attribute_def:<key>`, `setting_def:<key>` or `device_kind:<kind>` by its row
 //   metric         `metric:<code>` by its row          source   `source:<code>` by its row
 //   device_action  `device_action:<kind>.<action>` by its row
-//   view           `view:<name>` in sqlite_master
+//   view           `view:<name>` in information_schema.views
 //   read_function  `<module>.<export>`: a function exported by one of readModules (the matrix uses
 //                  planner-read only: { 'planner-read': the module src/core/planner-read.js })
 //

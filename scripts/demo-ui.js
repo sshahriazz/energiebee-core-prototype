@@ -1,32 +1,27 @@
-// A database to browse in the web pages: the REAL GB home (a copy of data/core.db, untouched and
-// still the original's data) plus a SYNTHETIC French and a SYNTHETIC Dutch home dated to the last
-// few days, so every page has something to show for each market.
+// A database to browse in the web pages: the REAL GB home (a copy of the app's database, untouched and still the
+// original's data) plus a SYNTHETIC French and a SYNTHETIC Dutch home dated to the last few days, so every page has
+// something to show for each market.
 //
-//   node --disable-warning=ExperimentalWarning scripts/demo-ui.js [out.db]
-//   PORT=4101 DB_FILE=<out.db> node --disable-warning=ExperimentalWarning src/server.js
+//   node --disable-warning=ExperimentalWarning scripts/demo-ui.js [database]      default energiebee_ui_demo
+//   DATABASE_URL=<that database> PORT=4101 node --disable-warning=ExperimentalWarning src/server.js
 //
-// Never changes data/core.db and calls no provider. The French and Dutch homes are flagged
-// is_demo, their tariffs and readings are labelled synthetic, and their tax values are
-// placeholders: the pages show a banner saying so. The real GB home is not flagged and keeps its
-// own labels (provider / sourced).
-import fs from 'node:fs';
+// Never changes the app's database (DATABASE_URL) and calls no provider: the demo is a separate database on the same
+// server, made again on every run. The French and Dutch homes are flagged is_demo, their tariffs and readings are
+// labelled synthetic, and their tax values are placeholders: the pages show a banner saying so. The real GB home is
+// not flagged and keeps its own labels (provider / sourced).
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { loadTables, postgresTables, scriptDatabase } from './lib/databases.js';
 
 const root = path.resolve(import.meta.dirname, '..');
-const out = path.resolve(process.argv[2] || path.join(os.tmpdir(), 'eb-ui-demo', 'core.db'));
-fs.mkdirSync(path.dirname(out), { recursive: true });
-for (const f of [out, `${out}-wal`, `${out}-shm`]) fs.rmSync(f, { force: true });
-const live = path.join(root, 'data', 'core.db');
-if (!fs.existsSync(live)) { console.error('no data/core.db to copy the real GB home from'); process.exit(1); }
-const src = new DatabaseSync(live, { readOnly: true });
-src.exec(`VACUUM INTO '${out.replace(/'/g, "''")}'`);
-src.close();
-process.env.DB_FILE = out;
+try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides DATABASE_URL */ }
+const live = process.env.DATABASE_URL;
+const name = process.argv[2] || 'energiebee_ui_demo';
+const demo = await scriptDatabase({ keep: name, dataDir: process.env.DEMO_DATA_DIR || path.join(os.tmpdir(), 'eb-ui-demo') });
+await loadTables(demo.url, postgresTables(live));
 
 const m = await import('./lib/multi-market.js');
-const { db } = await import('../src/db/db.js');
+const { db, closeDb } = await import('../src/db/db.js');
 const { buildSite } = await import('../src/core/build.js');
 const { localDate, addDays, nowSec } = await import('../src/core/time.js');
 
@@ -52,7 +47,8 @@ await buildSite(fr.site.id, m.FR.from, FRd, { reason: 'synthetic ui demo' });
 await buildSite(nl.site.id, m.NL.from, NLd, { reason: 'synthetic ui demo' });
 
 const real = await db.prepare('SELECT id, name, currency, slot_s FROM site WHERE id = 1').get();
-console.log(`UI demo database: ${out}`);
-console.log(`  site ${real.id}  ${real.name}  ${real.currency}  slot ${real.slot_s}s  REAL data (copy of data/core.db)`);
+console.log(`UI demo database: ${demo.name} (DATABASE_URL=${demo.url})`);
+console.log(`  site ${real.id}  ${real.name}  ${real.currency}  slot ${real.slot_s}s  REAL data (copy of the app's database)`);
 console.log(`  site ${fr.site.id}  Synthetic FR home  EUR  slot 1800s  SYNTHETIC ${m.FR.from}..${FRd}`);
 console.log(`  site ${nl.site.id}  Synthetic NL home  EUR  slot 900s   SYNTHETIC ${m.NL.from}..${NLd}`);
+await closeDb();

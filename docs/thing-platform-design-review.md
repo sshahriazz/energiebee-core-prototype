@@ -128,3 +128,58 @@ Findings are in two groups:
 | D8 | Money rounding and checking against bills | Money stays in minor units at full precision and is rounded only for display. Checking against the supplier's statements is a later check |
 | D9 | Live updates on pages | Streaming from `point_state` (R15) |
 | D10 | Access per thing (installer, owner, viewer) | Grants are per home now. Things carry `home_id` (R4), so per-thing grants can be added without reshaping |
+
+---
+
+## Real-world gaps (added 17 November)
+
+A second pass, asking whether the design survives real homes rather than the one home it was drawn for. Five more gaps, each with a fix in the design. They are in [the fix list](fix-list.md) as R20–R24.
+
+**R20. A thing shared by several homes.**
+- *Problem:* communal heating in a block of flats, a shared EV charger, a heat network, a shared PV roof. The rule "every row has one `home_id`" (R4) cannot say that one device serves several homes, and erasing one home would delete the shared device's history.
+- *Fix:* a thing belongs to one **site** (a home, or a building, a block or a car park: a new `site` kind of thing above homes), and homes are linked to it by dated `serves` relationships with a **share** (fixed fraction, or by a sub-meter per home). Energy and cost of a shared thing are split to homes by share in L3 and labelled as allocated, not measured. Erasing a home ends its relationships and never deletes the shared thing.
+
+**R21. A home changes hands.**
+- *Problem:* when a house is sold, its PV, meters and history belong to the house, while the previous owner's account, logins, plans and personal settings belong to them. Today access, erasure and ownership are all tied to the home.
+- *Fix:* separate **the home's history** (things, facts, timelines: they stay with the home) from **an occupancy** (who lived there, from when to when: grants, provider logins, preferences, plans). A change of owner ends one occupancy and starts another; the new owner sees the home's physical history from the handover only, unless the previous owner shared more. Erasure on request removes the person's occupancy data and their personal raw payloads (supplier account answers), not the home's device history. The per-home encryption key (R14) becomes per occupancy for personal payloads.
+
+**R22. More than one hub, or none.**
+- *Problem:* a large house may need two hubs (radio range, a detached garage), a block of flats may run one hub for several homes, and some homes will never have a hub (cloud-only devices).
+- *Fix:* the hub is a thing like any other; `served_by` is per device, so a home can have several hubs and a hub can serve devices of several homes (each device still has its own home or site). A home without a hub is a normal state: its devices have cloud links only (thing-model §5.3), not a transition that must end.
+
+**R23. Devices that cannot report their state.**
+- *Problem:* control is confirmed by read-back (R16, thing-model §9.3), but some devices accept a write and report nothing (an IR blaster, some relays, some cloud APIs that answer only "accepted").
+- *Fix:* each writable point declares its **verification**: `reported` (read-back of the state), `effect` (confirmed by a measured effect, such as the power of a plug dropping), or `none`. A command on an unverifiable point ends as `sent_unverified`, never `acked`; the planner treats such a device as uncertain, and safety-class actions are never sent to it.
+
+**R24. A device moves to another home.**
+- *Problem:* an EV leaves with its owner; a portable battery or a plug moves house. Its history in the old home must stay there, and the new home must not inherit it.
+- *Fix:* a move is a dated change of the thing's home (a version of `home_id`, recorded like any other attribute) and of its links. Facts carry the `home_id` in force when they were recorded (R4), so each home's timelines keep exactly the energy that happened there.
+
+## Real-world case catalogue
+
+Every case is a test to write with the thing platform (fix list C1). "Covered" names the part of the design that handles it; a gap points at its fix.
+
+| # | Case | Covered by | Test |
+|---|---|---|---|
+| 1 | The inverter is replaced by another brand | `replaces`, a new thing in the same place in the energy graph (R2) | home and system timelines unbroken across the day of the swap; the old inverter's timeline ends |
+| 2 | A Zigbee TRV is reset and re-pairs with a new id | merge of two things (R2, plan 1.8) | after the merge, one thing with one timeline; no double counting in the room |
+| 3 | The hub is offline for two days | store and forward; late facts are bitemporal (thing-model §6) | replayed data lands in the right slots; "as known at" the outage still shows the gap |
+| 4 | The owner changes the battery reserve in the inverter's own app | external change becomes a manual request (R16) | the optimiser does not revert it before its expiry; the owner is told |
+| 5 | Intelligent Octopus charges the EV at night | external controller (R16) plus dispatch price overlay (thing-model §8) | no conflicting EnergieBee command; those slots priced off-peak for this home only |
+| 6 | The home switches tariff mid-month | dated `supplied_on` plus price runs (thing-model §8) | slots before the switch keep the old price; after it, the new one |
+| 7 | The clocks go back (a 25-hour day) | slot grid from local midnight (existing) | 50 half-hours; daily totals and counter fit hold (the 25 October warnings must be explained first, fix list B3) |
+| 8 | The meter and the inverter clamp disagree by 38 % | fusion with tolerance (R6) | the slot is flagged, the meter total wins, the shape comes from the clamp; the disagreement shows on the check |
+| 9 | A clamp is installed the wrong way round | point binding sign mapping (thing-model §4) | detected by the balance check (import while exporting); fixed by one binding change and a rebuild |
+| 10 | AC-coupled battery or two inverters | allocation rules per topology (R1) | supported topologies build; others are refused with a reason, never built wrong |
+| 11 | An EV that powers the home (vehicle-to-home) | ports on the EV and the charger (R1) | energy flows both ways through the charger; untracked never goes negative |
+| 12 | A device that accepts writes but reports nothing | verification `effect` or `none` (R23) | commands end `sent_unverified`; no safety action is sent |
+| 13 | The house is sold | occupancy (R21) | the new owner sees device history from the handover only; the old owner's logins and plans are gone |
+| 14 | The owner asks for their data to be erased | erasure path (R14) and occupancy (R21) | the person's data and personal raw payloads are gone; the home's device history stays |
+| 15 | A block of flats with communal heating | shared thing on a site with shares (R20) | each flat's heating cost is its share, labelled allocated |
+| 16 | An EV moves with its owner to a new home | dated home of a thing (R24) | the old home keeps its EV history; the new home starts empty |
+| 17 | A detached garage on a second hub | several hubs per home (R22) | devices on both hubs in one home graph; one hub offline marks only its devices |
+| 18 | One broken temperature sensor in the bedroom | required vs optional members (R8) | the home stays final; the bedroom shows lower coverage |
+| 19 | Agile prices for tomorrow are not published yet | never guess (thing-model §8) | tomorrow's slots are missing, not estimated; the planner says so |
+| 20 | A home with no hub and only cloud devices | cloud links as a normal state (R22) | everything works without a hub; control limited to what the cloud APIs allow |
+| 21 | A plug is moved from the garage to the kitchen at 14:10 | relationship changes at the next slot boundary (R13) | the 14:00 slot counts in the garage, 14:30 in the kitchen; no slot split |
+| 22 | The home's slot length changes from 30 to 15 minutes | rebuild at the new length (existing, R9) | every layer rebuilt on one grid; the money totals are unchanged |

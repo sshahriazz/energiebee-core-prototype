@@ -1,6 +1,6 @@
 # EnergieBee thing platform: design
 
-Status: design, 17 November 2026. This is the target design. The order of work is in [the plan](thing-platform-plan.md); the problems this design already avoids are in [the design review](thing-platform-design-review.md) (R1–R19, D1–D10); progress is tracked in [the fix list](fix-list.md). The device edge (hub agent, Hub Link Protocol) is specified in [architecture v3, section 5](architecture-v3.md); this document says how the core models what the hub sends and how it commands the hub.
+Status: design, 17 November 2026. This is the target design. Real-world gaps found after it was written (shared things, a change of owner, several hubs, devices that report nothing, devices moving home) and the 22-case catalogue it is tested against are in [the design review](thing-platform-design-review.md#real-world-gaps-added-17-november) (R20–R24, C1). The order of work is in [the plan](thing-platform-plan.md); the problems this design already avoids are in [the design review](thing-platform-design-review.md) (R1–R19, D1–D10); progress is tracked in [the fix list](fix-list.md). The device edge (hub agent, Hub Link Protocol) is specified in [architecture v3, section 5](architecture-v3.md); this document says how the core models what the hub sends and how it commands the hub.
 
 Scope for now: **one home, its rooms, its devices, their controls, and the home's power, heating and consumption.** Many homes, other countries and scale come later; nothing here may block them.
 

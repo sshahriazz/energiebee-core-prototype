@@ -56,6 +56,12 @@ Rule: **same model, same numbers.** The golden test and the fingerprint must mat
 | R15 | `point_state` (device shadow) | ⏭ Phase 2.9 | review, plan | — | — | |
 | R16 | External changes become manual overrides; external controllers respected | ⏭ Phase 4.2 | review, plan | — | — | |
 | R18 | One thing per PV array; any number of batteries and inverters | ⏭ Phase 1.4 | review, plan | — | — | |
+| R20 | A thing shared by several homes: sites above homes, `serves` with shares | ⏭ Phase 1.2, 3.4 | review | — | — | |
+| R21 | A home changes hands: the home's history vs an occupancy (grants, logins, plans, personal payloads) | ⏭ Phase 1.3b, 1.7 | review | — | — | |
+| R22 | Several hubs per home, a hub for several homes, a home with no hub as a normal state | ⏭ Phase 2.3 | review, thing-model §5 | — | — | |
+| R23 | Writable points declare their verification (reported, effect, none); unverifiable commands end `sent_unverified` | ⏭ Phase 4.1, 4.5 | review | — | — | |
+| R24 | A device moving to another home: a dated home of a thing | ⏭ Phase 1.1 | review | — | — | |
+| C1 | The real-world case catalogue (22 cases), each a test | ⏭ with each phase | review | a test per case | the 22 tests | |
 
 ## Log
 

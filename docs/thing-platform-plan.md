@@ -35,6 +35,7 @@ The prototype has strong foundations, but it models **a home with energy columns
 5. **Every thing has controls**: desired vs reported state, priority (safety > manual > schedule > optimiser), limits on any thing (device, room, circuit, home), and commands on a group that split into commands for its members.
 6. **Integrations only supply identities, points and commands.** They discover external devices, the core links them to things, and the same pipeline handles pull, push, hub and manual data.
 7. **Raw data is kept safe**: append-only in the database itself, stored apart from the database, and checked for integrity.
+8. **The slotted tariff is the baseline for all money (decided 17 Nov).** Whatever its type, every tariff is converted into a price per slot, past and future, and every cost, saving, comparison and plan is energy per slot × price per slot. A tariff is a context thing whose timeline is its slotted price; a meter is `supplied_on` a tariff for a dated period.
 
 ```
 SPATIAL TREE (where)                      ENERGY SYSTEM TREE (how energy flows)
@@ -69,6 +70,56 @@ Get a clean, current starting point and a fixed reference to compare against.
 | 0.4 | Write `docs/thing-model.md`: the target design (things, relationships, points, capabilities, timelines, controls, integrations) with full table definitions. This plan refers to it. | M |
 
 **Exit:** database current; full suite green; the fingerprint test in place.
+
+## Phase T: the slotted tariff baseline (L, runs alongside Phase 1)
+
+Every tariff becomes a price per slot. Today the build works out a slot's price on the fly (`priceOver` samples every 15 minutes, `fixedOver` spreads fixed charges) and stores it only inside `site_hh`, only for past slots and only for the home's own tariff. Phase T makes the slotted price a timeline of its own, past and future, that everything reads.
+
+**Two layers:**
+
+```
+rate rows + windows + calendars ──► TARIFF SLOTS        shared, fixed 15-minute base grid, per tariff and register
+  (rate_interval, register_window)   tariff_slot         "what this tariff charges, slot by slot"
+                                         │
+agreement + home taxes + home rows ──► HOME PRICE SLOTS   per home and supply point, at the home's slot length
+  + meter's own windows + dispatches    supply_price_slot "what this home pays per kWh in this slot, and its fixed share"
+                                         │
+                                         ▼
+                            cost = slot energy × slot price  (build, compare, planner, per device and room)
+```
+
+**How each tariff type becomes slots:**
+
+| Tariff type (in the database today) | Conversion |
+|---|---|
+| Flat (6,279) | One unit price in every slot while the rate row is valid |
+| Economy 7 / day-night (1,986), time of use | `register_window` decides each slot's register (day, night, peak); the register's rate row gives the price. Clock changes: real lengths (`tariff-expand.js` already handles this) |
+| Intelligent Octopus Go (3) | Windows as above, plus the home's smart-charge dispatches as an overlay: those slots are priced off-peak for that home only |
+| Agile, Tracker, export Agile (3) | Native intervals (30 min, or daily for Tracker) cut onto the 15-minute grid. Future slots exist only once prices are published |
+| Day-type calendars (Tempo) | Calendar windows; a day whose colour is not published yet is priced with the stated cautious default and marked estimated |
+| tounify day-ahead (FR/NL) | Native 15/30/60-minute points cut onto the grid; taxes already in the price, so only VAT is added |
+| Fixed export (178) | One export price per slot |
+| Gas | One unit price per slot; m³ → kWh conversion stays in the energy layer |
+| Standing, subscription, capacity charges | Not per kWh: spread as a fixed share of each slot (daily by the day's real slot count, monthly and yearly by real seconds, capacity by contracted kVA), so every money figure adds up slot by slot |
+
+**Rules:**
+1. **Never guess.** A slot whose price is not known yet (Agile beyond its publication) is missing. It is marked estimated only when a stated rule gives a cautious default (Tempo).
+2. **Future horizon:** known prices are slotted ahead to the agreement's end or a horizon (14 days to start), so the planner can read them.
+3. **The base grid is 15 minutes**, the same as `priceOver`'s sample today, so the home price slots reproduce today's prices exactly when rolled up to 30 or 60 minutes by time-weighted mean.
+4. **Only tariffs in use are stored** (homes' agreements and chosen comparison references). The other ~8,400 catalogue tariffs are expanded on demand by the same pure function, not stored (8,449 × 96 slots a day would be about 800,000 rows a day).
+5. **Consumption-dependent charges** (tiered blocks, peak-demand charges on a monthly peak) can't be priced before consumption is known. The slots carry the rate, and the home's energy layer adds the dependent part once the energy is known, recorded in lineage. None are in the current GB data; the model just must not block them.
+
+| # | Work | Size |
+|---|---|---|
+| T.1 | `tariff_slot(tariff_id, register, slot_start, dur_s = 900, unit_ex, estimated, origin, lineage, built_at)`, built by a pure expansion from rate rows, windows and calendars (extends `tariff-expand.js`), for every tariff structure above. | L |
+| T.2 | Fixed charges as slot shares (standing, monthly, yearly, capacity). | M |
+| T.3 | `supply_price_slot(home, supply point, slot_start, dur_s, tariff_id, register, unit_ex, tax, unit_inc, export_unit, fixed_share, estimated, origin, lineage)` at the home's slot length: agreement in force → tariff slots → home-specific rows and the meter's own windows → the home's taxes → dispatch overlays → roll-up. After Phase 1 it is the timeline of the supply point (meter) thing. | L |
+| T.4 | Build stage 4 (price) reads `supply_price_slot` instead of calling `priceAt` / `priceOver` / `fixedOver` per slot. | M |
+| T.5 | Rebuild: a changed rate row, window, tax rule or agreement marks the tariff's slots dirty from the change, then every home on it. New Agile prices extend the timeline. | M |
+| T.6 | Comparison and the tariff picker: a candidate's cost = the home's slot energy × the candidate's slots, the same code as the home's own bill. | M |
+| T.7 | API: `GET /api/tariffs/:id/slots?from&to` and the home's price timeline, past and future. | S |
+
+**Exit:** every tariff in use produces slots with no gaps inside its validity; the fingerprint matches exactly (prices, costs, savings); home 1 has a price timeline at least 7 days ahead where prices are known; a comparison gives the same totals as today's `compare.js`.
 
 ## Phase 1: the thing graph (L)
 
@@ -157,12 +208,12 @@ Give every thing its own timeline on the shared grid, and roll them up.
 ## 4. Order and what can run in parallel
 
 ```
-Phase 0 ─► Phase 1 ─► Phase 2 ─► Phase 3 ─┬─► Phase 5 ─► Phase 6
-              │                           └─► Phase 4 (4.5 waits for a real device)
-              └─ 1.7 raw-data safety runs alongside 1.1–1.6
+Phase 0 ─┬─► Phase 1 ─► Phase 2 ─► Phase 3 ─┬─► Phase 5 ─► Phase 6
+         │      └─ 1.7 raw-data safety       └─► Phase 4
+         └─► Phase T (slotted tariffs) ──────────┘ (T.3 joins the supply point thing after Phase 1)
 ```
 
-Phases 0–3 are the foundation and must go in order. Phase 4 can start once Phase 3's timelines exist; a real driver (4.5) depends on a device, so ordering a smart plug early removes the main outside blocker. Phase 6 can start screen by screen as the APIs arrive.
+Phases 0–3 are the foundation and must go in order. Phase T needs only Phase 0 and runs alongside Phases 1–2; it must be done before Phase 3.4, because the home timeline prices from it. Phase 4 can start once Phase 3's timelines exist. The first real driver (4.5) is the Sunsynk inverter, so check early whether its login may be used for automated writes. Phase 6 can start screen by screen as the APIs arrive.
 
 ## 5. Risks
 
@@ -184,6 +235,7 @@ Made by the owner on 16 November 2026:
 | Inverter, PV, battery, main meters | Home-wide, not in a room: they sit in the energy system tree at home level | Section 2, Phase 1.4 |
 | Where the meters and the EV are | Meters on an outside wall; EV on the driveway | Phase 1.5 |
 | First real device to control | The Sunsynk inverter (the only controllable device the owner has) | Phase 4.5 |
+| Money baseline (17 Nov) | Every tariff is converted to a slotted tariff; all costs are energy per slot × price per slot | Section 2, Phase T |
 | `site` vs the home thing | Fold `site` into the home thing | Phase 1.3b |
 
 Nothing is open that blocks Phases 0–3.

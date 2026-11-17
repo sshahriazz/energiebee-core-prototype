@@ -103,6 +103,7 @@ agreement + home taxes + home rows ──► HOME PRICE SLOTS   per home and sup
 | Standing, subscription, capacity charges | Not per kWh: spread as a fixed share of each slot (daily by the day's real slot count, monthly and yearly by real seconds, capacity by contracted kVA), so every money figure adds up slot by slot |
 
 **Rules:**
+
 1. **Never guess.** A slot whose price is not known yet (Agile beyond its publication) is missing. It is marked estimated only when a stated rule gives a cautious default (Tempo).
 2. **Future horizon:** known prices are slotted ahead to the agreement's end or a horizon (14 days to start), so the planner can read them.
 3. **The base grid is 15 minutes**, the same as `priceOver`'s sample today, so the home price slots reproduce today's prices exactly when rolled up to 30 or 60 minutes by time-weighted mean.

@@ -34,14 +34,14 @@ const items = matrix.items;
 const catalogueIds = [...catalogueText.matchAll(/^\| ((?:PB|PH)-[A-Z]+-\d+|PD-\d+) \|/gm)].map((m) => m[1]);
 const STATUSES = ['covered', 'excluded_not_data', 'gap'];
 
-test('the catalogue is read whole: 416 Predbat, 54 PredHeat and 11 planning-design items, each once', () => {
+await test('the catalogue is read whole: 416 Predbat, 54 PredHeat and 11 planning-design items, each once', () => {
   assert.equal(new Set(catalogueIds).size, catalogueIds.length, 'no id twice');
   assert.equal(catalogueIds.filter((i) => i.startsWith('PB-')).length, 416);
   assert.equal(catalogueIds.filter((i) => i.startsWith('PH-')).length, 54);
   assert.equal(catalogueIds.filter((i) => i.startsWith('PD-')).length, 11);
 });
 
-test('(a) every catalogue id has a matrix entry, and (b) every entry is a catalogue id, once, sorted by id', () => {
+await test('(a) every catalogue id has a matrix entry, and (b) every entry is a catalogue id, once, sorted by id', () => {
   const ids = items.map((i) => i.id);
   const inMatrix = new Set(ids);
   const inCatalogue = new Set(catalogueIds);
@@ -51,7 +51,7 @@ test('(a) every catalogue id has a matrix entry, and (b) every entry is a catalo
   assert.deepEqual(ids, [...ids].sort(), 'sorted by id');
 });
 
-test('(c) every entry has a status; a covered one has targets, an excluded one a reason, a gap a kind and a description', () => {
+await test('(c) every entry has a status; a covered one has targets, an excluded one a reason, a gap a kind and a description', () => {
   for (const it of items) {
     assert.ok(STATUSES.includes(it.status), `${it.id}: status ${it.status}`);
     assert.ok(it.name && Array.isArray(it.direction), `${it.id}: name and direction`);
@@ -61,7 +61,7 @@ test('(c) every entry has a status; a covered one has targets, an excluded one a
   }
 });
 
-test('(d) every target exists in a fresh database and the read layer', () => {
+await test('(d) every target exists in a fresh database and the read layer', async () => {
   // The check is src/core/coverage.js, the same one GET /api/compatibility runs against the live database.
   // Read functions are planner-read exports only; JSON keys are those docs/database.md lists.
   const exists = targetChecker(db, { readModules: { 'planner-read': readLayer }, jsonKeys: documentedJsonKeys(databaseMd) });
@@ -70,14 +70,14 @@ test('(d) every target exists in a fresh database and the read layer', () => {
   for (const it of items.filter((i) => i.status === 'covered')) {
     for (const t of it.targets) {
       n++;
-      if (!exists(t)) missing.push(`${it.id}: ${t.kind} ${targetLabel(t)}`);
+      if (!await exists(t)) missing.push(`${it.id}: ${t.kind} ${targetLabel(t)}`);
     }
   }
   assert.ok(n > 1000, `targets checked: ${n}`);
   assert.deepEqual(missing, [], 'targets that do not exist');
 });
 
-test('(e) gaps: every one is on the allow-list with a reason, none is a missing schema element, no stale rows', (t) => {
+await test('(e) gaps: every one is on the allow-list with a reason, none is a missing schema element, no stale rows', (t) => {
   const allow = new Map();
   for (const m of read('docs/coverage-gaps.md').matchAll(/^\| ((?:PB|PH)-[A-Z]+-\d+|PD-\d+) \| ([^|]+) \| ([^|]+) \|/gm)) {
     allow.set(m[1], { kind: m[2].trim(), reason: m[3].trim() });
@@ -98,7 +98,7 @@ test('(e) gaps: every one is on the allow-list with a reason, none is a missing 
   }
 });
 
-test('the counts agree with the entries, and every verified Predbat / PredHeat item that is data is covered', (t) => {
+await test('the counts agree with the entries, and every verified Predbat / PredHeat item that is data is covered', (t) => {
   const count = (xs) => Object.fromEntries(STATUSES.map((s) => [s, xs.filter((x) => x.status === s).length]));
   assert.deepEqual(count(items), { covered: matrix.counts.all.covered, excluded_not_data: matrix.counts.all.excluded_not_data, gap: matrix.counts.all.gap });
   const verified = items.filter((i) => i.verified && !i.id.startsWith('PD-'));
@@ -107,10 +107,10 @@ test('the counts agree with the entries, and every verified Predbat / PredHeat i
   assert.deepEqual(data.filter((i) => i.status !== 'covered').map((i) => i.id), [], 'verified data items not covered');
 });
 
-test('the matrix and its report are what scripts/build-coverage-matrix.js builds now (stable, sorted, no timestamps)', () => {
-  const build = () => buildMatrix({ ctx: schemaContext(db), catalogueText, databaseMd, readFunctions: new Set(Object.keys(readLayer)) });
-  const built = build();
-  assert.equal(render(built), render(build()), 'the same inputs build the same bytes');
+await test('the matrix and its report are what scripts/build-coverage-matrix.js builds now (stable, sorted, no timestamps)', async () => {
+  const build = async () => buildMatrix({ ctx: await schemaContext(db), catalogueText, databaseMd, readFunctions: new Set(Object.keys(readLayer)) });
+  const built = await build();
+  assert.equal(render(built), render(await build()), 'the same inputs build the same bytes');
   assert.ok(render(built) === matrixText, 'docs/coverage-matrix.json is out of date: run node scripts/build-coverage-matrix.js');
   assert.ok(renderReport(built) === read('docs/predbat-predheat-coverage.md'), 'docs/predbat-predheat-coverage.md is out of date: run node scripts/build-coverage-matrix.js');
 });

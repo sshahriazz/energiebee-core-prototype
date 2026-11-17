@@ -6,8 +6,8 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 if (hasLive) useDb({ snapshot: true });
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { app } = hasLive ? await import('../src/server.js') : {};
+const { db } = await import('../src/db/db.js');
+const { app } = await import('../src/server.js');
 
 let server; let base;
 before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
@@ -18,7 +18,7 @@ const get = async (p) => { const r = await fetch(`${base}${p}`); return { status
 const post = async (p, body = {}) => { const r = await fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
 let demoSite; let devs;
 
-test('the real GB home lists its real devices with the old fields and no synthetic flag', { skip }, async () => {
+await test('the real GB home lists its real devices with the old fields and no synthetic flag', { skip }, async () => {
   const { status, body } = await get(`/api/sites/${GB}/devices`);
   assert.equal(status, 200);
   assert.ok(Array.isArray(body) && body.length >= 3);
@@ -33,7 +33,7 @@ test('the real GB home lists its real devices with the old fields and no synthet
   assert.ok(inv && inv.kind === 'inverter' && inv.channels.length >= 4, 'the home-level inverter is listed as a device');
 });
 
-test('detail of a real meter has data and no synthetic banner; simulate and commands are refused for it', { skip }, async () => {
+await test('detail of a real meter has data and no synthetic banner; simulate and commands are refused for it', { skip }, async () => {
   const meter = (await get(`/api/sites/${GB}/devices`)).body.find((d) => d.kind === 'meter_import');
   const { status, body } = await get(`/api/sites/${GB}/devices/${meter.id}`);
   assert.equal(status, 200);
@@ -49,7 +49,7 @@ test('detail of a real meter has data and no synthetic banner; simulate and comm
   assert.ok(inv.body.channels.length >= 4 && inv.body.channels.every((c) => c.data.points.length));
 });
 
-test('the demo home: not there, created once, then the same one', { skip }, async () => {
+await test('the demo home: not there, created once, then the same one', { skip }, async () => {
   assert.deepEqual((await get('/api/demo/iot')).body, { exists: false, siteId: null, name: null });
   const a = await post('/api/demo/iot');
   assert.equal(a.status, 200);
@@ -57,13 +57,13 @@ test('the demo home: not there, created once, then the same one', { skip }, asyn
   demoSite = a.body.siteId;
   const b = await post('/api/demo/iot');
   assert.equal(b.body.created, false); assert.equal(b.body.siteId, demoSite);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM site WHERE env_key = 'synthetic_iot'").get().n, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) n FROM site WHERE env_key = 'synthetic_iot'").get()).n, 1);
   assert.deepEqual((await get('/api/demo/iot')).body, { exists: true, siteId: demoSite, name: 'Synthetic IoT home (demo data)' });
   // the real home is untouched
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM device WHERE site_id = ?').get(GB).n >= 3, true);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM device WHERE site_id = ?').get(GB)).n >= 3, true);
 });
 
-test('the synthetic home lists five synthetic devices, stale until time is moved forward', { skip }, async () => {
+await test('the synthetic home lists five synthetic devices, stale until time is moved forward', { skip }, async () => {
   const { body } = await get(`/api/sites/${demoSite}/devices`);
   devs = Object.fromEntries(body.map((d) => [d.kind, d]));
   assert.equal(body.length, 5);
@@ -76,7 +76,7 @@ test('the synthetic home lists five synthetic devices, stale until time is moved
   assert.equal(devs.smart_plug.controllable, false);
 });
 
-test('detail of the plug: raw counter, derived periods, a marked restart and a refused reading', { skip }, async () => {
+await test('detail of the plug: raw counter, derived periods, a marked restart and a refused reading', { skip }, async () => {
   const { status, body } = await get(`/api/sites/${demoSite}/devices/${devs.smart_plug.id}?hours=72`);
   assert.equal(status, 200);
   assert.equal(body.synthetic, true);
@@ -90,7 +90,7 @@ test('detail of the plug: raw counter, derived periods, a marked restart and a r
   assert.ok(power.data.points.length > 100);
 });
 
-test('detail of the heat pump: two counters, temperatures, defrost events and a gap; the battery shows its settings', { skip }, async () => {
+await test('detail of the heat pump: two counters, temperatures, defrost events and a gap; the battery shows its settings', { skip }, async () => {
   const hp = (await get(`/api/sites/${demoSite}/devices/${devs.heat_pump.id}?hours=72`)).body;
   assert.ok(hp.channels.filter((c) => c.kind === 'counter').length === 2);
   assert.ok(hp.channels.find((c) => c.kind === 'event' && c.point === 'defrost').data.intervals.length >= 2);
@@ -100,7 +100,7 @@ test('detail of the heat pump: two counters, temperatures, defrost events and a 
   assert.ok(bat.settings.some((s) => s.label && s.word === 'demand'), 'the work mode in words');
 });
 
-test('simulate: exactly the next period, the derived energy equals the counter difference, then it catches up with the clock', { skip }, async () => {
+await test('simulate: exactly the next period, the derived energy equals the counter difference, then it catches up with the clock', { skip }, async () => {
   const before = (await get(`/api/sites/${demoSite}/devices/${devs.heat_pump.id}`)).body.newestTs;
   const r = await post(`/api/sites/${demoSite}/devices/${devs.heat_pump.id}/simulate`, { periods: 1 });
   assert.equal(r.status, 201);
@@ -121,7 +121,7 @@ test('simulate: exactly the next period, the derived energy equals the counter d
   assert.equal(status, 'fresh');
 });
 
-test('commands: the battery reaches acked and verified, the target alternates, a plug cannot be commanded', { skip }, async () => {
+await test('commands: the battery reaches acked and verified, the target alternates, a plug cannot be commanded', { skip }, async () => {
   const r = await post(`/api/sites/${demoSite}/devices/${devs.battery.id}/commands`, {});
   assert.equal(r.status, 201);
   assert.equal(r.body.written, true);
@@ -142,7 +142,7 @@ test('commands: the battery reaches acked and verified, the target alternates, a
   assert.equal(plug.status, 400); assert.equal(plug.body.code, 'not_controllable');
 });
 
-test('error cases carry a message and a code', { skip }, async () => {
+await test('error cases carry a message and a code', { skip }, async () => {
   assert.deepEqual([(await get('/api/sites/999/devices/1')).status, (await get('/api/sites/999/devices/1')).body.code], [404, 'not_found']);
   const unknown = await get(`/api/sites/${demoSite}/devices/99999`);
   assert.deepEqual([unknown.status, unknown.body.code], [404, 'unknown_device']);
@@ -160,8 +160,8 @@ test('error cases carry a message and a code', { skip }, async () => {
   assert.equal((await post(`/api/sites/${demoSite}/devices/${meter.id}/simulate`, {})).status, 404);
 });
 
-test('the real home\'s data and devices were not touched by any of this', { skip }, async () => {
-  assert.ok(db.prepare('SELECT COUNT(*) n FROM device WHERE site_id = ?').get(GB).n >= 3, 'the real devices are all still there');
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM command c JOIN device d ON d.id = c.device_id WHERE d.site_id = ?').get(GB).n, 0);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM channel_reject WHERE site_id = ? AND reason = 'counter_backwards'").get(GB).n, 0);
+await test('the real home\'s data and devices were not touched by any of this', { skip }, async () => {
+  assert.ok((await db.prepare('SELECT COUNT(*) n FROM device WHERE site_id = ?').get(GB)).n >= 3, 'the real devices are all still there');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM command c JOIN device d ON d.id = c.device_id WHERE d.site_id = ?').get(GB)).n, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) n FROM channel_reject WHERE site_id = ? AND reason = 'counter_backwards'").get(GB)).n, 0);
 });

@@ -19,29 +19,29 @@ const insertRaw = db.prepare(
 // time (period_to=now, nonces), so the same data fetched again would otherwise be
 // stored again. The row is written first and removed if the file cannot be, so a
 // file never exists without its row.
-export function landRaw({ source, siteId, request, body, status = 'accepted', reason = null }) {
+export async function landRaw({ source, siteId, request, body, status = 'accepted', reason = null }) {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
   const reqText = JSON.stringify(request ?? {});
   const hash = crypto.createHash('sha256').update(`${source}\n${status}\n${text}`).digest('hex');
-  const existing = findRaw.get(hash);
+  const existing = await findRaw.get(hash);
   if (existing) return { rawId: existing.id, duplicate: true };
   const fetchedAt = nowSec();
   const day = new Date(fetchedAt * 1000).toISOString().slice(0, 10);
   const rel = path.join('raw', source, day, `${hash.slice(0, 16)}.json`);
-  const r = insertRaw.run(sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
+  const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
   const rawId = Number(r.lastInsertRowid);
   try {
     fs.mkdirSync(path.join(dataDir, path.dirname(rel)), { recursive: true });
     fs.writeFileSync(path.join(dataDir, rel), text);
   } catch (err) {
-    db.prepare('DELETE FROM raw_payload WHERE id = ?').run(rawId);
+    await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(rawId);
     throw err;
   }
   return { rawId, duplicate: false };
 }
 
-export function quarantine({ source, siteId, request, body, reason }) {
-  return landRaw({ source, siteId, request, body, status: 'quarantined', reason });
+export async function quarantine({ source, siteId, request, body, reason }) {
+  return await landRaw({ source, siteId, request, body, status: 'quarantined', reason });
 }
 
 // ───────────── Series ─────────────
@@ -54,12 +54,12 @@ const seriesCache = new Map();
 // Forget the cached series ids: a dry run or a failed transaction that created series rows and was rolled back leaves ids that no longer exist.
 export const forgetSeriesCache = () => seriesCache.clear();
 
-export function seriesId(subjectKind, subjectId, metric, source) {
+export async function seriesId(subjectKind, subjectId, metric, source) {
   const key = `${subjectKind}|${subjectId}|${metric}|${source}`;
   if (seriesCache.has(key)) return seriesCache.get(key);
-  const args = [subjectKind, String(subjectId), metricId(metric), sourceId(source)];
-  let row = findSeries.get(...args);
-  if (!row) row = { id: Number(insertSeries.run(...args).lastInsertRowid) };
+  const args = [subjectKind, String(subjectId), await metricId(metric), await sourceId(source)];
+  let row = await findSeries.get(...args);
+  if (!row) row = { id: Number((await insertSeries.run(...args)).lastInsertRowid) };
   seriesCache.set(key, row.id);
   return row.id;
 }
@@ -84,10 +84,10 @@ const writerStore = new AsyncLocalStorage();
 export async function asWriter(source, fn) {
   return writerStore.run(await sourceId(source), fn);
 }
-function checkWriter(series) {
+async function checkWriter(series) {
   const writerSource = writerStore.getStore();
   if (writerSource == null) return;
-  const sid = db.prepare('SELECT source_id FROM series WHERE id = ?').get(series)?.source_id;
+  const sid = (await db.prepare('SELECT source_id FROM series WHERE id = ?').get(series))?.source_id;
   if (sid !== writerSource) throw new Error(`series ${series} belongs to another source than the one writing`);
 }
 
@@ -99,23 +99,23 @@ const lastPerKey = (rows, key) => [...new Map(rows.map((r) => [key(r), r])).valu
 const same = (a, b) => (a === null && b === null) || (a !== null && b !== null && Math.abs(a - b) < 1e-9);
 
 // Returns how many facts were new or changed, so callers know what to rebuild.
-export function putReadings(series, rows, rawId) {
-  checkWriter(series);
+export async function putReadings(series, rows, rawId) {
+  await checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
-  tx(() => {
-    for (const r of lastPerKey(rows, (x) => x.ts)) {
-      const value = r.value === undefined ? null : r.value;
-      const cur = curReading.get(series, r.ts);
-      if (cur && same(cur.value, value)) continue;
-      // A correction in the same millisecond as the version it replaces would repeat (series, ts, recorded_at):
-      // the new version is stamped one millisecond after the old one instead of failing the batch.
-      const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;
-      if (cur) supReading.run(at, series, r.ts);
-      insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
-      changed++;
-    }
-  });
+  await tx(async () => {
+        for (const r of lastPerKey(rows, (x) => x.ts)) {
+          const value = r.value === undefined ? null : r.value;
+          const cur = await curReading.get(series, r.ts);
+          if (cur && same(cur.value, value)) continue;
+          // A correction in the same millisecond as the version it replaces would repeat (series, ts, recorded_at):
+          // the new version is stamped one millisecond after the old one instead of failing the batch.
+          const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;
+          if (cur) await supReading.run(at, series, r.ts);
+          await insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
+          changed++;
+        }
+      });
   return changed;
 }
 
@@ -126,21 +126,21 @@ const supInterval = db.prepare(
 const insInterval = db.prepare(
   'INSERT INTO interval_fact (series_id, start_ts, end_ts, value, quality, recorded_at, raw_id) VALUES (?, ?, ?, ?, ?, ?, ?)');
 
-export function putIntervals(series, rows, rawId) {
-  checkWriter(series);
+export async function putIntervals(series, rows, rawId) {
+  await checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
-  tx(() => {
-    for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
-      const value = r.value === undefined ? null : r.value;
-      const cur = curInterval.get(series, r.start, r.end);
-      if (cur && same(cur.value, value)) continue;
-      const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;   // see putReadings
-      if (cur) supInterval.run(at, series, r.start, r.end);
-      insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
-      changed++;
-    }
-  });
+  await tx(async () => {
+        for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
+          const value = r.value === undefined ? null : r.value;
+          const cur = await curInterval.get(series, r.start, r.end);
+          if (cur && same(cur.value, value)) continue;
+          const at = cur && cur.recorded_at >= recordedAt ? cur.recorded_at + 1 : recordedAt;   // see putReadings
+          if (cur) await supInterval.run(at, series, r.start, r.end);
+          await insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
+          changed++;
+        }
+      });
   return changed;
 }
 
@@ -154,17 +154,17 @@ const latestForecast = db.prepare('SELECT value FROM forecast_fact WHERE series_
 // A period is its start AND end (delta 040): one of another length from the same start is a new
 // period, compared with its own latest issue and stored, never dropped. recorded_at (ms) is when
 // the core stored the issue (readForecastAsOf); issuedAt (s) stays the provider's issue time.
-export function putForecasts(series, issuedAt, rows, rawId, { recordedAt = Date.now() } = {}) {
-  checkWriter(series);
+export async function putForecasts(series, issuedAt, rows, rawId, { recordedAt = Date.now() } = {}) {
+  await checkWriter(series);
   let n = 0;
-  tx(() => {
-    for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
-      const value = r.value === undefined ? null : r.value;
-      const last = latestForecast.get(series, r.start, r.end);
-      if (last && same(last.value, value)) continue;
-      n += Number(insForecast.run(series, r.start, r.end, issuedAt, value, rawId ?? null, recordedAt).changes);
-    }
-  });
+  await tx(async () => {
+        for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
+          const value = r.value === undefined ? null : r.value;
+          const last = await latestForecast.get(series, r.start, r.end);
+          if (last && same(last.value, value)) continue;
+          n += Number((await insForecast.run(series, r.start, r.end, issuedAt, value, rawId ?? null, recordedAt)).changes);
+        }
+      });
   return n;
 }
 
@@ -173,9 +173,9 @@ export function putForecasts(series, issuedAt, rows, rawId, { recordedAt = Date.
 const insDirty = db.prepare(
   'INSERT INTO rebuild_queue (site_id, from_ts, to_ts, reason, enqueued_at) VALUES (?, ?, ?, ?, ?)');
 
-export function markDirty(siteId, fromTs, toTs, reason) {
+export async function markDirty(siteId, fromTs, toTs, reason) {
   if (!(toTs > fromTs)) return;
-  insDirty.run(siteId, fromTs, toTs, reason, nowSec());
+  await insDirty.run(siteId, fromTs, toTs, reason, nowSec());
 }
 
 // "As known at": while set (ms), every fact read returns the version that was in force at
@@ -199,12 +199,12 @@ export function inForce(alias = '') {
 }
 
 // Readings, intervals and forecasts for a set of series over a window (versions in force).
-export function readReadings(seriesIds, from, to) {
+export async function readReadings(seriesIds, from, to) {
   if (!seriesIds.length) return [];
   const q = `SELECT series_id, ts, value, quality, raw_id FROM reading
              WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND ts >= ? AND ts < ? AND ${inForce()}
              ORDER BY ts`;
-  return db.prepare(q).all(...seriesIds, from, to);
+  return await db.prepare(q).all(...seriesIds, from, to);
 }
 
 // The longest fact (end_ts - start_ts, s) of a set of series, from series.max_span_s (delta 013:
@@ -214,31 +214,31 @@ export function readReadings(seriesIds, from, to) {
 // key (series_id, start_ts, ...) is searched as a range instead of the series' whole history.
 // null: no bound (a series without facts, or a database without the column).
 let hasSpan = null;
-export function spanColumn() {
-  hasSpan ??= Boolean(db.prepare("SELECT 1 FROM pragma_table_info('series') WHERE name = 'max_span_s'").get());
+export async function spanColumn() {
+  hasSpan ??= Boolean(await db.prepare("SELECT 1 FROM pragma_table_info('series') WHERE name = 'max_span_s'").get());
   return hasSpan;
 }
-export function spanOf(seriesIds) {
-  if (!seriesIds.length || !spanColumn()) return null;
-  const r = db.prepare(`SELECT MAX(max_span_s) AS span, COUNT(max_span_s) AS known, COUNT(*) AS n FROM series WHERE id IN (${seriesIds.map(() => '?').join(',')})`).get(...seriesIds);
+export async function spanOf(seriesIds) {
+  if (!seriesIds.length || !await spanColumn()) return null;
+  const r = await db.prepare(`SELECT MAX(max_span_s) AS span, COUNT(max_span_s) AS known, COUNT(*) AS n FROM series WHERE id IN (${seriesIds.map(() => '?').join(',')})`).get(...seriesIds);
   return r && r.known === r.n && r.span != null ? r.span : null;
 }
 
-export function readIntervals(seriesIds, from, to) {
+export async function readIntervals(seriesIds, from, to) {
   if (!seriesIds.length) return [];
-  const span = spanOf(seriesIds);
+  const span = await spanOf(seriesIds);
   const q = `SELECT series_id, start_ts, end_ts, value, quality, raw_id FROM interval_fact
              WHERE series_id IN (${seriesIds.map(() => '?').join(',')}) AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND ${inForce()}
              ORDER BY start_ts`;
-  return db.prepare(q).all(...seriesIds, from, to, ...(span == null ? [] : [from - span]));
+  return await db.prepare(q).all(...seriesIds, from, to, ...(span == null ? [] : [from - span]));
 }
 
 // Forecast of record: for each target slot, the latest issue made before `asOf`. The outer read is
 // bounded to the same [from, to) as the inner one (it joins on start_ts, so this changes nothing
 // but the rows searched).
-export function readForecastOfRecord(seriesId, from, to, asOf) {
-  return db.prepare(
-    `SELECT f.start_ts, f.end_ts, f.value, f.issued_at FROM forecast_fact f
+export async function readForecastOfRecord(seriesId, from, to, asOf) {
+  return await db.prepare(
+      `SELECT f.start_ts, f.end_ts, f.value, f.issued_at FROM forecast_fact f
      JOIN (SELECT start_ts, MAX(issued_at) AS iss FROM forecast_fact
            WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= ? GROUP BY start_ts) last
        ON last.start_ts = f.start_ts AND last.iss = f.issued_at
@@ -252,15 +252,15 @@ export function readForecastOfRecord(seriesId, from, to, asOf) {
 // overlapped by a period of a later issue (the provider changed its period length) is left out:
 // the later issue is the record for that time. Ordered by series, start, end. The lower bound
 // start_ts >= from - max_span_s (series.max_span_s, delta 013) only narrows the rows searched.
-export function readForecastAsOf(seriesIds, from, to, asOfMs) {
+export async function readForecastAsOf(seriesIds, from, to, asOfMs) {
   if (!seriesIds.length) return [];
   const asOf = Math.floor(Number(asOfMs));
   if (!Number.isFinite(asOf)) throw new TypeError(`readForecastAsOf: asOfMs must be a number of ms, not ${asOfMs}`);
   const list = seriesIds.map(() => '?').join(',');
-  const span = spanOf(seriesIds);
+  const span = await spanOf(seriesIds);
   const bound = span == null ? '' : ' AND start_ts >= ?';
-  const rows = db.prepare(
-    `SELECT f.series_id, f.start_ts, f.end_ts, f.issued_at, f.recorded_at, f.value FROM forecast_fact f
+  const rows = await db.prepare(
+      `SELECT f.series_id, f.start_ts, f.end_ts, f.issued_at, f.recorded_at, f.value FROM forecast_fact f
      JOIN (SELECT series_id, start_ts, end_ts, MAX(issued_at) AS iss FROM forecast_fact
            WHERE series_id IN (${list}) AND end_ts > ? AND start_ts < ?${bound} AND recorded_at <= ?
            GROUP BY series_id, start_ts, end_ts) last

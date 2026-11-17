@@ -119,9 +119,9 @@ function fitTemperature(hist, wholeDays) {
 
 // Quartz's forecast of record for past half-hours: for each, the latest issue made before
 // it started. Read from Quartz's own series, so our stored forecast never counts as Quartz.
-function quartzOfRecord(seriesKey, from, to, slotS, phase) {
-  const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
-    .all(seriesKey, from, to);
+async function quartzOfRecord(seriesKey, from, to, slotS, phase) {
+  const rows = await db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
+      .all(seriesKey, from, to);
   const best = new Map();
   for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
   return energyBySlot(best.values(), slotS, phase);
@@ -319,14 +319,14 @@ function simulate(slots, wins, holds, b, homeKey, solarKey) {
 // How our own stored forecasts did: each finished slot of the last 7 days against the
 // latest forecast issued at least 12 hours before it. Forecast periods are matched to the slot
 // by overlap (a forecast stored in half-hours scores 15-minute or hourly slots by its share).
-function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
-  const fcS = seriesId('site', siteId, 'load_kwh', 'core_forecast');
-  const hh = db.prepare(`SELECT slot_start, local_date, home FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start + dur_s <= ? AND dur_s = ?
+async function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
+  const fcS = await seriesId('site', siteId, 'load_kwh', 'core_forecast');
+  const hh = await db.prepare(`SELECT slot_start, local_date, home FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start + dur_s <= ? AND dur_s = ?
       AND state != 'missing' AND home IS NOT NULL ORDER BY slot_start`).all(siteId, now - 7 * 86400, now, slotS);
   // Lower bound from the series' longest period (spanOf): the same rows, without reading the whole history.
-  const span = spanOf([fcS]);
-  const facts = hh.length ? db.prepare(`SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND issued_at <= end_ts - ? ORDER BY start_ts`)
-    .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ...(span == null ? [] : [hh[0].slot_start - span]), ACCURACY_LEAD) : [];
+  const span = await spanOf([fcS]);
+  const facts = hh.length ? await db.prepare(`SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND issued_at <= end_ts - ? ORDER BY start_ts`)
+      .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ...(span == null ? [] : [hh[0].slot_start - span]), ACCURACY_LEAD) : [];
   const rows = [];
   let lo = 0;
   for (const h of hh) {
@@ -365,8 +365,8 @@ function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
   };
 }
 
-export function forecastSite(siteId, hours = 48) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function forecastSite(siteId, hours = 48) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   const tz = site.timezone;
   const now = nowSec();
   // The home's slot grid; slots per nominal day (48 at 30 minutes) for "next 24 hours".
@@ -375,15 +375,15 @@ export function forecastSite(siteId, hours = 48) {
   const nDay = slotsPerDay(slotS);
   const from = slotFloor(now, slotS, phase);
   const to = from + hours * 3600;
-  const sid = (m, s) => seriesId('site', siteId, m, s);
+  const sid = async (m, s) => await seriesId('site', siteId, m, s);
   const cap = site.battery_kwh || 0;
   const histFrom = from - HISTORY_DAYS * 86400;
 
   // The home's own recent slots (of its current length): everything below is learned from these.
-  const hist = db.prepare(
-    `SELECT slot_start, local_date, tod_min, home, ev, solar, solar_forecast, battery_charge, battery_discharge, grid_to_battery, grid_to_home, soc_end, outdoor_temp
+  const hist = (await db.prepare(
+      `SELECT slot_start, local_date, tod_min, home, ev, solar, solar_forecast, battery_charge, battery_discharge, grid_to_battery, grid_to_home, soc_end, outdoor_temp
      FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND state != ? AND dur_s = ? ORDER BY slot_start`)
-    .all(siteId, histFrom, from, 'missing', slotS)
+      .all(siteId, histFrom, from, 'missing', slotS))
     .map((r) => ({ ...r, k: Math.floor(r.tod_min / (slotS / 60)), weekend: isWeekend(r.local_date), base: Math.max(0, (r.home || 0) - (r.ev || 0)) }));
   const perDay = new Map();
   for (const r of hist) perDay.set(r.local_date, (perDay.get(r.local_date) || 0) + 1);
@@ -394,11 +394,11 @@ export function forecastSite(siteId, hours = 48) {
 
   // Solar: Quartz needs the panel angles; without them, the home's learned response to sunlight.
   const anglesKnown = site.pv_tilt != null && site.pv_orientation != null;
-  const quartzFc = anglesKnown ? readForecastOfRecord(sid('solar_kwh', 'quartz'), from, to, now + 60) : [];
-  const ghiS = sid('ghi_wm2', 'open_meteo');
-  const sunFc = readForecastOfRecord(ghiS, from - 3600, to, now + 60);
-  const quartzCal = calibrateQuartz(hist, wholeDays, anglesKnown ? quartzOfRecord(sid('solar_kwh', 'quartz'), histFrom, from, slotS, phase) : new Map());
-  const sunlight = learnSunlight(hist, sunBySlot(readIntervals([ghiS], histFrom - 3600, from), slotS, phase).kwh, wholeDays, slotS);
+  const quartzFc = anglesKnown ? await readForecastOfRecord(await sid('solar_kwh', 'quartz'), from, to, now + 60) : [];
+  const ghiS = await sid('ghi_wm2', 'open_meteo');
+  const sunFc = await readForecastOfRecord(ghiS, from - 3600, to, now + 60);
+  const quartzCal = calibrateQuartz(hist, wholeDays, anglesKnown ? await quartzOfRecord(await sid('solar_kwh', 'quartz'), histFrom, from, slotS, phase) : new Map());
+  const sunlight = learnSunlight(hist, sunBySlot(await readIntervals([ghiS], histFrom - 3600, from), slotS, phase).kwh, wholeDays, slotS);
   // Quartz is used once it has been checked against this home's output (calibrated). Until then the
   // forecast learned from this home's own output and sunlight is used, because uncalibrated Quartz
   // was seen to miss this home badly (e.g. a 2.0 kW peak forecast while the panels made 3.9 kW).
@@ -425,7 +425,7 @@ export function forecastSite(siteId, hours = 48) {
     solarFactor = 1; solarRange = sunlight.range; solarRangeReason = sunlight.rangeReason;
   }
 
-  const evFc = readForecastOfRecord(sid('ev_charge_kwh', 'octopus_kraken'), from - 3600, to, now + 60);
+  const evFc = await readForecastOfRecord(await sid('ev_charge_kwh', 'octopus_kraken'), from - 3600, to, now + 60);
   const evAt = (slot) => evFc.reduce((s, f) => {
     const o = Math.min(f.end_ts, slot + slotS) - Math.max(f.start_ts, slot);
     return o > 0 && f.value != null ? s + (f.value * o) / (f.end_ts - f.start_ts) : s;
@@ -435,7 +435,7 @@ export function forecastSite(siteId, hours = 48) {
   // earlier, so a period that started before the first slot still counts.
   const carbonSeries = carbonSeriesOf(site);
   const carbonFc = carbonSeries?.forecast
-    ? readForecastOfRecord(seriesId('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source), from - 3600, to, now + 60) : [];
+    ? await readForecastOfRecord(await seriesId('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source), from - 3600, to, now + 60) : [];
   const carbonAt = (slot) => {
     const over = carbonFc.filter((f) => f.value != null && f.end_ts > slot && f.start_ts < slot + slotS);
     if (over.length === 1) return over[0].value;
@@ -443,17 +443,17 @@ export function forecastSite(siteId, hours = 48) {
     for (const f of over) { const o = Math.min(f.end_ts, slot + slotS) - Math.max(f.start_ts, slot); num += f.value * o; den += o; }
     return den ? num / den : null;
   };
-  const pricing = loadPricing(siteId, from, to);
+  const pricing = await loadPricing(siteId, from, to);
 
   // Each forecast day's mean temperature from Open-Meteo (today's past hours as
   // recorded, the rest from the latest forecast) and, when the fit applies, its use scale.
-  const tempS = sid('outdoor_temp_c', 'open_meteo');
+  const tempS = await sid('outdoor_temp_c', 'open_meteo');
   const fcDays = new Map();
-  const dayOf = (date) => {
+  const dayOf = async (date) => {
     if (fcDays.has(date)) return fcDays.get(date);
     const [a, b] = dayBounds(tz, date);
-    const temps = new Map(readForecastOfRecord(tempS, a, b, now + 60).map((f) => [f.start_ts, f.value]));
-    for (const r of readReadings([tempS], a, b)) temps.set(r.ts, r.value);
+    const temps = new Map((await readForecastOfRecord(tempS, a, b, now + 60)).map((f) => [f.start_ts, f.value]));
+    for (const r of await readReadings([tempS], a, b)) temps.set(r.ts, r.value);
     const vals = [...temps.values()].filter((v) => v != null);
     // A day's mean only when every hour of it has a temperature.
     const t = vals.length === (b - a) / 3600 ? mean(vals) : null;
@@ -467,7 +467,7 @@ export function forecastSite(siteId, hours = 48) {
   };
 
   // Battery starts from the latest known charge level: a reading, or the last built half-hour.
-  const socRow = readReadings([sid('battery_soc_pct', 'sunsynk_live'), sid('battery_soc_pct', 'sunsynk_5min')], histFrom, now + 1).pop();
+  const socRow = (await readReadings([await sid('battery_soc_pct', 'sunsynk_live'), await sid('battery_soc_pct', 'sunsynk_5min')], histFrom, now + 1)).pop();
   const lastHh = [...hist].reverse().find((r) => r.soc_end != null);
   const start = socRow && (!lastHh || socRow.ts >= lastHh.slot_start + slotS) ? { pct: socRow.value, at: socRow.ts }
     : lastHh ? { pct: lastHh.soc_end, at: lastHh.slot_start + slotS } : null;
@@ -481,7 +481,7 @@ export function forecastSite(siteId, hours = 48) {
     const k = slotOfDay(tz, t, slotS);
     const date = localDate(tz, t);
     const use = profile.at(isWeekend(date), k);
-    const scale = dayOf(date).scale;
+    const scale = (await dayOf(date)).scale;
     const ev = evAt(t);
     const raw = rawBy.has(t) ? rawBy.get(t) : null;
     const pi = priceOver(pricing, 'meter_import', t, slotS);
@@ -634,7 +634,7 @@ export function forecastSite(siteId, hours = 48) {
       import_low: sumRange('grid_import_low'), import_high: sumRange('grid_import_high'), cost_low: sumRange('cost_low'), cost_high: sumRange('cost_high'),
     },
     cheapestWindow: window('import_rate'), greenestWindow: window('carbon_intensity'),
-    accuracy: scoreAccuracy(siteId, tz, now, slotS),
+    accuracy: await scoreAccuracy(siteId, tz, now, slotS),
     model,
     slots,
   };

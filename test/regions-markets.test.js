@@ -5,7 +5,7 @@ import { MARKETS } from '../src/db/seed/markets.js';
 import { getMarket, defaultSlotFor, SLOT_LENGTHS_S } from '../src/core/markets.js';
 import { CURRENCIES } from '../src/core/money.js';
 
-test('every market is well formed', () => {
+await test('every market is well formed', () => {
   assert.deepEqual(MARKETS.map((m) => m.code), ['GB', 'FR', 'NL', 'DE', 'BE', 'ES']);
   for (const m of MARKETS) {
     assert.ok(CURRENCIES[m.currency], `${m.code} currency`);
@@ -27,7 +27,7 @@ test('every market is well formed', () => {
   assert.throws(() => getMarket('US'), /unknown market/);
 });
 
-test('slot length: the market default, made finer only by a finer tariff', () => {
+await test('slot length: the market default, made finer only by a finer tariff', () => {
   const cases = [
     ['GB', null, 1800],
     ['GB', { native_period_s: null }, 1800],     // flat tariff

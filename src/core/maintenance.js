@@ -10,27 +10,28 @@ import { bindingsFor } from './inputs.js';
 import { seedAttributes } from './attributes.js';
 import { replayableSources } from './replay.js';
 import { seedDeviceHistory } from './devices.js';
+import { filterAsync } from "./async.js";
 
 // Earlier code (before 16 Oct 2026) converted this home's gas readings from m³ to kWh with a
 // fixed calorific value as it stored them, and saved the result as Octopus 'gas_kwh' facts.
 // Octopus never sent those numbers: it reports m³ for this meter, and the m³ readings are
 // stored as 'gas_m3' and converted in the build with the daily calorific value. The build
 // already ignores the old 'gas_kwh' rows; withdrawing them keeps the facts truthful.
-export function withdrawDerivedGas(siteId) {
+export async function withdrawDerivedGas(siteId) {
   let withdrawn = 0;
-  for (const d of db.prepare("SELECT id, attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId)) {
+  for (const d of await db.prepare("SELECT id, attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId)) {
     if (JSON.parse(d.attrs || '{}').gasUnit?.unit !== 'm3') continue;
-    for (const bd of bindingsFor(siteId, 'meter_energy')) {
-    const series = seriesId('device', d.id, 'gas_kwh', bd.source);
-    tx(() => {
-      const n = db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(Date.now(), series).changes;
-      if (n) {
-        db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)').run(siteId, nowSec(), series, n,
-          'Gas kWh values computed by earlier EnergieBee code (m³ × a fixed calorific value) had been stored as if Octopus sent them. '
-          + 'Octopus reports m³ for this meter; those readings are kept and converted with National Gas\'s daily calorific value.');
-        withdrawn += n;
-      }
-    });
+    for (const bd of await bindingsFor(siteId, 'meter_energy')) {
+    const series = await seriesId('device', d.id, 'gas_kwh', bd.source);
+    await tx(async () => {
+              const n = (await db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(Date.now(), series)).changes;
+              if (n) {
+                await db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)').run(siteId, nowSec(), series, n,
+                            'Gas kWh values computed by earlier EnergieBee code (m³ × a fixed calorific value) had been stored as if Octopus sent them. '
+                            + 'Octopus reports m³ for this meter; those readings are kept and converted with National Gas\'s daily calorific value.');
+                withdrawn += n;
+              }
+            });
     }
   }
   return withdrawn;
@@ -38,33 +39,33 @@ export function withdrawDerivedGas(siteId) {
 
 // Record the system details already on `site` as their first versions (databases created
 // before details were versioned), with the source they most likely came from.
-export function seedSiteAttributes(siteId) {
-  const meta = JSON.parse(db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(siteId)?.meta || '{}');
+export async function seedSiteAttributes(siteId) {
+  const meta = JSON.parse((await db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(siteId))?.meta || '{}');
   const env = process.env;
-  seedAttributes(siteId, (attr, value) => {
-    if (attr === 'battery_kwh') {
-      if (env.BATTERY_KWH) return { source: 'installer', detail: '.env BATTERY_KWH' };
-      if (meta.batteryMeasured?.kwhPer100 === value) return { source: 'measured', detail: `measured: ${meta.batteryMeasured.energyKwh} kWh discharged over ${meta.batteryMeasured.socPoints} points of charge drop` };
-      return { source: 'provider', detail: 'battery reading (Ah × voltage)' };
-    }
-    if (attr === 'pv_kwp') return env.PV_KWP ? { source: 'installer', detail: '.env PV_KWP' } : { source: 'provider', detail: 'Sunsynk plant record' };
-    const est = meta.panelAnglesEstimate;
-    const isEst = est && ((attr === 'pv_tilt' && value === est.tilt) || (attr === 'pv_orientation' && value === est.bearing));
-    return isEst ? { source: 'estimated', detail: "estimated from this home's output" } : { source: 'installer', detail: `.env ${attr === 'pv_tilt' ? 'PV_TILT' : 'PV_ORIENTATION'}` };
-  });
+  await seedAttributes(siteId, (attr, value) => {
+        if (attr === 'battery_kwh') {
+          if (env.BATTERY_KWH) return { source: 'installer', detail: '.env BATTERY_KWH' };
+          if (meta.batteryMeasured?.kwhPer100 === value) return { source: 'measured', detail: `measured: ${meta.batteryMeasured.energyKwh} kWh discharged over ${meta.batteryMeasured.socPoints} points of charge drop` };
+          return { source: 'provider', detail: 'battery reading (Ah × voltage)' };
+        }
+        if (attr === 'pv_kwp') return env.PV_KWP ? { source: 'installer', detail: '.env PV_KWP' } : { source: 'provider', detail: 'Sunsynk plant record' };
+        const est = meta.panelAnglesEstimate;
+        const isEst = est && ((attr === 'pv_tilt' && value === est.tilt) || (attr === 'pv_orientation' && value === est.bearing));
+        return isEst ? { source: 'estimated', detail: "estimated from this home's output" } : { source: 'installer', detail: `.env ${attr === 'pv_tilt' ? 'PV_TILT' : 'PV_ORIENTATION'}` };
+      });
 }
 
 // The start-up hook (server.js start). Per home: { gasKwhWithdrawn }. Then retention, in the mode
 // RETENTION sets: 'report' (the default: a dry run, nothing deleted), 'apply', or 'off'; its report
 // is returned under `retention` (null when off).
-export function runMaintenance({ retention = retentionSettings().mode } = {}) {
+export async function runMaintenance({ retention = retentionSettings().mode } = {}) {
   const out = {};
-  for (const { id } of db.prepare('SELECT id FROM site').all()) {
-    seedSiteAttributes(id);
-    seedDeviceHistory(id);
-    out[id] = { gasKwhWithdrawn: withdrawDerivedGas(id) };
+  for (const { id } of await db.prepare('SELECT id FROM site').all()) {
+    await seedSiteAttributes(id);
+    await seedDeviceHistory(id);
+    out[id] = { gasKwhWithdrawn: await withdrawDerivedGas(id) };
   }
-  Object.defineProperty(out, 'retention', { value: retention === 'off' ? null : runRetention({ dryRun: retention !== 'apply' }), enumerable: false });
+  Object.defineProperty(out, 'retention', { value: retention === 'off' ? null : await runRetention({ dryRun: retention !== 'apply' }), enumerable: false });
   return out;
 }
 
@@ -138,7 +139,7 @@ export function retentionSettings(env = process.env) {
 }
 
 // Raw ids named in saved JSON state: a key containing 'raw' with an integer value (or a list of them).
-function rawIdsInState() {
+async function rawIdsInState() {
   const ids = new Set();
   const walk = (v, key) => {
     if (Array.isArray(v)) { for (const x of v) walk(x, key); return; }
@@ -147,7 +148,7 @@ function rawIdsInState() {
   };
   for (const sql of ['SELECT meta AS j FROM connection WHERE meta IS NOT NULL', 'SELECT state AS j FROM provider_state WHERE state IS NOT NULL']) {
     let rows = [];
-    try { rows = db.prepare(sql).all(); } catch { /* table not there: nothing saved */ }
+    try { rows = await db.prepare(sql).all(); } catch { /* table not there: nothing saved */ }
     for (const r of rows) { try { walk(JSON.parse(r.j)); } catch { /* not JSON: names no payload */ } }
   }
   return ids;
@@ -168,10 +169,10 @@ export function endpointOf(requestText) {
 
 // Every column with a foreign key to raw_payload (reading, interval_fact, forecast_fact,
 // rate_interval.raw_id today), read from the schema so a table added later is respected too.
-function rawRefs() {
+async function rawRefs() {
   const out = [];
-  for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()) {
-    for (const fk of db.prepare('SELECT "table" AS parent, "from" AS col FROM pragma_foreign_key_list(?)').all(name)) if (fk.parent === 'raw_payload') out.push([name, fk.col]);
+  for (const { name } of await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()) {
+    for (const fk of await db.prepare('SELECT "table" AS parent, "from" AS col FROM pragma_foreign_key_list(?)').all(name)) if (fk.parent === 'raw_payload') out.push([name, fk.col]);
   }
   return out;
 }
@@ -181,22 +182,22 @@ function fileSize(rel) {
   try { return fs.statSync(path.join(dataDir, rel)).size; } catch { return null; }
 }
 
-function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
-  const inState = rawIdsInState();
-  const refs = rawRefs();
+async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
+  const inState = await rawIdsInState();
+  const refs = await rawRefs();
   // In fetch order (then id), so the last one seen per endpoint is its newest answer.
-  const rows = db.prepare("SELECT id, source_id, site_id, request, file, fetched_at FROM raw_payload WHERE status = 'accepted' ORDER BY fetched_at, id").all();
-  const replayable = new Set(db.prepare(`SELECT id FROM source WHERE code IN (${replayableSources().map(() => '?').join(',')})`).all(...replayableSources()).map((x) => x.id));
+  const rows = await db.prepare("SELECT id, source_id, site_id, request, file, fetched_at FROM raw_payload WHERE status = 'accepted' ORDER BY fetched_at, id").all();
+  const replayable = new Set((await db.prepare(`SELECT id FROM source WHERE code IN (${replayableSources().map(() => '?').join(',')})`).all(...replayableSources())).map((x) => x.id));
   const newest = new Map();
   for (const r of rows) newest.set(`${r.source_id}|${r.site_id ?? ''}|${endpointOf(r.request)}`, r.id);
   const referenced = db.prepare(`SELECT NOT (${notReferenced(refs, 'p')}) AS ref FROM (SELECT ? AS id) p`);
   const out = { olderThanWindow: 0, keptReferenced: 0, keptInState: 0, keptNewestOfEndpoint: 0, keptReplayable: 0, quarantinedKept: 0, candidates: 0, bytes: 0, deleted: 0, filesDeleted: 0, filesMissing: 0 };
-  out.quarantinedKept = db.prepare("SELECT COUNT(*) AS n FROM raw_payload WHERE status = 'quarantined' AND fetched_at < ?").get(cutoff).n;
+  out.quarantinedKept = (await db.prepare("SELECT COUNT(*) AS n FROM raw_payload WHERE status = 'quarantined' AND fetched_at < ?").get(cutoff)).n;
   const doomed = [];
   for (const r of rows) {
     if (r.fetched_at >= cutoff) continue;
     out.olderThanWindow++;
-    if (referenced.get(r.id).ref) { out.keptReferenced++; continue; }
+    if ((await referenced.get(r.id)).ref) { out.keptReferenced++; continue; }
     if (inState.has(r.id)) { out.keptInState++; continue; }
     if (newest.get(`${r.source_id}|${r.site_id ?? ''}|${endpointOf(r.request)}`) === r.id) { out.keptNewestOfEndpoint++; continue; }
     if (keepReplayableCutoff != null && replayable.has(r.source_id) && r.fetched_at >= keepReplayableCutoff) { out.keptReplayable++; continue; }   // a replay could still recover from it
@@ -209,7 +210,7 @@ function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
   const del = db.prepare(`DELETE FROM raw_payload WHERE id = ? AND status = 'accepted' AND ${notReferenced(refs, 'raw_payload')}`);
   for (let i = 0; i < doomed.length; i += batch) {
     const chunk = doomed.slice(i, i + batch);
-    const gone = tx(() => chunk.filter((r) => !inState.has(r.id) && del.run(r.id).changes === 1));
+    const gone = await tx(async () => await filterAsync(chunk, async (r) => !inState.has(r.id) && (await del.run(r.id)).changes === 1));
     out.deleted += gone.length;
     for (const r of gone) {
       try { fs.unlinkSync(path.join(dataDir, r.file)); out.filesDeleted++; } catch (err) { if (err.code !== 'ENOENT') throw err; }
@@ -219,11 +220,11 @@ function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
 }
 
 // Files under data/raw that no raw_payload row names, last written before the cutoff.
-function orphanFiles(cutoff, dryRun) {
+async function orphanFiles(cutoff, dryRun) {
   const out = { found: 0, bytes: 0, deleted: 0 };
   const rawDir = path.join(dataDir, 'raw');
   if (!fs.existsSync(rawDir)) return out;
-  const known = new Set(db.prepare('SELECT file FROM raw_payload').all().map((r) => path.normalize(r.file)));
+  const known = new Set((await db.prepare('SELECT file FROM raw_payload').all()).map((r) => path.normalize(r.file)));
   const walk = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, e.name);
@@ -241,13 +242,13 @@ function orphanFiles(cutoff, dryRun) {
   return out;
 }
 
-function syncRunRetention(cutoff, dryRun) {
+async function syncRunRetention(cutoff, dryRun) {
   const where = `started_at < ? AND status <> 'running'
     AND id NOT IN (SELECT MAX(id) FROM sync_run WHERE started_at < ? AND status <> 'running' GROUP BY site_id, started_at / 86400)`;
-  const out = { olderThanWindow: db.prepare("SELECT COUNT(*) AS n FROM sync_run WHERE started_at < ? AND status <> 'running'").get(cutoff).n, candidates: 0, deleted: 0 };
-  out.candidates = db.prepare(`SELECT COUNT(*) AS n FROM sync_run WHERE ${where}`).get(cutoff, cutoff).n;
+  const out = { olderThanWindow: (await db.prepare("SELECT COUNT(*) AS n FROM sync_run WHERE started_at < ? AND status <> 'running'").get(cutoff)).n, candidates: 0, deleted: 0 };
+  out.candidates = (await db.prepare(`SELECT COUNT(*) AS n FROM sync_run WHERE ${where}`).get(cutoff, cutoff)).n;
   out.keptOnePerDay = out.olderThanWindow - out.candidates;
-  if (!dryRun && out.candidates) out.deleted = Number(tx(() => db.prepare(`DELETE FROM sync_run WHERE ${where}`).run(cutoff, cutoff).changes));
+  if (!dryRun && out.candidates) out.deleted = Number(await tx(async () => (await db.prepare(`DELETE FROM sync_run WHERE ${where}`).run(cutoff, cutoff)).changes));
   return out;
 }
 
@@ -258,47 +259,47 @@ function keptIssues(t) {
   return [max(''), max(` AND g.issued_at <= ${t}.start_ts`), max(` AND g.issued_at <= ${t}.start_ts - ${LEAD_S}`),
     max(` AND g.end_ts = ${t}.end_ts`), max(` AND g.end_ts = ${t}.end_ts AND g.issued_at <= ${t}.start_ts`), max(` AND g.end_ts = ${t}.end_ts AND g.issued_at <= ${t}.start_ts - ${LEAD_S}`)].join(', ');
 }
-function forecastRetention(cutoff, dryRun) {
+async function forecastRetention(cutoff, dryRun) {
   const out = { periodsOlderThanWindow: 0, candidates: 0, deleted: 0 };
-  out.periodsOlderThanWindow = db.prepare('SELECT COUNT(*) AS n FROM (SELECT DISTINCT series_id, start_ts, end_ts FROM forecast_fact WHERE end_ts <= ?)').get(cutoff).n;
-  out.candidates = db.prepare(`SELECT COUNT(*) AS n FROM forecast_fact f WHERE f.end_ts <= ? AND f.issued_at NOT IN (${keptIssues('f')})`).get(cutoff).n;
-  if (!dryRun && out.candidates) out.deleted = Number(tx(() => db.prepare(`DELETE FROM forecast_fact WHERE end_ts <= ? AND issued_at NOT IN (${keptIssues('forecast_fact')})`).run(cutoff).changes));
+  out.periodsOlderThanWindow = (await db.prepare('SELECT COUNT(*) AS n FROM (SELECT DISTINCT series_id, start_ts, end_ts FROM forecast_fact WHERE end_ts <= ?)').get(cutoff)).n;
+  out.candidates = (await db.prepare(`SELECT COUNT(*) AS n FROM forecast_fact f WHERE f.end_ts <= ? AND f.issued_at NOT IN (${keptIssues('f')})`).get(cutoff)).n;
+  if (!dryRun && out.candidates) out.deleted = Number(await tx(async () => (await db.prepare(`DELETE FROM forecast_fact WHERE end_ts <= ? AND issued_at NOT IN (${keptIssues('forecast_fact')})`).run(cutoff)).changes));
   return out;
 }
 
 // Refusal rows (channel_reject) and the push log older than the receipt window. No fact is touched.
-function receiptTables(cutoffS, dryRun) {
+async function receiptTables(cutoffS, dryRun) {
   const cutMs = cutoffS * 1000;
   const out = { channelReject: { candidates: 0, deleted: 0 }, pushLog: { present: false, candidates: 0, deleted: 0 } };
-  out.channelReject.candidates = db.prepare('SELECT COUNT(*) AS n FROM channel_reject WHERE recorded_at < ?').get(cutMs).n;
-  if (!dryRun && out.channelReject.candidates) out.channelReject.deleted = Number(tx(() => db.prepare('DELETE FROM channel_reject WHERE recorded_at < ?').run(cutMs).changes));
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'push_log'").get()) {
+  out.channelReject.candidates = (await db.prepare('SELECT COUNT(*) AS n FROM channel_reject WHERE recorded_at < ?').get(cutMs)).n;
+  if (!dryRun && out.channelReject.candidates) out.channelReject.deleted = Number(await tx(async () => (await db.prepare('DELETE FROM channel_reject WHERE recorded_at < ?').run(cutMs)).changes));
+  if (await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'push_log'").get()) {
     out.pushLog.present = true;
-    out.pushLog.candidates = db.prepare('SELECT COUNT(*) AS n FROM push_log WHERE received_at < ?').get(cutMs).n;
-    if (!dryRun && out.pushLog.candidates) out.pushLog.deleted = Number(tx(() => db.prepare('DELETE FROM push_log WHERE received_at < ?').run(cutMs).changes));
+    out.pushLog.candidates = (await db.prepare('SELECT COUNT(*) AS n FROM push_log WHERE received_at < ?').get(cutMs)).n;
+    if (!dryRun && out.pushLog.candidates) out.pushLog.deleted = Number(await tx(async () => (await db.prepare('DELETE FROM push_log WHERE received_at < ?').run(cutMs)).changes));
   }
   return out;
 }
 
-function rebuildQueueRetention(dryRun) {
-  const out = { candidates: db.prepare('SELECT COUNT(*) AS n FROM rebuild_queue WHERE done_at IS NOT NULL').get().n, deleted: 0 };
-  if (!dryRun && out.candidates) out.deleted = Number(tx(() => db.prepare('DELETE FROM rebuild_queue WHERE done_at IS NOT NULL').run().changes));
+async function rebuildQueueRetention(dryRun) {
+  const out = { candidates: (await db.prepare('SELECT COUNT(*) AS n FROM rebuild_queue WHERE done_at IS NOT NULL').get()).n, deleted: 0 };
+  if (!dryRun && out.candidates) out.deleted = Number(await tx(async () => (await db.prepare('DELETE FROM rebuild_queue WHERE done_at IS NOT NULL').run()).changes));
   return out;
 }
 
 // One retention run. dryRun (the default): counts what would be deleted, deletes nothing.
 // The windows come from the environment (retentionSettings) unless given; now is in seconds.
-export function runRetention({ dryRun = true, now = nowSec(), rawDays, syncRunDays, forecastDays, receiptDays, batch = 500 } = {}) {
+export async function runRetention({ dryRun = true, now = nowSec(), rawDays, syncRunDays, forecastDays, receiptDays, batch = 500 } = {}) {
   const env = retentionSettings();
   const s = { rawDays: rawDays ?? env.rawDays, syncRunDays: syncRunDays ?? env.syncRunDays, forecastDays: Math.max(forecastDays ?? env.forecastDays, MIN_FORECAST_DAYS), receiptDays: receiptDays ?? receiptRetentionDays() };
   const cut = (d) => Math.floor(now - d * 86400);
   const report = { dryRun, at: now, settings: s };
-  report.raw = rawRetention(cut(s.rawDays), dryRun, batch, cut(s.receiptDays));
-  report.orphanFiles = orphanFiles(cut(s.rawDays), dryRun);
-  report.syncRun = syncRunRetention(cut(s.syncRunDays), dryRun);
-  report.forecast = forecastRetention(cut(s.forecastDays), dryRun);
-  report.rebuildQueue = rebuildQueueRetention(dryRun);
-  Object.assign(report, receiptTables(cut(s.receiptDays), dryRun));
+  report.raw = await rawRetention(cut(s.rawDays), dryRun, batch, cut(s.receiptDays));
+  report.orphanFiles = await orphanFiles(cut(s.rawDays), dryRun);
+  report.syncRun = await syncRunRetention(cut(s.syncRunDays), dryRun);
+  report.forecast = await forecastRetention(cut(s.forecastDays), dryRun);
+  report.rebuildQueue = await rebuildQueueRetention(dryRun);
+  Object.assign(report, await receiptTables(cut(s.receiptDays), dryRun));
   return report;
 }
 

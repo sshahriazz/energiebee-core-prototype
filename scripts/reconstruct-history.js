@@ -6,8 +6,8 @@ import { db } from '../src/db/db.js';
 import { reconstructHistory } from '../src/core/history.js';
 
 const force = process.argv.includes('--force');
-for (const { id, name } of db.prepare('SELECT id, name FROM site').all()) {
+for (const { id, name } of await db.prepare('SELECT id, name FROM site').all()) {
   const t0 = Date.now();
-  const r = reconstructHistory(id, { force });
+  const r = await reconstructHistory(id, { force });
   console.log(`${name}: ${JSON.stringify(r)} in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 }

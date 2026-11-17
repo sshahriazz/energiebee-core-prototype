@@ -11,23 +11,23 @@ const keyOf = (env = process.env) => (env.SECRET_KEY && env.SECRET_KEY.length >=
 export const secretsReady = (env = process.env) => !!keyOf(env);
 const aad = (siteId, provider) => Buffer.from(`connection_secret:${siteId}:${provider}`);
 
-export function putSecret(siteId, provider, value) {
+export async function putSecret(siteId, provider, value) {
   const key = keyOf();
   if (!key) { const e = new Error('Logins cannot be stored: SECRET_KEY (32+ characters) is not set in .env'); e.status = 503; throw e; }
   const iv = crypto.randomBytes(12);
   const c = crypto.createCipheriv('aes-256-gcm', key, iv);
   c.setAAD(aad(siteId, provider));
   const ciphertext = Buffer.concat([c.update(JSON.stringify(value), 'utf8'), c.final()]);
-  db.prepare(`INSERT INTO connection_secret (site_id, provider, iv, tag, ciphertext, recorded_at) VALUES (?, ?, ?, ?, ?, ?)
+  await db.prepare(`INSERT INTO connection_secret (site_id, provider, iv, tag, ciphertext, recorded_at) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT (site_id, provider) DO UPDATE SET iv = excluded.iv, tag = excluded.tag, ciphertext = excluded.ciphertext, recorded_at = excluded.recorded_at`)
-    .run(siteId, provider, iv, c.getAuthTag(), ciphertext, Date.now());
+        .run(siteId, provider, iv, c.getAuthTag(), ciphertext, Date.now());
 }
 
-export const hasSecret = (siteId, provider) => !!db.prepare('SELECT 1 FROM connection_secret WHERE site_id = ? AND provider = ?').get(siteId, provider);
+export const hasSecret = async (siteId, provider) => !!await db.prepare('SELECT 1 FROM connection_secret WHERE site_id = ? AND provider = ?').get(siteId, provider);
 
 // The stored login, or null when there is none. Throws when it cannot be read (no key, another key).
-export function getSecret(siteId, provider) {
-  const r = db.prepare('SELECT iv, tag, ciphertext FROM connection_secret WHERE site_id = ? AND provider = ?').get(siteId, provider);
+export async function getSecret(siteId, provider) {
+  const r = await db.prepare('SELECT iv, tag, ciphertext FROM connection_secret WHERE site_id = ? AND provider = ?').get(siteId, provider);
   if (!r) return null;
   const key = keyOf();
   if (!key) throw new Error('the stored login cannot be read: SECRET_KEY is not set in .env');
@@ -39,14 +39,14 @@ export function getSecret(siteId, provider) {
   } catch { throw new Error('the stored login cannot be read: SECRET_KEY has changed since it was stored'); }
 }
 
-export const deleteSecret = (siteId, provider) => db.prepare('DELETE FROM connection_secret WHERE site_id = ? AND provider = ?').run(siteId, provider);
+export const deleteSecret = async (siteId, provider) => await db.prepare('DELETE FROM connection_secret WHERE site_id = ? AND provider = ?').run(siteId, provider);
 
 // A step's credentials ({ creds } | { missing: reason }, as envCredentials): the home's stored login
 // when it has one, else .env for the .env home (vars and optional map fields to variable names).
-export function siteCredentials(site, provider, vars, optional = {}) {
-  if (site?.id == null || !hasSecret(site.id, provider)) return envCredentials(site, vars, optional);
+export async function siteCredentials(site, provider, vars, optional = {}) {
+  if (site?.id == null || !await hasSecret(site.id, provider)) return envCredentials(site, vars, optional);
   let stored;
-  try { stored = getSecret(site.id, provider); } catch (err) { return { missing: `no credentials: ${err.message}` }; }
+  try { stored = await getSecret(site.id, provider); } catch (err) { return { missing: `no credentials: ${err.message}` }; }
   const absent = Object.keys(vars).filter((k) => !stored?.[k]);
   if (absent.length) return { missing: `no credentials: ${absent.join(', ')} not in the stored login` };
   return { creds: Object.fromEntries([...Object.keys(vars), ...Object.keys(optional)].filter((k) => stored[k]).map((k) => [k, stored[k]])) };

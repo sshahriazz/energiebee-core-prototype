@@ -10,8 +10,8 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 const dbFile = hasLive ? useDb({ snapshot: true }) : null;
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { app } = hasLive ? await import('../src/server.js') : {};
+const { db } = await import('../src/db/db.js');
+const { app } = await import('../src/server.js');
 
 let server; let base;
 before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
@@ -20,7 +20,7 @@ after(() => server?.close());
 const SITE = 1;
 const get = async (p) => { const r = await fetch(`${base}${p}`); return { status: r.status, body: await r.json() }; };
 const post = async (p, body) => { const r = await fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
-const count = (t) => db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;
+const count = async (t) => (await db.prepare(`SELECT COUNT(*) n FROM ${t}`).get()).n;
 
 const good = (over = {}) => ({
   code: 'acme_inverter', name: 'Acme inverter cloud',
@@ -28,7 +28,7 @@ const good = (over = {}) => ({
   traits: { holdS: 300, expectedEveryS: 300 }, ...over,
 });
 
-test('a new source is created, marked as the user\'s, listed at once, and can be bound and mapped like any other', { skip }, async () => {
+await test('a new source is created, marked as the user\'s, listed at once, and can be bound and mapped like any other', { skip }, async () => {
   const r = await post('/api/sources', good());
   assert.equal(r.status, 201);
   assert.equal(r.body.source.code, 'acme_inverter');
@@ -47,18 +47,18 @@ test('a new source is created, marked as the user\'s, listed at once, and can be
   assert.ok(pv.body.warnings.some((w) => /no data for this home yet/.test(w)), 'a source with no data says so');
 });
 
-test('dryRun validates and returns the row but creates nothing', { skip }, async () => {
-  const before = count('source');
+await test('dryRun validates and returns the row but creates nothing', { skip }, async () => {
+  const before = await count('source');
   const r = await post('/api/sources?dryRun=1', good({ code: 'acme_dry' }));
   assert.equal(r.status, 200);
   assert.equal(r.body.dryRun, true);
   assert.equal(r.body.source.code, 'acme_dry');
-  assert.equal(count('source'), before);
-  assert.equal(db.prepare("SELECT 1 FROM source WHERE code = 'acme_dry'").get(), undefined);
+  assert.equal(await count('source'), before);
+  assert.equal(await db.prepare("SELECT 1 FROM source WHERE code = 'acme_dry'").get(), undefined);
 });
 
-test('every validation error has a status, a code and the field at fault, and writes nothing', { skip }, async () => {
-  const before = count('source');
+await test('every validation error has a status, a code and the field at fault, and writes nothing', { skip }, async () => {
+  const before = await count('source');
   const cases = [
     [good({ code: '' }), 400, 'missing_field', 'code'],
     [good({ code: 'Acme' }), 400, 'bad_code', 'code'],
@@ -85,12 +85,12 @@ test('every validation error has a status, a code and the field at fault, and wr
     assert.deepEqual([r.status, r.body.code, r.body.field], [status, code, field], JSON.stringify(body).slice(0, 80));
     assert.ok(r.body.error && r.body.error.length > 5, 'a plain message');
   }
-  assert.equal(count('source'), before, 'nothing was created');
+  assert.equal(await count('source'), before, 'nothing was created');
 });
 
-test('a source created on the screen survives the registry seed on the next open, and the code-defined ones are intact', { skip }, () => {
+await test('a source created on the screen survives the registry seed on the next open, and the code-defined ones are intact', { skip }, async () => {
   const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eb-src-')), 'copy.db');
-  db.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
+  await db.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
   const script = `const { db } = await import(${JSON.stringify(path.resolve(import.meta.dirname, '../src/db/db.js'))});
     const a = db.prepare("SELECT name, contract, traits FROM source WHERE code = 'acme_inverter'").get();
     const b = db.prepare("SELECT traits FROM source WHERE code = 'sunsynk_5min'").get();
@@ -104,7 +104,7 @@ test('a source created on the screen survives the registry seed on the next open
     assert.equal(JSON.parse(out.a.traits).created_by, 'user');
     assert.equal(JSON.parse(out.a.contract).units, 'kW and kWh');
     assert.equal(JSON.parse(out.b.traits).expectedEveryS, 300, 'the code-defined source keeps its traits');
-    assert.equal(out.n, db.prepare('SELECT COUNT(*) n FROM source').get().n);
+    assert.equal(out.n, (await db.prepare('SELECT COUNT(*) n FROM source').get()).n);
   }
   fs.rmSync(path.dirname(copy), { recursive: true, force: true });
 });

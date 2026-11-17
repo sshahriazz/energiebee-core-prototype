@@ -52,24 +52,24 @@ if (hasLive) {
   before = { ...reads(c), oldShape: !c.prepare("SELECT 1 FROM pragma_table_info('forecast_fact') WHERE name = 'recorded_at'").get() };
   c.close();
 }
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { readForecastOfRecord } = hasLive ? await import('../src/core/facts.js') : {};
+const { db } = await import('../src/db/db.js');
+const { readForecastOfRecord } = await import('../src/core/facts.js');
 
-test('every forecast read gives the same rows after delta 040 as before it', { skip }, () => {
+await test('every forecast read gives the same rows after delta 040 as before it', { skip }, async () => {
   const after = reads(db);
   const { oldShape, ...b } = before;
   assert.deepEqual(after, b);
   assert.ok(b.count > 0, 'the copy holds forecasts');
-  assert.ok(db.prepare("SELECT 1 FROM pragma_table_info('forecast_fact') WHERE name = 'recorded_at'").get());
-  if (oldShape) assert.equal(db.prepare('SELECT COUNT(*) AS n FROM forecast_fact WHERE recorded_at != issued_at * 1000').get().n, 0, 'backfilled from issued_at');
+  assert.ok(await db.prepare("SELECT 1 FROM pragma_table_info('forecast_fact') WHERE name = 'recorded_at'").get());
+  if (oldShape) assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM forecast_fact WHERE recorded_at != issued_at * 1000').get()).n, 0, 'backfilled from issued_at');
   // The exported reader agrees with its SQL on every series.
-  for (const s of db.prepare(seriesSql).all()) {
-    assert.equal(hash(readForecastOfRecord(s.id, 0, 4e9, asOf)), after.record[s.id], `series ${s.id} (${s.metric}/${s.source})`);
+  for (const s of await db.prepare(seriesSql).all()) {
+    assert.equal(hash(await readForecastOfRecord(s.id, 0, 4e9, asOf)), after.record[s.id], `series ${s.id} (${s.metric}/${s.source})`);
   }
 });
 
-test('the GB home has no heating series: site_heat_slot stays empty', { skip }, async () => {
+await test('the GB home has no heating series: site_heat_slot stays empty', { skip }, async () => {
   const { hasHeatingSeries } = await import('../src/core/heat.js');
-  assert.equal(hasHeatingSeries(SITE), false);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM site_heat_slot').get().n, 0);
+  assert.equal(await hasHeatingSeries(SITE), false);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM site_heat_slot').get()).n, 0);
 });

@@ -28,6 +28,7 @@ import { bindingsFor } from './inputs.js';
 import { nowSec, localDate, addDays, dayBounds, daysBetween, slotLength, slotNoun, slotLabel, zonedParts, todMinute, floorTo, parseIso, slotFloor } from './time.js';
 import { mapRecords } from '../adapters/tariffscanner.js';
 import { mapPrices, mapComponents } from '../adapters/tounify.js';
+import { mapAsync, flatMapAsync } from "./async.js";
 
 const bad = (msg) => new ExplainError(msg, 400);
 const notFound = (msg) => new ExplainError(msg, 404);
@@ -65,18 +66,18 @@ function timeParam(q, name, tz, { end = false } = {}) {
   if (isDate(v)) return dayBounds(tz, v)[end ? 1 : 0];
   throw bad(`${name} must be epoch seconds or a date YYYY-MM-DD`);
 }
-function siteParam(q, { required = true } = {}) {
+async function siteParam(q, { required = true } = {}) {
   const v = one(q.site, 'site');
   if (v == null) { if (required) throw bad('site is required (the home id)'); return null; }
   if (!/^\d+$/.test(v)) throw bad('site must be a home id');
-  const s = db.prepare('SELECT * FROM site WHERE id = ?').get(Number(v));
+  const s = await db.prepare('SELECT * FROM site WHERE id = ?').get(Number(v));
   if (!s) throw notFound(`no home ${v}`);
   return s;
 }
 const asOfParam = (q) => intParam(q, 'as_of_ms', { min: 1e11, max: 1e14 });
 // A range of local dates; defaults to the last `days` days the home has built.
-function dateRange(site, q, { days = 7, maxDays = 400 } = {}) {
-  const last = db.prepare('SELECT MAX(local_date) AS d FROM site_day WHERE site_id = ?').get(site.id)?.d ?? localDate(site.timezone, nowSec());
+async function dateRange(site, q, { days = 7, maxDays = 400 } = {}) {
+  const last = (await db.prepare('SELECT MAX(local_date) AS d FROM site_day WHERE site_id = ?').get(site.id))?.d ?? localDate(site.timezone, nowSec());
   const to = dateParam(q, 'to', null) ?? (q.from ? addDays(dateParam(q, 'from'), days - 1) : last);
   const from = dateParam(q, 'from', null) ?? addDays(to, -(days - 1));
   if (from > to) throw bad('from must not be after to');
@@ -118,31 +119,31 @@ const kindOfUnit = (u) => KIND_OF_UNIT[u] ?? 'other';
 // ───────────── Series of a home ─────────────
 
 const FORECAST_ONLY = new Set(['core_forecast', 'quartz', 'core_solar_cases', 'core_plan']);
-function regionsOf(site) {
+async function regionsOf(site) {
   const out = [];
   const carbon = carbonSubjectOf(site);
   if (carbon) out.push(carbon);
-  for (const d of db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id)) {
+  for (const d of await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id)) {
     try { const ldz = JSON.parse(d.attrs || '{}').ldz; if (ldz) out.push(`ldz:${ldz}`); } catch { /* attrs not JSON */ }
   }
   return out;
 }
-export function siteSeries(site) {
-  return db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.label, m.unit, m.time_role, m.aggregation, so.code AS source
+export async function siteSeries(site) {
+  return await db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.label, m.unit, m.time_role, m.aggregation, so.code AS source
       FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
      WHERE (se.subject_kind = 'site' AND se.subject_id = ?)
         OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
         OR (se.subject_kind = 'region' AND se.subject_id IN (SELECT value FROM json_each(?)))
-     ORDER BY se.id`).all(String(site.id), site.id, JSON.stringify(regionsOf(site)));
+     ORDER BY se.id`).all(String(site.id), site.id, JSON.stringify(await regionsOf(site)));
 }
 // Fact counts per series and table (current and superseded), first and last time.
-function seriesStats(ids) {
+async function seriesStats(ids) {
   const st = new Map(ids.map((id) => [id, {}]));
   if (!ids.length) return st;
   const list = ids.map(() => '?').join(',');
-  for (const r of db.prepare(`SELECT series_id, COUNT(*) AS n, SUM(superseded_at IS NOT NULL) AS sup, MIN(ts) AS a, MAX(ts) AS b FROM reading WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).reading = r;
-  for (const r of db.prepare(`SELECT series_id, COUNT(*) AS n, SUM(superseded_at IS NOT NULL) AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM interval_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).interval_fact = r;
-  for (const r of db.prepare(`SELECT series_id, COUNT(*) AS n, 0 AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM forecast_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).forecast_fact = r;
+  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, SUM(superseded_at IS NOT NULL) AS sup, MIN(ts) AS a, MAX(ts) AS b FROM reading WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).reading = r;
+  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, SUM(superseded_at IS NOT NULL) AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM interval_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).interval_fact = r;
+  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, 0 AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM forecast_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).forecast_fact = r;
   return st;
 }
 function describeSeries(s, st, site) {
@@ -196,24 +197,24 @@ const LINK = [
   ['reading', 'SELECT COUNT(*) AS n FROM reading WHERE raw_id = ?'], ['interval_fact', 'SELECT COUNT(*) AS n FROM interval_fact WHERE raw_id = ?'],
   ['forecast_fact', 'SELECT COUNT(*) AS n FROM forecast_fact WHERE raw_id = ?'], ['rate_interval', 'SELECT COUNT(*) AS n FROM rate_interval WHERE raw_id = ?'],
 ];
-function linkedCounts(rawId) {
+async function linkedCounts(rawId) {
   const out = { total: 0 };
-  for (const [t, sql] of LINK) { out[t] = db.prepare(sql).get(rawId).n; out.total += out[t]; }
+  for (const [t, sql] of LINK) { out[t] = (await db.prepare(sql).get(rawId)).n; out.total += out[t]; }
   return out;
 }
 const UNLINKED = `NOT EXISTS (SELECT 1 FROM reading WHERE raw_id = p.id) AND NOT EXISTS (SELECT 1 FROM interval_fact WHERE raw_id = p.id)
   AND NOT EXISTS (SELECT 1 FROM forecast_fact WHERE raw_id = p.id) AND NOT EXISTS (SELECT 1 FROM rate_interval WHERE raw_id = p.id)`;
 
 // The facts a payload produced (forward lineage): every table that cites it, up to `limit` rows.
-function forwardLineage(rawId, limit = 200) {
-  const counts = linkedCounts(rawId);
+async function forwardLineage(rawId, limit = 200) {
+  const counts = await linkedCounts(rawId);
   const out = [];
-  const take = (sql) => { if (out.length < limit) out.push(...db.prepare(`${sql} LIMIT ?`).all(rawId, limit - out.length)); };
+  const take = async (sql) => { if (out.length < limit) out.push(...await db.prepare(`${sql} LIMIT ?`).all(rawId, limit - out.length)); };
   const join = 'JOIN series se ON se.id = x.series_id JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id';
-  take(`SELECT 'reading' AS "table", x.series_id, m.code AS metric, so.code AS source, x.ts, x.value, x.quality, x.recorded_at, x.superseded_at FROM reading x ${join} WHERE x.raw_id = ? ORDER BY x.series_id, x.ts, x.recorded_at`);
-  take(`SELECT 'interval_fact' AS "table", x.series_id, m.code AS metric, so.code AS source, x.start_ts, x.end_ts, x.value, x.quality, x.recorded_at, x.superseded_at FROM interval_fact x ${join} WHERE x.raw_id = ? ORDER BY x.series_id, x.start_ts, x.recorded_at`);
-  take(`SELECT 'forecast_fact' AS "table", x.series_id, m.code AS metric, so.code AS source, x.start_ts, x.end_ts, x.value, x.issued_at, x.recorded_at, NULL AS superseded_at FROM forecast_fact x ${join} WHERE x.raw_id = ? ORDER BY x.series_id, x.start_ts, x.issued_at`);
-  take(`SELECT 'rate_interval' AS "table", NULL AS series_id, 'rate:' || x.component || '/' || x.register AS metric, t.provider AS source, x.id AS rate_id, t.tariff_code, x.payment_method, x.charge_period,
+  await take(`SELECT 'reading' AS "table", x.series_id, m.code AS metric, so.code AS source, x.ts, x.value, x.quality, x.recorded_at, x.superseded_at FROM reading x ${join} WHERE x.raw_id = ? ORDER BY x.series_id, x.ts, x.recorded_at`);
+  await take(`SELECT 'interval_fact' AS "table", x.series_id, m.code AS metric, so.code AS source, x.start_ts, x.end_ts, x.value, x.quality, x.recorded_at, x.superseded_at FROM interval_fact x ${join} WHERE x.raw_id = ? ORDER BY x.series_id, x.start_ts, x.recorded_at`);
+  await take(`SELECT 'forecast_fact' AS "table", x.series_id, m.code AS metric, so.code AS source, x.start_ts, x.end_ts, x.value, x.issued_at, x.recorded_at, NULL AS superseded_at FROM forecast_fact x ${join} WHERE x.raw_id = ? ORDER BY x.series_id, x.start_ts, x.issued_at`);
+  await take(`SELECT 'rate_interval' AS "table", NULL AS series_id, 'rate:' || x.component || '/' || x.register AS metric, t.provider AS source, x.id AS rate_id, t.tariff_code, x.payment_method, x.charge_period,
       x.valid_from AS start_ts, x.valid_to AS end_ts, x.price_ex_vat AS value, x.recorded_at, x.superseded_at FROM rate_interval x JOIN tariff t ON t.id = x.tariff_id WHERE x.raw_id = ? ORDER BY x.id`);
   return { rows: out, total: counts.total, by_table: counts, truncated: counts.total > out.length };
 }
@@ -263,14 +264,14 @@ function derivedRates(r, body, site) {
  * Re-run the adapter's pure normaliser on a stored body and compare with the stored rows that cite
  * the payload: { supported, ok, rederived_count, stored_count, diffs: [{ key, stored, rederived }] }.
  */
-export function rederive(r, body, site) {
+export async function rederive(r, body, site) {
   if (!['tariffscanner', 'tounify'].includes(r.source)) {
-    return { supported: false, ok: null, rederived_count: null, stored_count: linkedCounts(r.id).total, diffs: [],
+    return { supported: false, ok: null, rederived_count: null, stored_count: (await linkedCounts(r.id)).total, diffs: [],
       reason: `${r.source}: no side-effect-free normaliser is exported (${NOT_PURE[r.source] ?? 'no adapter normaliser known for this source'}); nothing is refactored for the explorer, so this payload is not re-run. /api/explorer/validate reads its published values directly instead.` };
   }
-  if (body == null) return { supported: true, ok: false, rederived_count: 0, stored_count: linkedCounts(r.id).total, diffs: [], reason: 'the payload body could not be read as JSON (or its file is not on this machine)' };
+  if (body == null) return { supported: true, ok: false, rederived_count: 0, stored_count: (await linkedCounts(r.id)).total, diffs: [], reason: 'the payload body could not be read as JSON (or its file is not on this machine)' };
   const d = derivedRates(r, body, site);
-  const stored = db.prepare('SELECT x.*, t.tariff_code FROM rate_interval x JOIN tariff t ON t.id = x.tariff_id WHERE x.raw_id = ? ORDER BY x.id').all(r.id);
+  const stored = await db.prepare('SELECT x.*, t.tariff_code FROM rate_interval x JOIN tariff t ON t.id = x.tariff_id WHERE x.raw_id = ? ORDER BY x.id').all(r.id);
   const key = (x, any) => [any ? '*' : x.tariff_code, x.component, x.register, x.charge_period ?? '', x.payment_method ?? 'ANY', any ? '' : x.valid_from].join('|');
   const derivedBy = new Map();
   for (const x of d.rows) derivedBy.set(key(x, d.anyTariff), x);
@@ -395,11 +396,11 @@ const bodies = new Map();
 function payloadCache({ budget = Infinity } = {}) {
   const cache = new Map();
   let left = budget;
-  const get = (rawId, { optional = false } = {}) => {
+  const get = async (rawId, { optional = false } = {}) => {
     if (rawId == null) return null;
     if (cache.get(rawId)?.deferred && !optional) cache.delete(rawId);
     if (!cache.has(rawId)) {
-      const r = db.prepare('SELECT p.*, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id = ?').get(rawId);
+      const r = await db.prepare('SELECT p.*, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id = ?').get(rawId);
       const key = r ? `${dataDir}|${r.hash}` : null;
       let hit = key ? bodies.get(key) : null;
       if (hit) { bodies.delete(key); bodies.set(key, hit); }   // most recently used last
@@ -434,11 +435,11 @@ function publishedValue(pc, fact, meta, tz) {
 
 // ───────────── 1 overview ─────────────
 
-export function overview(q) {
-  const site = siteParam(q);
-  const range = db.prepare('SELECT MIN(local_date) AS first_date, MAX(local_date) AS last_date FROM site_day WHERE site_id = ?').get(site.id);
-  const list = siteSeries(site);
-  const st = seriesStats(list.map((s) => s.id));
+export async function overview(q) {
+  const site = await siteParam(q);
+  const range = await db.prepare('SELECT MIN(local_date) AS first_date, MAX(local_date) AS last_date FROM site_day WHERE site_id = ?').get(site.id);
+  const list = await siteSeries(site);
+  const st = await seriesStats(list.map((s) => s.id));
   const bySource = new Map();
   for (const s of list) {
     const x = bySource.get(s.source) || bySource.set(s.source, { code: s.source, series: 0, facts: 0, first_ts: null, last_ts: null }).get(s.source);
@@ -451,8 +452,8 @@ export function overview(q) {
       x.last_ts = x.last_ts == null ? r.b : Math.max(x.last_ts, r.b);
     }
   }
-  const raws = db.prepare('SELECT p.id, p.file, so.code AS source, p.fetched_at FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ?').all(site.id);
-  const unlinked = new Map(db.prepare(`SELECT so.code AS source, SUM(${UNLINKED}) AS n FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ? GROUP BY so.code`).all(site.id).map((r) => [r.source, r.n]));
+  const raws = await db.prepare('SELECT p.id, p.file, so.code AS source, p.fetched_at FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ?').all(site.id);
+  const unlinked = new Map((await db.prepare(`SELECT so.code AS source, SUM(${UNLINKED}) AS n FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ? GROUP BY so.code`).all(site.id)).map((r) => [r.source, r.n]));
   const rawBy = new Map();
   for (const r of raws) {
     const x = rawBy.get(r.source) || rawBy.set(r.source, { source: r.source, count: 0, bytes: 0, first_at: null, last_at: null, unlinked: unlinked.get(r.source) ?? 0, missing_files: 0 }).get(r.source);
@@ -462,17 +463,17 @@ export function overview(q) {
     x.first_at = x.first_at == null ? r.fetched_at : Math.min(x.first_at, r.fetched_at);
     x.last_at = x.last_at == null ? r.fetched_at : Math.max(x.last_at, r.fetched_at);
   }
-  const tl = db.prepare(`SELECT COUNT(*) AS slots, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
+  const tl = await db.prepare(`SELECT COUNT(*) AS slots, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
     SUM((quality & ${QUALITY.RESTATED}) != 0) AS restated FROM site_hh WHERE site_id = ?`).get(site.id);
   const ck = Object.fromEntries(['pass', 'warn', 'fail', 'skip'].map((s) => [s, 0]));
-  for (const r of db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? GROUP BY status').all(site.id)) ck[r.status] = r.n;
+  for (const r of await db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? GROUP BY status').all(site.id)) ck[r.status] = r.n;
   return {
     ...base(site), name: site.name, timezone: site.timezone, is_demo: !!site.is_demo,
     range: { first_date: range?.first_date ?? null, last_date: range?.last_date ?? null },
     slot_s: slotLength(site), currency: site.currency ?? 'GBP', series_count: list.length,
     sources: [...bySource.values()].sort((a, b) => a.code.localeCompare(b.code)),
     raw: { count: raws.length, bytes: [...rawBy.values()].reduce((s, x) => s + x.bytes, 0), by_source: [...rawBy.values()].sort((a, b) => a.source.localeCompare(b.source)),
-      shared: db.prepare('SELECT COUNT(*) AS n FROM raw_payload WHERE site_id IS NULL').get().n,
+      shared: (await db.prepare('SELECT COUNT(*) AS n FROM raw_payload WHERE site_id IS NULL').get()).n,
       note: 'unlinked: payloads no fact or rate row cites (often a re-fetch whose values were already held: unchanged facts are not stored twice); shared: catalogue payloads of no home' },
     timeline: { slots: tl.slots ?? 0, final: tl.final ?? 0, provisional: tl.provisional ?? 0, missing: tl.missing ?? 0, restated: tl.restated ?? 0 },
     checks: ck,
@@ -481,8 +482,8 @@ export function overview(q) {
 
 // ───────────── 2 and 3 raw ─────────────
 
-export function rawList(q) {
-  const site = siteParam(q);
+export async function rawList(q) {
+  const site = await siteParam(q);
   const tz = site.timezone;
   const source = one(q.source, 'source');
   const status = enumParam(q, 'status', ['accepted', 'quarantined'], null);
@@ -491,7 +492,7 @@ export function rawList(q) {
   const cursor = intParam(q, 'cursor', { min: 1 });
   const where = ['p.site_id = ?']; const args = [site.id];
   if (source) {
-    const sid = db.prepare('SELECT id FROM source WHERE code = ?').get(source)?.id;
+    const sid = (await db.prepare('SELECT id FROM source WHERE code = ?').get(source))?.id;
     if (sid == null) throw bad(`unknown source ${source}`);
     where.push('p.source_id = ?'); args.push(sid);
   }
@@ -499,72 +500,72 @@ export function rawList(q) {
   if (from != null) { where.push('p.fetched_at >= ?'); args.push(from); }
   if (to != null) { where.push('p.fetched_at < ?'); args.push(to); }
   if (cursor != null) { where.push('p.id < ?'); args.push(cursor); }
-  const rows = db.prepare(`SELECT p.id, so.code AS source, p.fetched_at, p.status, p.reason, p.hash, p.request, p.file FROM raw_payload p JOIN source so ON so.id = p.source_id
+  const rows = await db.prepare(`SELECT p.id, so.code AS source, p.fetched_at, p.status, p.reason, p.hash, p.request, p.file FROM raw_payload p JOIN source so ON so.id = p.source_id
     WHERE ${where.join(' AND ')} ORDER BY p.id DESC LIMIT ?`).all(...args, limit + 1);
   const page = rows.slice(0, limit);
   return {
     ...base(site),
-    rows: page.map((r) => ({ id: r.id, source: r.source, fetched_at: r.fetched_at, status: r.status, reason: r.reason ?? null, size: rawSize(r), hash: r.hash, request: requestOf(r), facts_linked: linkedCounts(r.id).total })),
+    rows: await mapAsync(page, async (r) => ({ id: r.id, source: r.source, fetched_at: r.fetched_at, status: r.status, reason: r.reason ?? null, size: rawSize(r), hash: r.hash, request: requestOf(r), facts_linked: (await linkedCounts(r.id)).total })),
     next: rows.length > limit ? page[page.length - 1].id : null,
   };
 }
 
 const BODY_LIMIT = 200000;
-export function rawOne(id, q) {
+export async function rawOne(id, q) {
   if (!/^\d+$/.test(String(id ?? ''))) throw bad('the raw payload id must be a number');
-  const r = db.prepare('SELECT p.*, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id = ?').get(Number(id));
+  const r = await db.prepare('SELECT p.*, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id = ?').get(Number(id));
   if (!r) throw notFound(`no raw payload ${id}`);
-  const asked = siteParam(q, { required: false });
+  const asked = await siteParam(q, { required: false });
   if (asked && r.site_id != null && r.site_id !== asked.id) throw notFound(`raw payload ${id} is not one of home ${asked.id}`);
-  const site = asked ?? (r.site_id != null ? db.prepare('SELECT * FROM site WHERE id = ?').get(r.site_id) : null);
+  const site = asked ?? (r.site_id != null ? await db.prepare('SELECT * FROM site WHERE id = ?').get(r.site_id) : null);
   const text = rawText(r);
   const j = text != null ? parseJson(text) : { ok: false, value: null };
   const n = { count: 0 };
   let body = text;
   if (j.ok) { const clean = scrub(j.value, n); if (n.count) body = JSON.stringify(clean); } else if (text != null) body = scrubString(text, n);
   const truncated = body != null && body.length > BODY_LIMIT;
-  const lineage = forwardLineage(r.id, 200);
+  const lineage = await forwardLineage(r.id, 200);
   return {
     ...base(site),
     meta: { id: r.id, source: r.source, site_id: r.site_id, fetched_at: r.fetched_at, status: r.status, reason: r.reason ?? null, hash: r.hash, file: r.file, size: text != null ? Buffer.byteLength(text) : rawSize(r), request: requestOf(r), redacted: n.count, file_found: text != null },
     body: truncated ? body.slice(0, BODY_LIMIT) : body, truncated, json_ok: j.ok,
     facts: lineage.rows, total: lineage.total, facts_total: lineage.total, facts_by_table: lineage.by_table, facts_truncated: lineage.truncated,
-    rederive: rederive(r, j.ok ? j.value : null, site),
+    rederive: await rederive(r, j.ok ? j.value : null, site),
   };
 }
 
 // ───────────── 4 and 5 series and facts ─────────────
 
-export function seriesList(q) {
-  const site = siteParam(q);
+export async function seriesList(q) {
+  const site = await siteParam(q);
   const text = one(q.q, 'q')?.toLowerCase() ?? null;
   const source = one(q.source, 'source'); const metric = one(q.metric, 'metric');
-  let list = siteSeries(site);
+  let list = await siteSeries(site);
   if (source) list = list.filter((s) => s.source === source);
   if (metric) list = list.filter((s) => s.metric === metric);
   if (text) list = list.filter((s) => [s.metric, s.label, s.source, s.subject_id, s.unit].some((x) => String(x).toLowerCase().includes(text)));
-  const st = seriesStats(list.map((s) => s.id));
+  const st = await seriesStats(list.map((s) => s.id));
   // An array, as the contract gives it: each item carries the home and generated_at.
   const at = nowSec();
   return list.map((s) => ({ ...describeSeries(s, st.get(s.id), site), generated_at: at }));
 }
 
-function seriesById(id) {
-  return db.prepare(`SELECT se.*, m.code AS metric, m.label, m.unit, m.time_role, m.aggregation, so.code AS source
+async function seriesById(id) {
+  return await db.prepare(`SELECT se.*, m.code AS metric, m.label, m.unit, m.time_role, m.aggregation, so.code AS source
     FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id WHERE se.id = ?`).get(id);
 }
-function siteOfSeries(s) {
-  if (s.subject_kind === 'site') return db.prepare('SELECT * FROM site WHERE id = ?').get(Number(s.subject_id)) ?? null;
-  if (s.subject_kind === 'device') return db.prepare('SELECT s.* FROM site s JOIN device d ON d.site_id = s.id WHERE d.id = ?').get(Number(s.subject_id)) ?? null;
+async function siteOfSeries(s) {
+  if (s.subject_kind === 'site') return await db.prepare('SELECT * FROM site WHERE id = ?').get(Number(s.subject_id)) ?? null;
+  if (s.subject_kind === 'device') return await db.prepare('SELECT s.* FROM site s JOIN device d ON d.site_id = s.id WHERE d.id = ?').get(Number(s.subject_id)) ?? null;
   return null;
 }
 
-export function facts(q) {
+export async function facts(q) {
   const id = intParam(q, 'series', { required: true, min: 1 });
-  const s = seriesById(id);
+  const s = await seriesById(id);
   if (!s) throw notFound(`no series ${id}`);
-  const owner = siteOfSeries(s);
-  const asked = siteParam(q, { required: false });
+  const owner = await siteOfSeries(s);
+  const asked = await siteParam(q, { required: false });
   if (asked && owner && owner.id !== asked.id) throw notFound(`series ${id} is not one of home ${asked.id}`);
   const site = owner ?? asked;
   const tz = site?.timezone ?? 'UTC';
@@ -573,7 +574,7 @@ export function facts(q) {
   const limit = intParam(q, 'limit', { def: 1000, min: 1, max: 5000 });
   const from = timeParam(q, 'from', tz); const to = timeParam(q, 'to', tz, { end: true });
   if (from != null && to != null && from >= to) throw bad('from must be before to');
-  const st = seriesStats([id]).get(id);
+  const st = (await seriesStats([id])).get(id);
   const meta = describeSeries(s, st, site);
   const table = enumParam(q, 'table', ['reading', 'interval_fact', 'forecast_fact'], meta.table);
   const tcol = table === 'reading' ? 'ts' : 'start_ts';
@@ -596,7 +597,7 @@ export function facts(q) {
   const latest = from == null && to == null;
   const cap = table === 'forecast_fact' && !all ? 20000 : limit + 1;
   const order = table === 'forecast_fact' ? `start_ts ${latest ? 'DESC' : ''}, end_ts, issued_at` : `${tcol} ${latest ? 'DESC' : ''}, recorded_at`;
-  let rows = db.prepare(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ?`).all(...args, cap);
+  let rows = await db.prepare(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ?`).all(...args, cap);
   if (table === 'forecast_fact') {
     const best = new Map();
     for (const r of rows) {
@@ -618,8 +619,8 @@ export function facts(q) {
   const steps = times.slice(1).map((t, i) => t - times[i]).filter((d) => d > 0).sort((a, b) => a - b);
   const typical = steps.length ? steps[steps.length >> 1] : null;
   const versions = table === 'forecast_fact' ? rows.length - new Set(rows.map((r) => `${r.start_ts}|${r.end_ts}`)).size
-    : db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE series_id = ? AND superseded_at IS NOT NULL${from != null ? ` AND ${tcol} >= ?` : ''}${to != null ? ` AND ${tcol} < ?` : ''}${asOf != null ? ' AND recorded_at <= ?' : ''}`)
-      .get(id, ...(from != null ? [from] : []), ...(to != null ? [to] : []), ...(asOf != null ? [asOf] : [])).n;
+    : (await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE series_id = ? AND superseded_at IS NOT NULL${from != null ? ` AND ${tcol} >= ?` : ''}${to != null ? ` AND ${tcol} < ?` : ''}${asOf != null ? ' AND recorded_at <= ?' : ''}`)
+            .get(id, ...(from != null ? [from] : []), ...(to != null ? [to] : []), ...(asOf != null ? [asOf] : []))).n;
   return {
     ...base(site), series: meta, table, as_of_ms: asOf, include_superseded: all, truncated,
     points: rows,
@@ -632,17 +633,17 @@ export function facts(q) {
 
 // ───────────── 6 timeline ─────────────
 
-export function timeline(q) {
-  const site = siteParam(q);
-  const { from, to } = dateRange(site, q, { days: 7, maxDays: 400 });
+export async function timeline(q) {
+  const site = await siteParam(q);
+  const { from, to } = await dateRange(site, q, { days: 7, maxDays: 400 });
   const colsText = one(q.cols, 'cols');
   const cols = colsText ? [...new Set(colsText.split(',').map((c) => c.trim()).filter(Boolean))] : DEFAULT_COLS;
   for (const c of cols) if (!TIMELINE_VARS[c]) throw bad(`unknown column ${c}: one of ${Object.keys(TIMELINE_VARS).join(', ')}`);
   const limit = intParam(q, 'limit', { def: 5000, min: 1, max: 40000 });
   const [a] = dayBounds(site.timezone, from); const [, b] = dayBounds(site.timezone, to);
-  const rows = db.prepare(`SELECT slot_start, local_date, tod_min, dur_s, state, quality, ${cols.map(colSql).join(', ')} FROM site_hh
+  const rows = await db.prepare(`SELECT slot_start, local_date, tod_min, dur_s, state, quality, ${cols.map(colSql).join(', ')} FROM site_hh
     WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start LIMIT ?`).all(site.id, a, b, limit + 1);
-  const days = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date').all(site.id, from, to)
+  const days = (await db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date').all(site.id, from, to))
     .map((d) => ({ ...d, battery_stock_layers: d.battery_stock ? JSON.parse(d.battery_stock).length : 0 }));
   return {
     ...base(site), from, to, timezone: site.timezone, slot_s: slotLength(site), currency: site.currency ?? 'GBP',
@@ -652,18 +653,18 @@ export function timeline(q) {
 
 // ───────────── 7 slot trace ─────────────
 
-export function slot(q) {
-  const site = siteParam(q);
+export async function slot(q) {
+  const site = await siteParam(q);
   const s = intParam(q, 'slot', { required: true, min: 0 });
-  return { ...base(site), ...explainSlot(site.id, s, { asOfMs: asOfParam(q) }) };
+  return { ...base(site), ...await explainSlot(site.id, s, { asOfMs: asOfParam(q) }) };
 }
 
 // ───────────── 11 variables; reading one on a step ─────────────
 
-export function variables(q) {
-  const site = siteParam(q);
-  const list = siteSeries(site);
-  const st = seriesStats(list.map((s) => s.id));
+export async function variables(q) {
+  const site = await siteParam(q);
+  const list = await siteSeries(site);
+  const st = await seriesStats(list.map((s) => s.id));
   const series = list.map((s) => describeSeries(s, st.get(s.id), site)).filter((s) => s.variable);
   return {
     ...base(site), slot_s: slotLength(site), currency: site.currency ?? 'GBP',
@@ -676,13 +677,13 @@ export function variables(q) {
   };
 }
 
-function varMeta(site, name) {
+async function varMeta(site, name) {
   if (name == null) throw bad('a variable name is required');
   if (name.startsWith('series:')) {
     const id = Number(name.slice(7));
-    const s = Number.isInteger(id) ? siteSeries(site).find((x) => x.id === id) : null;
+    const s = Number.isInteger(id) ? (await siteSeries(site)).find((x) => x.id === id) : null;
     if (!s) throw bad(`unknown variable ${name}: no series ${name.slice(7)} of home ${site.id}`);
-    const d = describeSeries(s, seriesStats([id]).get(id), site);
+    const d = describeSeries(s, (await seriesStats([id])).get(id), site);
     if (!d.variable) throw bad(`${name} holds forecasts only: use the timeline column solar_forecast`);
     return { name, label: d.label, unit: d.unit, kind: d.kind, source: 'series', series: s, agg: s.aggregation === 'sum' ? 'sum' : s.aggregation === 'last' ? 'last' : 'mean' };
   }
@@ -697,7 +698,7 @@ const AGG = {
 // One variable over [a, b) on a step: Map(step start -> value). slot: the home's slots; hour: local
 // hour starts; day: local day starts. A step whose parts are all null is null; a partial step
 // aggregates the parts it has.
-function readVariable(site, v, a, b, step) {
+async function readVariable(site, v, a, b, step) {
   const tz = site.timezone;
   const dayStart = new Map();
   const dayOf = (d) => dayStart.get(d) ?? dayStart.set(d, dayBounds(tz, d)[0]).get(d);
@@ -705,7 +706,7 @@ function readVariable(site, v, a, b, step) {
   const put = (k, x) => { const p = parts.get(k) || parts.set(k, []).get(k); if (x != null && Number.isFinite(x)) p.push(x); };
   if (v.source === 'timeline') {
     const expr = TIMELINE_VARS[v.name].sql ?? v.name;
-    for (const r of db.prepare(`SELECT slot_start, tod_min, local_date, ${expr} AS v FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start`).all(site.id, a, b)) {
+    for (const r of await db.prepare(`SELECT slot_start, tod_min, local_date, ${expr} AS v FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start`).all(site.id, a, b)) {
       put(step === 'slot' ? r.slot_start : step === 'hour' ? r.slot_start - (r.tod_min % 60) * 60 : dayOf(r.local_date), r.v);
     }
   } else {
@@ -759,11 +760,11 @@ export function stats(xs, ys) {
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MIN_POINTS = 8;
 
-export function correlate(q) {
-  const site = siteParam(q);
+export async function correlate(q) {
+  const site = await siteParam(q);
   const step = enumParam(q, 'step', ['slot', 'hour', 'day'], 'slot');
-  const { from, to } = dateRange(site, q, { days: 30, maxDays: 400 });
-  const x = varMeta(site, one(q.x, 'x')); const y = varMeta(site, one(q.y, 'y'));
+  const { from, to } = await dateRange(site, q, { days: 30, maxDays: 400 });
+  const x = await varMeta(site, one(q.x, 'x')); const y = await varMeta(site, one(q.y, 'y'));
   const lag = intParam(q, 'lag', { def: 0, min: -10000, max: 10000 });
   const group = enumParam(q, 'group', ['none', 'hour', 'weekday'], 'none');
   if (group === 'hour' && step === 'day') throw bad('group=hour needs step slot or hour');
@@ -771,7 +772,7 @@ export function correlate(q) {
   const tz = site.timezone;
   const axis = axisOf(site, from, to, step);
   const [a] = dayBounds(tz, from); const [, b] = dayBounds(tz, to);
-  const X = readVariable(site, x, a, b, step); const Y = readVariable(site, y, a, b, step);
+  const X = await readVariable(site, x, a, b, step); const Y = await readVariable(site, y, a, b, step);
   const pts = []; let skipped = 0;
   for (let i = 0; i < axis.length; i++) {
     const j = i + lag;
@@ -782,8 +783,8 @@ export function correlate(q) {
   }
   const meta = (v) => ({ name: v.name, unit: v.unit, label: v.label, kind: v.kind, source: v.source });
   const notes = [`${skipped} step(s) skipped where x or y had no value`, `step ${step}${lag ? `; y is read ${lag} step(s) ${lag > 0 ? 'after' : 'before'} x` : ''}`,
-    ...[x, y].filter((v) => v.source === 'series').map((v) => `${v.name} resampled with the planner read layer (src/core/planner-read.js series), as known now`),
-    ...[x, y].filter((v) => v.source === 'timeline').map((v) => `${v.name}: site_hh as stored${step !== 'slot' ? ` (${v.agg} per ${step})` : ''}`)];
+    ...(await [x, y].filter((v) => v.source === 'series')).map((v) => `${v.name} resampled with the planner read layer (src/core/planner-read.js series), as known now`),
+    ...(await [x, y].filter((v) => v.source === 'timeline')).map((v) => `${v.name}: site_hh as stored${step !== 'slot' ? ` (${v.agg} per ${step})` : ''}`)];
   const head = { ...base(site), x: meta(x), y: meta(y), from, to, step, lag, group, n: pts.length };
   if (pts.length < MIN_POINTS) return { ...head, error: 'too few points', min_points: MIN_POINTS, notes };
   const s = stats(pts.map((p) => p.x), pts.map((p) => p.y));
@@ -805,11 +806,11 @@ export function correlate(q) {
 
 // ───────────── 10 heatmap ─────────────
 
-export function heatmap(q) {
-  const site = siteParam(q);
-  const v = varMeta(site, one(q.var, 'var'));
+export async function heatmap(q) {
+  const site = await siteParam(q);
+  const v = await varMeta(site, one(q.var, 'var'));
   const agg = enumParam(q, 'agg', ['mean', 'sum'], 'mean');
-  const { from, to } = dateRange(site, q, { days: 30, maxDays: 400 });
+  const { from, to } = await dateRange(site, q, { days: 30, maxDays: 400 });
   const tz = site.timezone; const slotS = slotLength(site);
   const buckets = 86400 / slotS;
   const [a] = dayBounds(tz, from); const [, b] = dayBounds(tz, to);
@@ -822,7 +823,7 @@ export function heatmap(q) {
   };
   if (v.source === 'timeline') {
     const expr = TIMELINE_VARS[v.name].sql ?? v.name;
-    for (const r of db.prepare(`SELECT local_date, tod_min, ${expr} AS v FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?`).all(site.id, a, b)) add(r.local_date, r.tod_min, r.v);
+    for (const r of await db.prepare(`SELECT local_date, tod_min, ${expr} AS v FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?`).all(site.id, a, b)) add(r.local_date, r.tod_min, r.v);
   } else {
     const res = plannerSeries(site.id, v.series.metric, a, b, { stepS: 'slot', source: v.series.source });
     for (let i = 0; i < res.n; i++) { const t = res.start + i * res.stepS; if (t >= a && t < b && res.values[i] != null) add(localDate(tz, t), todMinute(tz, t), res.values[i]); }
@@ -859,36 +860,36 @@ const fx = (v, d = 4) => (v == null || !Number.isFinite(v) ? 'none' : Number(v).
 const POWER = { solar: 'solar_w', load: 'load_w', imp: 'grid_import_w', exp: 'grid_export_w', chg: 'battery_charge_w', dis: 'battery_discharge_w' };
 
 // Everything the checks of a range read, once.
-function loadCx(site, from, to, { slot = null } = {}) {
+async function loadCx(site, from, to, { slot = null } = {}) {
   const tz = site.timezone; const slotS = slotLength(site);
   const [a] = dayBounds(tz, from); const [, b] = dayBounds(tz, to);
-  const sidOf = (metric, source) => findSeries('site', site.id, metric, source);
+  const sidOf = async (metric, source) => await findSeries('site', site.id, metric, source);
   let built; let pricing;
-  if (slot != null) { const t = traceSlot(site.id, slot); built = t.built; pricing = t.trace.pricing ?? loadPricing(site.id, a, b); }
-  else { built = buildSite(site.id, from, to, { dryRun: true }); pricing = loadPricing(site.id, a, b); }
-  const rows = db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start').all(site.id, a, b);
-  const power = Object.fromEntries(Object.entries(POWER).map(([k, m]) => [k, sidOf(m, 'sunsynk_5min')]));
-  const socId = sidOf('battery_soc_pct', 'sunsynk_5min');
-  const ids = [...Object.values(power), socId].filter((x) => x != null);
-  const readings = ids.length ? db.prepare(`SELECT series_id, ts, value, raw_id FROM reading WHERE series_id IN (${ids.map(() => '?').join(',')}) AND ts >= ? AND ts < ? AND superseded_at IS NULL ORDER BY ts`).all(...ids, a - 300, b) : [];
-  const intervals = (id, pad = 0) => (id == null ? [] : db.prepare('SELECT series_id, start_ts, end_ts, value, raw_id, recorded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ? AND start_ts >= ? AND superseded_at IS NULL ORDER BY start_ts')
-    .all(id, a - pad, b + pad, a - pad - 2 * 86400));
-  const devices = db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider NOT IN ('env', 'picker', 'tounify')").all(site.id);
-  const meterId = (kind, metric) => { const d = devices.find((x) => x.kind === kind); const src = bindingsFor(site.id, 'meter_energy')[0]?.source; return d && src ? findSeries('device', d.id, metric, src) : null; };
+  if (slot != null) { const t = await traceSlot(site.id, slot); built = t.built; pricing = t.trace.pricing ?? await loadPricing(site.id, a, b); }
+  else { built = await buildSite(site.id, from, to, { dryRun: true }); pricing = await loadPricing(site.id, a, b); }
+  const rows = await db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start').all(site.id, a, b);
+  const power = Object.fromEntries(await mapAsync(Object.entries(POWER), async ([k, m]) => [k, await sidOf(m, 'sunsynk_5min')]));
+  const socId = await sidOf('battery_soc_pct', 'sunsynk_5min');
+  const ids = await [...await Object.values(power), socId].filter((x) => x != null);
+  const readings = ids.length ? await db.prepare(`SELECT series_id, ts, value, raw_id FROM reading WHERE series_id IN (${ids.map(() => '?').join(',')}) AND ts >= ? AND ts < ? AND superseded_at IS NULL ORDER BY ts`).all(...ids, a - 300, b) : [];
+  const intervals = async (id, pad = 0) => (id == null ? [] : await db.prepare('SELECT series_id, start_ts, end_ts, value, raw_id, recorded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ? AND start_ts >= ? AND superseded_at IS NULL ORDER BY start_ts')
+      .all(id, a - pad, b + pad, a - pad - 2 * 86400));
+  const devices = await db.prepare("SELECT * FROM device WHERE site_id = ? AND kind IN ('meter_import','meter_export','meter_gas') AND provider NOT IN ('env', 'picker', 'tounify')").all(site.id);
+  const meterId = async (kind, metric) => { const d = devices.find((x) => x.kind === kind); const src = (await bindingsFor(site.id, 'meter_energy'))[0]?.source; return d && src ? await findSeries('device', d.id, metric, src) : null; };
   const gasDev = devices.find((d) => d.kind === 'meter_gas');
   const gasAttrs = gasDev ? (() => { try { return JSON.parse(gasDev.attrs || '{}'); } catch { return {}; } })() : {};
-  const meters = { import: intervals(meterId('meter_import', 'grid_import_kwh')), export: intervals(meterId('meter_export', 'grid_export_kwh')),
-    gas: intervals(gasDev ? meterId('meter_gas', gasAttrs.gasUnit?.unit === 'm3' ? 'gas_m3' : 'gas_kwh') : null) };
+  const meters = { import: await intervals(await meterId('meter_import', 'grid_import_kwh')), export: await intervals(await meterId('meter_export', 'grid_export_kwh')),
+    gas: await intervals(gasDev ? await meterId('meter_gas', gasAttrs.gasUnit?.unit === 'm3' ? 'gas_m3' : 'gas_kwh') : null) };
   const carbonSeries = carbonSeriesOf(site);
-  const carbonId = carbonSeries ? findSeries('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source) : null;
-  const tempId = sidOf('outdoor_temp_c', 'open_meteo');
-  const fcRows = (source) => { const id = sidOf('solar_kwh', source); return id == null ? [] : db.prepare('SELECT series_id, start_ts, end_ts, issued_at, value, raw_id FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts').all(id, a, b); };
-  const carbon = intervals(carbonId);
-  const cvId = gasAttrs.ldz ? findSeries('region', `ldz:${gasAttrs.ldz}`, 'gas_cv_mjm3', 'national_gas_cv') : null;
-  const cvs = intervals(cvId, 86400);
+  const carbonId = carbonSeries ? await findSeries('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source) : null;
+  const tempId = await sidOf('outdoor_temp_c', 'open_meteo');
+  const fcRows = async (source) => { const id = await sidOf('solar_kwh', source); return id == null ? [] : await db.prepare('SELECT series_id, start_ts, end_ts, issued_at, value, raw_id FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts').all(id, a, b); };
+  const carbon = await intervals(carbonId);
+  const cvId = gasAttrs.ldz ? await findSeries('region', `ldz:${gasAttrs.ldz}`, 'gas_cv_mjm3', 'national_gas_cv') : null;
+  const cvs = await intervals(cvId, 86400);
   const gasM3 = gasAttrs.gasUnit?.unit === 'm3';
-  const temps = tempId == null ? [] : db.prepare('SELECT series_id, ts, value, raw_id FROM reading WHERE series_id = ? AND ts >= ? AND ts < ? AND superseded_at IS NULL').all(tempId, a - 3600, b);
-  const forecasts = { quartz: fcRows('quartz'), core_forecast: fcRows('core_forecast') };
+  const temps = tempId == null ? [] : await db.prepare('SELECT series_id, ts, value, raw_id FROM reading WHERE series_id = ? AND ts >= ? AND ts < ? AND superseded_at IS NULL').all(tempId, a - 3600, b);
+  const forecasts = { quartz: await fcRows('quartz'), core_forecast: await fcRows('core_forecast') };
   // Facts per slot, indexed once: readings in [slot - 300, slot + slotS) (a sample's hold can reach
   // into the next slot), interval facts and forecast periods by every slot they overlap.
   const phase = ((a % slotS) + slotS) % slotS;
@@ -909,14 +910,14 @@ function loadCx(site, from, to, { slot = null } = {}) {
     }).get(slot),
     pieces: (kind, slot) => { const k = `${kind}|${slot}`; return pieces.get(k) ?? pieces.set(k, pricePieces(pricing, kind, slot, slotS)).get(k); },
     rebuilt: new Map(built.hhRows.map((r) => [r.slot_start, r])),
-    daily: Object.fromEntries(['solar_kwh', 'load_kwh', 'grid_import_kwh', 'grid_export_kwh', 'battery_charge_kwh', 'battery_discharge_kwh'].map((m) => [m, intervals(sidOf(m, 'sunsynk_daily'))])),
+    daily: Object.fromEntries(await mapAsync(['solar_kwh', 'load_kwh', 'grid_import_kwh', 'grid_export_kwh', 'battery_charge_kwh', 'battery_discharge_kwh'], async (m) => [m, await intervals(await sidOf(m, 'sunsynk_daily'))])),
     carbon, carbonId, temps, tempId, forecasts, gasM3, gasLdz: gasAttrs.ldz ?? null,
-    checks: db.prepare('SELECT * FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(site.id, from, to),
-    days: db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(site.id, from, to),
-    meta: seriesMetaOf(site), pc: payloadCache({ budget: slot != null ? Infinity : RANGE_PAYLOAD_BUDGET }), rederived: new Map(),
+    checks: await db.prepare('SELECT * FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(site.id, from, to),
+    days: await db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(site.id, from, to),
+    meta: await seriesMetaOf(site), pc: payloadCache({ budget: slot != null ? Infinity : RANGE_PAYLOAD_BUDGET }), rederived: new Map(),
   };
 }
-function seriesMetaOf(site) { return new Map(siteSeries(site).map((s) => [s.id, s])); }
+async function seriesMetaOf(site) { return new Map((await siteSeries(site)).map((s) => [s.id, s])); }
 const overlapOf = (f, s, e) => Math.min(f.end_ts, e) - Math.max(f.start_ts, s);
 
 // ── Words ──
@@ -942,7 +943,7 @@ const PROVIDER_WORDS = { sunsynk_5min: 'the inverter (Sunsynk)', sunsynk_daily: 
 const providerWords = (source) => PROVIDER_WORDS[source] ?? source;
 
 // ── Per-slot checks ──
-function slotChecks(cx, row) {
+async function slotChecks(cx, row) {
   const { slotS } = cx;
   const slot = row.slot_start; const end = slot + slotS; const h = slotS / 3600; const noun = slotNoun(slotS);
   const lin = (() => { try { return JSON.parse(row.lineage || '{}'); } catch { return {}; } })();
@@ -1040,7 +1041,7 @@ function slotChecks(cx, row) {
   }
 
   // Prices.
-  out.push(...priceChecks(cx, row));
+  out.push(...await priceChecks(cx, row));
 
   // Carbon intensity used = the source's value for the period.
   const carbonTitle = 'The carbon figure is the grid operator\'s';
@@ -1067,7 +1068,7 @@ function slotChecks(cx, row) {
 }
 const POWER_WORDS = { solar: 'solar', load: 'house', imp: 'grid import', exp: 'grid export', chg: 'battery charging', dis: 'battery discharging' };
 
-function priceChecks(cx, row) {
+async function priceChecks(cx, row) {
   const { tz, slotS, pricing } = cx;
   const slot = row.slot_start; const noun = slotNoun(slotS);
   const out = [];
@@ -1127,7 +1128,7 @@ function priceChecks(cx, row) {
   }
 
   // Tax: the rule in force, read from the rule tables.
-  const tax = taxInForce(cx, 'electricity', 'import', slot);
+  const tax = await taxInForce(cx, 'electricity', 'import', slot);
   const tDiff = tax.vat != null && row.import_vat != null ? row.import_vat - tax.vat : null;
   const tOk = tDiff != null && Math.abs(tDiff) <= 1e-9;
   out.push(ck('tax_rule', 'price', 'The right VAT rate is applied', `We looked up the tax rate in force on that date and checked it is the one added to the price.`,
@@ -1162,9 +1163,9 @@ function priceChecks(cx, row) {
 const hhmmOf = (tz, ts) => { const p = zonedParts(tz, ts); return `${pad2(p.hh)}:${pad2(p.mm)}`; };
 
 // The percentage tax in force for one fuel and direction, read from tax_rule (or vat_rate).
-function taxInForce(cx, fuel, direction, ts) {
+async function taxInForce(cx, fuel, direction, ts) {
   const { site } = cx;
-  const rules = site.country ? db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND fuel = ? AND direction = ? AND IFNULL(customer_class, 'domestic') = 'domestic' AND superseded_at IS NULL
+  const rules = site.country ? await db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND fuel = ? AND direction = ? AND IFNULL(customer_class, 'domestic') = 'domestic' AND superseded_at IS NULL
     AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY seq`).all(site.country, fuel, direction, ts, ts) : [];
   const agreement = cx.pricing.agreements.find((a) => a.kind === (direction === 'export' ? 'meter_export' : fuel === 'gas' ? 'meter_gas' : 'meter_import') && a.valid_from <= ts && (a.valid_to == null || a.valid_to > ts));
   const pct = rules.filter((r) => r.kind === 'percent' && r.applies_to !== 'fixed');
@@ -1179,7 +1180,7 @@ function taxInForce(cx, fuel, direction, ts) {
       explanation: `${pct.length ? `The tax on ${fuel} on ${when} was ${pct.map((r) => `${pctWords(r.value)} ${r.code.toUpperCase()}`).join(' and ')}${groups.length > 1 ? ' (one on top of the other)' : ''}` : `No percentage tax applied to ${fuel} on ${when}`}${unverified ? ' (a stand-in rate, not yet checked against an official source)' : ''}${agreement?.taxes_in_price === 1 ? '; the supplier\'s prices already include the other levies' : ''}.` };
   }
   if (site.country == null || site.country === 'GB') {
-    const v = db.prepare('SELECT * FROM vat_rate WHERE fuel = ? AND direction = ? AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').get(fuel, direction, ts, ts);
+    const v = await db.prepare('SELECT * FROM vat_rate WHERE fuel = ? AND direction = ? AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').get(fuel, direction, ts, ts);
     return { source: 'vat_rate', vat: v ? v.rate : 0, ids: v ? [v.id ?? null] : [], explanation: v ? `UK VAT on ${fuel} was ${pctWords(v.rate)} on ${when}.` : `No UK VAT rate is recorded for ${when}, so 0%.` };
   }
   return { source: 'tax_rule', vat: 0, ids: [], explanation: `We hold no tax rules for ${site.country}, so taxes are taken as 0% (an assumption).` };
@@ -1270,14 +1271,14 @@ function lookupChecks(cx, row) {
 
 // Re-derivation of the payloads behind a set of facts (supported sources), one check per payload;
 // the unsupported sources one 'skip' each.
-function rederiveChecks(cx, rawIds) {
+async function rederiveChecks(cx, rawIds) {
   const out = []; const skipped = new Map();
   const ids = [...new Set(rawIds.filter((x) => x != null))].sort((a, b) => a - b);
   // Sources first (no body read): only payloads of a source with a pure normaliser are opened.
   const sourceOf = new Map();
   for (let i = 0; i < ids.length; i += 500) {
     const part = ids.slice(i, i + 500);
-    for (const r of db.prepare(`SELECT p.id, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id IN (${part.map(() => '?').join(',')})`).all(...part)) sourceOf.set(r.id, r.source);
+    for (const r of await db.prepare(`SELECT p.id, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id IN (${part.map(() => '?').join(',')})`).all(...part)) sourceOf.set(r.id, r.source);
   }
   const how = 'We re-ran the code that turns the provider\'s reply into our rows on the saved copy of the reply, and compared the result with what we stored.';
   for (const id of ids) {
@@ -1285,7 +1286,7 @@ function rederiveChecks(cx, rawIds) {
     if (!source) continue;
     if (!['tariffscanner', 'tounify'].includes(source)) { (skipped.get(source) || skipped.set(source, []).get(source)).push(id); continue; }
     const p = cx.pc.get(id);
-    const res = rederive(p.r, p.json ? p.body : null, cx.site);
+    const res = await rederive(p.r, p.json ? p.body : null, cx.site);
     const d = res.diffs[0];
     out.push(ck('rederive', 'source', `A saved reply from ${providerWords(source)} reads the same again`, how,
       { source_value: d?.rederived?.value ?? null, our_value: d?.stored?.value ?? null, unit: 'minor/kWh', diff: d?.rederived && d?.stored ? d.stored.value - d.rederived.value : null, tolerance: 1e-9,
@@ -1433,29 +1434,29 @@ function aggregate(list, date, noun, tz, slotS) {
  * tolerance, status, evidence, explanation }], summary: { pass, warn, fail, skip } } for one slot
  * (slot=) or a range of local dates (from=, to=; at most 31 days, per-slot checks aggregated per day).
  */
-export function validate(q) {
-  const site = siteParam(q);
+export async function validate(q) {
+  const site = await siteParam(q);
   const slotQ = intParam(q, 'slot', { min: 0 });
   const noun = slotNoun(slotLength(site));
   let checks; let scope;
   if (slotQ != null) {
     const date = localDate(site.timezone, slotQ);
-    const cx = loadCx(site, date, date, { slot: slotQ });
+    const cx = await loadCx(site, date, date, { slot: slotQ });
     const row = cx.rows.find((r) => r.slot_start === slotQ);
     if (!row) throw notFound(`no stored ${noun} at ${slotQ}`);
-    checks = [...slotChecks(cx, row), ...rederiveChecks(cx, rawIdsOf(cx, [row])), ...dayChecks(cx, date)];
+    checks = [...await slotChecks(cx, row), ...await rederiveChecks(cx, rawIdsOf(cx, [row])), ...dayChecks(cx, date)];
     scope = { slot: slotQ, local_time: localTime(site.timezone, slotQ), date };
   } else {
     if (q.from == null && q.to == null) throw bad('give slot=<epoch> or from=&to= (dates)');
-    const { from, to } = dateRange(site, q, { days: 1, maxDays: 31 });
-    const cx = loadCx(site, from, to);
+    const { from, to } = await dateRange(site, q, { days: 1, maxDays: 31 });
+    const cx = await loadCx(site, from, to);
     checks = [];
     for (const date of daysBetween(from, to)) {
       const rows = cx.rows.filter((r) => r.local_date === date);
       if (!rows.length) continue;
-      checks.push(...aggregate(rows.flatMap((r) => slotChecks(cx, r)), date, noun, site.timezone, cx.slotS), ...dayChecks(cx, date).map((c) => ({ ...c, date })));
+      checks.push(...aggregate(await flatMapAsync(rows, async (r) => await slotChecks(cx, r)), date, noun, site.timezone, cx.slotS), ...dayChecks(cx, date).map((c) => ({ ...c, date })));
     }
-    checks.push(...rederiveChecks(cx, rawIdsOf(cx, cx.rows)));
+    checks.push(...await rederiveChecks(cx, rawIdsOf(cx, cx.rows)));
     scope = { from, to };
   }
   const summary = { pass: 0, warn: 0, fail: 0, skip: 0 };

@@ -30,10 +30,10 @@ export async function syncWeather(site, pastDays) {
   const { json } = await fetchJson(url);
   const h = json?.hourly;
   if (!h?.time?.length) {
-    quarantine({ source: 'open_meteo', siteId: site.id, request: { url }, body: json, reason: 'no hourly data' });
+    await quarantine({ source: 'open_meteo', siteId: site.id, request: { url }, body: json, reason: 'no hourly data' });
     return { skipped: 'no hourly data' };
   }
-  const { rawId } = landRaw({ source: 'open_meteo', siteId: site.id, request: { url }, body: json });
+  const { rawId } = await landRaw({ source: 'open_meteo', siteId: site.id, request: { url }, body: json });
   const now = nowSec();
   // Points as Open-Meteo names them. Instant variables become readings (past) or forecast issues (future);
   // the two irradiance means cover the hour before their timestamp, so they are periods.

@@ -101,9 +101,9 @@ export const adapterCodes = () => [...adapters.keys()];
 // ───────────── Registry rows ─────────────
 
 /** Every provider listed for a role in a market (its own rows and the '*' ones), in the order they are tried. */
-export function providersFor(db, marketCode, role) {
-  return db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND role = ?
-    ORDER BY priority, market_code = '*', adapter`).all(marketCode ?? 'GB', role).map((r) => ({ ...r }));
+export async function providersFor(db, marketCode, role) {
+  return (await db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND role = ?
+    ORDER BY priority, market_code = '*', adapter`).all(marketCode ?? 'GB', role)).map((r) => ({ ...r }));
 }
 
 // Credentials from the environment, for the .env home only (see the note at the top).
@@ -156,14 +156,14 @@ const hidden = (entry, props) => {
  * run records the skip; a per-home role the home is not connected to, a fallback or a provider with
  * nothing to fetch is not recorded). A role with no provider in the market has no entry.
  */
-export function plan(db, site, { conns = null } = {}) {
-  conns ??= new Set(db.prepare('SELECT provider FROM connection WHERE site_id = ?').all(site.id).map((c) => c.provider));
+export async function plan(db, site, { conns = null } = {}) {
+  conns ??= new Set((await db.prepare('SELECT provider FROM connection WHERE site_id = ?').all(site.id)).map((c) => c.provider));
   const market = site.market_code ?? 'GB';
   const p = { site, conns, market };
   const out = [];
   for (const { role, order: roleOrder, additive } of ROLES) {
     let chosen = null;
-    for (const row of providersFor(db, market, role)) {
+    for (const row of await providersFor(db, market, role)) {
       const impl = adapters.get(row.adapter) ?? null;
       const def = impl?.roles[role] ?? null;
       const base = { role, adapter: row.adapter, market_code: row.market_code, scope: row.scope, priority: row.priority, origin: row.origin, note: row.note };
@@ -200,8 +200,8 @@ export const newCycle = () => ({ shared: new Map(), tariffs: new Map(), response
 
 // ───────────── Status for the API ─────────────
 
-const lastLog = (db, siteId) => {
-  const r = db.prepare('SELECT detail FROM sync_run WHERE site_id = ? AND detail IS NOT NULL ORDER BY id DESC LIMIT 1').get(siteId);
+const lastLog = async (db, siteId) => {
+  const r = await db.prepare('SELECT detail FROM sync_run WHERE site_id = ? AND detail IS NOT NULL ORDER BY id DESC LIMIT 1').get(siteId);
   try { return JSON.parse(r?.detail || '[]'); } catch { return []; }
 };
 
@@ -231,10 +231,10 @@ function usedStatus(db, site, used, log, conns) {
  * connection row. An additive role (tariff_catalogue) gives its first provider here and every other
  * one it also runs in `also` ([{ adapter, status, reason, origin, note }]). Never contains credentials.
  */
-export function providerStatus(db, site) {
-  const entries = plan(db, site);
-  const log = lastLog(db, site.id);
-  const conns = new Map(db.prepare('SELECT provider, status, last_error FROM connection WHERE site_id = ?').all(site.id).map((c) => [c.provider, c]));
+export async function providerStatus(db, site) {
+  const entries = await plan(db, site);
+  const log = await lastLog(db, site.id);
+  const conns = new Map((await db.prepare('SELECT provider, status, last_error FROM connection WHERE site_id = ?').all(site.id)).map((c) => [c.provider, c]));
   return ROLES.map(({ role, scope, label }) => {
     const list = entries.filter((e) => e.role === role);
     if (!list.length) return { role, label, adapter: null, status: 'none', origin: null, note: NO_PROVIDER, scope, reason: NO_PROVIDER, alternatives: [] };
@@ -276,15 +276,15 @@ const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
  * market in a per-home role, switched on, licensed (or on its development override), owned by the
  * core and built. Returns { row, impl, market }; throws a 400 error with a readable message.
  */
-export function connectable(db, site, { provider, role = null } = {}) {
+export async function connectable(db, site, { provider, role = null } = {}) {
   if (!provider || typeof provider !== 'string') throw bad('provider is required: the adapter code of an inverter or meter (octopus, sunsynk, ...)');
   if (site.is_demo) throw bad('demo home: its data is generated, it takes no provider connection');
   const market = site.market_code ?? 'GB';
   if (role && !ROLE_CODES.includes(role)) throw bad(`unknown role ${role} (one of ${ROLE_CODES.join(', ')})`);
-  const rows = db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND adapter = ? ${role ? 'AND role = ?' : ''}
+  const rows = await db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND adapter = ? ${role ? 'AND role = ?' : ''}
     ORDER BY scope = 'home' DESC, priority`).all(...[market, provider, role].filter(Boolean));
-  const homeRoles = db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND scope = 'home' AND enabled = 1 AND owner = 'core'
-    ORDER BY role, priority`).all(market).filter((r) => adapters.get(r.adapter)?.connection && licensed(r, adapters.get(r.adapter))).map((r) => `${r.adapter} (${r.role})`);
+  const homeRoles = (await db.prepare(`SELECT * FROM market_provider WHERE market_code IN (?, '*') AND scope = 'home' AND enabled = 1 AND owner = 'core'
+    ORDER BY role, priority`).all(market)).filter((r) => adapters.get(r.adapter)?.connection && licensed(r, adapters.get(r.adapter))).map((r) => `${r.adapter} (${r.role})`);
   const allowed = `connections allowed for a home in market ${market}: ${homeRoles.join(', ') || 'none'}`;
   if (!rows.length) throw bad(`${provider} is not a provider for market ${market}${role ? ` in role ${role}` : ''}; ${allowed}`);
   const row = rows[0];
@@ -298,18 +298,18 @@ export function connectable(db, site, { provider, role = null } = {}) {
   return { row, impl, market };
 }
 
-export function connectProvider(db, site, { provider, role = null, credentials = null } = {}) {
-  const { row, impl, market } = connectable(db, site, { provider, role });
+export async function connectProvider(db, site, { provider, role = null, credentials = null } = {}) {
+  const { row, impl, market } = await connectable(db, site, { provider, role });
   // A provider with its own registration (tounify: the home's tariff and postal code, recorded by
   // its adapter) is connected by it, never by a bare row here.
   if (impl.registers) throw bad(`${provider} connects a home through its own registration: ${impl.registers}`);
   const given = credentials && typeof credentials === 'object' && !Array.isArray(credentials) ? credentials : {};
   const ref = impl.externalRef?.(given) ?? null;
   const notStored = Object.keys(given).filter((k) => !(impl.publicFields ?? []).includes(k));
-  const existed = !!db.prepare('SELECT 1 FROM connection WHERE site_id = ? AND provider = ?').get(site.id, impl.connection);
-  db.prepare(`INSERT INTO connection (site_id, provider, external_ref) VALUES (?, ?, ?)
+  const existed = !!await db.prepare('SELECT 1 FROM connection WHERE site_id = ? AND provider = ?').get(site.id, impl.connection);
+  await db.prepare(`INSERT INTO connection (site_id, provider, external_ref) VALUES (?, ?, ?)
     ON CONFLICT (site_id, provider) DO UPDATE SET external_ref = COALESCE(excluded.external_ref, connection.external_ref)`)
-    .run(site.id, impl.connection, ref == null ? null : String(ref));
-  const connection = { ...db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? AND provider = ?').get(site.id, impl.connection) };
+        .run(site.id, impl.connection, ref == null ? null : String(ref));
+  const connection = { ...await db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? AND provider = ?').get(site.id, impl.connection) };
   return { created: !existed, role: row.role, adapter: provider, market, connection, secrets_stored: false, not_stored: notStored, credentials_note: CREDENTIALS_NOTE };
 }

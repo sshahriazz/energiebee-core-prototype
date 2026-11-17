@@ -66,13 +66,13 @@ const subjectSql = `((se.subject_kind = 'site' AND se.subject_id = ?)
   OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?)))`;
 
 /** Whether the home has any heating series (one indexed query; the build's only cost for other homes). */
-export function hasHeatingSeries(siteId) {
-  return !!db.prepare(`SELECT 1 FROM series se JOIN metric m ON m.id = se.metric_id WHERE m.domain = 'heating' AND ${subjectSql} LIMIT 1`)
-    .get(String(siteId), siteId);
+export async function hasHeatingSeries(siteId) {
+  return !!await db.prepare(`SELECT 1 FROM series se JOIN metric m ON m.id = se.metric_id WHERE m.domain = 'heating' AND ${subjectSql} LIMIT 1`)
+      .get(String(siteId), siteId);
 }
 
-export function buildHeat(siteId, fromDate, toDate, opts = {}) {
-  return opts.asOf != null ? withKnownAt(opts.asOf * 1000, () => build(siteId, fromDate, toDate, opts)) : build(siteId, fromDate, toDate, opts);
+export async function buildHeat(siteId, fromDate, toDate, opts = {}) {
+  return opts.asOf != null ? withKnownAt(opts.asOf * 1000, async () => await build(siteId, fromDate, toDate, opts)) : await build(siteId, fromDate, toDate, opts);
 }
 
 const groupBy = (rows, key) => rows.reduce((m, r) => (m.get(r[key]) ? m.get(r[key]).push(r) : m.set(r[key], [r]), m), new Map());
@@ -115,15 +115,15 @@ function intervalBySlot(facts, slotS, phase) {
 const HEAT_ROLE = (metric) => (metric === 'heatpump_elec_kwh' ? 'heat_pump_energy' : metric === 'heat_output_kwh' ? 'heat_output_energy' : 'heat_telemetry');
 function boundTo(siteId, asOf, winStart, winEnd) {
   const roles = new Map();
-  const of = (role) => roles.get(role) ?? roles.set(role, bindingsFor(siteId, role, asOf)).get(role);
-  return (s) => {
-    const b = of(HEAT_ROLE(s.metric));
+  const of = async (role) => roles.get(role) ?? roles.set(role, await bindingsFor(siteId, role, asOf)).get(role);
+  return async (s) => {
+    const b = await of(HEAT_ROLE(s.metric));
     return !b.length || b.some((x) => x.from < winEnd && x.to > winStart && x.source === s.source && (x.deviceId == null || (s.subject_kind === 'device' && String(x.deviceId) === s.subject_id)));
   };
 }
 
-function build(siteId, fromDate, toDate, opts) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+async function build(siteId, fromDate, toDate, opts) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
   const o = { ...HEAT_DEFAULTS, ...opts };
   const tz = site.timezone;
@@ -134,9 +134,9 @@ function build(siteId, fromDate, toDate, opts) {
   if (toDate > today) toDate = today;
 
   // The home's heating series (and the metrics' time roles), one chosen per metric and subject below.
-  const series = db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.time_role, so.code AS source
+  const series = (await db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.time_role, so.code AS source
       FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
-      WHERE m.domain = 'heating' AND ${subjectSql} ORDER BY se.id`).all(String(siteId), siteId)
+      WHERE m.domain = 'heating' AND ${subjectSql} ORDER BY se.id`).all(String(siteId), siteId))
     .filter((s) => USED[s.metric])
     .filter(boundTo(siteId, asOf, dayBounds(tz, fromDate)[0], dayBounds(tz, toDate)[1]));
   const empty = { days: 0, slots: 0, ...(opts.dryRun ? { rows: [] } : {}) };
@@ -145,8 +145,8 @@ function build(siteId, fromDate, toDate, opts) {
   const ids = series.map((s) => s.id);
   const list = ids.map(() => '?').join(',');
   const firstFact = Math.min(
-    db.prepare(`SELECT MIN(ts) AS t FROM reading WHERE series_id IN (${list}) AND ${inForce()}`).get(...ids)?.t ?? Infinity,
-    db.prepare(`SELECT MIN(start_ts) AS t FROM interval_fact WHERE series_id IN (${list}) AND ${inForce()}`).get(...ids)?.t ?? Infinity);
+    (await db.prepare(`SELECT MIN(ts) AS t FROM reading WHERE series_id IN (${list}) AND ${inForce()}`).get(...ids))?.t ?? Infinity,
+    (await db.prepare(`SELECT MIN(start_ts) AS t FROM interval_fact WHERE series_id IN (${list}) AND ${inForce()}`).get(...ids))?.t ?? Infinity);
   if (!Number.isFinite(firstFact)) return { ...empty, skipped: 'no heating facts' };
   if (localDate(tz, firstFact) > fromDate) fromDate = localDate(tz, firstFact);
   if (fromDate > toDate) return empty;
@@ -158,8 +158,8 @@ function build(siteId, fromDate, toDate, opts) {
   // ── Facts per series, as slot accumulations ──
   const instIds = series.filter((s) => s.time_role === 'instant').map((s) => s.id);
   const intIds = series.filter((s) => s.time_role === 'interval').map((s) => s.id);
-  const readings = groupBy(readReadings(instIds, winStart - o.holdMaxS, winEnd), 'series_id');
-  const intervals = groupBy(readIntervals(intIds, winStart, winEnd), 'series_id');
+  const readings = groupBy(await readReadings(instIds, winStart - o.holdMaxS, winEnd), 'series_id');
+  const intervals = groupBy(await readIntervals(intIds, winStart, winEnd), 'series_id');
   const acc = new Map();
   for (const s of series) {
     acc.set(s.id, s.time_role === 'instant'
@@ -178,12 +178,12 @@ function build(siteId, fromDate, toDate, opts) {
   const sourcesOf = (metric) => [...new Set([...(chosen[metric]?.values() ?? [])].map((s) => s.source))];
 
   // Outdoor temperature: a sensor at the home first, Open-Meteo where it has none.
-  const outdoor = db.prepare(`SELECT se.id, so.code AS source FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
+  const outdoor = await db.prepare(`SELECT se.id, so.code AS source FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
       WHERE m.code = 'outdoor_temp_c' AND ${subjectSql} ORDER BY so.code = 'open_meteo', se.id`).all(String(siteId), siteId);
-  const outReadings = groupBy(readReadings(outdoor.map((s) => s.id), winStart - o.holdMaxS, winEnd), 'series_id');
+  const outReadings = groupBy(await readReadings(outdoor.map((s) => s.id), winStart - o.holdMaxS, winEnd), 'series_id');
   const outAcc = outdoor.map((s) => ({ ...s, acc: holdBySlot(outReadings.get(s.id) || [], slotS, fl, s.source === 'open_meteo' ? 3600 : o.holdMaxS, winStart, winEnd) }));
 
-  const pricing = loadPricing(siteId, winStart, winEnd);
+  const pricing = await loadPricing(siteId, winStart, winEnd);
   const agreed = (kind) => pricing.agreements.some((a) => a.kind === kind);
   const fuel = has('heatpump_elec_kwh') && has('boiler_gas_kwh') ? 'electricity+gas' : has('heatpump_elec_kwh') ? 'electricity' : has('boiler_gas_kwh') ? 'gas' : null;
   const dataOrigin = dataOriginOf(site);
@@ -278,13 +278,13 @@ function build(siteId, fromDate, toDate, opts) {
   }
   const days = new Set(rows.map((r) => r.local_date)).size;
   if (opts.dryRun) return { days, slots: rows.length, rows };
-  tx(() => {
-    db.prepare('DELETE FROM site_heat_slot WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').run(siteId, winStart, winEnd);
-    if (rows.length) {
-      const cols = Object.keys(rows[0]);
-      const ins = db.prepare(`INSERT INTO site_heat_slot (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
-      for (const r of rows) ins.run(...cols.map((c) => (typeof r[c] === 'number' && !Number.isFinite(r[c]) ? null : r[c] ?? null)));
-    }
-  });
+  await tx(async () => {
+        await db.prepare('DELETE FROM site_heat_slot WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').run(siteId, winStart, winEnd);
+        if (rows.length) {
+          const cols = Object.keys(rows[0]);
+          const ins = db.prepare(`INSERT INTO site_heat_slot (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+          for (const r of rows) await ins.run(...cols.map((c) => (typeof r[c] === 'number' && !Number.isFinite(r[c]) ? null : r[c] ?? null)));
+        }
+      });
   return { days, slots: rows.length };
 }

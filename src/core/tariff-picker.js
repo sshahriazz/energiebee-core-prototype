@@ -28,6 +28,7 @@ import { connectable } from './providers.js';
 import { setContractedCapacity } from './sites.js';
 import { rulesFor } from './tax.js';
 import * as TU from '../adapters/tounify.js';
+import { mapAsync } from "./async.js";
 
 // The device a picked tariff sits on, for a home whose meter no account reports (no Octopus login): one
 // import meter per home, provider 'picker'. Retired, with its agreements ended, once an account meter
@@ -53,9 +54,9 @@ const toMin = (s) => {
 
 // ───────────── Questions (market_question rows, delta 080) ─────────────
 
-export function questionsFor(market, kind) {
-  return db.prepare(`SELECT field, label, help, input, allowed, required FROM market_question
-    WHERE market_code IN (?, '*') AND (when_kind = '*' OR when_kind = ?) ORDER BY seq, field`).all(market, kind === 'two_rate' ? 'two_rate' : '*')
+export async function questionsFor(market, kind) {
+  return (await db.prepare(`SELECT field, label, help, input, allowed, required FROM market_question
+    WHERE market_code IN (?, '*') AND (when_kind = '*' OR when_kind = ?) ORDER BY seq, field`).all(market, kind === 'two_rate' ? 'two_rate' : '*'))
     .map((q) => ({ ...q, required: q.required === 1, allowed: q.allowed ? JSON.parse(q.allowed) : null }));
 }
 
@@ -83,8 +84,8 @@ const OFFERED = `t.provider = 'tariffscanner' AND t.region = ? AND t.fuel = 'ele
 
 function tsKind(structure) { return structure === 'e7' ? 'two_rate' : 'one_price'; }
 
-function tsOption(t, nowTs, market) {
-  const rows = db.prepare(`SELECT component, register, payment_method, price_ex_vat FROM rate_interval WHERE tariff_id = ? AND site_id IS NULL AND superseded_at IS NULL
+async function tsOption(t, nowTs, market) {
+  const rows = await db.prepare(`SELECT component, register, payment_method, price_ex_vat FROM rate_interval WHERE tariff_id = ? AND site_id IS NULL AND superseded_at IS NULL
     AND component IN ('unit', 'standing') AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY payment_method, component, register`).all(t.id, nowTs, nowTs);
   const methods = [...new Set(rows.map((r) => r.payment_method))];
   const options = methods.map((pm) => {
@@ -98,7 +99,7 @@ function tsOption(t, nowTs, market) {
     };
   });
   const kind = tsKind(t.structure);
-  const night = kind === 'two_rate' ? db.prepare(`SELECT start_min, end_min FROM register_window WHERE tariff_id = ? AND device_id IS NULL AND superseded_at IS NULL
+  const night = kind === 'two_rate' ? await db.prepare(`SELECT start_min, end_min FROM register_window WHERE tariff_id = ? AND device_id IS NULL AND superseded_at IS NULL
     AND register = 'night' ORDER BY start_min LIMIT 1`).get(t.id) : null;
   const service = /^TS-[^-]+-([EDG])-/.exec(t.tariff_code)?.[1];
   const sup = t.supplier_name ? `${t.supplier_name}: ` : '';
@@ -107,40 +108,40 @@ function tsOption(t, nowTs, market) {
     kind, prices_known: true, options,
     default_payment_method: methods.includes('DDM') ? 'DDM' : (methods[0] ?? null),
     hours: night ? { from: hhmm(night.start_min), to: hhmm(night.end_min), source: 'the supplier\'s usual night hours' } : null,
-    questions: questionsFor(market, kind),
+    questions: await questionsFor(market, kind),
   };
 }
 
 registerPickerSource({
   code: 'tariffscanner', markets: ['GB'], label: 'Tariffscanner',
-  available(site) {
+  async available(site) {
     if (!gbRegion(site)) return { available: false, reason: 'the home has no electricity region yet (its postcode was not found)' };
-    const n = db.prepare(`SELECT COUNT(*) AS n FROM tariff WHERE provider = 'tariffscanner' AND region = ?`).get(gbRegion(site)).n;
+    const n = (await db.prepare(`SELECT COUNT(*) AS n FROM tariff WHERE provider = 'tariffscanner' AND region = ?`).get(gbRegion(site))).n;
     return n ? { available: true } : { available: false, reason: 'no Tariffscanner tariffs are held for this region yet (the daily catalogue sync fills them)' };
   },
   async listSuppliers(site) {
-    backfillSuppliers();
+    await backfillSuppliers();
     const now = nowSec();
-    return db.prepare(`SELECT s.code, s.name, COUNT(*) AS tariffs FROM tariff t JOIN supplier s ON s.id = t.supplier_id
+    return await db.prepare(`SELECT s.code, s.name, COUNT(*) AS tariffs FROM tariff t JOIN supplier s ON s.id = t.supplier_id
       WHERE ${OFFERED} GROUP BY s.id ORDER BY s.name COLLATE NOCASE`).all(gbRegion(site), now, now);
   },
   async listTariffs(site, sup) {
     const now = nowSec();
-    const rows = db.prepare(`SELECT t.*, s.name AS supplier_name FROM tariff t JOIN supplier s ON s.id = t.supplier_id
+    const rows = await db.prepare(`SELECT t.*, s.name AS supplier_name FROM tariff t JOIN supplier s ON s.id = t.supplier_id
       WHERE ${OFFERED} AND s.id = ? ORDER BY t.name COLLATE NOCASE, t.structure, t.tariff_code`).all(gbRegion(site), now, now, sup.id);
-    return rows.map((t) => tsOption(t, now, 'GB'));
+    return await mapAsync(rows, async (t) => await tsOption(t, now, 'GB'));
   },
   async choose(site, tariff, choice) {
-    return chooseOnPickerMeter(site, tariff, choice);
+    return await chooseOnPickerMeter(site, tariff, choice);
   },
 });
 
 // ───────────── FR / NL: tounify v2 (lists kept 7 days, the choice kept here) ─────────────
 
-const tuClient = () => {
+const tuClient = async () => {
   const c = TU.credentialsFromEnv(process.env);
   if (c.missing) throw bad(`tounify cannot be called: ${c.missing}`, 503);
-  return { client: TU.clientFor(c.creds), dev: c.creds.dev ?? null };
+  return { client: await TU.clientFor(c.creds), dev: c.creds.dev ?? null };
 };
 // The tounify answers as ours: a refusal by the allowance or a rate limit -> 429, refused by tounify -> 400,
 // anything else (auth, network, an odd answer) -> 502. Never the token.
@@ -163,66 +164,66 @@ const tuHours = (market, kind) => (market === 'FR' && kind === 'two_rate'
 
 registerPickerSource({
   code: 'tounify', markets: ['FR', 'NL'], label: 'tounify',
-  available(site) {
-    try { connectable(db, site, { provider: 'tounify' }); } catch (err) { return { available: false, reason: err.message }; }
+  async available(site) {
+    try { await connectable(db, site, { provider: 'tounify' }); } catch (err) { return { available: false, reason: err.message }; }
     const c = TU.credentialsFromEnv(process.env);
     return c.missing ? { available: false, reason: `tounify cannot be called: ${c.missing}` } : { available: true };
   },
   async listSuppliers(site) {
-    const { client } = tuClient();
+    const { client } = await tuClient();
     try {
       const { list, country } = await TU.listCompanies(site, { client });
-      const held = new Map(db.prepare(`SELECT a.external_id, COUNT(t.id) AS n FROM supplier_alias a LEFT JOIN tariff t ON t.supplier_id = a.supplier_id
-        WHERE a.provider = 'tounify' AND a.country = ? GROUP BY a.external_id`).all(country).map((r) => [r.external_id, r.n]));
-      const out = list.map((c) => { const s = ensureSupplier({ provider: 'tounify', country, externalId: c.id, name: c.name ?? c.id }); return { code: s.code, name: s.name, tariffs: held.get(c.id) || null }; });
+      const held = new Map((await db.prepare(`SELECT a.external_id, COUNT(t.id) AS n FROM supplier_alias a LEFT JOIN tariff t ON t.supplier_id = a.supplier_id
+        WHERE a.provider = 'tounify' AND a.country = ? GROUP BY a.external_id`).all(country)).map((r) => [r.external_id, r.n]));
+      const out = await mapAsync(list, async (c) => { const s = await ensureSupplier({ provider: 'tounify', country, externalId: c.id, name: c.name ?? c.id }); return { code: s.code, name: s.name, tariffs: held.get(c.id) || null }; });
       return out.sort((a, b) => a.name.localeCompare(b.name));
     } catch (err) { throw tuError(err); }
   },
   async listTariffs(site, sup) {
-    const { client } = tuClient();
+    const { client } = await tuClient();
     const market = site.market_code ?? site.country;
-    const ext = db.prepare("SELECT external_id FROM supplier_alias WHERE supplier_id = ? AND provider = 'tounify'").get(sup.id)?.external_id;
+    const ext = (await db.prepare("SELECT external_id FROM supplier_alias WHERE supplier_id = ? AND provider = 'tounify'").get(sup.id))?.external_id;
     if (!ext) throw bad(`${sup.name} is not a tounify supplier`, 404);
     try {
       const { list, country } = await TU.listCompanyTariffs(site, ext, { client });
-      return list.filter((t) => t.available !== false).map((t) => {
-        const kind = tuKind(t);
-        // Pricing a tariff spends one of a testing token's tariffs: the list shows the prices this home already holds
-        // (chosen, or previewed with quoteTariff); the others are priced when the user selects one.
-        const ps = priceSummary(site, `TOUNIFY-${country}-${t.id}`, Math.floor(client.clock.now() / 1000));
-        return {
-          id: t.id, name: t.name ?? t.id, variant: null, kind, prices_known: ps.unit.length > 0 || !!ps.range, link: t.link ?? null,
-          options: [{ payment_method: 'ANY', label: paymentLabel('ANY'), unit: ps.unit, range: ps.range, standing: null }], default_payment_method: 'ANY',
-          vat_rate: ps.vat_rate, price_day: ps.day, quote: 'on_select',
-          hours: tuHours(market, kind), questions: questionsFor(market, kind),
-        };
-      });
+      return await mapAsync(list.filter((t) => t.available !== false), async (t) => {
+                    const kind = tuKind(t);
+                    // Pricing a tariff spends one of a testing token's tariffs: the list shows the prices this home already holds
+                    // (chosen, or previewed with quoteTariff); the others are priced when the user selects one.
+                    const ps = await priceSummary(site, `TOUNIFY-${country}-${t.id}`, Math.floor(client.clock.now() / 1000));
+                    return {
+                      id: t.id, name: t.name ?? t.id, variant: null, kind, prices_known: ps.unit.length > 0 || !!ps.range, link: t.link ?? null,
+                      options: [{ payment_method: 'ANY', label: paymentLabel('ANY'), unit: ps.unit, range: ps.range, standing: null }], default_payment_method: 'ANY',
+                      vat_rate: ps.vat_rate, price_day: ps.day, quote: 'on_select',
+                      hours: tuHours(market, kind), questions: await questionsFor(market, kind),
+                    };
+                  });
     } catch (err) { throw tuError(err); }
   },
   async quote(site, sup, tariffId) {
-    const { client, dev } = tuClient();
-    const ext = db.prepare("SELECT external_id FROM supplier_alias WHERE supplier_id = ? AND provider = 'tounify'").get(sup.id)?.external_id;
+    const { client, dev } = await tuClient();
+    const ext = (await db.prepare("SELECT external_id FROM supplier_alias WHERE supplier_id = ? AND provider = 'tounify'").get(sup.id))?.external_id;
     if (!ext) throw bad(`${sup.name} is not a tounify supplier`, 404);
     try {
       const { list } = await TU.listCompanyTariffs(site, ext, { client });   // kept a week: no call
       if (!list.some((t) => t.id === tariffId && t.available !== false)) throw bad(`tariff ${tariffId} is not offered by ${sup.name}`, 404);
       const q = await TU.quoteTariff(site, tariffId, { client, company: ext, dev });
-      return { ...q, ...priceSummary(site, q.tariff, Math.floor(client.clock.now() / 1000)) };
+      return { ...q, ...await priceSummary(site, q.tariff, Math.floor(client.clock.now() / 1000)) };
     } catch (err) { throw tuError(err); }
   },
   async choose(site, tariff, choice) {
-    const { client, dev } = tuClient();
+    const { client, dev } = await tuClient();
     const market = site.market_code ?? site.country;
-    const ext = db.prepare("SELECT a.external_id FROM supplier_alias a JOIN supplier s ON s.id = a.supplier_id WHERE a.provider = 'tounify' AND s.code = ? AND a.country = ?").get(String(choice.supplier ?? ''), market)?.external_id ?? null;
+    const ext = (await db.prepare("SELECT a.external_id FROM supplier_alias a JOIN supplier s ON s.id = a.supplier_id WHERE a.provider = 'tounify' AND s.code = ? AND a.country = ?").get(String(choice.supplier ?? ''), market))?.external_id ?? null;
     const hours = tariff.kind === 'two_rate' ? (choice.hours ?? (tariff.hours ? { from: tariff.hours.from, to: tariff.hours.to } : null)) : null;
     const input = { consumption_tariff: tariff.id, company: ext, ...(hours ? { off_peak_hours: [{ from: hours.from, to: hours.to }] } : {}) };
     try {
-      if (choice.contracted_kva != null) setContractedCapacity(site.id, Number(choice.contracted_kva), { origin: 'user', note: 'stated in onboarding (tariff picker)' });
-      const reg = await TU.registerConnection(db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), input, { client });
-      const sync = await TU.syncTounifyHome({ site: db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), client, dev, force: true });
-      const dev2 = db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'tounify' AND kind = 'meter_import' AND retired_at IS NULL").get(site.id);
-      const tId = db.prepare('SELECT id FROM tariff WHERE tariff_code = ?').get(`TOUNIFY-${market}-${tariff.id}`)?.id;
-      if (dev2 && tId && hours) storeMeterHours(dev2.id, tId, hours);
+      if (choice.contracted_kva != null) await setContractedCapacity(site.id, Number(choice.contracted_kva), { origin: 'user', note: 'stated in onboarding (tariff picker)' });
+      const reg = await TU.registerConnection(await db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), input, { client });
+      const sync = await TU.syncTounifyHome({ site: await db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), client, dev, force: true });
+      const dev2 = await db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'tounify' AND kind = 'meter_import' AND retired_at IS NULL").get(site.id);
+      const tId = (await db.prepare('SELECT id FROM tariff WHERE tariff_code = ?').get(`TOUNIFY-${market}-${tariff.id}`))?.id;
+      if (dev2 && tId && hours) await storeMeterHours(dev2.id, tId, hours);
       return { source: 'tounify', tariff: `TOUNIFY-${market}-${tariff.id}`, grid_resolution: reg.grid_resolution ?? null, prices: sync, warnings: [...(reg.warnings ?? []), ...(sync.warnings ?? [])] };
     } catch (err) { throw tuError(err); }
   },
@@ -231,25 +232,25 @@ registerPickerSource({
 // The prices of a tariff a home holds for today (its own rows: chosen or previewed), for the list: one price, or a
 // peak and an off-peak price, or (a price that changes through the day) today's lowest, highest and time-weighted
 // average; ex VAT, in minor units, with the country's VAT rate now to show what is paid.
-function vatRateNow(country, ts) {
-  const rules = rulesFor(db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL').all(country), { country, fuel: 'electricity', direction: 'import', ts })
+async function vatRateNow(country, ts) {
+  const rules = rulesFor(await db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL').all(country), { country, fuel: 'electricity', direction: 'import', ts })
     .filter((r) => r.kind === 'percent' && ['unit', 'all'].includes(r.applies_to));
   return rules.length ? rules.reduce((m, r) => m + r.value, 0) : null;
 }
-export function priceSummary(site, tariffCode, now = nowSec()) {
+export async function priceSummary(site, tariffCode, now = nowSec()) {
   const tz = site.timezone || 'Europe/London';
   const q = db.prepare(`SELECT r.valid_from, IFNULL(r.valid_to, ?) AS valid_to, r.price_ex_vat AS p FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
     WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ? ORDER BY r.valid_from`);
   // Today; else the latest day the home holds (a tariff previewed or read some days ago), named in `day`.
   let day = localDate(tz, now);
   let [a, b] = dayBounds(tz, day);
-  let rows = q.all(b, tariffCode, site.id, b, a);
+  let rows = await q.all(b, tariffCode, site.id, b, a);
   if (!rows.length) {
-    const last = db.prepare(`SELECT MAX(r.valid_from) AS t FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
-      WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ?`).get(tariffCode, site.id, now).t;
-    if (last != null) { day = localDate(tz, last); [a, b] = dayBounds(tz, day); rows = q.all(b, tariffCode, site.id, b, a); }
+    const last = (await db.prepare(`SELECT MAX(r.valid_from) AS t FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+      WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ?`).get(tariffCode, site.id, now)).t;
+    if (last != null) { day = localDate(tz, last); [a, b] = dayBounds(tz, day); rows = await q.all(b, tariffCode, site.id, b, a); }
   }
-  const vat = vatRateNow(site.country ?? site.market_code, now);
+  const vat = await vatRateNow(site.country ?? site.market_code, now);
   if (!rows.length) return { unit: [], range: null, vat_rate: vat, day: null };
   const prices = [...new Set(rows.map((r) => r.p))].sort((x, y) => y - x);
   if (prices.length === 1) return { unit: [{ register: 'single', label: 'Price', price: prices[0] }], range: null, vat_rate: vat, day };
@@ -263,17 +264,17 @@ export function priceSummary(site, tariffCode, now = nowSec()) {
 
 // The meter's own two-rate hours: [{ from: 'HH:MM', to: 'HH:MM' }] -> register_window rows with device_id,
 // every day, local clock. The meter's earlier hours are superseded (kept as history).
-function storeMeterHours(deviceId, tariffId, hours, register = 'night') {
+async function storeMeterHours(deviceId, tariffId, hours, register = 'night') {
   const list = Array.isArray(hours) ? hours : [hours];
   const rows = list.map((h) => {
     const a = toMin(h.from); const b = toMin(h.to);
     if (a == null || b == null || a === b) throw bad('hours must be { from: "HH:MM", to: "HH:MM" }, two different times');
     return { device_id: deviceId, register, start_min: a % 1440, end_min: b === 0 ? 1440 : b, weekdays: 127, clock: 'local', source_text: `${h.from}-${h.to}` };
   });
-  tx(() => {
-    db.prepare('UPDATE register_window SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(Date.now(), deviceId);
-    putWindows(tariffId, rows, { origin: 'user', originNote: 'the meter\'s own hours, confirmed by the user in onboarding (tariff picker)' });
-  });
+  await tx(async () => {
+        await db.prepare('UPDATE register_window SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(Date.now(), deviceId);
+        await putWindows(tariffId, rows, { origin: 'user', originNote: 'the meter\'s own hours, confirmed by the user in onboarding (tariff picker)' });
+      });
   return rows.length;
 }
 
@@ -282,20 +283,20 @@ function storeMeterHours(deviceId, tariffId, hours, register = 'night') {
 // INITIAL_DAYS) starts BACKFILL_DAYS back, so those days are priced when they arrive. Either way never before the
 // tariff's first known price (chooseOnPickerMeter).
 const BACKFILL_DAYS = 31;
-function firstDataDay(site) {
-  const r = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(site.id);
+async function firstDataDay(site) {
+  const r = await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(site.id);
   return r?.d ?? localDate(site.timezone || 'Europe/London', nowSec() - BACKFILL_DAYS * 86400);
 }
 
 // An account meter (Octopus) that prices the home: its tariff comes from the account, never from a list.
-function accountMeter(siteId) {
-  return db.prepare(`SELECT d.provider FROM device d JOIN tariff_agreement a ON a.device_id = d.id AND a.superseded_at IS NULL
+async function accountMeter(siteId) {
+  return await db.prepare(`SELECT d.provider FROM device d JOIN tariff_agreement a ON a.device_id = d.id AND a.superseded_at IS NULL
     WHERE d.site_id = ? AND d.kind = 'meter_import' AND d.retired_at IS NULL AND d.provider NOT IN ('${PICKER}', 'env', 'tounify') LIMIT 1`).get(siteId);
 }
 
-function chooseOnPickerMeter(site, tariff, choice) {
+async function chooseOnPickerMeter(site, tariff, choice) {
   const tz = site.timezone || 'Europe/London';
-  const t = db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariff.id);
+  const t = await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariff.id);
   // Payment method: one the tariff is priced in (the default when the request names none).
   const methods = tariff.options.map((o) => o.payment_method);
   const pm = choice.payment_method ?? tariff.default_payment_method;
@@ -304,26 +305,26 @@ function chooseOnPickerMeter(site, tariff, choice) {
   const hours = tariff.kind === 'two_rate' ? (choice.hours ?? (tariff.hours ? { from: tariff.hours.from, to: tariff.hours.to } : null)) : null;
   if (tariff.kind === 'two_rate' && !hours) throw bad('hours are required for a day / night tariff: { from: "HH:MM", to: "HH:MM" } of the cheap night rate');
   // Start: the day given, else the first day of data; never before the tariff's first known price.
-  const since = choice.since ?? firstDataDay(site);
+  const since = choice.since ?? await firstDataDay(site);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) throw bad('since must be a date YYYY-MM-DD');
   const [sinceTs] = dayBounds(tz, since);
-  const firstPrice = db.prepare("SELECT MIN(valid_from) AS t FROM rate_interval WHERE tariff_id = ? AND site_id IS NULL AND component = 'unit' AND superseded_at IS NULL").get(t.id).t;
+  const firstPrice = (await db.prepare("SELECT MIN(valid_from) AS t FROM rate_interval WHERE tariff_id = ? AND site_id IS NULL AND component = 'unit' AND superseded_at IS NULL").get(t.id)).t;
   const from = Math.max(sinceTs, firstPrice ?? sinceTs);
   const notes = [];
   if (from > sinceTs) notes.push(`priced from ${localDate(tz, from)}: the first day this tariff's price is known`);
 
   let device;
-  tx(() => {
-    db.prepare(`INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'meter_import', '${PICKER}', 'import', 'Grid import (tariff chosen by the user)', '{}', ?)
+  await tx(async () => {
+        await db.prepare(`INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'meter_import', '${PICKER}', 'import', 'Grid import (tariff chosen by the user)', '{}', ?)
       ON CONFLICT (site_id, provider, external_ref) DO UPDATE SET retired_at = NULL`).run(site.id, Date.now());
-    device = db.prepare(`SELECT * FROM device WHERE site_id = ? AND provider = '${PICKER}' AND external_ref = 'import'`).get(site.id);
-    // Keep the earlier choices before the new start (history); the new one runs open-ended from it.
-    const cur = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(device.id);
-    const kept = cur.filter((a) => a.valid_from < from).map((a) => ({ tariffId: a.tariff_id, from: a.valid_from, to: a.valid_to == null || a.valid_to > from ? from : a.valid_to, paymentMethod: a.payment_method }));
-    supersedeAgreements(site.id, device.id, [...kept, { tariffId: t.id, from, to: null, paymentMethod: pm }]);
-    if (hours) storeMeterHours(device.id, t.id, hours);
-  });
-  markDirty(site.id, from, nowSec() + 86400, 'tariff chosen by the user');
+        device = await db.prepare(`SELECT * FROM device WHERE site_id = ? AND provider = '${PICKER}' AND external_ref = 'import'`).get(site.id);
+        // Keep the earlier choices before the new start (history); the new one runs open-ended from it.
+        const cur = await db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(device.id);
+        const kept = cur.filter((a) => a.valid_from < from).map((a) => ({ tariffId: a.tariff_id, from: a.valid_from, to: a.valid_to == null || a.valid_to > from ? from : a.valid_to, paymentMethod: a.payment_method }));
+        await supersedeAgreements(site.id, device.id, [...kept, { tariffId: t.id, from, to: null, paymentMethod: pm }]);
+        if (hours) await storeMeterHours(device.id, t.id, hours);
+      });
+  await markDirty(site.id, from, nowSec() + 86400, 'tariff chosen by the user');
   return {
     source: 'tariffscanner', tariff: t.tariff_code, name: t.name, payment_method: pm, from: localDate(tz, from),
     hours: hours ? { from: hours.from, to: hours.to } : null, notes,
@@ -334,29 +335,29 @@ function chooseOnPickerMeter(site, tariff, choice) {
  * An account meter now prices the home (Octopus): the picker's meter is retired and its agreements end where
  * the account's begin (the days before keep the price the user chose). Called by the Octopus sync step.
  */
-export function retirePickedMeters(siteId) {
-  const picked = db.prepare(`SELECT id FROM device WHERE site_id = ? AND provider = '${PICKER}' AND retired_at IS NULL`).all(siteId);
+export async function retirePickedMeters(siteId) {
+  const picked = await db.prepare(`SELECT id FROM device WHERE site_id = ? AND provider = '${PICKER}' AND retired_at IS NULL`).all(siteId);
   if (!picked.length) return 0;
-  const acc = db.prepare(`SELECT MIN(a.valid_from) AS t FROM tariff_agreement a JOIN device d ON d.id = a.device_id
-    WHERE d.site_id = ? AND d.kind = 'meter_import' AND d.provider NOT IN ('${PICKER}', 'env') AND d.retired_at IS NULL AND a.superseded_at IS NULL`).get(siteId).t;
+  const acc = (await db.prepare(`SELECT MIN(a.valid_from) AS t FROM tariff_agreement a JOIN device d ON d.id = a.device_id
+    WHERE d.site_id = ? AND d.kind = 'meter_import' AND d.provider NOT IN ('${PICKER}', 'env') AND d.retired_at IS NULL AND a.superseded_at IS NULL`).get(siteId)).t;
   if (acc == null) return 0;
   let first = null;
   for (const d of picked) {
-    const cur = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(d.id);
+    const cur = await db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(d.id);
     const kept = cur.filter((a) => a.valid_from < acc).map((a) => ({ tariffId: a.tariff_id, from: a.valid_from, to: a.valid_to == null || a.valid_to > acc ? acc : a.valid_to, paymentMethod: a.payment_method }));
-    supersedeAgreements(siteId, d.id, kept);
-    retireDevice(d.id);
+    await supersedeAgreements(siteId, d.id, kept);
+    await retireDevice(d.id);
     for (const a of cur) first = Math.min(first ?? a.valid_from, a.valid_from);
   }
-  if (first != null) markDirty(siteId, Math.max(first, acc), nowSec() + 86400, 'account meter replaces the chosen tariff');
+  if (first != null) await markDirty(siteId, Math.max(first, acc), nowSec() + 86400, 'account meter replaces the chosen tariff');
   return picked.length;
 }
 
 // ───────────── The interface ─────────────
 
-const supplierOf = (site, code) => {
+const supplierOf = async (site, code) => {
   const country = site.country ?? site.market_code;
-  const s = db.prepare('SELECT * FROM supplier WHERE country = ? AND code = ?').get(country, String(code ?? ''));
+  const s = await db.prepare('SELECT * FROM supplier WHERE country = ? AND code = ?').get(country, String(code ?? ''));
   if (!s) throw bad(`no supplier ${code} in ${country}`, 404);
   return s;
 };
@@ -376,7 +377,7 @@ export async function listSuppliers(site) {
 
 export async function listTariffs(site, supplierCode) {
   const src = requireSource(site);
-  const sup = supplierOf(site, supplierCode);
+  const sup = await supplierOf(site, supplierCode);
   return { country: site.country, source: src.code, supplier: { code: sup.code, name: sup.name }, tariffs: await src.listTariffs(site, sup) };
 }
 
@@ -384,7 +385,7 @@ export async function listTariffs(site, supplierCode) {
 export async function quoteTariff(site, supplierCode, tariffId) {
   const src = requireSource(site);
   if (!src.quote) throw bad(`${src.label} lists its prices with its tariffs: nothing to ask`, 404);
-  const sup = supplierOf(site, supplierCode);
+  const sup = await supplierOf(site, supplierCode);
   return { supplier: { code: sup.code, name: sup.name }, ...(await src.quote(site, sup, String(tariffId ?? ''))) };
 }
 
@@ -417,9 +418,9 @@ export function checkOffPeakHours(market, hours) {
  */
 export async function chooseTariff(site, choice = {}) {
   const src = requireSource(site);
-  const account = accountMeter(site.id);
+  const account = await accountMeter(site.id);
   if (account) throw bad(`this home's tariff comes from its ${account.provider} account; disconnect it first to choose one from a list`, 409);
-  const sup = supplierOf(site, choice.supplier);
+  const sup = await supplierOf(site, choice.supplier);
   const offered = await src.listTariffs(site, sup);
   const tariff = offered.find((t) => t.id === choice.tariff);
   if (!tariff) throw bad(`tariff ${choice.tariff} is not offered by ${sup.name} for this home now`);
@@ -434,16 +435,16 @@ export async function chooseTariff(site, choice = {}) {
 }
 
 /** What the home is on now, and whether the picker applies to it. */
-export function tariffChoice(site) {
+export async function tariffChoice(site) {
   const src = sourceFor(site);
   const avail = src ? src.available(site) : { available: false, reason: 'no tariff list for this market yet' };
-  const cur = db.prepare(`SELECT a.valid_from, a.payment_method, d.provider AS meter, d.id AS device_id, t.tariff_code, t.name, t.structure, s.code AS supplier_code, s.name AS supplier_name
+  const cur = await db.prepare(`SELECT a.valid_from, a.payment_method, d.provider AS meter, d.id AS device_id, t.tariff_code, t.name, t.structure, s.code AS supplier_code, s.name AS supplier_name
     FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id LEFT JOIN supplier s ON s.id = t.supplier_id
     WHERE a.site_id = ? AND d.kind = 'meter_import' AND d.retired_at IS NULL AND a.superseded_at IS NULL AND a.valid_from <= ? AND IFNULL(a.valid_to, 9000000000) > ?
     ORDER BY a.valid_from DESC LIMIT 1`).get(site.id, nowSec(), nowSec());
-  const hours = cur ? db.prepare(`SELECT start_min, end_min FROM register_window WHERE device_id = ? AND superseded_at IS NULL ORDER BY start_min`).all(cur.device_id)
+  const hours = cur ? (await db.prepare(`SELECT start_min, end_min FROM register_window WHERE device_id = ? AND superseded_at IS NULL ORDER BY start_min`).all(cur.device_id))
     .map((w) => ({ from: hhmm(w.start_min), to: hhmm(w.end_min) })) : [];
-  const acc = accountMeter(site.id);
+  const acc = await accountMeter(site.id);
   return {
     source: src?.code ?? null, available: avail.available && !acc, ...(acc ? { reason: `the tariff comes from the home's ${acc.provider} account` } : avail.reason ? { reason: avail.reason } : {}),
     current: cur ? {

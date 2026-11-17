@@ -25,6 +25,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { REVIEW, parseTarget, DEFINITION } from './coverage-review.js';
+import { mapAsync } from "../src/core/async.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const CATALOGUE = 'docs/predbat-predheat-requirements.md';
@@ -101,20 +102,20 @@ export function appendixCounts(text) {
 // ───────────── The schema as built ─────────────
 
 /** What a fresh database holds: tables and views with their columns, and every registry row. */
-export function schemaContext(db) {
-  const objects = db.prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'").all();
-  const columns = new Map(objects.map((o) => [o.name, new Set(db.prepare('SELECT name FROM pragma_table_info(?)').all(o.name).map((r) => r.name))]));
-  const refsOf = (table) => new Map(db.prepare(`SELECT key, refs FROM ${table}`).all().map((r) => [r.key, JSON.parse(r.refs || '[]')]));
+export async function schemaContext(db) {
+  const objects = await db.prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'").all();
+  const columns = new Map(await mapAsync(objects, async (o) => [o.name, new Set((await db.prepare('SELECT name FROM pragma_table_info(?)').all(o.name)).map((r) => r.name))]));
+  const refsOf = async (table) => new Map((await db.prepare(`SELECT key, refs FROM ${table}`).all()).map((r) => [r.key, JSON.parse(r.refs || '[]')]));
   return {
     tables: new Set(objects.filter((o) => o.type === 'table').map((o) => o.name)),
     views: new Set(objects.filter((o) => o.type === 'view').map((o) => o.name)),
     columns,
-    attributes: refsOf('attribute_def'),
-    settings: refsOf('setting_def'),
-    kinds: new Set(db.prepare('SELECT kind FROM device_kind').all().map((r) => r.kind)),
-    actions: new Set(db.prepare('SELECT device_kind, action FROM device_action').all().map((r) => `${r.device_kind}.${r.action}`)),
-    metrics: new Set(db.prepare('SELECT code FROM metric').all().map((r) => r.code)),
-    sources: new Set(db.prepare('SELECT code FROM source').all().map((r) => r.code)),
+    attributes: await refsOf('attribute_def'),
+    settings: await refsOf('setting_def'),
+    kinds: new Set((await db.prepare('SELECT kind FROM device_kind').all()).map((r) => r.kind)),
+    actions: new Set((await db.prepare('SELECT device_kind, action FROM device_action').all()).map((r) => `${r.device_kind}.${r.action}`)),
+    metrics: new Set((await db.prepare('SELECT code FROM metric').all()).map((r) => r.code)),
+    sources: new Set((await db.prepare('SELECT code FROM source').all()).map((r) => r.code)),
   };
 }
 
@@ -404,7 +405,7 @@ async function main() {
   process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
   const { db, closeDb } = await import(pathToFileURL(path.join(root, 'src', 'db', 'db.js')).href);
   const readFunctions = new Set(Object.keys(await import(pathToFileURL(path.join(root, 'src', 'core', 'planner-read.js')).href)));
-  const ctx = schemaContext(db);
+  const ctx = await schemaContext(db);
   closeDb?.();
   const catalogueText = fs.readFileSync(path.join(root, CATALOGUE), 'utf8');
   const databaseMd = fs.readFileSync(path.join(root, DATABASE_DOC), 'utf8');
@@ -439,5 +440,5 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main().catch((err) => { console.error(err.message); process.exitCode = 1; });
+  await main().catch((err) => { console.error(err.message); process.exitCode = 1; });
 }

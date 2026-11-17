@@ -70,13 +70,13 @@ export function siteOrigin(site, providers = []) {
 // and every placeholder or synthetic input named. Read from what each slot's lineage recorded when
 // it was built. Slots built before lineage carried an origin are labelled from the tariffs, rates
 // and tax rules in force over the period instead (unlabelled_slots says how many).
-export function periodProvenance(db, site, from, to, bounds) {
+export async function periodProvenance(db, site, from, to, bounds) {
   const q = 'FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?';
-  const groups = db.prepare(`SELECT json_extract(lineage, '$.origin') AS origin, json_extract(lineage, '$.data_origin') AS data_origin,
+  const groups = await db.prepare(`SELECT json_extract(lineage, '$.origin') AS origin, json_extract(lineage, '$.data_origin') AS data_origin,
       COUNT(*) AS n, SUM(json_extract(lineage, '$.estimated') = 1) AS estimated, SUM(json_extract(lineage, '$.capacity_unknown') = 1) AS capacity_unknown
     ${q} AND json_valid(lineage) GROUP BY 1, 2`).all(site.id, from, to);
-  const listed = db.prepare(`SELECT DISTINCT j.value AS v FROM site_hh h, json_each(h.lineage, '$.placeholder_inputs') j
-    WHERE h.site_id = ? AND h.local_date >= ? AND h.local_date <= ? AND json_valid(h.lineage)`).all(site.id, from, to).map((r) => r.v);
+  const listed = (await db.prepare(`SELECT DISTINCT j.value AS v FROM site_hh h, json_each(h.lineage, '$.placeholder_inputs') j
+    WHERE h.site_id = ? AND h.local_date >= ? AND h.local_date <= ? AND json_valid(h.lineage)`).all(site.id, from, to)).map((r) => r.v);
   const slots = groups.reduce((s, g) => s + g.n, 0);
   const unlabelled = groups.filter((g) => g.origin == null).reduce((s, g) => s + g.n, 0);
   const origins = groups.map((g) => g.origin).filter(Boolean);
@@ -85,7 +85,7 @@ export function periodProvenance(db, site, from, to, bounds) {
   if (slots) origins.push(data);
   if (isUnverified(data) && slots) placeholders.add(labelOf('energy data (demo home)', data));
   if (unlabelled && bounds) {
-    for (const i of inForceInputs(db, site, bounds[0], bounds[1])) {
+    for (const i of await inForceInputs(db, site, bounds[0], bounds[1])) {
       origins.push(i.origin);
       if (isUnverified(i.origin)) placeholders.add(labelOf(i.what, i.origin));
     }
@@ -100,16 +100,16 @@ export function periodProvenance(db, site, from, to, bounds) {
 }
 
 // The tariffs, rate rows and tax rules in force for a home over [a, b), as labelled inputs.
-export function inForceInputs(db, site, a, b) {
+export async function inForceInputs(db, site, a, b) {
   const out = [];
-  const tariffs = db.prepare(`SELECT DISTINCT t.id, t.tariff_code, t.origin FROM tariff_agreement ag JOIN tariff t ON t.id = ag.tariff_id
+  const tariffs = await db.prepare(`SELECT DISTINCT t.id, t.tariff_code, t.origin FROM tariff_agreement ag JOIN tariff t ON t.id = ag.tariff_id
     WHERE ag.site_id = ? AND ag.superseded_at IS NULL AND ag.valid_from < ? AND IFNULL(ag.valid_to, 9000000000) > ?`).all(site.id, b, a);
   for (const t of tariffs) {
     out.push({ what: `tariff ${t.tariff_code}`, origin: t.origin });
-    for (const r of db.prepare(`SELECT DISTINCT origin FROM rate_interval WHERE tariff_id = ? AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
+    for (const r of await db.prepare(`SELECT DISTINCT origin FROM rate_interval WHERE tariff_id = ? AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
         AND (site_id IS NULL OR site_id = ?)`).all(t.id, b, a, site.id)) out.push({ what: `rates ${t.tariff_code}`, origin: r.origin });
   }
-  for (const r of db.prepare(`SELECT country, code, origin FROM tax_rule WHERE country = ? AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?`)
-    .all(site.country ?? 'GB', b, a)) out.push({ what: `tax_rule ${r.country}/${r.code}`, origin: r.origin });
+  for (const r of await db.prepare(`SELECT country, code, origin FROM tax_rule WHERE country = ? AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?`)
+      .all(site.country ?? 'GB', b, a)) out.push({ what: `tax_rule ${r.country}/${r.code}`, origin: r.origin });
   return out;
 }

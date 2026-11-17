@@ -33,13 +33,13 @@ const matrix = JSON.parse(read('docs/coverage-matrix.json'));
 const docs = { matrix, catalogueText: read('docs/predbat-predheat-requirements.md'), reportText: read('docs/predbat-predheat-coverage.md'), databaseMd: read('docs/database.md') };
 const MODULES = { 'planner-read': plannerRead, plans, commands };
 
-const site = createSite({ ...HOME, lat: 51.5, lon: -0.1 });
-db.prepare("INSERT INTO connection (site_id, provider, external_ref, status, meta) VALUES (?, 'octopus', ?, 'ok', ?)").run(site.id, REF, JSON.stringify({ account: REF }));
+const site = await createSite({ ...HOME, lat: 51.5, lon: -0.1 });
+await db.prepare("INSERT INTO connection (site_id, provider, external_ref, status, meta) VALUES (?, 'octopus', ?, 'ok', ?)").run(site.id, REF, JSON.stringify({ account: REF }));
 
-const built = C.buildCompatibility(db);
+const built = await C.buildCompatibility(db);
 const byId = new Map(built.items.map((i) => [i.id, i]));
 
-test('the summary equals docs/coverage-matrix.json: 481 items, 467 covered, 14 excluded, 0 gaps; 456 of 456 verified data items', () => {
+await test('the summary equals docs/coverage-matrix.json: 481 items, 467 covered, 14 excluded, 0 gaps; 456 of 456 verified data items', () => {
   const c = matrix.counts;
   const s = built.summary;
   assert.equal(s.items, c.all.total);
@@ -70,7 +70,7 @@ test('the summary equals docs/coverage-matrix.json: 481 items, 467 covered, 14 e
   assert.equal(built.definition, matrix.definition);
 });
 
-test('live check on a fresh database: every target of every covered item exists, and every "how" place and read function', () => {
+await test('live check on a fresh database: every target of every covered item exists, and every "how" place and read function', () => {
   const lc = built.live_check;
   const nTargets = matrix.items.reduce((n, i) => n + (i.targets?.length ?? 0), 0);
   assert.equal(lc.targets_checked, nTargets);
@@ -88,7 +88,7 @@ test('live check on a fresh database: every target of every covered item exists,
   for (const m of matrix.items) assert.deepEqual(byId.get(m.id).targets.map(({ exists, ...t }) => t), (m.targets ?? []).map((t) => ({ kind: t.kind, ref: t.ref, ...(t.json_key ? { json_key: t.json_key } : {}) })), m.id);
 });
 
-test('a missing target is reported: exists false on the target, the item, its group and the summary, and the live check fails', () => {
+await test('a missing target is reported: exists false on the target, the item, its group and the summary, and the live check fails', async () => {
   // The shared check itself: a fake ref of every kind is false, a real one true.
   const exists = targetChecker(db, { readModules: { 'planner-read': plannerRead }, jsonKeys: documentedJsonKeys(docs.databaseMd) });
   for (const t of [
@@ -98,15 +98,15 @@ test('a missing target is reported: exists false on the target, the item, its gr
     { kind: 'metric', ref: 'metric:no_such_metric' }, { kind: 'source', ref: 'source:no_such_source' }, { kind: 'device_action', ref: 'device_action:battery.no_such_action' },
     { kind: 'view', ref: 'view:v_no_such_view' }, { kind: 'read_function', ref: 'planner-read.noSuchFunction' }, { kind: 'read_function', ref: 'plans.currentPlan' },
     { kind: 'read_function', ref: 'planner-read.STEP_S' }, { kind: 'no_such_kind', ref: 'x' },
-  ]) assert.equal(exists(t), false, JSON.stringify(t));
+  ]) assert.equal(await exists(t), false, JSON.stringify(t));
   for (const t of [{ kind: 'table_column', ref: 'plan_slot.action' }, { kind: 'metric', ref: 'metric:solar_kwh_p10' }, { kind: 'read_function', ref: 'planner-read.rates' },
-    { kind: 'view', ref: 'view:v_plan_in_force' }, { kind: 'device_action', ref: 'device_action:battery.freeze_export' }]) assert.equal(exists(t), true, t.ref);
+    { kind: 'view', ref: 'view:v_plan_in_force' }, { kind: 'device_action', ref: 'device_action:battery.freeze_export' }]) assert.equal(await exists(t), true, t.ref);
 
   // Through the API's builder: one verified Predbat item gains a target that does not exist.
   const broken = structuredClone(matrix);
   const victim = broken.items.find((i) => i.id === 'PB-RATE-03');
   victim.targets.push({ kind: 'metric', ref: 'metric:no_such_metric' });
-  const r = C.buildCompatibility(db, { ...docs, matrix: broken });
+  const r = await C.buildCompatibility(db, { ...docs, matrix: broken });
   assert.equal(r.live_check.ok, false);
   assert.equal(r.live_check.targets_missing, 1);
   assert.deepEqual(r.live_check.missing, [{ item: 'PB-RATE-03', kind: 'metric', ref: 'metric:no_such_metric' }]);
@@ -129,7 +129,7 @@ test('a missing target is reported: exists false on the target, the item, its gr
   assert.ok(!V.filterOptions(built).statuses.includes('target_missing'));
 });
 
-test('excluded items carry their reasons; gaps none; unverified and conflicts listed with their items', () => {
+await test('excluded items carry their reasons; gaps none; unverified and conflicts listed with their items', () => {
   assert.equal(built.excluded.length, 14);
   for (const x of built.excluded) {
     assert.ok(typeof x.reason === 'string' && x.reason.length > 20, `${x.id} states why`);
@@ -150,7 +150,7 @@ test('excluded items carry their reasons; gaps none; unverified and conflicts li
   assert.match(built.headline.limit, /planner itself, device adapters and real heating data are not built/);
 });
 
-test('how they read: every entry has a read function that exists in its module (planner-read.js for the facts), real places and catalogue ids, and one sentence why', () => {
+await test('how they read: every entry has a read function that exists in its module (planner-read.js for the facts), real places and catalogue ids, and one sentence why', () => {
   const how = built.how_it_consumes;
   assert.ok(how.length >= 9);
   const ids = new Set(matrix.items.map((i) => i.id));
@@ -176,7 +176,7 @@ test('how they read: every entry has a read function that exists in its module (
   }
 });
 
-test('no credential and no home\'s data in the JSON', () => {
+await test('no credential and no home\'s data in the JSON', () => {
   const text = JSON.stringify(built);
   for (const v of [...Object.values(SECRETS), HOME.name, HOME.postcode, REF, '51.5']) assert.ok(!text.includes(v), `contains ${v}`);
   const keys = new Set();
@@ -185,12 +185,12 @@ test('no credential and no home\'s data in the JSON', () => {
   for (const k of ['site_id', 'postcode', 'external_ref', 'lat', 'lon', 'meta', 'password', 'token', 'api_key', 'credential', 'name_of_home']) assert.ok(!keys.has(k), `key ${k}`);
 });
 
-test('the live check is cached for 60 s, then run again', () => {
+await test('the live check is cached for 60 s, then run again', async () => {
   C.clearCompatibilityCache();
   const t = Date.parse('2026-10-26T12:00:00Z');
-  const a = C.compatibility(db, { now: t });
-  assert.equal(C.compatibility(db, { now: t + 59_000 }), a, 'same result within 60 s');
-  const b = C.compatibility(db, { now: t + 60_000 });
+  const a = await C.compatibility(db, { now: t });
+  assert.equal(await C.compatibility(db, { now: t + 59_000 }), a, 'same result within 60 s');
+  const b = await C.compatibility(db, { now: t + 60_000 });
   assert.notEqual(b, a, 'checked again after 60 s');
   assert.equal(b.generated_at, new Date(t + 60_000).toISOString());
   assert.equal(a.live_check.cache_s, 60);
@@ -210,7 +210,7 @@ const get = (p) => new Promise((resolve, reject) => {
   }).on('error', reject);
 });
 
-test('GET /api/compatibility: no home needed, the shape the page reads, no credential', async () => {
+await test('GET /api/compatibility: no home needed, the shape the page reads, no credential', async () => {
   const r = await get('/api/compatibility');
   assert.equal(r.status, 200);
   const j = JSON.parse(r.text);
@@ -227,9 +227,9 @@ test('GET /api/compatibility: no home needed, the shape the page reads, no crede
   assert.match(page.text, /\/js\/pages\/compatibility\.js/);
 });
 
-test('the page views escape every API text, say each status in words, and page the list', () => {
+await test('the page views escape every API text, say each status in words, and page the list', async () => {
   const evil = '<img src=x onerror=alert(1)>';
-  const d = structuredClone(built);
+  const d = await structuredClone(built);
   const it = d.items.find((i) => i.id === 'PB-INV-01');
   Object.assign(it, { name: evil, note: `${evil} \`code\``, source: evil });
   it.targets[0].ref = evil;
@@ -267,7 +267,7 @@ test('the page views escape every API text, say each status in words, and page t
   assert.match(V.countText(46, 481, 1), /46 of 481 items match; showing 26 to 46/);
 });
 
-test('the nav lists the page, and the page file exists', () => {
+await test('the nav lists the page, and the page file exists', () => {
   assert.match(read('public/js/layout.js'), /\['compatibility', 'Compatibility', '\/compatibility'\]/);
   assert.ok(fs.existsSync(path.join(root, 'public', 'compatibility.html')));
 });

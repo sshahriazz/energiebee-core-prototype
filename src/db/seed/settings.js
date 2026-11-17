@@ -254,18 +254,18 @@ export const SETTING_DEFS = Object.freeze([
 export const SETTING_DEF_COLUMNS = Object.freeze(['key', 'label', 'unit', 'value_type', 'default_value', 'min_value', 'max_value', 'step', 'allowed_values',
   'json_shape', 'planner', 'applies_to', 'unverified', 'description', 'refs']);
 
-const missingDefs = (db) => {
-  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'setting_def'").get()) return [];
-  const have = new Set(db.prepare('SELECT key FROM setting_def').all().map((r) => r.key));
+const missingDefs = async (db) => {
+  if (!await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'setting_def'").get()) return [];
+  const have = new Set((await db.prepare('SELECT key FROM setting_def').all()).map((r) => r.key));
   return SETTING_DEFS.filter((d) => !have.has(d.key));
 };
 // True when seedSettingDefs would write (read only).
-export const settingSeedPending = (db) => missingDefs(db).length > 0;
+export const settingSeedPending = async (db) => (await missingDefs(db)).length > 0;
 
 // Inserts the rows that are missing; an existing row is never changed. Returns rows written.
-export function seedSettingDefs(db) {
+export async function seedSettingDefs(db) {
   const st = db.prepare(`INSERT INTO setting_def (${SETTING_DEF_COLUMNS.join(', ')}) VALUES (${SETTING_DEF_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT DO NOTHING`);
   let n = 0;
-  for (const d of missingDefs(db)) n += Number(st.run(...SETTING_DEF_COLUMNS.map((c) => d[c] ?? null)).changes);
+  for (const d of await missingDefs(db)) n += Number((await st.run(...SETTING_DEF_COLUMNS.map((c) => d[c] ?? null))).changes);
   return n;
 }

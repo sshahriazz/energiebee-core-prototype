@@ -22,10 +22,10 @@ import { ensureSharedConnections, syncSite } from '../jobs/sync.js';
 const fail = (status, msg) => { const e = new Error(msg); e.status = status; return e; };
 
 export const hooks = {
-  verify: { sunsynk: (c) => checkSunsynkLogin(c), octopus: (c) => checkOctopusAccount(c) },
-  plants: { sunsynk: (c) => listSunsynkPlants(c) },
-  geo: (site) => resolveSiteGeo(site),
-  startSync: (siteId) => syncSite(siteId),
+  verify: { sunsynk: async (c) => await checkSunsynkLogin(c), octopus: async (c) => await checkOctopusAccount(c) },
+  plants: { sunsynk: async (c) => await listSunsynkPlants(c) },
+  geo: async (site) => await resolveSiteGeo(site),
+  startSync: async (siteId) => await syncSite(siteId),
 };
 
 // ───────────── The home: country and postcode ─────────────
@@ -56,9 +56,9 @@ export async function addHome(user, { country = 'GB', postcode, name = null } = 
   const cc = String(country ?? 'GB').toUpperCase();
   const pc = normalisePostcode(cc, postcode);
   let site;
-  try { site = createSite({ name: String(name ?? '').trim().slice(0, 100) || `Home ${pc}`, postcode: pc, country: cc }); } catch (err) { throw fail(400, err.message); }
-  giveHome(user.id, site.id);
-  ensureSharedConnections(site);
+  try { site = await createSite({ name: String(name ?? '').trim().slice(0, 100) || `Home ${pc}`, postcode: pc, country: cc }); } catch (err) { throw fail(400, err.message); }
+  await giveHome(user.id, site.id);
+  await ensureSharedConnections(site);
   let geoError = null;
   if (cc === 'GB') {
     try { site = await hooks.geo(site); } catch (err) { geoError = `The postcode could not be looked up yet (${err.message}); the first sync tries again.`; }
@@ -91,12 +91,12 @@ const ABOUT = {
 // The home's providers: { connect: per-home providers (inverter, meter) as cards, each with the login
 // it asks for (no values), whether it is connected and how its last sync went; automatic: the shared
 // providers that need no login (weather, carbon, prices), with their status }.
-export function homeProviders(site) {
+export async function homeProviders(site) {
   const market = site.market_code ?? 'GB';
-  const conns = new Map(db.prepare('SELECT provider, external_ref, status, last_success_at, last_error, meta FROM connection WHERE site_id = ?').all(site.id).map((c) => [c.provider, c]));
+  const conns = new Map((await db.prepare('SELECT provider, external_ref, status, last_success_at, last_error, meta FROM connection WHERE site_id = ?').all(site.id)).map((c) => [c.provider, c]));
   const connect = [];
   for (const r of ROLES.filter((x) => x.scope === 'home')) {
-    for (const row of providersFor(db, market, r.role)) {
+    for (const row of await providersFor(db, market, r.role)) {
       const impl = adapterFor(row.adapter);
       const fields = FIELDS[row.adapter] ?? null;
       const reason = !row.enabled ? 'Coming soon: not switched on yet'
@@ -104,7 +104,7 @@ export function homeProviders(site) {
           : !licensed(row, impl) ? 'Coming soon: licence not confirmed'
             : row.owner !== 'core' ? 'Run by another service' : !fields ? 'Connected another way' : null;
       const conn = conns.get(impl?.connection ?? row.adapter);
-      const stored = conn ? hasSecret(site.id, impl?.connection ?? row.adapter) : false;
+      const stored = conn ? await hasSecret(site.id, impl?.connection ?? row.adapter) : false;
       connect.push({
         role: r.role, role_label: r.label, adapter: row.adapter, ...(ABOUT[row.adapter] ?? { name: row.adapter, what: '' }),
         available: !reason, reason, fields: reason ? [] : fields,
@@ -115,7 +115,7 @@ export function homeProviders(site) {
       });
     }
   }
-  const automatic = providerStatus(db, site).filter((p) => p.scope === 'shared' && p.adapter && p.status !== 'none')
+  const automatic = (await providerStatus(db, site)).filter((p) => p.scope === 'shared' && p.adapter && p.status !== 'none')
     .map((p) => ({ role: p.role, label: p.label, adapter: p.adapter, status: p.status, reason: p.reason ?? null }));
   return { secrets_ready: secretsReady(), connect, automatic };
 }
@@ -126,7 +126,7 @@ export function homeProviders(site) {
 // address }] }. Nothing is stored. 400 when the login is refused.
 export async function findPlants(user, site, { provider, credentials } = {}) {
   if (!user) throw fail(401, 'Sign in first');
-  const card = homeProviders(site).connect.find((c) => c.adapter === provider);
+  const card = (await homeProviders(site)).connect.find((c) => c.adapter === provider);
   if (!card?.available || !hooks.plants[provider]) throw fail(400, `${card?.name ?? provider} has no plants to pick`);
   const given = credentials && typeof credentials === 'object' ? credentials : {};
   const creds = {};
@@ -148,7 +148,7 @@ export async function findPlants(user, site, { provider, credentials } = {}) {
 // row made, and the home's first sync started (not awaited). The reply never echoes a secret.
 export async function connectHome(user, site, { provider, credentials } = {}) {
   if (!user) throw fail(401, 'Sign in first');
-  const card = homeProviders(site).connect.find((c) => c.adapter === provider);
+  const card = (await homeProviders(site)).connect.find((c) => c.adapter === provider);
   if (!card) throw fail(400, `${provider} is not a provider for this home`);
   if (!card.available) throw fail(400, `${card.name}: ${card.reason}`);
   const given = credentials && typeof credentials === 'object' && !Array.isArray(credentials) ? credentials : {};
@@ -171,15 +171,15 @@ export async function connectHome(user, site, { provider, credentials } = {}) {
   const other = provider === 'sunsynk' ? was?.plantId != null && String(was.plantId) !== String(creds.plantId ?? checked?.plantId)
     : was?.accountNumber != null && was.accountNumber !== creds.accountNumber;
   let replaced = null;
-  if (card.connected && card.can_disconnect && other) replaced = disconnectHome(user, site, provider);
-  putSecret(site.id, adapterFor(provider).connection, creds);
-  connectProvider(db, site, { provider, role: card.role, credentials: creds });
+  if (card.connected && card.can_disconnect && other) replaced = await disconnectHome(user, site, provider);
+  await putSecret(site.id, adapterFor(provider).connection, creds);
+  await connectProvider(db, site, { provider, role: card.role, credentials: creds });
   // Which account this is, to show on the card (no secret: the login name, plant or account).
   const account = provider === 'sunsynk' ? { login: creds.username, plantId: checked?.plantId ?? creds.plantId ?? null, plantName: checked?.plantName ?? null }
     : { accountNumber: creds.accountNumber, postcode: checked?.postcode ?? null };
-  const conn = db.prepare('SELECT meta FROM connection WHERE site_id = ? AND provider = ?').get(site.id, adapterFor(provider).connection);
-  db.prepare('UPDATE connection SET meta = ? WHERE site_id = ? AND provider = ?').run(JSON.stringify({ ...JSON.parse(conn?.meta || '{}'), account }), site.id, adapterFor(provider).connection);
-  Promise.resolve().then(() => hooks.startSync(site.id)).catch((err) => console.error(`first sync of home ${site.id}:`, err.message));
+  const conn = await db.prepare('SELECT meta FROM connection WHERE site_id = ? AND provider = ?').get(site.id, adapterFor(provider).connection);
+  await db.prepare('UPDATE connection SET meta = ? WHERE site_id = ? AND provider = ?').run(JSON.stringify({ ...JSON.parse(conn?.meta || '{}'), account }), site.id, adapterFor(provider).connection);
+  await Promise.resolve().then(async () => await hooks.startSync(site.id)).catch((err) => console.error(`first sync of home ${site.id}:`, err.message));
   const { password, apiKey, ...shown } = checked ?? {};
   return { connected: true, provider, role: card.role, checked: shown, syncing: true, replaced: replaced ? { withdrawn: replaced.withdrawn } : null };
 }
@@ -191,46 +191,46 @@ export async function connectHome(user, site, { provider, credentials } = {}) {
 // the history, with a fact_correction row saying why), its meters retired, and the details it gave
 // (panel size, battery size from the inverter) withdrawn. The home's built days are rebuilt without
 // it. Connecting again (any account) starts with the full first window, as a new provider.
-export function disconnectHome(user, site, provider) {
+export async function disconnectHome(user, site, provider) {
   if (!user) throw fail(401, 'Sign in first');
-  const card = homeProviders(site).connect.find((c) => c.adapter === provider);
+  const card = (await homeProviders(site)).connect.find((c) => c.adapter === provider);
   if (!card) throw fail(400, `${provider} is not a provider for this home`);
   if (!card.connected) throw fail(400, `${card.name} is not connected to this home`);
   if (!card.can_disconnect) throw fail(400, `${card.name} on this home is read from .env: change it there`);
   const connection = adapterFor(provider).connection;
   const mine = (col) => `(${col} = ? OR substr(${col}, 1, ?) = ?)`;   // the provider and its own sources (octopus_meter, octopus_kraken)
   const p = [provider, provider.length + 1, `${provider}_`];
-  const devices = db.prepare(`SELECT id FROM device WHERE site_id = ? AND ${mine('provider')}`).all(site.id, ...p).map((d) => d.id);
-  const series = db.prepare(`SELECT se.id FROM series se JOIN source so ON so.id = se.source_id WHERE
+  const devices = (await db.prepare(`SELECT id FROM device WHERE site_id = ? AND ${mine('provider')}`).all(site.id, ...p)).map((d) => d.id);
+  const series = (await db.prepare(`SELECT se.id FROM series se JOIN source so ON so.id = se.source_id WHERE
       (se.subject_kind = 'site' AND se.subject_id = ? AND ${mine('so.code')})
       OR (se.subject_kind = 'device' AND se.subject_id IN (${devices.map(() => '?').join(',') || "''"}))`)
-    .all(String(site.id), ...p, ...devices.map(String)).map((r) => r.id);
+      .all(String(site.id), ...p, ...devices.map(String))).map((r) => r.id);
   const now = Date.now();
   const reason = `${card.name} was disconnected from this home by its owner: the data it brought is withdrawn.`;
   let withdrawn = 0; let agreements = 0;
-  tx(() => {
-    for (const id of series) {
-      const n = db.prepare('UPDATE reading SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(now, id).changes
-        + db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(now, id).changes;
-      if (n) db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)').run(site.id, nowSec(), id, n, reason);
-      withdrawn += n;
-    }
-    // Its meters' tariff agreements go too (superseded, kept in history): pricing reads only current ones,
-    // so a retired meter would otherwise go on pricing the home with the old account's tariffs.
-    for (const id of devices) agreements += db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, id).changes;
-    deleteSecret(site.id, connection);
-    db.prepare('DELETE FROM connection WHERE site_id = ? AND provider = ?').run(site.id, connection);
-  });
-  for (const id of devices) retireDevice(id);
+  await tx(async () => {
+        for (const id of series) {
+          const n = (await db.prepare('UPDATE reading SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(now, id)).changes
+            + (await db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND superseded_at IS NULL').run(now, id)).changes;
+          if (n) await db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)').run(site.id, nowSec(), id, n, reason);
+          withdrawn += n;
+        }
+        // Its meters' tariff agreements go too (superseded, kept in history): pricing reads only current ones,
+        // so a retired meter would otherwise go on pricing the home with the old account's tariffs.
+        for (const id of devices) agreements += (await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, id)).changes;
+        await deleteSecret(site.id, connection);
+        await db.prepare('DELETE FROM connection WHERE site_id = ? AND provider = ?').run(site.id, connection);
+      });
+  for (const id of devices) await retireDevice(id);
   if (provider === 'sunsynk') {
-    for (const [attr, source] of [['pv_kwp', 'provider'], ['battery_kwh', 'provider'], ['battery_kwh', 'measured']]) withdrawAttribute(site.id, attr, source);
+    for (const [attr, source] of [['pv_kwp', 'provider'], ['battery_kwh', 'provider'], ['battery_kwh', 'measured']]) await withdrawAttribute(site.id, attr, source);
   }
   // Rebuild every day built: what the provider gave reaches back to the first one.
-  const first = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(site.id).d;
+  const first = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(site.id)).d;
   let rebuilt = [];
   if (first) {
-    markDirty(site.id, dayBounds(site.timezone, first)[0], nowSec(), `${provider} disconnected`);
-    rebuilt = processQueue().filter((r) => r.siteId === site.id);
+    await markDirty(site.id, dayBounds(site.timezone, first)[0], nowSec(), `${provider} disconnected`);
+    rebuilt = (await processQueue()).filter((r) => r.siteId === site.id);
   }
   return { disconnected: true, provider, withdrawn, agreements, devices: devices.length, rebuilt };
 }

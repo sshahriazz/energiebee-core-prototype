@@ -85,29 +85,29 @@ export async function processSource(site, creds, window) {
   const body = await fetchJson(req.url, req.opts);                                          // 1 fetch
   const reason = checkShape(body);                                                          // 2 validate
   if (reason) {
-    quarantine({ source: SOURCE.code, siteId: site.id, request: req.log, body, reason });
+    await quarantine({ source: SOURCE.code, siteId: site.id, request: req.log, body, reason });
     throw new Error(`${SOURCE.code}: unexpected shape (${reason}); quarantined`);
   }
-  const { rawId } = landRaw({ source: SOURCE.code, siteId: site.id, request: req.log, body }); // 3 land raw
+  const { rawId } = await landRaw({ source: SOURCE.code, siteId: site.id, request: req.log, body }); // 3 land raw
 
   let changed = 0;
   let earliest = Infinity;
   const parsed = parse(body, { site, window });                                             // 4 parse
   // An answer that parsed to nothing is an error the sync log shows, not a quiet success (a source that can legitimately be empty may skip this).
   if (!parsed.some((s) => s.rows.length)) throw new Error(`${SOURCE.code}: the answer had no rows`);
-  asWriter(SOURCE.code, () => {                                                             // writes may only touch this source's series
-    for (const s of parsed) {
-      const id = seriesId(s.subject.kind, String(s.subject.id), s.metric, SOURCE.code);
-      const n = s.kind === 'reading' ? putReadings(id, s.rows, rawId)                       // 5 write
-        : s.kind === 'interval' ? putIntervals(id, s.rows, rawId)
-          : putForecasts(id, s.issuedAt, s.rows, rawId);
-      if (n) {
-        changed += n;
-        earliest = Math.min(earliest, ...s.rows.map((r) => r.ts ?? r.start));
-      }
-    }
-  });
-  if (changed) markDirty(site.id, earliest, nowSec(), `new ${SOURCE.code} data`);          // 6 mark dirty: the build rebuilds from there
+  await asWriter(SOURCE.code, async () => {                                                             // writes may only touch this source's series
+        for (const s of parsed) {
+          const id = await seriesId(s.subject.kind, String(s.subject.id), s.metric, SOURCE.code);
+          const n = s.kind === 'reading' ? await putReadings(id, s.rows, rawId)                       // 5 write
+            : s.kind === 'interval' ? await putIntervals(id, s.rows, rawId)
+              : await putForecasts(id, s.issuedAt, s.rows, rawId);
+          if (n) {
+            changed += n;
+            earliest = Math.min(earliest, ...s.rows.map((r) => r.ts ?? r.start));
+          }
+        }
+      });
+  if (changed) await markDirty(site.id, earliest, nowSec(), `new ${SOURCE.code} data`);          // 6 mark dirty: the build rebuilds from there
   return { facts: changed };
 }
 

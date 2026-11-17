@@ -56,12 +56,12 @@ async function attempt(url, init, timeoutMs) {
 
 const describe = (method, url) => `${method} ${new URL(url).host}${new URL(url).pathname}`;
 
-export function fetchJson(url, opts = {}) {
+export async function fetchJson(url, opts = {}) {
   const cache = sharedResponses.getStore();
   const { method = 'GET', headers = {}, body } = opts;
-  if (!cache || Object.keys(headers).some((h) => h.toLowerCase() === 'authorization')) return fetchJsonOnce(url, opts);
+  if (!cache || Object.keys(headers).some((h) => h.toLowerCase() === 'authorization')) return await fetchJsonOnce(url, opts);
   const key = JSON.stringify([method, url, body === undefined ? null : body]);
-  if (!cache.has(key)) cache.set(key, fetchJsonOnce(url, opts).catch((err) => { cache.delete(key); throw err; }));
+  if (!cache.has(key)) cache.set(key, await fetchJsonOnce(url, opts).catch((err) => { cache.delete(key); throw err; }));
   return cache.get(key);
 }
 

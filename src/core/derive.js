@@ -9,11 +9,11 @@ import { setAttribute } from './attributes.js';
 // Stored on the Sunsynk connection next to the configured value and the battery's
 // own Ah × V reading, so all three can be compared. The configured value (from the
 // installer, in .env) stays the one the core uses when it is set.
-export function measureBatteryCapacity(siteId, days = 30) {
-  const sid = (m) => seriesId('site', siteId, m, 'sunsynk_5min');
+export async function measureBatteryCapacity(siteId, days = 30) {
+  const sid = async (m) => await seriesId('site', siteId, m, 'sunsynk_5min');
   const from = nowSec() - days * 86400;
-  const read = (m) => new Map(db.prepare('SELECT ts, value FROM reading WHERE series_id = ? AND superseded_at IS NULL AND ts >= ?').all(sid(m), from).map((r) => [r.ts, r.value]));
-  const soc = read('battery_soc_pct'); const dis = read('battery_discharge_w'); const chg = read('battery_charge_w');
+  const read = async (m) => new Map((await db.prepare('SELECT ts, value FROM reading WHERE series_id = ? AND superseded_at IS NULL AND ts >= ?').all(await sid(m), from)).map((r) => [r.ts, r.value]));
+  const soc = await read('battery_soc_pct'); const dis = await read('battery_discharge_w'); const chg = await read('battery_charge_w');
   const ts = [...soc.keys()].sort((a, b) => a - b);
   let kwh = 0; let points = 0; let steps = 0;
   for (let i = 1; i < ts.length; i++) {
@@ -24,16 +24,16 @@ export function measureBatteryCapacity(siteId, days = 30) {
   }
   // Charge level is reported in whole percent, so a large total drop is needed for a stable figure.
   const measured = points >= 100 ? { kwhPer100: Math.round((kwh / points) * 1000) / 10, energyKwh: Math.round(kwh * 10) / 10, socPoints: points, steps, days, at: nowSec() } : null;
-  const conn = db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(siteId);
+  const conn = await db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(siteId);
   if (!conn) return null;
   const meta = JSON.parse(conn.meta || '{}');
   meta.batteryMeasured = measured ?? { reason: `only ${points}% of discharge-only charge drop in ${days} days; needs 100%` };
-  db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'sunsynk'").run(JSON.stringify(meta), siteId);
+  await db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'sunsynk'").run(JSON.stringify(meta), siteId);
   // The core mostly uses capacity to turn charge level (%) into kWh, so the measured kWh per
   // 1% is the right figure when the installer's value is not configured. The battery's own
   // Ah × voltage reading drifts with the voltage at the moment it is read (10.3–10.7 kWh seen).
   // Recorded as the 'measured' source; an installer value from .env still takes priority.
-  if (measured) setAttribute(siteId, 'battery_kwh', measured.kwhPer100, 'measured', `${measured.energyKwh} kWh discharged over ${measured.socPoints} points of charge drop, ${days} days`);
+  if (measured) await setAttribute(siteId, 'battery_kwh', measured.kwhPer100, 'measured', `${measured.energyKwh} kWh discharged over ${measured.socPoints} points of charge drop, ${days} days`);
   return meta.batteryMeasured;
 }
 
@@ -44,11 +44,11 @@ export function measureBatteryCapacity(siteId, days = 30) {
 // Coarse grid first, then a finer grid around the best. Returns the full ranking so the
 // strength of the result can be judged (a flat ranking means the data cannot tell).
 export async function estimatePanelAngles(siteId, { fetchJson }) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (site?.lat == null) return { reason: 'no coordinates' };
   const now = nowSec();
-  const rows = db.prepare('SELECT slot_start, dur_s, solar FROM site_hh WHERE site_id = ? AND slot_start >= ? AND state != ? AND solar IS NOT NULL')
-    .all(siteId, now - 14 * 86400, 'missing');
+  const rows = await db.prepare('SELECT slot_start, dur_s, solar FROM site_hh WHERE site_id = ? AND slot_start >= ? AND state != ? AND solar IS NOT NULL')
+      .all(siteId, now - 14 * 86400, 'missing');
   // Hourly actual solar, keyed by the end of the hour (Open-Meteo's irradiance at t covers [t − 1h, t),
   // asked in GMT, so its hours are UTC hours). Each slot is the home's own length from local midnight:
   // its energy goes to the UTC hours it overlaps, by overlap. In a whole-hour zone every 15, 30 or

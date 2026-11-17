@@ -7,6 +7,6 @@
 import { runRetention, retentionSummary } from '../src/core/maintenance.js';
 
 const apply = process.argv.includes('--apply');
-const report = runRetention({ dryRun: !apply });
+const report = await runRetention({ dryRun: !apply });
 console.log(JSON.stringify(report, null, 1));
 console.log(retentionSummary(report));

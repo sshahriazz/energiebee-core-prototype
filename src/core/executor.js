@@ -17,8 +17,8 @@ import { readReported, checkEffect, STANDARD_POINTS, DEFAULT_MODES } from './con
 
 const LATE_WINDOW_MS = 24 * 3600 * 1000;   // how long after expiry a sent command is still checked for having been applied
 
-function reportedFor(device, desired, now) {
-  const r = readReported(device.id, desired, now);
+async function reportedFor(device, desired, now) {
+  const r = await readReported(device.id, desired, now);
   const mapped = Object.fromEntries(Object.entries(desired).filter(([k]) => r.compared.includes(k)));
   return { ...r, desiredMapped: mapped };
 }
@@ -27,8 +27,8 @@ function reportedFor(device, desired, now) {
 // handles(device) -> boolean so one vendor's driver never touches another vendor's device.
 export async function runControlCycle(siteId, { driver, now = Date.now(), maxAttempts = 3, settleS = 0, devices: only = null } = {}) {
   if (!driver?.read || !driver?.send || !driver?.source) throw new Error('a driver needs source, read(device) and send(device, desired)');
-  const out = { expired: expireStale({ now }).ids, devices: [] };
-  const candidates = db.prepare(`SELECT DISTINCT d.* FROM device d JOIN command c ON c.device_id = d.id
+  const out = { expired: (await expireStale({ now })).ids, devices: [] };
+  const candidates = await db.prepare(`SELECT DISTINCT d.* FROM device d JOIN command c ON c.device_id = d.id
     WHERE d.site_id = ? AND (c.status IN ('pending', 'sent')
       OR (c.status = 'expired' AND c.sent_at IS NOT NULL AND c.applied_late_at IS NULL AND c.valid_until * 1000 > ?)
       OR (c.status = 'acked' AND c.verify_status IS NULL))`).all(siteId, now - LATE_WINDOW_MS);
@@ -42,65 +42,65 @@ export async function runControlCycle(siteId, { driver, now = Date.now(), maxAtt
     const ing = ingestObservations(siteId, driver.source, obs, null, { deviceId: device.id });
     step.rejected = ing.rejected;
     for (const ack of ing.acks) {
-      const c = ack.commandId != null ? getCommand(ack.commandId) : null;
-      if (c) { recordAckRef(c.id, ack.ref, { now }); step.did.push(`ack_ref ${c.id}`); }
+      const c = ack.commandId != null ? await getCommand(ack.commandId) : null;
+      if (c) { await recordAckRef(c.id, ack.ref, { now }); step.did.push(`ack_ref ${c.id}`); }
     }
 
     // 2. The open command.
-    const open = db.prepare("SELECT id FROM command WHERE device_id = ? AND status IN ('pending', 'sent')").get(device.id);
+    const open = await db.prepare("SELECT id FROM command WHERE device_id = ? AND status IN ('pending', 'sent')").get(device.id);
     if (open) {
-      const c = getCommand(open.id);
-      const rb = reportedFor(device, c.desired, now);
+      const c = await getCommand(open.id);
+      const rb = await reportedFor(device, c.desired, now);
       if (!rb.compared.length) {
-        markFailed(c.id, 'the device has no state point that reports this command, so it cannot be read back', { now });
+        await markFailed(c.id, 'the device has no state point that reports this command, so it cannot be read back', { now });
         step.did.push(`failed ${c.id} (no read-back)`);
       } else if (c.status === 'pending') {
         if (!Object.keys(diffState(rb.desiredMapped, rb.reported)).length && !rb.missing.length) {
-          markSkipped(c.id, { reported: rb.reported, now, compare: rb.compared });
+          await markSkipped(c.id, { reported: rb.reported, now, compare: rb.compared });
           step.did.push(`skipped_unchanged ${c.id}`);
         } else if (now > c.valid_until * 1000) {
-          expireStale({ now }); step.did.push(`expired ${c.id}`);
+          await expireStale({ now }); step.did.push(`expired ${c.id}`);
         } else {
           const res = await driver.send(device, c.desired, { now });
           if (!res?.accepted) {
-            const r = markFailed(c.id, res?.error ?? 'the device did not accept the write', { retry: true, maxAttempts, now });
+            const r = await markFailed(c.id, res?.error ?? 'the device did not accept the write', { retry: true, maxAttempts, now });
             step.did.push(`send_refused ${c.id} -> ${r.status}`);
           } else {
-            markSent(c.id, { now, registerWrites: res.registerWrites ?? null });
-            if (res.ackRef != null) recordAckRef(c.id, res.ackRef, { now });
+            await markSent(c.id, { now, registerWrites: res.registerWrites ?? null });
+            if (res.ackRef != null) await recordAckRef(c.id, res.ackRef, { now });
             step.did.push(`sent ${c.id}`);
           }
         }
       } else if (c.status === 'sent') {
         const diff = diffState(rb.desiredMapped, rb.reported);
         if (!Object.keys(diff).length && !rb.missing.length) {
-          markAcked(c.id, { reported: rb.reported, now, compare: rb.compared });
-          if (rb.unverifiable.length) logObserved(c.id, 'unverifiable_fields', { now, detail: { fields: rb.unverifiable } });
+          await markAcked(c.id, { reported: rb.reported, now, compare: rb.compared });
+          if (rb.unverifiable.length) await logObserved(c.id, 'unverifiable_fields', { now, detail: { fields: rb.unverifiable } });
           step.did.push(`acked ${c.id}`);
         } else if (now - c.sent_at < settleS * 1000) {
           step.did.push(`waiting ${c.id}`);
         } else {
-          markAcked(c.id, { reported: rb.reported, now, compare: rb.compared });   // keeps reported and the diff on the row; stays sent
-          const r = markFailed(c.id, `read-back differs: ${Object.keys(diff).join(', ') || rb.missing.join(', ')}`, { retry: true, maxAttempts, now });
+          await markAcked(c.id, { reported: rb.reported, now, compare: rb.compared });   // keeps reported and the diff on the row; stays sent
+          const r = await markFailed(c.id, `read-back differs: ${Object.keys(diff).join(', ') || rb.missing.join(', ')}`, { retry: true, maxAttempts, now });
           step.did.push(`readback_mismatch ${c.id} -> ${r.status}`);
         }
       }
     }
 
     // 3. Expired but applied: the device runs a command whose time had passed.
-    for (const e of db.prepare("SELECT id FROM command WHERE device_id = ? AND status = 'expired' AND sent_at IS NOT NULL AND applied_late_at IS NULL AND valid_until * 1000 > ?").all(device.id, now - LATE_WINDOW_MS)) {
-      const c = getCommand(e.id);
-      const rb = reportedFor(device, c.desired, now);
+    for (const e of await db.prepare("SELECT id FROM command WHERE device_id = ? AND status = 'expired' AND sent_at IS NOT NULL AND applied_late_at IS NULL AND valid_until * 1000 > ?").all(device.id, now - LATE_WINDOW_MS)) {
+      const c = await getCommand(e.id);
+      const rb = await reportedFor(device, c.desired, now);
       if (!rb.compared.length || rb.missing.length) continue;
-      const r = markAppliedLate(c.id, { reported: rb.reported, now, compare: rb.compared });
+      const r = await markAppliedLate(c.id, { reported: rb.reported, now, compare: rb.compared });
       if (r.appliedLate) step.did.push(`applied_late ${c.id}`);
     }
 
     // 4. Effect check of acked commands.
-    for (const a of db.prepare("SELECT id FROM command WHERE device_id = ? AND status = 'acked' AND verify_status IS NULL").all(device.id)) {
-      const c = getCommand(a.id);
-      const e = checkEffect(c, now);
-      if (e.status === 'verified' || e.status === 'not_verified') { setVerify(c.id, e.status, e.evidence, { now }); step.did.push(`${e.status} ${c.id}`); }
+    for (const a of await db.prepare("SELECT id FROM command WHERE device_id = ? AND status = 'acked' AND verify_status IS NULL").all(device.id)) {
+      const c = await getCommand(a.id);
+      const e = await checkEffect(c, now);
+      if (e.status === 'verified' || e.status === 'not_verified') { await setVerify(c.id, e.status, e.evidence, { now }); step.did.push(`${e.status} ${c.id}`); }
     }
   }
   return out;
@@ -135,7 +135,7 @@ export function createSimulatedDriver({ source, modes = DEFAULT_MODES, initial =
     },
     minuteOfDay: (ts, tz) => { const p = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ts * 1000)); return Number(p.find((x) => x.type === 'hour').value) * 60 + Number(p.find((x) => x.type === 'minute').value); },
     async read(device, { now }) {
-      const tz = db.prepare('SELECT timezone FROM site WHERE id = ?').get(device.site_id).timezone;
+      const tz = (await db.prepare('SELECT timezone FROM site WHERE id = ?').get(device.site_id)).timezone;
       for (const p of pending.filter((x) => x.at <= now)) { sim.apply(p.desired, tz); pending.splice(pending.indexOf(p), 1); }
       const ts = Math.floor(now / 1000);
       const obs = STANDARD_POINTS.map(([point]) => ({ kind: 'state', point, ts, value: settings[point === 'work_mode' ? 'work_mode' : point] }));
@@ -146,7 +146,7 @@ export function createSimulatedDriver({ source, modes = DEFAULT_MODES, initial =
     async send(device, desired, { now }) {
       sim.writes.push({ at: now, desired });
       if (sim.options.refuseNext > 0) { sim.options.refuseNext--; return { accepted: false, error: 'device busy' }; }
-      const tz = db.prepare('SELECT timezone FROM site WHERE id = ?').get(device.site_id).timezone;
+      const tz = (await db.prepare('SELECT timezone FROM site WHERE id = ?').get(device.site_id)).timezone;
       if (!sim.options.ignoreWrites) {
         if (sim.options.applyAfterMs > 0) pending.push({ at: now + sim.options.applyAfterMs, desired }); else sim.apply(desired, tz);
       }

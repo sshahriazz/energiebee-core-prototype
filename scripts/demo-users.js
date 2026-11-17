@@ -28,10 +28,10 @@ process.env.DB_FILE = out;
 const { db, closeDb } = await import('../src/db/db.js');
 const { createUser, giveHome, listUsers } = await import('../src/core/users.js');
 
-const home = (where) => db.prepare(`SELECT id, name FROM site WHERE ${where} ORDER BY id LIMIT 1`).get();
-const gb = home("is_demo = 0 AND IFNULL(market_code, 'GB') = 'GB'");
-const fr = home("is_demo = 1 AND country = 'FR'");
-const nl = home("is_demo = 1 AND country = 'NL'");
+const home = async (where) => await db.prepare(`SELECT id, name FROM site WHERE ${where} ORDER BY id LIMIT 1`).get();
+const gb = await home("is_demo = 0 AND IFNULL(market_code, 'GB') = 'GB'");
+const fr = await home("is_demo = 1 AND country = 'FR'");
+const nl = await home("is_demo = 1 AND country = 'NL'");
 if (!gb || !fr || !nl) { console.error('expected the GB, FR and NL homes of demo-ui.js'); process.exit(1); }
 
 // One user per scenario. Fictional people; no PIN (picked with the switch; scripts/set-pin.js gives one).
@@ -43,17 +43,17 @@ const USERS = [
   { name: 'Nora Newman', username: 'nora', role: 'owner', homes: [], note: 'just signed up: no home yet' },
   { name: 'Admin', username: 'admin', role: 'admin', homes: [], note: 'sees every home' },
 ];
-db.exec('DELETE FROM user_site; DELETE FROM app_user;');
+await db.exec('DELETE FROM user_site; DELETE FROM app_user;');
 for (const u of USERS) {
-  const row = createUser(u);
-  for (const h of u.homes) giveHome(row.id, h.id);
+  const row = await createUser(u);
+  for (const h of u.homes) await giveHome(row.id, h.id);
 }
 
 console.log('\nUsers (switch between them with "Viewing as" in the top bar):');
-const names = new Map(db.prepare('SELECT id, name FROM site').all().map((s) => [s.id, s.name]));
-for (const u of listUsers()) {
-  const homes = db.prepare('SELECT site_id FROM user_site WHERE user_id = ? ORDER BY site_id').all(u.id).map((r) => names.get(r.site_id));
+const names = new Map((await db.prepare('SELECT id, name FROM site').all()).map((s) => [s.id, s.name]));
+for (const u of await listUsers()) {
+  const homes = (await db.prepare('SELECT site_id FROM user_site WHERE user_id = ? ORDER BY site_id').all(u.id)).map((r) => names.get(r.site_id));
   console.log(`  user ${u.id}  ${u.name.padEnd(15)} ${u.role.padEnd(9)} ${u.role === 'admin' ? 'every home' : homes.join(', ') || '(no home)'}  — ${u.note}`);
 }
-closeDb();
+await closeDb();
 console.log(`\nStart it with: npm run demo:start   (http://localhost:4101; DB_FILE=${path.relative(root, out)})`);

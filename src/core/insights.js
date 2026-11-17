@@ -7,15 +7,15 @@ import { CURRENCIES } from './money.js';
 
 const kwh = (v) => `${v.toFixed(1)} kWh`;
 
-export function insightsFor(siteId) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function insightsFor(siteId) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   // Money in the home's currency: amounts are minor units (pence, cents), unit prices per kWh in the minor unit.
   const cu = CURRENCIES[site.currency] ?? CURRENCIES.GBP;
   const gbp = (p) => `${cu.symbol}${(p / 10 ** cu.minorExponent).toFixed(cu.minorExponent)}`;
   const mu = { GBP: 'p', EUR: 'c' }[cu.code] ?? '';
   const tz = site.timezone;
   const today = localDate(tz, nowSec());
-  const days = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? ORDER BY local_date').all(siteId, addDays(today, -30));
+  const days = await db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? ORDER BY local_date').all(siteId, addDays(today, -30));
   const t = days.find((d) => d.local_date === today);
   const y = days.find((d) => d.local_date === addDays(today, -1));
   const week = days.filter((d) => d.local_date >= addDays(today, -7) && d.local_date < today);
@@ -36,8 +36,8 @@ export function insightsFor(siteId) {
       `About ${gbp((s / week.length) * 365)} a year at this rate.`, ['site_day.saving', 'site_day.total_cost']);
   }
   if (y && y.grid_export > 0.5 && y.home > 0) {
-    const hh = db.prepare('SELECT AVG(import_rate_ex * (1 + import_vat)) AS imp, AVG(export_rate) AS exp FROM site_hh WHERE site_id = ? AND local_date = ? AND solar_to_grid > 0.01')
-      .get(siteId, y.local_date);
+    const hh = await db.prepare('SELECT AVG(import_rate_ex * (1 + import_vat)) AS imp, AVG(export_rate) AS exp FROM site_hh WHERE site_id = ? AND local_date = ? AND solar_to_grid > 0.01')
+          .get(siteId, y.local_date);
     if (hh?.imp != null && hh?.exp != null && hh.imp > hh.exp) {
       add('export', 'tip', `${kwh(y.grid_export)} exported yesterday at ${hh.exp.toFixed(1)}${mu}`,
         `Using it at home instead was worth ${hh.imp.toFixed(1)}${mu}/kWh at those times.`,
@@ -46,7 +46,7 @@ export function insightsFor(siteId) {
   }
   if (t && t.battery_to_home > 0.2 && t.battery_to_home_cost != null) {
     const paid = t.battery_to_home_cost / t.battery_to_home;
-    const avoided = db.prepare('SELECT SUM(battery_to_home * import_rate_ex * (1 + import_vat)) AS v FROM site_hh WHERE site_id = ? AND local_date = ?').get(siteId, today).v;
+    const avoided = (await db.prepare('SELECT SUM(battery_to_home * import_rate_ex * (1 + import_vat)) AS v FROM site_hh WHERE site_id = ? AND local_date = ?').get(siteId, today)).v;
     if (avoided != null) {
       add('battery', 'good', `Battery covered ${kwh(t.battery_to_home)} today`,
         `That energy cost ${paid.toFixed(1)}${mu}/kWh to store (first in, first out) and replaced grid power worth ${gbp(avoided)}.`,
@@ -65,7 +65,7 @@ export function insightsFor(siteId) {
     }
   }
   try {
-    const f = forecastSite(siteId, 48);
+    const f = await forecastSite(siteId, 48);
     if (f.cheapestWindow) {
       const s = zonedParts(tz, f.cheapestWindow.start);
       const e = zonedParts(tz, f.cheapestWindow.end);
@@ -95,7 +95,7 @@ export function insightsFor(siteId) {
     add('data', 'warn', `${prov.length} past day(s) still provisional`,
       'Smart meter readings have not arrived yet, so the inverter clamp is used for now. These days will be rebuilt when they do.', ['site_day.slots_provisional']);
   }
-  const warn = db.prepare("SELECT check_code, COUNT(*) AS n FROM check_result WHERE site_id = ? AND status IN ('warn','fail') AND local_date >= ? GROUP BY check_code").all(siteId, addDays(today, -7));
+  const warn = await db.prepare("SELECT check_code, COUNT(*) AS n FROM check_result WHERE site_id = ? AND status IN ('warn','fail') AND local_date >= ? GROUP BY check_code").all(siteId, addDays(today, -7));
   for (const w of warn) {
     if (w.check_code === 'rate_coverage') add('data', 'warn', `Prices missing on ${w.n} day(s)`, 'Some half-hours have no tariff price, so their cost is unknown.', ['check_result']);
     if (w.check_code === 'meter_vs_ct') add('data', 'warn', `Meter and inverter disagree on ${w.n} day(s)`, 'The smart meter is used for cost; the inverter clamp may need checking.', ['check_result']);

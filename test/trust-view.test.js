@@ -5,17 +5,17 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
 if (hasLive) useDb({ snapshot: true });
-const m = hasLive ? { ...(await import('../src/db/db.js')), ...(await import('../src/core/build.js')), ...(await import('../src/core/time.js')) } : {};
+const m = { ...(await import('../src/db/db.js')), ...(await import('../src/core/build.js')), ...(await import('../src/core/time.js')) };
 const SITE = 1;
-const site = () => m.db.prepare('SELECT * FROM site WHERE id = ?').get(SITE);
-const firstDay = () => m.db.prepare('SELECT MIN(local_date) d FROM site_day WHERE site_id = ?').get(SITE).d;
-const today = () => m.localDate(site().timezone, m.nowSec());
-const fullBuild = (reason) => m.buildSite(SITE, firstDay(), today(), { reason });
-test('trust view: one cell per half-hour per feed, states add up, and every day balances', { skip }, async () => {
+const site = async () => await m.db.prepare('SELECT * FROM site WHERE id = ?').get(SITE);
+const firstDay = async () => (await m.db.prepare('SELECT MIN(local_date) d FROM site_day WHERE site_id = ?').get(SITE)).d;
+const today = async () => m.localDate((await site()).timezone, m.nowSec());
+const fullBuild = async (reason) => await m.buildSite(SITE, await firstDay(), await today(), { reason });
+await test('trust view: one cell per half-hour per feed, states add up, and every day balances', { skip }, async () => {
   const { trustFor } = await import('../src/core/trust.js');
-  fullBuild('test');
-  const to = today(); const from = m.addDays(to, -6);
-  const t = trustFor(SITE, from, to);
+  await fullBuild('test');
+  const to = await today(); const from = m.addDays(to, -6);
+  const t = await trustFor(SITE, from, to);
   for (const f of t.feeds) assert.equal(f.cells.length, t.slots, f.key);
   const h = t.headline;
   assert.equal(h.final + h.provisional + h.missing, h.halfHours);

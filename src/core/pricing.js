@@ -49,32 +49,32 @@ const rateTies = (a = '') => (knownAtMs() == null ? `${a}tariff_id, ${a}componen
 
 // siteRow: the home as the caller reads it (build.js passes it as known at its asOf, H5); null reads
 // today's row. Inside withKnownAt, each tariff's pricing columns are read as known then (tariff_version).
-export function loadPricing(siteId, fromTs, toTs, siteRow = null) {
+export async function loadPricing(siteId, fromTs, toTs, siteRow = null) {
   // In meter order, then by start: the order the reads always gave (device scan, then
   // agreement_current), stated so that an index or new planner statistics cannot change it.
-  const agreements = db.prepare(
-    `SELECT a.*, d.kind, t.tariff_code, t.fuel, t.direction, t.structure, t.name, t.currency, t.kind AS tariff_kind, t.origin AS tariff_origin, t.taxes_in_price
+  const agreements = await db.prepare(
+      `SELECT a.*, d.kind, t.tariff_code, t.fuel, t.direction, t.structure, t.name, t.currency, t.kind AS tariff_kind, t.origin AS tariff_origin, t.taxes_in_price
      FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
      WHERE a.site_id = ? AND ${inForce('a')} AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?
      ORDER BY a.device_id, a.valid_from, a.id`).all(siteId, toTs, fromTs);
-  if (knownAtMs() != null) for (const a of agreements) Object.assign(a, tariffFlagsAt(a.tariff_id, knownAtMs()));
+  if (knownAtMs() != null) for (const a of agreements) Object.assign(a, await tariffFlagsAt(a.tariff_id, knownAtMs()));
   const tariffIds = [...new Set(agreements.map((a) => a.tariff_id))];
-  const rates = tariffIds.length ? db.prepare(
-    `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})
+  const rates = tariffIds.length ? await db.prepare(
+      `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})
        AND ${inForce()} AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
        AND (site_id IS NULL OR site_id = ?)
      ORDER BY valid_from, ${rateTies()}`).all(...tariffIds, toTs, fromTs - 86400 * 2, siteId) : [];
-  const vat = db.prepare('SELECT * FROM vat_rate').all();
+  const vat = await db.prepare('SELECT * FROM vat_rate').all();
   // Smart-charge dispatches, read from a day earlier so the daily allowance counts from its start.
   // The lower bound on start_ts (the series' longest dispatch, series.max_span_s) leaves no row out;
   // without a recorded span there is no bound.
-  const dispatches = db.prepare(
-    `SELECT f.start_ts, f.end_ts FROM interval_fact f JOIN series s ON s.id = f.series_id
+  const dispatches = await db.prepare(
+      `SELECT f.start_ts, f.end_ts FROM interval_fact f JOIN series s ON s.id = f.series_id
      JOIN source src ON src.id = s.source_id JOIN metric m ON m.id = s.metric_id
      WHERE s.subject_kind = 'site' AND s.subject_id = ? AND src.code = 'octopus_kraken' AND m.code = 'ev_charge_kwh'
-       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ?${spanColumn() ? ' AND f.start_ts >= ? - IFNULL(s.max_span_s, 9000000000)' : ''} ORDER BY f.start_ts`)
-    .all(String(siteId), fromTs - 86400, toTs, ...(spanColumn() ? [fromTs - 86400] : []));
-  const site = siteRow ?? db.prepare('SELECT timezone, gsp_region, country, currency, is_demo, contracted_kva, contracted_kva_origin FROM site WHERE id = ?').get(siteId);
+       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ?${await spanColumn() ? ' AND f.start_ts >= ? - IFNULL(s.max_span_s, 9000000000)' : ''} ORDER BY f.start_ts`)
+      .all(String(siteId), fromTs - 86400, toTs, ...(await spanColumn() ? [fromTs - 86400] : []));
+  const site = siteRow ?? await db.prepare('SELECT timezone, gsp_region, country, currency, is_demo, contracted_kva, contracted_kva_origin FROM site WHERE id = ?').get(siteId);
   const tz = site?.timezone || 'Europe/London';
   const country = site?.country ?? null;
   const currency = site?.currency ?? null;
@@ -84,7 +84,7 @@ export function loadPricing(siteId, fromTs, toTs, siteRow = null) {
     }
   }
   // Tax rules of the home's country, as known at the moment being built (versioned like facts).
-  const taxRules = country ? db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND ${inForce()}`).all(country) : [];
+  const taxRules = country ? await db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND ${inForce()}`).all(country) : [];
   // How the home pays each tariff it is on (delta 080): a source that publishes one price per payment
   // method (Tariffscanner) is priced at the home's own method.
   const payment = new Map(agreements.filter((a) => a.payment_method).map((a) => [a.tariff_id, a.payment_method]));
@@ -93,7 +93,7 @@ export function loadPricing(siteId, fromTs, toTs, siteRow = null) {
   const deviceIds = [...new Set(agreements.map((a) => a.device_id))];
   const meterWindows = new Map();
   if (deviceIds.length) {
-    for (const w of db.prepare(`SELECT * FROM register_window WHERE device_id IN (${deviceIds.map(() => '?').join(',')}) AND calendar IS NULL AND ${inForce()}
+    for (const w of await db.prepare(`SELECT * FROM register_window WHERE device_id IN (${deviceIds.map(() => '?').join(',')}) AND calendar IS NULL AND ${inForce()}
         ORDER BY device_id, start_min, id`).all(...deviceIds)) {
       (meterWindows.get(w.device_id) ?? meterWindows.set(w.device_id, []).get(w.device_id)).push(w);
     }
@@ -103,7 +103,7 @@ export function loadPricing(siteId, fromTs, toTs, siteRow = null) {
     hasFixed: rates.some((r) => r.component === 'fixed' || r.component === 'capacity'),
     capacityKva: site?.contracted_kva ?? null, capacityOrigin: site?.contracted_kva_origin ?? null,
     shapes: new Map(),
-    iogWindow: learnIogWindow(site?.gsp_region, tz), dispatchAllowed: dispatchAllowance(dispatches, tz),
+    iogWindow: await learnIogWindow(site?.gsp_region, tz), dispatchAllowed: dispatchAllowance(dispatches, tz),
   };
 }
 
@@ -137,9 +137,9 @@ export function dispatchAllowance(dispatches, tz) {
 // Intelligent Octopus Go tariffs that publish day/night prices give no times. Octopus's
 // time-stamped IOG price lists for the same region do: the cheaper rows mark the off-peak
 // window (local time). It is read from those rows, never assumed.
-export function learnIogWindow(region, tz) {
+export async function learnIogWindow(region, tz) {
   if (!region) return null;
-  const rows = db.prepare(`SELECT r.tariff_id, r.valid_from, r.valid_to, r.price_ex_vat, t.tariff_code FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+  const rows = await db.prepare(`SELECT r.tariff_id, r.valid_from, r.valid_to, r.price_ex_vat, t.tariff_code FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
     WHERE t.structure = 'iog' AND t.region = ? AND r.component = 'unit' AND r.register = 'single'
       AND ${inForce('r')} AND r.valid_to IS NOT NULL ORDER BY r.valid_from DESC, ${rateTies('r.')} LIMIT 500`).all(region);
   if (!rows.length) return null;

@@ -38,20 +38,20 @@ Object.assign(m.FR, { to: FRd, change: addDays(FRd, -2), from: addDays(FRd, -3) 
 m.FR.tempo.colours = Object.fromEntries([addDays(FRd, -2), addDays(FRd, -1), FRd].map((d, i) => [d, ['blue', 'white', 'red'][i]]));
 Object.assign(m.NL, { to: NLd, change: addDays(NLd, -1), from: addDays(NLd, -3) });
 
-const fr = m.frHome();
-const nl = m.nlHome();
+const fr = await m.frHome();
+const nl = await m.nlHome();
 // Synthetic readings are generated for whole days; drop what lies in the future so nothing is "live" ahead of now.
 for (const id of [fr.site.id, nl.site.id]) {
-  const series = db.prepare(`SELECT id FROM series WHERE (subject_kind = 'site' AND subject_id = ?) OR (subject_kind = 'device' AND subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).all(String(id), id).map((r) => r.id);
+  const series = (await db.prepare(`SELECT id FROM series WHERE (subject_kind = 'site' AND subject_id = ?) OR (subject_kind = 'device' AND subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).all(String(id), id)).map((r) => r.id);
   for (const sid of series) {
-    db.prepare('DELETE FROM reading WHERE series_id = ? AND ts > ?').run(sid, now);
-    db.prepare('DELETE FROM interval_fact WHERE series_id = ? AND end_ts > ?').run(sid, now);
+    await db.prepare('DELETE FROM reading WHERE series_id = ? AND ts > ?').run(sid, now);
+    await db.prepare('DELETE FROM interval_fact WHERE series_id = ? AND end_ts > ?').run(sid, now);
   }
 }
-buildSite(fr.site.id, m.FR.from, FRd, { reason: 'synthetic ui demo' });
-buildSite(nl.site.id, m.NL.from, NLd, { reason: 'synthetic ui demo' });
+await buildSite(fr.site.id, m.FR.from, FRd, { reason: 'synthetic ui demo' });
+await buildSite(nl.site.id, m.NL.from, NLd, { reason: 'synthetic ui demo' });
 
-const real = db.prepare('SELECT id, name, currency, slot_s FROM site WHERE id = 1').get();
+const real = await db.prepare('SELECT id, name, currency, slot_s FROM site WHERE id = 1').get();
 console.log(`UI demo database: ${out}`);
 console.log(`  site ${real.id}  ${real.name}  ${real.currency}  slot ${real.slot_s}s  REAL data (copy of data/core.db)`);
 console.log(`  site ${fr.site.id}  Synthetic FR home  EUR  slot 1800s  SYNTHETIC ${m.FR.from}..${FRd}`);

@@ -17,9 +17,9 @@ export const registeredDrivers = () => drivers.slice();
 // One pass. Returns [{ siteId, driver, result | error }] for the homes and drivers it ran.
 export async function controlTick({ now = Date.now(), driversList = drivers } = {}) {
   if (!driversList.length) return [];
-  const sites = db.prepare(`SELECT DISTINCT d.site_id FROM command c JOIN device d ON d.id = c.device_id
+  const sites = (await db.prepare(`SELECT DISTINCT d.site_id FROM command c JOIN device d ON d.id = c.device_id
     WHERE c.status IN ('pending', 'sent') OR (c.status = 'expired' AND c.sent_at IS NOT NULL AND c.applied_late_at IS NULL)
-      OR (c.status = 'acked' AND c.verify_status IS NULL)`).all().map((r) => r.site_id);
+      OR (c.status = 'acked' AND c.verify_status IS NULL)`).all()).map((r) => r.site_id);
   const out = [];
   for (const siteId of sites) {
     for (const driver of driversList) {

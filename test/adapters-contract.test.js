@@ -28,13 +28,13 @@ const catalogue = {
   versions: async () => ({ status: 'ok', etag: null, versions: [{ versionDate: '20261001', available: true }] }),
 };
 
-test('a well-formed market adapter and catalogue adapter pass', () => {
+await test('a well-formed market adapter and catalogue adapter pass', () => {
   assert.deepEqual(checkAdapter(market), []);
   assert.deepEqual(checkAdapter(catalogue), []);
   assert.equal(assertAdapter(market), market);
 });
 
-test('missing or malformed fields are each reported', () => {
+await test('missing or malformed fields are each reported', () => {
   const { versions, ...noVersions } = catalogue;
   assert.ok(versions);
   assert.deepEqual(checkAdapter(noVersions), ['fake_catalogue: versions() is required for role catalogue']);
@@ -46,7 +46,7 @@ test('missing or malformed fields are each reported', () => {
   assert.throws(() => assertAdapter({ ...market, owner: 'nobody' }), /adapter contract broken: fake_market: owner/);
 });
 
-test('only the owning process may call a provider', () => {
+await test('only the owning process may call a provider', () => {
   assert.throws(() => assertOwner(catalogue), /fake_catalogue is owned by another process: the core must not call it \(one rate budget, one caller\)/);
   assert.equal(assertOwner(catalogue, 'external'), catalogue);
   assert.equal(assertOwner(market), market);
@@ -54,7 +54,7 @@ test('only the owning process may call a provider', () => {
   assert.throws(() => assertAdapter({ ...catalogue, owner: 'someone_else' }), /owner must be one of core, external/);
 });
 
-test('price rows from an adapter pass, negative prices and a 23-hour day included', async () => {
+await test('price rows from an adapter pass, negative prices and a 23-hour day included', async () => {
   const { rows } = await market.priceDays({ provider: 'fake_market', externalId: 'FR', country: 'FR' }, '', ['2026-03-29'], 900);
   assert.equal(rows.length, 92);   // 23 hours of quarter-hours
   assert.ok(rows.some((r) => r.minorPerKwh < 0));
@@ -64,7 +64,7 @@ test('price rows from an adapter pass, negative prices and a 23-hour day include
   assert.deepEqual(checkPriceRows(slot), []);
 });
 
-test('broken price rows are each reported', () => {
+await test('broken price rows are each reported', () => {
   const ok = { fromUtc: 1792800000, toUtc: 1792801800, component: 'energy', minorPerKwh: 9.1, currency: 'GBP', estimated: false };
   const msgs = (rows, opts) => checkPriceRows(rows, opts).join(' | ');
   assert.match(msgs([{ ...ok, fromUtc: ok.fromUtc * 1000, toUtc: ok.toUtc * 1000 }]), /milliseconds/);

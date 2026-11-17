@@ -24,9 +24,9 @@ const { ORIGINS } = await import('../src/core/provenance.js');
 const { createSite } = await import('../src/core/sites.js');
 const { app } = await import('../src/server.js');
 
-const conn = (siteId, ...providers) => { for (const p of providers) db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(siteId, p); };
-const runSteps = (site) => P.plan(db, site).filter((e) => e.run).map((e) => e.step);
-const rowsOf = (market) => db.prepare("SELECT * FROM market_provider WHERE market_code = ? ORDER BY role, priority, adapter").all(market).map((r) => ({ ...r }));
+const conn = async (siteId, ...providers) => { for (const p of providers) await db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(siteId, p); };
+const runSteps = async (site) => (await P.plan(db, site)).filter((e) => e.run).map((e) => e.step);
+const rowsOf = async (market) => (await db.prepare("SELECT * FROM market_provider WHERE market_code = ? ORDER BY role, priority, adapter").all(market)).map((r) => ({ ...r }));
 
 // The steps src/jobs/sync.js called, in this order, before the registry (git e0a43c0): the Octopus
 // account first only for a home without a postcode; gas_cv only once a gas meter is known (checked
@@ -34,24 +34,24 @@ const rowsOf = (market) => db.prepare("SELECT * FROM market_provider WHERE marke
 const TODAY_GB = ['sunsynk', 'geo', 'weather', 'carbon', 'octopus', 'gas_cv', 'tariff', 'compare', 'solar_forecast'];
 const TODAY_CONNECTIONS = ['sunsynk', null, 'weather', 'carbon', 'octopus', 'gas_cv', 'tariff', 'compare', 'solar_forecast'];
 
-test('registry seed: GB lists exactly the providers synced before, FR and NL the planned ones, honestly', () => {
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM market_provider').get().n, PROVIDERS.length);
-  for (const r of db.prepare('SELECT * FROM market_provider').all()) {
+await test('registry seed: GB lists exactly the providers synced before, FR and NL the planned ones, honestly', async () => {
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM market_provider').get()).n, PROVIDERS.length);
+  for (const r of await db.prepare('SELECT * FROM market_provider').all()) {
     assert.ok(ORIGINS.includes(r.origin), `${r.market_code}/${r.role}/${r.adapter} origin`);
     assert.ok(r.note, `${r.market_code}/${r.role}/${r.adapter} has a note`);
   }
-  const gb = rowsOf('GB').map((r) => [r.role, r.adapter, r.scope, r.enabled, r.needs_credentials]);
+  const gb = (await rowsOf('GB')).map((r) => [r.role, r.adapter, r.scope, r.enabled, r.needs_credentials]);
   assert.deepEqual(gb, [
     ['carbon', 'neso', 'shared', 1, 0], ['compare', 'compare', 'shared', 1, 0], ['gas_cv', 'national_gas', 'shared', 1, 0],
     ['location', 'geo', 'shared', 1, 0], ['meter', 'octopus', 'home', 1, 1], ['solar_forecast', 'quartz', 'shared', 1, 0],
     ['tariff_catalogue', 'octopus', 'shared', 1, 0], ['tariff_catalogue', 'tariffscanner', 'shared', 1, 1],
     ['tariff_prices', 'octopus', 'shared', 1, 0], ['weather', 'open_meteo', 'shared', 1, 0],
   ]);
-  assert.ok(rowsOf('GB').every((r) => r.origin === 'provider' && r.owner === 'core' && r.licence_confirmed === 1));
+  assert.ok((await rowsOf('GB')).every((r) => r.origin === 'provider' && r.owner === 'core' && r.licence_confirmed === 1));
   // Inverters do not depend on the country.
-  assert.deepEqual(rowsOf('*').map((r) => [r.role, r.adapter, r.scope, r.enabled, r.needs_credentials]), [['inverter', 'sunsynk', 'home', 1, 1]]);
+  assert.deepEqual((await rowsOf('*')).map((r) => [r.role, r.adapter, r.scope, r.enabled, r.needs_credentials]), [['inverter', 'sunsynk', 'home', 1, 1]]);
   for (const [m, meter] of [['FR', 'linky'], ['NL', 'p1']]) {
-    const by = Object.fromEntries(rowsOf(m).map((r) => [`${r.role}/${r.adapter}`, r]));
+    const by = Object.fromEntries((await rowsOf(m)).map((r) => [`${r.role}/${r.adapter}`, r]));
     // Grid carbon: France has RTE éCO2mix (national); the Netherlands has no carbon source yet.
     assert.deepEqual(Object.keys(by).sort(), ['meter/' + meter, 'tariff_catalogue/tounify', 'tariff_prices/entsoe', 'tariff_prices/manual', 'tariff_prices/tounify', 'weather/open_meteo',
       ...(m === 'FR' ? ['carbon/rte'] : [])].sort(), m);
@@ -68,51 +68,51 @@ test('registry seed: GB lists exactly the providers synced before, FR and NL the
     assert.deepEqual([by['tariff_prices/entsoe'].enabled, by['tariff_prices/entsoe'].needs_credentials], [0, 1]);
     assert.match(by['tariff_prices/entsoe'].note, /token/);
     assert.deepEqual([by['tariff_prices/manual'].enabled, by['tariff_prices/manual'].origin], [1, 'user']);
-    assert.deepEqual(P.providersFor(db, m, 'carbon').map((r) => [r.adapter, r.scope, r.enabled, r.needs_credentials, r.licence_confirmed, r.origin]),
+    assert.deepEqual((await P.providersFor(db, m, 'carbon')).map((r) => [r.adapter, r.scope, r.enabled, r.needs_credentials, r.licence_confirmed, r.origin]),
       m === 'FR' ? [['rte', 'shared', 1, 0, 1, 'provider']] : [], `${m}: carbon providers`);
   }
-  for (const m of ['DE', 'BE', 'ES']) assert.deepEqual(rowsOf(m).map((r) => [r.role, r.adapter, r.enabled]), [['weather', 'open_meteo', 1]], m);
+  for (const m of ['DE', 'BE', 'ES']) assert.deepEqual((await rowsOf(m)).map((r) => [r.role, r.adapter, r.enabled]), [['weather', 'open_meteo', 1]], m);
   // providersFor: the market's own rows and the '*' ones, in priority order.
-  assert.deepEqual(P.providersFor(db, 'FR', 'tariff_prices').map((r) => r.adapter), ['tounify', 'entsoe', 'manual']);
-  assert.deepEqual(P.providersFor(db, 'NL', 'inverter').map((r) => [r.market_code, r.adapter]), [['*', 'sunsynk']]);
+  assert.deepEqual((await P.providersFor(db, 'FR', 'tariff_prices')).map((r) => r.adapter), ['tounify', 'entsoe', 'manual']);
+  assert.deepEqual((await P.providersFor(db, 'NL', 'inverter')).map((r) => [r.market_code, r.adapter]), [['*', 'sunsynk']]);
 });
 
-test('the seed keeps an operator\'s switches and refreshes the descriptions', async () => {
+await test('the seed keeps an operator\'s switches and refreshes the descriptions', async () => {
   const { seedProviders } = await import('../src/db/seed/providers.js');
-  db.prepare("UPDATE market_provider SET enabled = 0, note = 'edited' WHERE market_code = 'GB' AND role = 'carbon'").run();
-  seedProviders(db);
-  const r = db.prepare("SELECT enabled, note FROM market_provider WHERE market_code = 'GB' AND role = 'carbon'").get();
+  await db.prepare("UPDATE market_provider SET enabled = 0, note = 'edited' WHERE market_code = 'GB' AND role = 'carbon'").run();
+  await seedProviders(db);
+  const r = await db.prepare("SELECT enabled, note FROM market_provider WHERE market_code = 'GB' AND role = 'carbon'").get();
   assert.equal(r.enabled, 0, 'switch kept');
   assert.match(r.note, /^NESO/, 'note refreshed');
-  db.prepare("UPDATE market_provider SET enabled = 1 WHERE market_code = 'GB' AND role = 'carbon'").run();
+  await db.prepare("UPDATE market_provider SET enabled = 1 WHERE market_code = 'GB' AND role = 'carbon'").run();
 });
 
 let envHome;
-test('the .env home is created as before, with the same connections, and its plan is today\'s step list', () => {
-  const id = ensureEnvSite();
-  envHome = db.prepare('SELECT * FROM site WHERE id = ?').get(id);
+await test('the .env home is created as before, with the same connections, and its plan is today\'s step list', async () => {
+  const id = await ensureEnvSite();
+  envHome = await db.prepare('SELECT * FROM site WHERE id = ?').get(id);
   assert.deepEqual([envHome.env_key, envHome.market_code, envHome.country, envHome.currency, envHome.slot_s], ['env', 'GB', 'GB', 'GBP', 1800]);
-  const providers = db.prepare('SELECT provider, external_ref FROM connection WHERE site_id = ? ORDER BY provider').all(id).map((c) => [c.provider, c.external_ref]);
+  const providers = (await db.prepare('SELECT provider, external_ref FROM connection WHERE site_id = ? ORDER BY provider').all(id)).map((c) => [c.provider, c.external_ref]);
   assert.deepEqual(providers, [['carbon', null], ['compare', null], ['octopus', SECRETS.OCTOPUS_ACCOUNT_NUMBER], ['solar_forecast', null], ['sunsynk', null], ['tariff', null], ['weather', null]]);
-  const p = P.plan(db, envHome);
+  const p = await P.plan(db, envHome);
   assert.deepEqual(p.filter((e) => e.run).map((e) => e.step), TODAY_GB);
   assert.deepEqual(p.filter((e) => e.run).map((e) => e.connection), TODAY_CONNECTIONS);
   assert.deepEqual(p.filter((e) => !e.run && e.log), [], 'nothing extra in the sync log of the GB home');
   // Without a postcode the Octopus account is read first, for the supply address.
-  assert.deepEqual(runSteps({ ...envHome, postcode: null }), ['octopus', ...TODAY_GB]);
+  assert.deepEqual(await runSteps({ ...envHome, postcode: null }), ['octopus', ...TODAY_GB]);
   // The credentials go to the steps, never into the plan's printable fields.
   assert.ok(!JSON.stringify(p).includes(SECRETS.OCTOPUS_API_KEY) && !JSON.stringify(p).includes(SECRETS.SUNSYNK_PASSWORD));
   assert.equal(p.find((e) => e.step === 'octopus').creds.apiKey, SECRETS.OCTOPUS_API_KEY);
 });
 
-test('a GB home with no account or inverter runs only the shared steps, as before', () => {
-  const s = createSite({ name: 'GB shared only', postcode: 'L1 8JQ' });
-  assert.deepEqual(runSteps(s), ['geo', 'weather', 'carbon', 'gas_cv', 'compare', 'solar_forecast']);
+await test('a GB home with no account or inverter runs only the shared steps, as before', async () => {
+  const s = await createSite({ name: 'GB shared only', postcode: 'L1 8JQ' });
+  assert.deepEqual(await runSteps(s), ['geo', 'weather', 'carbon', 'gas_cv', 'compare', 'solar_forecast']);
 });
 
-test('a French home: weather and carbon (RTE), with the unbuilt and unlicensed providers listed as skipped', () => {
-  const fr = createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 });
-  const p = P.plan(db, fr);
+await test('a French home: weather and carbon (RTE), with the unbuilt and unlicensed providers listed as skipped', async () => {
+  const fr = await createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 });
+  const p = await P.plan(db, fr);
   assert.deepEqual(p.filter((e) => e.run).map((e) => e.step), ['weather', 'carbon']);
   const logged = Object.fromEntries(p.filter((e) => !e.run && e.log).map((e) => [e.step, e.skipped]));
   assert.deepEqual(Object.keys(logged).sort(), ['meter:linky', 'tariff_prices:entsoe', 'tounify', 'tounify_catalogue']);
@@ -124,45 +124,45 @@ test('a French home: weather and carbon (RTE), with the unbuilt and unlicensed p
   const quiet = p.filter((e) => !e.run && !e.log).map((e) => [e.step, e.skipped]);
   assert.deepEqual(quiet, [['sunsynk', 'not connected for this home'], ['tariff_prices:manual', 'typed in by the user or installer: nothing to fetch']]);
   // A licence that is still unconfirmed skips the provider although it is switched on.
-  assert.match(P.plan(db, fr).find((e) => e.adapter === 'tounify').skipped, /^unlicensed: /);
+  assert.match((await P.plan(db, fr)).find((e) => e.adapter === 'tounify').skipped, /^unlicensed: /);
 });
 
-test('a disabled provider is skipped with its reason and the next one by priority is used', () => {
+await test('a disabled provider is skipped with its reason and the next one by priority is used', async () => {
   const restore = P.registerAdapter('better_weather', { roles: { weather: [{ step: 'weather', order: 30, connection: 'weather', run: async () => ({}) }] } });
-  db.prepare("INSERT INTO market_provider (market_code, role, adapter, priority, enabled, scope, origin, note) VALUES ('GB', 'weather', 'better_weather', 1, 0, 'shared', 'provider', 'switched off for a test')").run();
-  const p = P.plan(db, envHome).filter((e) => e.role === 'weather');
+  await db.prepare("INSERT INTO market_provider (market_code, role, adapter, priority, enabled, scope, origin, note) VALUES ('GB', 'weather', 'better_weather', 1, 0, 'shared', 'provider', 'switched off for a test')").run();
+  const p = (await P.plan(db, envHome)).filter((e) => e.role === 'weather');
   assert.deepEqual(p.map((e) => [e.adapter, e.run, e.skipped ?? null]), [['better_weather', false, 'disabled: switched off for a test'], ['open_meteo', true, null]]);
-  db.prepare("UPDATE market_provider SET enabled = 1 WHERE adapter = 'better_weather'").run();
-  const q = P.plan(db, envHome).filter((e) => e.role === 'weather');
+  await db.prepare("UPDATE market_provider SET enabled = 1 WHERE adapter = 'better_weather'").run();
+  const q = (await P.plan(db, envHome)).filter((e) => e.role === 'weather');
   assert.deepEqual(q.map((e) => [e.adapter, e.run, e.skipped ?? null]), [['better_weather', true, null], ['open_meteo', false, 'fallback: better_weather is used']]);
-  db.prepare("DELETE FROM market_provider WHERE adapter = 'better_weather'").run();
+  await db.prepare("DELETE FROM market_provider WHERE adapter = 'better_weather'").run();
   restore();
 });
 
-test('assertOwner still stops the core calling a provider another process owns', () => {
+await test('assertOwner still stops the core calling a provider another process owns', async () => {
   let called = 0;
   const restore = P.registerAdapter('remote_catalogue', { owner: 'external', roles: { tariff_catalogue: [{ step: 'remote_catalogue', run: async () => { called++; return {}; } }] } });
-  db.prepare("INSERT INTO market_provider (market_code, role, adapter, priority, owner, scope, origin, note) VALUES ('GB', 'tariff_catalogue', 'remote_catalogue', 1, 'external', 'shared', 'provider', 'a catalogue another process syncs')").run();
-  let e = P.plan(db, envHome).find((x) => x.adapter === 'remote_catalogue');
+  await db.prepare("INSERT INTO market_provider (market_code, role, adapter, priority, owner, scope, origin, note) VALUES ('GB', 'tariff_catalogue', 'remote_catalogue', 1, 'external', 'shared', 'provider', 'a catalogue another process syncs')").run();
+  let e = (await P.plan(db, envHome)).find((x) => x.adapter === 'remote_catalogue');
   assert.equal(e.run, false);
   assert.equal(e.log, true);
   assert.match(e.skipped, /^remote_catalogue is owned by another process: the core must not call it/);
   // The registry row cannot override the implementation's owner either.
-  db.prepare("UPDATE market_provider SET owner = 'core' WHERE adapter = 'remote_catalogue'").run();
-  e = P.plan(db, envHome).find((x) => x.adapter === 'remote_catalogue');
+  await db.prepare("UPDATE market_provider SET owner = 'core' WHERE adapter = 'remote_catalogue'").run();
+  e = (await P.plan(db, envHome)).find((x) => x.adapter === 'remote_catalogue');
   assert.match(e.skipped, /owned by another process/);
   // Only the two owner values are accepted (delta 010).
-  assert.throws(() => db.prepare("UPDATE market_provider SET owner = 'someone_else' WHERE adapter = 'remote_catalogue'").run(), /CHECK/);
+  await assert.rejects(async () => await db.prepare("UPDATE market_provider SET owner = 'someone_else' WHERE adapter = 'remote_catalogue'").run(), /CHECK/);
   assert.equal(called, 0);
-  db.prepare("DELETE FROM market_provider WHERE adapter = 'remote_catalogue'").run();
+  await db.prepare("DELETE FROM market_provider WHERE adapter = 'remote_catalogue'").run();
   restore();
 });
 
-test('missing credentials skip the step in the plan, with the variables named and no value', () => {
+await test('missing credentials skip the step in the plan, with the variables named and no value', async () => {
   const saved = { key: process.env.OCTOPUS_API_KEY, pw: process.env.SUNSYNK_PASSWORD };
   delete process.env.OCTOPUS_API_KEY;
   delete process.env.SUNSYNK_PASSWORD;
-  const p = P.plan(db, envHome);
+  const p = await P.plan(db, envHome);
   const skip = Object.fromEntries(p.filter((e) => !e.run && e.log).map((e) => [e.step, e.skipped]));
   assert.equal(skip.octopus, 'no credentials: OCTOPUS_API_KEY not set (start the server with --env-file=.env)');
   assert.equal(skip.sunsynk, 'no credentials: SUNSYNK_PASSWORD not set (start the server with --env-file=.env)');
@@ -170,9 +170,9 @@ test('missing credentials skip the step in the plan, with the variables named an
   process.env.OCTOPUS_API_KEY = saved.key;
   process.env.SUNSYNK_PASSWORD = saved.pw;
   // Another home never reads the .env secrets: there is no secret store for it.
-  const other = createSite({ name: 'Second GB home', postcode: 'M1 1AE' });
-  conn(other.id, 'octopus');
-  assert.match(P.plan(db, other).find((e) => e.step === 'octopus').skipped, /^no credentials: secrets are read from \.env for the \.env home only/);
+  const other = await createSite({ name: 'Second GB home', postcode: 'M1 1AE' });
+  await conn(other.id, 'octopus');
+  assert.match((await P.plan(db, other)).find((e) => e.step === 'octopus').skipped, /^no credentials: secrets are read from \.env for the \.env home only/);
 });
 
 // ───────────── API ─────────────
@@ -193,12 +193,12 @@ function call(method, path, body) {
   });
 }
 
-test('/api/sites: every home lists a provider per role with a status word, and no credential', async () => {
-  db.prepare("INSERT INTO sync_run (site_id, started_at, finished_at, status, detail) VALUES (?, 1, 2, 'partial', ?)").run(envHome.id, JSON.stringify([
-    { step: 'sunsynk', ok: true, ms: 5 }, { step: 'geo', ok: true }, { step: 'weather', ok: true }, { step: 'carbon', ok: false, error: 'HTTP 503' },
-    { step: 'octopus', ok: true, ms: 0, skipped: 'no credentials: OCTOPUS_API_KEY not set' }, { step: 'tariff', ok: true, skipped: 'using Octopus account agreements' },
-    { step: 'compare', ok: true, shared: 'fetched for home 9 earlier in this cycle (compare:GB:G)' }, { step: 'solar_forecast', ok: true, skipped: 'panel size, tilt or direction unknown' },
-  ]));
+await test('/api/sites: every home lists a provider per role with a status word, and no credential', async () => {
+  await db.prepare("INSERT INTO sync_run (site_id, started_at, finished_at, status, detail) VALUES (?, 1, 2, 'partial', ?)").run(envHome.id, JSON.stringify([
+        { step: 'sunsynk', ok: true, ms: 5 }, { step: 'geo', ok: true }, { step: 'weather', ok: true }, { step: 'carbon', ok: false, error: 'HTTP 503' },
+        { step: 'octopus', ok: true, ms: 0, skipped: 'no credentials: OCTOPUS_API_KEY not set' }, { step: 'tariff', ok: true, skipped: 'using Octopus account agreements' },
+        { step: 'compare', ok: true, shared: 'fetched for home 9 earlier in this cycle (compare:GB:G)' }, { step: 'solar_forecast', ok: true, skipped: 'panel size, tilt or direction unknown' },
+      ]));
   const r = await call('GET', '/api/sites');
   assert.equal(r.status, 200);
   for (const v of Object.values(SECRETS).filter((x) => x !== SECRETS.OCTOPUS_ACCOUNT_NUMBER)) assert.ok(!r.text.includes(v), 'no secret in /api/sites');
@@ -226,23 +226,23 @@ test('/api/sites: every home lists a provider per role with a status word, and n
   assert.deepEqual([fr.inverter.status, fr.inverter.reason], ['skipped', 'not connected for this home']);
 });
 
-test('POST connections: allowed for the market, stored without secrets; refused otherwise with a clear message', async () => {
-  const gb = createSite({ name: 'GB to connect', postcode: 'SW1A 1AA' });
-  const fr = db.prepare("SELECT * FROM site WHERE name = 'Maison'").get();
+await test('POST connections: allowed for the market, stored without secrets; refused otherwise with a clear message', async () => {
+  const gb = await createSite({ name: 'GB to connect', postcode: 'SW1A 1AA' });
+  const fr = await db.prepare("SELECT * FROM site WHERE name = 'Maison'").get();
   let r = await call('POST', `/api/sites/${gb.id}/connections`, { provider: 'octopus', credentials: { accountNumber: 'A-ABC123', apiKey: 'sk_live_must_not_be_kept' } });
   assert.equal(r.status, 201, r.text);
   assert.deepEqual([r.json.role, r.json.connection.provider, r.json.connection.external_ref, r.json.secrets_stored], ['meter', 'octopus', 'A-ABC123', false]);
   assert.deepEqual(r.json.not_stored, ['apiKey']);
   assert.match(r.json.credentials_note, /no secret store/);
   assert.ok(!r.text.includes('sk_live_must_not_be_kept'));
-  const row = db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'octopus'").get(gb.id);
+  const row = await db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'octopus'").get(gb.id);
   assert.ok(!JSON.stringify(row).includes('sk_live_must_not_be_kept'), 'the secret is not in the database');
-  assert.ok(!JSON.stringify(db.prepare('SELECT * FROM market_provider').all()).includes('sk_live'), 'nor in the registry');
+  assert.ok(!JSON.stringify(await db.prepare('SELECT * FROM market_provider').all()).includes('sk_live'), 'nor in the registry');
   r = await call('POST', `/api/sites/${gb.id}/connections`, { provider: 'octopus' });
   assert.equal(r.status, 200);
   assert.equal(r.json.connection.external_ref, 'A-ABC123', 'a second call keeps the reference');
   // The home's plan now has the meter, skipped for want of credentials (it is not the .env home).
-  assert.match(P.plan(db, gb).find((e) => e.step === 'octopus').skipped, /^no credentials/);
+  assert.match((await P.plan(db, gb)).find((e) => e.step === 'octopus').skipped, /^no credentials/);
   // Inverters connect in any market.
   r = await call('POST', `/api/sites/${fr.id}/connections`, { provider: 'sunsynk', credentials: { plantId: '12345', password: 'x' } });
   assert.equal(r.status, 201, r.text);
@@ -259,7 +259,7 @@ test('POST connections: allowed for the market, stored without secrets; refused 
     assert.equal(r.status, 400, JSON.stringify(body));
     assert.match(r.json.error, re);
   }
-  const demo = createSite({ name: 'Demo', isDemo: true });
+  const demo = await createSite({ name: 'Demo', isDemo: true });
   r = await call('POST', `/api/sites/${demo.id}/connections`, { provider: 'sunsynk' });
   assert.equal(r.status, 400);
   assert.match(r.json.error, /^demo home/);
@@ -267,14 +267,14 @@ test('POST connections: allowed for the market, stored without secrets; refused 
   assert.equal(r.status, 404);
 });
 
-test('the .env home takes its market from SITE_COUNTRY and only the connections that market allows', () => {
-  db.prepare("DELETE FROM binding WHERE site_id IN (SELECT id FROM site WHERE env_key = 'env')").run();   // a home's bindings go with it
-  db.prepare("DELETE FROM site WHERE env_key = 'env'").run();
+await test('the .env home takes its market from SITE_COUNTRY and only the connections that market allows', async () => {
+  await db.prepare("DELETE FROM binding WHERE site_id IN (SELECT id FROM site WHERE env_key = 'env')").run();   // a home's bindings go with it
+  await db.prepare("DELETE FROM site WHERE env_key = 'env'").run();
   process.env.SITE_COUNTRY = 'FR';
-  const id = ensureEnvSite();
+  const id = await ensureEnvSite();
   delete process.env.SITE_COUNTRY;
-  const s = db.prepare('SELECT * FROM site WHERE id = ?').get(id);
+  const s = await db.prepare('SELECT * FROM site WHERE id = ?').get(id);
   assert.deepEqual([s.market_code, s.currency, s.timezone], ['FR', 'EUR', 'Europe/Paris']);
-  assert.deepEqual(db.prepare('SELECT provider FROM connection WHERE site_id = ? ORDER BY provider').all(id).map((c) => c.provider), ['carbon', 'sunsynk', 'weather']);
+  assert.deepEqual((await db.prepare('SELECT provider FROM connection WHERE site_id = ? ORDER BY provider').all(id)).map((c) => c.provider), ['carbon', 'sunsynk', 'weather']);
   assert.deepEqual(calls, [], 'no network call anywhere in this file');
 });

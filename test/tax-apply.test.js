@@ -14,7 +14,7 @@ const dailyLevy = { ...NL, code: 'daily_levy', applies_to: 'fixed', kind: 'per_p
 const YEAR_2025 = 365 * 86400;   // local Amsterdam year: the spring and autumn hours cancel
 const localHM = (tz, s) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(s * 1000));
 
-test('a per-kWh energy tax is applied first, then VAT on price plus energy tax', () => {
+await test('a per-kWh energy tax is applied first, then VAT on price plus energy tax', () => {
   const r = applyTaxes([btw, energyTax], { currency: 'EUR', unitEx: 25, kwh: 2 });   // input order does not matter
   near(r.ex.unit, 50);
   assert.deepEqual(r.lines.map((l) => l.code), ['energiebelasting', 'btw']);
@@ -26,7 +26,7 @@ test('a per-kWh energy tax is applied first, then VAT on price plus energy tax',
   near(swapped.inc.unit, 50 * 1.21 + 20);
 });
 
-test('percent rules with the same seq share one base (no tax on each other)', () => {
+await test('percent rules with the same seq share one base (no tax on each other)', () => {
   const a = { ...btw, code: 'a', applies_to: 'unit', value: 0.1 };
   const b = { ...btw, code: 'b', applies_to: 'unit', value: 0.2 };
   const r = applyTaxes([a, b], { unitEx: 100, kwh: 1 });
@@ -34,7 +34,7 @@ test('percent rules with the same seq share one base (no tax on each other)', ()
   near(r.inc.total, 130);
 });
 
-test('applies_to keeps unit and fixed charges apart', () => {
+await test('applies_to keeps unit and fixed charges apart', () => {
   const unitOnly = { ...btw, code: 'vat_unit', applies_to: 'unit', value: 0.2 };
   const fixedOnly = { ...btw, code: 'vat_fixed', applies_to: 'fixed', value: 0.055 };
   const r = applyTaxes([unitOnly, fixedOnly], { unitEx: 20, kwh: 1, fixedEx: 40 });
@@ -43,7 +43,7 @@ test('applies_to keeps unit and fixed charges apart', () => {
   near(r.inc.total, 66.2);
 });
 
-test('a negative yearly credit is pro-rated to the slot and VAT applies to it', () => {
+await test('a negative yearly credit is pro-rated to the slot and VAT applies to it', () => {
   const r = applyTaxes([energyTax, credit, btw], { currency: 'EUR', unitEx: 25, kwh: 0.5, fixedEx: 0, slotS: 1800, yearLengthS: YEAR_2025 });
   const share = -60000 * 1800 / YEAR_2025;
   near(r.lines.find((l) => l.code === 'heffingskorting').fixed, share);
@@ -58,27 +58,27 @@ for (const [label, start, end, slots] of [
   ['25 h day (Amsterdam, 26 Oct 2025)', Date.UTC(2025, 9, 25, 22) / 1000, Date.UTC(2025, 9, 26, 23) / 1000, 50],
   ['24 h day (Amsterdam, 1 Jun 2025)', Date.UTC(2025, 4, 31, 22) / 1000, Date.UTC(2025, 5, 1, 22) / 1000, 48],
 ]) {
-  test(`per-period amounts add up exactly over a ${label}`, () => {
-    assert.equal(localHM('Europe/Amsterdam', start), '00:00');
-    assert.equal(localHM('Europe/Amsterdam', end), '00:00');
-    const dayLengthS = end - start;
-    assert.equal(dayLengthS / 1800, slots);
-    let daily = 0;
-    let yearly = 0;
-    for (let t = start; t < end; t += 1800) {
-      daily += applyTaxes([dailyLevy], { currency: 'EUR', fixedEx: 0, slotS: 1800, dayLengthS }).tax.fixed;
-      yearly += applyTaxes([credit], { currency: 'EUR', slotS: 1800, yearLengthS: YEAR_2025 }).tax.fixed;
-    }
-    near(daily, 120, 'one whole day of the daily levy');
-    near(yearly, -60000 * dayLengthS / YEAR_2025, 'the day\'s share of the yearly credit');
-    // 15-minute slots give the same day total.
-    let q = 0;
-    for (let t = start; t < end; t += 900) q += applyTaxes([dailyLevy], { currency: 'EUR', slotS: 900, dayLengthS }).tax.fixed;
-    near(q, 120);
-  });
+  await test(`per-period amounts add up exactly over a ${label}`, () => {
+        assert.equal(localHM('Europe/Amsterdam', start), '00:00');
+        assert.equal(localHM('Europe/Amsterdam', end), '00:00');
+        const dayLengthS = end - start;
+        assert.equal(dayLengthS / 1800, slots);
+        let daily = 0;
+        let yearly = 0;
+        for (let t = start; t < end; t += 1800) {
+          daily += applyTaxes([dailyLevy], { currency: 'EUR', fixedEx: 0, slotS: 1800, dayLengthS }).tax.fixed;
+          yearly += applyTaxes([credit], { currency: 'EUR', slotS: 1800, yearLengthS: YEAR_2025 }).tax.fixed;
+        }
+        near(daily, 120, 'one whole day of the daily levy');
+        near(yearly, -60000 * dayLengthS / YEAR_2025, 'the day\'s share of the yearly credit');
+        // 15-minute slots give the same day total.
+        let q = 0;
+        for (let t = start; t < end; t += 900) q += applyTaxes([dailyLevy], { currency: 'EUR', slotS: 900, dayLengthS }).tax.fixed;
+        near(q, 120);
+      });
 }
 
-test('guards: mixed currency, missing period length, double tax, mixed scope, bad shapes', () => {
+await test('guards: mixed currency, missing period length, double tax, mixed scope, bad shapes', () => {
   assert.throws(() => applyTaxes([energyTax], { currency: 'GBP', unitEx: 25, kwh: 1 }), /mixed currencies: EUR and GBP/);
   assert.throws(() => applyTaxes([energyTax], { unitEx: 25, kwh: 1 }), /input.currency is required/);
   assert.throws(() => applyTaxes([credit], { currency: 'EUR', slotS: 1800 }), /yearLengthS is required/);
@@ -91,7 +91,7 @@ test('guards: mixed currency, missing period length, double tax, mixed scope, ba
   assert.throws(() => applyTaxes([], { unitEx: NaN }), /finite/);
 });
 
-test('rulesFor picks the rules in force, current only, in seq order', () => {
+await test('rulesFor picks the rules in force, current only, in seq order', () => {
   const old = { ...btw, value: 0.19, valid_from: 0, valid_to: 1000 };
   const now = { ...btw, valid_from: 1000, valid_to: null };
   const gone = { ...energyTax, superseded_at: 5 };
@@ -101,7 +101,7 @@ test('rulesFor picks the rules in force, current only, in seq order', () => {
   assert.deepEqual(rulesFor(rules, { country: 'NL', fuel: 'gas', direction: 'import', ts: 1000 }), []);
 });
 
-test('FR and NL VAT is sourced; every other FR and NL seed value is a placeholder, flagged unverified, and says so in its result', () => {
+await test('FR and NL VAT is sourced; every other FR and NL seed value is a placeholder, flagged unverified, and says so in its result', () => {
   assert.ok(PLACEHOLDER_TAX_RULES.length > 0);
   for (const r of PLACEHOLDER_TAX_RULES) {
     assert.equal(r.unverified, true, `${r.country} ${r.code}`);

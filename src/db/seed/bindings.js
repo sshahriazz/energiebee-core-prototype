@@ -1,3 +1,5 @@
+import { someAsync } from "../../core/async.js";
+
 // The sources a home starts with, per role (binding_default, delta 062), and a backfill for homes
 // that have no binding of a role yet. Only missing rows are written; an operator's edit stays.
 // A role is what the slot builder asks for; the source is who fills it (inputs.js ROLES).
@@ -11,19 +13,19 @@ export const BINDING_DEFAULTS = [
   ['solar_forecast', 'core_forecast', 0], ['solar_forecast', 'quartz', 1],
 ];
 
-export function bindingSeedPending(db) {
-  return BINDING_DEFAULTS.some(([role, code]) => !db.prepare('SELECT 1 FROM binding_default d JOIN source s ON s.id = d.source_id WHERE d.role = ? AND s.code = ?').get(role, code))
-    || Boolean(db.prepare(`SELECT 1 FROM site s CROSS JOIN binding_default d WHERE NOT EXISTS (SELECT 1 FROM binding b WHERE b.site_id = s.id AND b.role = d.role)`).get());
+export async function bindingSeedPending(db) {
+  return await someAsync(BINDING_DEFAULTS, async ([role, code]) => !await db.prepare('SELECT 1 FROM binding_default d JOIN source s ON s.id = d.source_id WHERE d.role = ? AND s.code = ?').get(role, code))
+    || Boolean(await db.prepare(`SELECT 1 FROM site s CROSS JOIN binding_default d WHERE NOT EXISTS (SELECT 1 FROM binding b WHERE b.site_id = s.id AND b.role = d.role)`).get());
 }
 
-export function seedBindings(db) {
+export async function seedBindings(db) {
   const src = db.prepare('SELECT id FROM source WHERE code = ?');
   const insDefault = db.prepare('INSERT OR IGNORE INTO binding_default (role, source_id, priority) VALUES (?, ?, ?)');
   for (const [role, code, priority] of BINDING_DEFAULTS) {
-    const s = src.get(code);
-    if (s) insDefault.run(role, s.id, priority);
+    const s = await src.get(code);
+    if (s) await insDefault.run(role, s.id, priority);
   }
-  db.prepare(`INSERT INTO binding (site_id, role, source_id, valid_from, valid_to, recorded_at, priority, reason)
+  await db.prepare(`INSERT INTO binding (site_id, role, source_id, valid_from, valid_to, recorded_at, priority, reason)
     SELECT s.id, d.role, d.source_id, NULL, NULL, ?, d.priority, 'default'
     FROM site s CROSS JOIN binding_default d
     WHERE NOT EXISTS (SELECT 1 FROM binding b WHERE b.site_id = s.id AND b.role = d.role)`).run(0);   // recorded_at 0: known from the start

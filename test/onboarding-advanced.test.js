@@ -7,9 +7,9 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 if (hasLive) useDb({ snapshot: true });
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { app } = hasLive ? await import('../src/server.js') : {};
-const { ingestObservations } = hasLive ? await import('../src/core/channels.js') : {};
+const { db } = await import('../src/db/db.js');
+const { app } = await import('../src/server.js');
+const { ingestObservations } = await import('../src/core/channels.js');
 
 let server; let base;
 before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
@@ -18,10 +18,10 @@ after(() => server?.close());
 const SITE = 1;
 const get = async (p) => { const r = await fetch(`${base}${p}`); return { status: r.status, body: await r.json() }; };
 const post = async (p, body) => { const r = await fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
-const plug = hasLive ? Number(db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'smart_plug', 'push', 'adv-plug', 'Test plug', '{}', 0)").run(SITE).lastInsertRowid) : null;
-const ch = (o) => post(`/api/sites/${SITE}/channels`, { source: 'push_native', metric: 'plug_counter_kwh', point: 'total', deviceId: plug, ...o });
+const plug = hasLive ? Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'smart_plug', 'push', 'adv-plug', 'Test plug', '{}', 0)").run(SITE)).lastInsertRowid) : null;
+const ch = async (o) => await post(`/api/sites/${SITE}/channels`, { source: 'push_native', metric: 'plug_counter_kwh', point: 'total', deviceId: plug, ...o });
 
-test('every advanced field round trips: kind, derived measurement, wrap, reset, gap, stuck, clock offset, future tolerance, access, allowed values', { skip }, async () => {
+await test('every advanced field round trips: kind, derived measurement, wrap, reset, gap, stuck, clock offset, future tolerance, access, allowed values', { skip }, async () => {
   const c = await ch({ kind: 'counter', derived: 'plug_kwh', counterWrap: 99999.9, counterResetBelow: 0.5, maxGapS: 7200, clockOffsetS: -30, futureToleranceS: 120, min: 0 });
   assert.equal(c.status, 201, JSON.stringify(c.body));
   const row = (await get(`/api/sites/${SITE}/channels?source=push_native`)).body.channels.find((x) => x.id === c.body.id);
@@ -35,7 +35,7 @@ test('every advanced field round trips: kind, derived measurement, wrap, reset, 
   assert.equal(e.status, 201, JSON.stringify(e.body));
 });
 
-test('replacing a channel with different advanced options supersedes the old row (kept)', { skip }, async () => {
+await test('replacing a channel with different advanced options supersedes the old row (kept)', { skip }, async () => {
   const a = await ch({ point: 'repl', kind: 'counter', derived: 'plug_kwh', maxGapS: 600 });
   const b = await ch({ point: 'repl', kind: 'counter', derived: 'plug_kwh', maxGapS: 900 });
   assert.deepEqual(b.body.replaces, [a.body.id]);
@@ -45,8 +45,8 @@ test('replacing a channel with different advanced options supersedes the old row
   assert.equal(all.find((x) => x.id === b.body.id).maxGapS, 900);
 });
 
-test('combinations that make no sense are refused with the field at fault, and write nothing', { skip }, async () => {
-  const before = db.prepare('SELECT COUNT(*) n FROM channel').get().n;
+await test('combinations that make no sense are refused with the field at fault, and write nothing', { skip }, async () => {
+  const before = (await db.prepare('SELECT COUNT(*) n FROM channel').get()).n;
   const cases = [
     [{ kind: 'counter' }, 400, 'missing_field', 'derived'],
     [{ kind: 'counter', derived: 'plug_counter_kwh' }, 400, 'bad_value', 'derived'],
@@ -74,27 +74,27 @@ test('combinations that make no sense are refused with the field at fault, and w
     const r = await ch({ point: 'bad', ...o });
     assert.deepEqual([r.status, r.body.code, r.body.field], [status, code, field], JSON.stringify(o).slice(0, 80));
   }
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM channel').get().n, before);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM channel').get()).n, before);
 });
 
-test('a dry run of an advanced channel validates it and keeps nothing', { skip }, async () => {
-  const before = db.prepare('SELECT COUNT(*) n FROM channel').get().n;
+await test('a dry run of an advanced channel validates it and keeps nothing', { skip }, async () => {
+  const before = (await db.prepare('SELECT COUNT(*) n FROM channel').get()).n;
   const r = await ch({ point: 'dry', kind: 'counter', derived: 'plug_kwh', dryRun: true });
   assert.equal(r.status, 200);
   assert.equal(r.body.dryRun, true);
   assert.equal(r.body.channel.kind, 'counter');
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM channel').get().n, before);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM channel').get()).n, before);
   assert.equal((await ch({ point: 'dry', kind: 'counter', dryRun: true })).status, 400, 'a dry run validates too');
 });
 
-test('a counter channel defined through the API works end to end: ingest derives the energy of each period', { skip }, async () => {
+await test('a counter channel defined through the API works end to end: ingest derives the energy of each period', { skip }, async () => {
   const c = await ch({ point: 'e2e', kind: 'counter', derived: 'plug_kwh', min: 0, maxGapS: 7200 });
   assert.equal(c.status, 201);
   const t = 1_800_000_000 - (1_800_000_000 % 300);
   const res = ingestObservations(SITE, 'push_native', [{ point: 'e2e', ts: t, value: 10 }, { point: 'e2e', ts: t + 300, value: 10.5 }, { point: 'e2e', ts: t + 600, value: 11.25 }], null, { deviceId: plug, now: t + 900 });
   assert.equal(res.rejected, 0);
   assert.equal(res.counters, 3);
-  const e = db.prepare(`SELECT f.start_ts, f.value FROM interval_fact f JOIN series s ON s.id = f.series_id JOIN metric m ON m.id = s.metric_id
+  const e = await db.prepare(`SELECT f.start_ts, f.value FROM interval_fact f JOIN series s ON s.id = f.series_id JOIN metric m ON m.id = s.metric_id
     WHERE m.code = 'plug_kwh' AND s.subject_kind = 'device' AND s.subject_id = ? AND f.start_ts >= ? AND f.superseded_at IS NULL ORDER BY f.start_ts`).all(String(plug), t);
   assert.deepEqual(e.map((x) => x.value), [0.5, 0.75], 'the counter difference of each period');
 });

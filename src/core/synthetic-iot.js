@@ -18,6 +18,7 @@ import { ensureControlChannels } from './control.js';
 import { createSimulatedDriver, runControlCycle } from './executor.js';
 import { enqueueIfChanged, getCommand, commandLog } from './commands.js';
 import { todMinute, localDate, nowSec } from './time.js';
+import { mapAsync } from "./async.js";
 
 export const ENV_KEY = 'synthetic_iot';
 export const STEP_S = 300;                 // one reading every five minutes
@@ -134,34 +135,34 @@ export function stepAll(ts, prev, ctx) {
 export const START_STATE = { plug: 0, hpElec: 3200, hpHeat: 9800, ev: 410, soc: 40, lastTs: null };
 
 // ───────────── Setting the home up ─────────────
-export const findSyntheticIotSite = () => db.prepare('SELECT * FROM site WHERE env_key = ?').get(ENV_KEY) ?? null;
+export const findSyntheticIotSite = async () => await db.prepare('SELECT * FROM site WHERE env_key = ?').get(ENV_KEY) ?? null;
 export const isSyntheticSource = (code) => String(code ?? '').startsWith('synthetic_');
 export const isSyntheticDevice = (device) => device?.provider === 'synthetic';
 
-function ensureSources() {
+async function ensureSources() {
   const ins = db.prepare('INSERT OR IGNORE INTO source (code, name, contract, traits) VALUES (?, ?, ?, ?)');
   const units = { synthetic_plug: 'kWh counter, W, 0/1', synthetic_heatpump: 'kWh counters, degC, 0/1', synthetic_evcharger: 'kWh counter, W, 0/1', synthetic_battery: '%, W', synthetic_sensor: 'degC' };
-  for (const [code, name] of Object.entries(SOURCE_NAMES)) ins.run(code, name, contract(units[code]), JSON.stringify({ holdS: STEP_S }));
+  for (const [code, name] of Object.entries(SOURCE_NAMES)) await ins.run(code, name, contract(units[code]), JSON.stringify({ holdS: STEP_S }));
   // The one metric the registry has no code for yet: a smart plug's relay.
-  db.prepare("INSERT OR IGNORE INTO metric (code, label, unit, time_role, aggregation, domain) VALUES ('plug_on', 'Smart plug relay on', '0/1', 'instant', 'mean', 'plug')").run();
+  await db.prepare("INSERT OR IGNORE INTO metric (code, label, unit, time_role, aggregation, domain) VALUES ('plug_on', 'Smart plug relay on', '0/1', 'instant', 'mean', 'plug')").run();
 }
 
 // The devices of a home by key, with their ids.
-export function devicesOf(siteId) {
+export async function devicesOf(siteId) {
   const out = {};
-  for (const d of DEVICES) out[d.key] = db.prepare('SELECT * FROM device WHERE site_id = ? AND external_ref = ?').get(siteId, d.ref) ?? null;
+  for (const d of DEVICES) out[d.key] = await db.prepare('SELECT * FROM device WHERE site_id = ? AND external_ref = ?').get(siteId, d.ref) ?? null;
   return out;
 }
 
 const batteryDrivers = new Map();   // device id -> simulated driver (the device in memory); rebuilt from its last state facts after a restart
-export function batteryDriver(device) {
+export async function batteryDriver(device) {
   if (batteryDrivers.has(device.id)) return batteryDrivers.get(device.id);
-  const latest = (metric) => db.prepare(`SELECT r.value FROM reading r JOIN series s ON s.id = r.series_id JOIN metric m ON m.id = s.metric_id
-    WHERE s.subject_kind = 'device' AND s.subject_id = ? AND m.code = ? AND r.superseded_at IS NULL ORDER BY r.ts DESC LIMIT 1`).get(String(device.id), metric)?.value;
+  const latest = async (metric) => (await db.prepare(`SELECT r.value FROM reading r JOIN series s ON s.id = r.series_id JOIN metric m ON m.id = s.metric_id
+    WHERE s.subject_kind = 'device' AND s.subject_id = ? AND m.code = ? AND r.superseded_at IS NULL ORDER BY r.ts DESC LIMIT 1`).get(String(device.id), metric))?.value;
   const initial = {};
   for (const [key, metric] of [['work_mode', 'ctl_work_mode'], ['charge_target_soc', 'ctl_charge_target_soc_pct'], ['reserve', 'ctl_reserve_pct'], ['export_floor', 'ctl_export_floor_pct'],
     ['charge_window_start_min', 'ctl_charge_window_start_min'], ['charge_window_end_min', 'ctl_charge_window_end_min'], ['charge_rate_w', 'ctl_charge_rate_w'], ['discharge_rate_w', 'ctl_discharge_rate_w'], ['setpoint', 'ctl_setpoint_c']]) {
-    const v = latest(metric); if (v != null) initial[key] = v;
+    const v = await latest(metric); if (v != null) initial[key] = v;
   }
   const driver = createSimulatedDriver({ source: 'synthetic_battery', initial });
   driver.handles = (d) => d.id === device.id;
@@ -176,38 +177,38 @@ export const forgetDrivers = () => batteryDrivers.clear();
  * @returns { site, created }
  */
 export async function createSyntheticIotHome({ days = 3, now = nowSec() } = {}) {
-  const existing = findSyntheticIotSite();
+  const existing = await findSyntheticIotSite();
   if (existing) return { site: existing, created: false };
-  ensureSources();
+  await ensureSources();
   const histEnd = Math.floor((now - LAG_S) / STEP_S) * STEP_S;
   const start = histEnd - days * 86400;
-  const site = tx(() => {
-    const s = createSite({ name: 'Synthetic IoT home (demo data)', country: 'GB', isDemo: true, envKey: ENV_KEY, batteryKwh: BATTERY_KWH });
-    // A new home starts on the default bindings of the real providers; this one has none of them.
-    db.prepare('DELETE FROM binding WHERE site_id = ?').run(s.id);
-    for (const d of DEVICES) {
-      db.prepare('INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(s.id, d.kind, 'synthetic', d.ref, d.label, JSON.stringify({ synthetic: true, ...(d.key === 'battery' ? { battery_kwh: BATTERY_KWH } : {}) }), start * 1000);
-    }
-    return s;
-  });
-  const dev = devicesOf(site.id);
+  const site = await tx(async () => {
+      const s = await createSite({ name: 'Synthetic IoT home (demo data)', country: 'GB', isDemo: true, envKey: ENV_KEY, batteryKwh: BATTERY_KWH });
+      // A new home starts on the default bindings of the real providers; this one has none of them.
+      await db.prepare('DELETE FROM binding WHERE site_id = ?').run(s.id);
+      for (const d of DEVICES) {
+        await db.prepare('INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                  .run(s.id, d.kind, 'synthetic', d.ref, d.label, JSON.stringify({ synthetic: true, ...(d.key === 'battery' ? { battery_kwh: BATTERY_KWH } : {}) }), start * 1000);
+      }
+      return s;
+    });
+  const dev = await devicesOf(site.id);
   const tz = site.timezone;
 
   // Channels: what the device kind brings, plus the points the kind does not know.
-  for (const d of DEVICES) ensureChannels(site.id, d.source, dev[d.key].id);
-  defineChannel(site.id, 'synthetic_plug', 'relay', 'plug_on', { deviceId: dev.plug.id, min: 0, max: 1 });
-  defineChannel(site.id, 'synthetic_heatpump', 'heating', 'heating_on', { deviceId: dev.heatpump.id, min: 0, max: 1 });
-  defineChannel(site.id, 'synthetic_battery', 'soc', 'battery_soc_pct', { deviceId: dev.battery.id, min: 0, max: 100 });
-  defineChannel(site.id, 'synthetic_battery', 'charge_power', 'battery_charge_w', { deviceId: dev.battery.id, part: 'positive', min: 0 });
-  defineChannel(site.id, 'synthetic_sensor', 'temperature', 'indoor_temp_c', { deviceId: dev.sensor.id, min: -30, max: 60, futureToleranceS: 300 });
-  ensureControlChannels(site.id, 'synthetic_battery', dev.battery.id);
+  for (const d of DEVICES) await ensureChannels(site.id, d.source, dev[d.key].id);
+  await defineChannel(site.id, 'synthetic_plug', 'relay', 'plug_on', { deviceId: dev.plug.id, min: 0, max: 1 });
+  await defineChannel(site.id, 'synthetic_heatpump', 'heating', 'heating_on', { deviceId: dev.heatpump.id, min: 0, max: 1 });
+  await defineChannel(site.id, 'synthetic_battery', 'soc', 'battery_soc_pct', { deviceId: dev.battery.id, min: 0, max: 100 });
+  await defineChannel(site.id, 'synthetic_battery', 'charge_power', 'battery_charge_w', { deviceId: dev.battery.id, part: 'positive', min: 0 });
+  await defineChannel(site.id, 'synthetic_sensor', 'temperature', 'indoor_temp_c', { deviceId: dev.sensor.id, min: -30, max: 60, futureToleranceS: 300 });
+  await ensureControlChannels(site.id, 'synthetic_battery', dev.battery.id);
 
   // Roles: each device is bound where a role fits.
-  for (const d of DEVICES) for (const role of d.roles) bind(site.id, role, d.source, { deviceId: dev[d.key].id, reason: 'synthetic demo setup', keep: true });
+  for (const d of DEVICES) for (const role of d.roles) await bind(site.id, role, d.source, { deviceId: dev[d.key].id, reason: 'synthetic demo setup', keep: true });
 
   // Control: the battery can be told to charge (a capability the demo adapter delivers) and reports its own settings.
-  for (const action of ['charge', 'demand']) setCapability(dev.battery.id, action, true, { source: 'adapter' });
+  for (const action of ['charge', 'demand']) await setCapability(dev.battery.id, action, true, { source: 'adapter' });
 
   // History, step by step, in memory, then one ingest per device.
   const yesterday = localDate(tz, histEnd - 86400);
@@ -225,22 +226,22 @@ export async function createSyntheticIotHome({ days = 3, now = nowSec() } = {}) 
   for (const d of DEVICES) ingestObservations(site.id, d.source, all[d.key], null, { deviceId: dev[d.key].id, now });
 
   // The battery reports its own settings once (the simulated device in memory).
-  const driver = batteryDriver(dev.battery);
+  const driver = await batteryDriver(dev.battery);
   const stateObs = await driver.read(dev.battery, { now: histEnd * 1000 });
   ingestObservations(site.id, 'synthetic_battery', stateObs, null, { deviceId: dev.battery.id, now });
-  return { site: db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), created: true };
+  return { site: await db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), created: true };
 }
 
 // ───────────── Simulate the next period ─────────────
-const latestRaw = (deviceId, metric) => db.prepare(`SELECT r.ts, r.value FROM reading r JOIN series s ON s.id = r.series_id JOIN metric m ON m.id = s.metric_id
+const latestRaw = async (deviceId, metric) => await db.prepare(`SELECT r.ts, r.value FROM reading r JOIN series s ON s.id = r.series_id JOIN metric m ON m.id = s.metric_id
   WHERE s.subject_kind = 'device' AND s.subject_id = ? AND m.code = ? AND r.superseded_at IS NULL AND r.value IS NOT NULL ORDER BY r.ts DESC LIMIT 1`).get(String(deviceId), metric) ?? null;
 
 /** The counters and the charge level as stored, to carry on from. */
-export function stateFromStore(siteId) {
-  const dev = devicesOf(siteId);
-  const g = (d, metric, dflt) => (d ? latestRaw(d.id, metric) : null) ?? { ts: null, value: dflt };
-  const plug = g(dev.plug, 'plug_counter_kwh', 0); const hpE = g(dev.heatpump, 'heatpump_elec_counter_kwh', 3200); const hpH = g(dev.heatpump, 'heat_output_counter_kwh', 9800);
-  const ev = g(dev.ev, 'ev_delivered_counter_kwh', 410); const soc = g(dev.battery, 'battery_soc_pct', 40); const sensor = g(dev.sensor, 'indoor_temp_c', 20);
+export async function stateFromStore(siteId) {
+  const dev = await devicesOf(siteId);
+  const g = async (d, metric, dflt) => (d ? await latestRaw(d.id, metric) : null) ?? { ts: null, value: dflt };
+  const plug = await g(dev.plug, 'plug_counter_kwh', 0); const hpE = await g(dev.heatpump, 'heatpump_elec_counter_kwh', 3200); const hpH = await g(dev.heatpump, 'heat_output_counter_kwh', 9800);
+  const ev = await g(dev.ev, 'ev_delivered_counter_kwh', 410); const soc = await g(dev.battery, 'battery_soc_pct', 40); const sensor = await g(dev.sensor, 'indoor_temp_c', 20);
   const lastTs = Math.max(...[plug.ts, hpE.ts, ev.ts, soc.ts, sensor.ts].filter((t) => t != null), 0) || null;
   return { prev: { plug: plug.value, hpElec: hpE.value, hpHeat: hpH.value, ev: ev.value, soc: soc.value, lastTs }, lastTs };
 }
@@ -250,38 +251,38 @@ export function stateFromStore(siteId) {
  * time does). Stops at the real clock: a reading more than five minutes ahead would be refused as a future timestamp.
  * @returns { added, caughtUp, from, to, steps: [{ deviceKey, device, source, point, kind, received, channel, stored, derived }...] (the last period only) }
  */
-export function simulatePeriods(siteId, { periods = 1, now = nowSec() } = {}) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
-  const dev = devicesOf(siteId);
-  const { prev: start, lastTs } = stateFromStore(siteId);
+export async function simulatePeriods(siteId, { periods = 1, now = nowSec() } = {}) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  const dev = await devicesOf(siteId);
+  const { prev: start, lastTs } = await stateFromStore(siteId);
   if (lastTs == null) throw new Error('the synthetic home has no data to continue from');
   let prev = start; let ts = lastTs; let added = 0; let lastStep = null; const first = lastTs + STEP_S;
   for (let i = 0; i < periods; i++) {
     const next = ts + STEP_S;
     if (next > now + STEP_S) break;                                        // the clock's limit: a future timestamp is refused
     const r = stepAll(next, prev, { tz: site.timezone });
-    const before = Object.fromEntries(DEVICES.map((d) => [d.key, snapshotCounters(dev[d.key])]));
+    const before = Object.fromEntries(await mapAsync(DEVICES, async (d) => [d.key, await snapshotCounters(dev[d.key])]));
     const results = {};
     for (const d of DEVICES) results[d.key] = ingestObservations(siteId, d.source, r.obs[d.key], null, { deviceId: dev[d.key].id, now });
     lastStep = { ts: next, obs: r.obs, results, before };
     prev = r.prev; ts = next; added++;
   }
-  const steps = lastStep ? pipelineSteps(siteId, dev, lastStep) : [];
+  const steps = lastStep ? await pipelineSteps(siteId, dev, lastStep) : [];
   return { added, caughtUp: added < periods, from: added ? first : null, to: added ? ts : null, steps };
 }
 
-function snapshotCounters(device) {
+async function snapshotCounters(device) {
   if (!device) return {};
-  return Object.fromEntries(['plug_counter_kwh', 'heatpump_elec_counter_kwh', 'heat_output_counter_kwh', 'ev_delivered_counter_kwh'].map((m) => [m, latestRaw(device.id, m)?.value ?? null]));
+  return Object.fromEntries(await mapAsync(['plug_counter_kwh', 'heatpump_elec_counter_kwh', 'heat_output_counter_kwh', 'ev_delivered_counter_kwh'], async (m) => [m, (await latestRaw(device.id, m))?.value ?? null]));
 }
 
 // What happened to each reading of the last period, in words and numbers, for the page: received, translated by the
 // channel, stored, and for a counter the energy derived from it.
-function pipelineSteps(siteId, dev, step) {
+async function pipelineSteps(siteId, dev, step) {
   const out = [];
   for (const d of DEVICES) {
     const device = dev[d.key];
-    const chans = db.prepare(`SELECT c.point, c.scale, c.shift, c.part, c.kind, c.access, m.code AS metric, dm.code AS derived FROM channel c JOIN metric m ON m.id = c.metric_id
+    const chans = await db.prepare(`SELECT c.point, c.scale, c.shift, c.part, c.kind, c.access, m.code AS metric, dm.code AS derived FROM channel c JOIN metric m ON m.id = c.metric_id
       LEFT JOIN metric dm ON dm.id = c.derived_metric_id JOIN source s ON s.id = c.source_id WHERE c.site_id = ? AND s.code = ? AND c.device_id = ? AND c.superseded_at IS NULL`).all(siteId, d.source, device.id);
     for (const o of step.obs[d.key]) {
       const c = chans.find((x) => x.point === o.point);
@@ -290,7 +291,7 @@ function pipelineSteps(siteId, dev, step) {
         channel: { metric: c.metric, scale: c.scale, shift: c.shift, part: c.part }, stored: null, derived: null };
       if (c.kind === 'counter') {
         const prevRaw = step.before[d.key][c.metric];
-        const per = db.prepare(`SELECT i.start_ts, i.end_ts, i.value, i.quality FROM interval_fact i JOIN series s ON s.id = i.series_id JOIN metric m ON m.id = s.metric_id
+        const per = await db.prepare(`SELECT i.start_ts, i.end_ts, i.value, i.quality FROM interval_fact i JOIN series s ON s.id = i.series_id JOIN metric m ON m.id = s.metric_id
           WHERE s.subject_kind = 'device' AND s.subject_id = ? AND m.code = ? AND i.end_ts = ? AND i.superseded_at IS NULL`).get(String(device.id), c.derived, o.ts);
         row.stored = { metric: c.metric, value: o.value, previous: prevRaw };
         row.derived = per ? { metric: c.derived, value: per.value, start: per.start_ts, end: per.end_ts, partial: (per.quality & 16) !== 0, estimated: (per.quality & 8) !== 0 } : null;
@@ -311,18 +312,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @returns { command, log, cycles: [{ now, did }], target, window }
  */
 export async function sendTestCommand(siteId, deviceId, { targetSocPct = null } = {}) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
-  const device = db.prepare('SELECT * FROM device WHERE id = ?').get(deviceId);
-  const driver = batteryDriver(device);
-  const cur = db.prepare(`SELECT r.value FROM reading r JOIN series s ON s.id = r.series_id JOIN metric m ON m.id = s.metric_id
-    WHERE s.subject_kind = 'device' AND s.subject_id = ? AND m.code = 'ctl_charge_target_soc_pct' AND r.superseded_at IS NULL ORDER BY r.ts DESC LIMIT 1`).get(String(deviceId))?.value;
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  const device = await db.prepare('SELECT * FROM device WHERE id = ?').get(deviceId);
+  const driver = await batteryDriver(device);
+  const cur = (await db.prepare(`SELECT r.value FROM reading r JOIN series s ON s.id = r.series_id JOIN metric m ON m.id = s.metric_id
+    WHERE s.subject_kind = 'device' AND s.subject_id = ? AND m.code = 'ctl_charge_target_soc_pct' AND r.superseded_at IS NULL ORDER BY r.ts DESC LIMIT 1`).get(String(deviceId)))?.value;
   const target = targetSocPct ?? (cur === 80 ? 90 : 80);               // alternate, so a repeat is a real change
   const t0 = Date.now();
   const ws = Math.floor((t0 / 1000 - 900) / 60) * 60;
   const window = { start: ws, end: ws + 1800 };
-  const enq = enqueueIfChanged({ deviceId, desired: { action: 'charge', windowStart: window.start, windowEnd: window.end, limitPct: target },
-    validFrom: ws - 300, validUntil: ws + 3600, now: t0 });
-  if (!enq.written) return { command: enq.command ?? null, log: enq.command ? commandLog(enq.command.id) : [], cycles: [], target, window, written: false, reason: enq.reason, blocks: enq.blocks ?? [] };
+  const enq = await enqueueIfChanged({ deviceId, desired: { action: 'charge', windowStart: window.start, windowEnd: window.end, limitPct: target },
+      validFrom: ws - 300, validUntil: ws + 3600, now: t0 });
+  if (!enq.written) return { command: enq.command ?? null, log: enq.command ? await commandLog(enq.command.id) : [], cycles: [], target, window, written: false, reason: enq.reason, blocks: enq.blocks ?? [] };
   const id = enq.command.id;
   const cycles = [];
   const cycle = async (k) => { const now = Date.now() + 2000 * k; const r = await runControlCycle(siteId, { driver, now, devices: [deviceId] }); cycles.push({ now, did: r.devices[0]?.did ?? [] }); await sleep(5); };
@@ -333,6 +334,6 @@ export async function sendTestCommand(siteId, deviceId, { targetSocPct = null } 
   ingestObservations(siteId, 'synthetic_battery', obs, null, { deviceId, now: nowSec() + 600 });
   await sleep(5);
   await cycle(2);                      // the effect check
-  const c = getCommand(id);
-  return { command: c, log: commandLog(id), cycles, target, window, written: true };
+  const c = await getCommand(id);
+  return { command: c, log: await commandLog(id), cycles, target, window, written: true };
 }

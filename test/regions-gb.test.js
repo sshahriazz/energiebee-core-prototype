@@ -27,7 +27,7 @@ const TABLE = [
   ['23', 'M', '14', 'Yorkshire', 'Yorkshire'],
 ];
 
-test('14 regions, 14 Octopus letters (no I or O), 42 aliases', () => {
+await test('14 regions, 14 Octopus letters (no I or O), 42 aliases', () => {
   assert.equal(GB_REGIONS.length, 14);
   assert.equal(GB_REGION_ALIASES.length, 42);
   const letters = GB_REGION_ALIASES.filter((a) => a.alias_scheme === 'octopus_gsp').map((a) => a.alias_code).sort();
@@ -35,23 +35,23 @@ test('14 regions, 14 Octopus letters (no I or O), 42 aliases', () => {
 });
 
 for (const [mpan, letter, tsId, tsName, name] of TABLE) {
-  test(`round trip ${mpan} / ${letter} / Tariffscanner ${tsId} ${tsName}`, () => {
-    const viaMpan = resolveRegion('gb_dno', mpan);
-    assert.deepEqual(viaMpan, { scheme: 'gb_dno', code: mpan, country: 'GB', name });
-    for (const [scheme, code] of [['octopus_gsp', letter], ['tariffscan_id', tsId], ['tariffscan_name', tsName]]) {
-      assert.equal(resolveRegion(scheme, code), viaMpan, `${scheme} ${code}`);
-    }
-    assert.deepEqual(aliasesOf(viaMpan), [
-      { alias_scheme: 'octopus_gsp', alias_code: letter },
-      { alias_scheme: 'tariffscan_id', alias_code: tsId },
-      { alias_scheme: 'tariffscan_name', alias_code: tsName },
-    ]);
-    // ... and back: each alias of the region resolves to the same region.
-    for (const a of aliasesOf(viaMpan)) assert.equal(resolveRegion(a.alias_scheme, a.alias_code), viaMpan);
-  });
+  await test(`round trip ${mpan} / ${letter} / Tariffscanner ${tsId} ${tsName}`, () => {
+        const viaMpan = resolveRegion('gb_dno', mpan);
+        assert.deepEqual(viaMpan, { scheme: 'gb_dno', code: mpan, country: 'GB', name });
+        for (const [scheme, code] of [['octopus_gsp', letter], ['tariffscan_id', tsId], ['tariffscan_name', tsName]]) {
+          assert.equal(resolveRegion(scheme, code), viaMpan, `${scheme} ${code}`);
+        }
+        assert.deepEqual(aliasesOf(viaMpan), [
+          { alias_scheme: 'octopus_gsp', alias_code: letter },
+          { alias_scheme: 'tariffscan_id', alias_code: tsId },
+          { alias_scheme: 'tariffscan_name', alias_code: tsName },
+        ]);
+        // ... and back: each alias of the region resolves to the same region.
+        for (const a of aliasesOf(viaMpan)) assert.equal(resolveRegion(a.alias_scheme, a.alias_code), viaMpan);
+      });
 }
 
-test('BB12 is Octopus G: North West England, MPAN 16, Tariffscanner Norweb (7)', () => {
+await test('BB12 is Octopus G: North West England, MPAN 16, Tariffscanner Norweb (7)', () => {
   // Postcode BB12 is NESO carbon region 3 and Octopus GSP letter G (the test homes elsewhere use it).
   const g = resolveRegion('octopus_gsp', 'G');
   assert.equal(g.code, '16');
@@ -60,7 +60,7 @@ test('BB12 is Octopus G: North West England, MPAN 16, Tariffscanner Norweb (7)',
   assert.equal(resolveRegion('tariffscan_id', 7), g);
 });
 
-test('codes are normalised the way upstream sends them', () => {
+await test('codes are normalised the way upstream sends them', () => {
   assert.equal(resolveRegion('octopus_gsp', '_g').code, '16');         // Octopus API: "_G"
   assert.equal(resolveRegion('octopus_gsp', ' c ').code, '12');
   assert.equal(resolveRegion('tariffscan_id', '07').code, '16');
@@ -69,7 +69,7 @@ test('codes are normalised the way upstream sends them', () => {
   assert.equal(normaliseCode('octopus_gsp', '_j'), 'J');
 });
 
-test('unknown codes resolve to nothing, never to a guess', () => {
+await test('unknown codes resolve to nothing, never to a guess', () => {
   assert.equal(resolveRegion('octopus_gsp', 'I'), null);
   assert.equal(resolveRegion('octopus_gsp', 'O'), null);
   assert.equal(resolveRegion('gb_dno', '24'), null);
@@ -79,7 +79,7 @@ test('unknown codes resolve to nothing, never to a guess', () => {
   assert.throws(() => aliasesOf({ scheme: 'gb_dno', code: '99' }), /unknown region/);
 });
 
-test('NESO carbon regions are a separate scheme, never aliased to distribution regions', () => {
+await test('NESO carbon regions are a separate scheme, never aliased to distribution regions', () => {
   // BB12 is carbon region 3 and GSP G; L1 is carbon region 6 and also GSP G: not a function.
   assert.equal(resolveRegion('gb_carbon', '3'), null);
   assert.equal(resolveRegion('gb_carbon', '16'), null);   // a DNO id is not a carbon id
@@ -101,7 +101,7 @@ test('NESO carbon regions are a separate scheme, never aliased to distribution r
   assert.equal(resolveRegion('gb_dno', '3', idx), null);
 });
 
-test('an alias that points at two regions, or at none, is refused', () => {
+await test('an alias that points at two regions, or at none, is refused', () => {
   assert.throws(() => buildRegionIndex({
     regions: GB_REGIONS,
     aliases: [...GB_REGION_ALIASES, { scheme: 'gb_dno', code: '12', alias_scheme: 'octopus_gsp', alias_code: 'G' }],
@@ -115,7 +115,7 @@ test('an alias that points at two regions, or at none, is refused', () => {
 // API answered, kept in test/fixtures/tariffscanner/ and used by test/tariffscanner.test.js).
 // Part of the repository: never skipped; a missing or empty fixture fails.
 const FIXTURE_DIR = path.join(import.meta.dirname, 'fixtures', 'tariffscanner');
-test('Tariffscanner dno_region_id and dno_region in the saved samples agree with the aliases and the table', () => {
+await test('Tariffscanner dno_region_id and dno_region in the saved samples agree with the aliases and the table', () => {
   const files = fs.readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.json')).sort();
   assert.deepEqual(files, ['page-1.json', 'page-2.json', 'page-day-night.json']);
   const pairs = new Map();
@@ -141,7 +141,7 @@ test('Tariffscanner dno_region_id and dno_region in the saved samples agree with
   assert.deepEqual([...pairs.keys()].sort((a, b) => a - b), [1, 4, 5, 6, 7, 9, 11, 12, 13, 14]);
 });
 
-test('Tariffscanner ids run in alphabetical order of the names (ignoring case and spaces)', () => {
+await test('Tariffscanner ids run in alphabetical order of the names (ignoring case and spaces)', () => {
   const key = (s) => s.toLowerCase().replace(/\s+/g, '');
   const names = TABLE.map((r) => r[3]);
   assert.deepEqual([...names].sort((a, b) => key(a).localeCompare(key(b))), names);

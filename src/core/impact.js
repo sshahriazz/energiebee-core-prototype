@@ -9,16 +9,16 @@ const FIELDS = ['solar', 'home', 'grid_import', 'grid_export', 'total_cost', 'st
 
 // apply: a function that makes the change (for example () => bind(...)). Returns
 // { slots, changed, byField: { field: { slots, sum } }, firstChanged, lastChanged, days }.
-export function previewImpact(siteId, apply) {
-  const site = db.prepare('SELECT timezone FROM site WHERE id = ?').get(siteId);
-  const first = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId)?.d;
+export async function previewImpact(siteId, apply) {
+  const site = await db.prepare('SELECT timezone FROM site WHERE id = ?').get(siteId);
+  const first = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId))?.d;
   if (!first) return { slots: 0, changed: 0, byField: {}, firstChanged: null, lastChanged: null, days: [] };
   const last = addDays(localDate(site.timezone, nowSec()), -1);
-  const read = () => buildSite(siteId, first, last, { asOf: nowSec() + 1, dryRun: true }).hhRows; // +1: rows written this second are known
-  const before = new Map(read().map((r) => [r.slot_start, r]));
-  db.exec('SAVEPOINT impact_preview');
+  const read = async () => (await buildSite(siteId, first, last, { asOf: nowSec() + 1, dryRun: true })).hhRows; // +1: rows written this second are known
+  const before = new Map((await read()).map((r) => [r.slot_start, r]));
+  await db.exec('SAVEPOINT impact_preview');
   let after;
-  try { apply(); after = read(); } finally { db.exec('ROLLBACK TO impact_preview'); db.exec('RELEASE impact_preview'); }
+  try { apply(); after = await read(); } finally { await db.exec('ROLLBACK TO impact_preview'); await db.exec('RELEASE impact_preview'); }
   const byField = {}; const days = new Set(); let changed = 0; let firstChanged = null; let lastChanged = null;
   for (const r of after) {
     const o = before.get(r.slot_start);

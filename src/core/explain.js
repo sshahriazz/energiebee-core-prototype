@@ -58,17 +58,17 @@ export function localTime(tz, ts) {
 }
 
 // The series metadata (metric, source, subject) of a list of ids, read-only.
-export function seriesMeta(ids) {
+export async function seriesMeta(ids) {
   const list = [...new Set(ids.filter((x) => x != null))];
   if (!list.length) return new Map();
-  return new Map(db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.unit, so.code AS source FROM series se
-      JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id WHERE se.id IN (${list.map(() => '?').join(',')})`).all(...list).map((r) => [r.id, r]));
+  return new Map((await db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.unit, so.code AS source FROM series se
+      JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id WHERE se.id IN (${list.map(() => '?').join(',')})`).all(...list)).map((r) => [r.id, r]));
 }
 
 // A site-level series id by metric and source, never created (a read must not write).
-export function findSeries(subjectKind, subjectId, metric, source) {
-  return db.prepare(`SELECT se.id FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
-    WHERE se.subject_kind = ? AND se.subject_id = ? AND m.code = ? AND so.code = ?`).get(subjectKind, String(subjectId), metric, source)?.id ?? null;
+export async function findSeries(subjectKind, subjectId, metric, source) {
+  return (await db.prepare(`SELECT se.id FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
+    WHERE se.subject_kind = ? AND se.subject_id = ? AND m.code = ? AND so.code = ?`).get(subjectKind, String(subjectId), metric, source))?.id ?? null;
 }
 
 // Compare a rebuilt row with the stored one: every column but when it was built. Numbers within
@@ -96,14 +96,14 @@ export function compareRows(stored, rebuilt) {
 }
 
 // The site, the slot checked against the home's grid, and the stored row.
-export function slotContext(siteId, slot) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function slotContext(siteId, slot) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new ExplainError(`no home ${siteId}`, 404);
   const slotS = slotLength(site);
   if (!Number.isInteger(slot)) throw new ExplainError('slot must be the epoch seconds of a slot start');
   const start = slotFloor(slot, slotS, slotPhase(site.timezone, slotS, slot));
   if (start !== slot) throw new ExplainError(`${slot} is not the start of a ${slotNoun(slotS)} of this home: the slot holding it starts at ${start}`);
-  const stored = db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start = ?').get(siteId, slot) ?? null;
+  const stored = await db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start = ?').get(siteId, slot) ?? null;
   return { site, slotS, tz: site.timezone, date: localDate(site.timezone, slot), stored };
 }
 
@@ -111,29 +111,29 @@ export function slotContext(siteId, slot) {
 // home's first day (an as-of rebuild never continues from a stored battery stock, build.js), so it
 // costs a whole-history dry run. The moment is passed to the build to the millisecond (asOf in
 // fractional seconds), so a fact recorded later in the same second stays invisible.
-export function traceSlot(siteId, slot, { asOfMs = null } = {}) {
-  const ctx = slotContext(siteId, slot);
+export async function traceSlot(siteId, slot, { asOfMs = null } = {}) {
+  const ctx = await slotContext(siteId, slot);
   const trace = { slot };
   let first = ctx.date;
-  if (asOfMs != null) first = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId)?.d ?? ctx.date;
+  if (asOfMs != null) first = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId))?.d ?? ctx.date;
   if (first > ctx.date) first = ctx.date;
   const t0 = Date.now();
-  const built = buildSite(siteId, first, ctx.date, { dryRun: true, trace, ...(asOfMs != null ? { asOf: asOfMs / 1000 } : {}) });
+  const built = await buildSite(siteId, first, ctx.date, { dryRun: true, trace, ...(asOfMs != null ? { asOf: asOfMs / 1000 } : {}) });
   return { ...ctx, trace, built, ms: Date.now() - t0, asOfMs };
 }
 
 // recorded_at of the readings and interval facts the slot used (the version in force, or as known at).
 function recordedAtOf(readings, intervals, asOfMs) {
-  return withKnownAt(asOfMs, () => {
+  return withKnownAt(asOfMs, async () => {
     const out = new Map();
     const bySeries = new Map();
     for (const r of readings) (bySeries.get(r.series_id) || bySeries.set(r.series_id, []).get(r.series_id)).push(r.ts);
     for (const [id, ts] of bySeries) {
       const q = db.prepare(`SELECT ts, recorded_at FROM reading WHERE series_id = ? AND ts >= ? AND ts <= ? AND ${inForce()}`);
-      for (const r of q.all(id, Math.min(...ts), Math.max(...ts))) out.set(`r|${id}|${r.ts}`, r.recorded_at);
+      for (const r of await q.all(id, Math.min(...ts), Math.max(...ts))) out.set(`r|${id}|${r.ts}`, r.recorded_at);
     }
     const qi = db.prepare(`SELECT recorded_at FROM interval_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND ${inForce()}`);
-    for (const x of intervals) out.set(`i|${x.series_id}|${x.start_ts}|${x.end_ts}`, qi.get(x.series_id, x.start_ts, x.end_ts)?.recorded_at ?? null);
+    for (const x of intervals) out.set(`i|${x.series_id}|${x.start_ts}|${x.end_ts}`, (await qi.get(x.series_id, x.start_ts, x.end_ts))?.recorded_at ?? null);
     return out;
   });
 }
@@ -196,8 +196,8 @@ const NODE_RESULT = { solar: 'solar', chg: 'battery_charge', dis: 'battery_disch
  * The calculation trace of one slot (GET /api/explorer/slot): { slot, local_time, dur_s, state,
  * quality, row, recomputed, matches_stored, diffs, steps, flows, price, battery, checks, lineage }.
  */
-export function explainSlot(siteId, slot, { asOfMs = null } = {}) {
-  const t = traceSlot(siteId, slot, { asOfMs });
+export async function explainSlot(siteId, slot, { asOfMs = null } = {}) {
+  const t = await traceSlot(siteId, slot, { asOfMs });
   const { site, slotS, tz, date, stored, trace: T, built } = t;
   const TS = T.slotTrace; const TD = T.day;
   if (!stored && (!TS || TS.row.state === 'missing')) throw new ExplainError(`no ${slotNoun(slotS)} at ${slot}: not built (it has not ended, or the home has no data then)`, 404);
@@ -235,8 +235,8 @@ export function explainSlot(siteId, slot, { asOfMs = null } = {}) {
   if (stored && stored.quality !== q) out.quality.recomputed = q;
 
   // ── inputs ──
-  const meta = seriesMeta([...Object.values(T.ids.power), T.ids.soc, T.ids.daily ? Object.values(T.ids.daily) : [],
-    ...['import', 'export', 'gas', 'ev'].flatMap((k) => (TS.meter[k] || []).map((x) => x.series_id)), TS.meter.gasCv?.series_id, ...X.carbon.map((x) => x.series_id)].flat());
+  const meta = await seriesMeta([...Object.values(T.ids.power), T.ids.soc, T.ids.daily ? Object.values(T.ids.daily) : [],
+      ...['import', 'export', 'gas', 'ev'].flatMap((k) => (TS.meter[k] || []).map((x) => x.series_id)), TS.meter.gasCv?.series_id, ...X.carbon.map((x) => x.series_id)].flat());
   const samples = Object.entries(TS.samples).flatMap(([k, rows]) => rows.map((r) => ({ ...r, node: k })));
   const intervals = [...['import', 'export', 'gas', 'ev'].flatMap((k) => TS.meter[k] || []), ...X.carbon, ...(TS.meter.gasCv ? [TS.meter.gasCv] : []),
     ...Object.values(TD.align).map((a) => a.counter).filter(Boolean)];
@@ -259,9 +259,9 @@ export function explainSlot(siteId, slot, { asOfMs = null } = {}) {
   for (const x of TS.meter.ev || []) inputs.push(factItem(x, `EV smart-charge dispatch ${span(x)}`, 'kWh', shareNote(x)));
   for (const [k, a] of Object.entries(TD.align)) if (a.counter) inputs.push(factItem(a.counter, `inverter daily counter ${COUNTER_METRIC[k]} for ${date}`, 'kWh'));
   for (const x of X.carbon) inputs.push(factItem(x, `grid carbon intensity ${span(x)}`, 'gCO2/kWh'));
-  if (X.temp != null) inputs.push(item(`outdoor temperature at ${hhmm(tz, X.tempHour)}`, X.temp, 'degC', { source: 'open_meteo', series_id: findSeries('site', site.id, 'outdoor_temp_c', 'open_meteo'), ts: X.tempHour }));
+  if (X.temp != null) inputs.push(item(`outdoor temperature at ${hhmm(tz, X.tempHour)}`, X.temp, 'degC', { source: 'open_meteo', series_id: await findSeries('site', site.id, 'outdoor_temp_c', 'open_meteo'), ts: X.tempHour }));
   for (const fc of X.forecast) {
-    inputs.push(item(`solar forecast ${span(fc)} (issued ${isoUtc(fc.issued_at)})`, fc.value, 'kWh', { source: fc.source, series_id: fc.source ? findSeries('site', site.id, 'solar_kwh', fc.source) : null, start_ts: fc.start_ts, end_ts: fc.end_ts,
+    inputs.push(item(`solar forecast ${span(fc)} (issued ${isoUtc(fc.issued_at)})`, fc.value, 'kWh', { source: fc.source, series_id: fc.source ? await findSeries('site', site.id, 'solar_kwh', fc.source) : null, start_ts: fc.start_ts, end_ts: fc.end_ts,
       note: 'the latest issue made before the period started (forecast of record)' }));
   }
   out.price.import = priceBlock(T.pricing, 'meter_import', P.pi, slot, slotS);

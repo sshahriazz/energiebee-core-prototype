@@ -18,6 +18,7 @@ import { ingestObservations } from './channels.js';
 import { forgetSeriesCache } from './facts.js';
 import { nowSec } from './time.js';
 import { parseDay, parseMonth, parseFlow } from '../adapters/sunsynk.js';
+import { mapAsync } from "./async.js";
 
 export class ReplayError extends Error {
   constructor(status, code, message, field = null) { super(message); this.status = status; this.code = code; this.field = field; }
@@ -89,19 +90,19 @@ function readReceipt(file) {
   try { return fs.readFileSync(path.join(dataDir, file), 'utf8'); } catch { return null; }
 }
 
-function rolledBack(fn) {
-  db.exec('SAVEPOINT replay_dry');
-  try { return fn(); } finally { db.exec('ROLLBACK TO replay_dry'); db.exec('RELEASE replay_dry'); }
+async function rolledBack(fn) {
+  await db.exec('SAVEPOINT replay_dry');
+  try { return fn(); } finally { await db.exec('ROLLBACK TO replay_dry'); await db.exec('RELEASE replay_dry'); }
 }
 
 // Receipts of a home that a replay would read: accepted (never quarantined), of a replayable source, within `days`.
-function receiptsOf(siteId, { source = null, days = 30, ids = null, limit = 2000, now = nowSec() } = {}) {
+async function receiptsOf(siteId, { source = null, days = 30, ids = null, limit = 2000, now = nowSec() } = {}) {
   const codes = source ? [source] : replayableSources();
   const q = codes.map(() => '?').join(',');
   const idFilter = ids ? ` AND rp.id IN (${ids.map(() => '?').join(',')})` : '';
-  const rows = db.prepare(`SELECT rp.id, rp.request, rp.file, rp.fetched_at, so.code AS source FROM raw_payload rp JOIN source so ON so.id = rp.source_id
+  const rows = await db.prepare(`SELECT rp.id, rp.request, rp.file, rp.fetched_at, so.code AS source FROM raw_payload rp JOIN source so ON so.id = rp.source_id
     WHERE rp.site_id = ? AND rp.status = 'accepted' AND so.code IN (${q}) AND rp.fetched_at >= ?${idFilter} ORDER BY rp.id LIMIT ?`)
-    .all(siteId, ...codes, Math.floor(now - days * 86400), ...(ids ?? []), limit + 1);
+      .all(siteId, ...codes, Math.floor(now - days * 86400), ...(ids ?? []), limit + 1);
   const capped = rows.length > limit;
   const kept = rows.slice(0, limit).filter((r) => {
     const rq = parseJson(r.request) ?? {};
@@ -114,9 +115,9 @@ function receiptsOf(siteId, { source = null, days = 30, ids = null, limit = 2000
  * What a replay could recover: for each source that has refused or unmapped values in the window, how many receipts it could
  * read again, or why it cannot. Nothing is changed. { sources: [...], total (receipts), canReplay }.
  */
-export function replayCandidates(siteId, { days = 30, now = nowSec() } = {}) {
+export async function replayCandidates(siteId, { days = 30, now = nowSec() } = {}) {
   const since = (now - days * 86400) * 1000;
-  const bySource = db.prepare(`SELECT so.code AS source, r.reason, COUNT(*) AS n FROM channel_reject r JOIN source so ON so.id = r.source_id
+  const bySource = await db.prepare(`SELECT so.code AS source, r.reason, COUNT(*) AS n FROM channel_reject r JOIN source so ON so.id = r.source_id
     WHERE r.site_id = ? AND r.recorded_at >= ? GROUP BY so.code, r.reason`).all(siteId, since);
   const sources = new Map();
   for (const x of bySource) {
@@ -124,16 +125,16 @@ export function replayCandidates(siteId, { days = 30, now = nowSec() } = {}) {
     if (x.reason === 'unmapped_point') s.unmapped += x.n; else s.refused += x.n;
     sources.set(x.source, s);
   }
-  const list = [...sources.values()].map((s) => {
-    const can = canReplay(s.source);
-    const receipts = can ? receiptsOf(siteId, { source: s.source, days, now }).receipts.length : 0;
-    return { ...s, canReplay: can, receipts, why: can ? null : whyNot(s.source) };
-  });
-  return { siteId, days, sources: list, total: list.reduce((t, s) => t + s.receipts, 0), lastRuns: lastRuns(siteId) };
+  const list = await mapAsync([...sources.values()], async (s) => {
+        const can = canReplay(s.source);
+        const receipts = can ? (await receiptsOf(siteId, { source: s.source, days, now })).receipts.length : 0;
+        return { ...s, canReplay: can, receipts, why: can ? null : whyNot(s.source) };
+      });
+  return { siteId, days, sources: list, total: list.reduce((t, s) => t + s.receipts, 0), lastRuns: await lastRuns(siteId) };
 }
 
-export function lastRuns(siteId, limit = 5) {
-  return db.prepare('SELECT * FROM replay_log WHERE site_id = ? ORDER BY id DESC LIMIT ?').all(siteId, limit).map((r) => ({
+export async function lastRuns(siteId, limit = 5) {
+  return (await db.prepare('SELECT * FROM replay_log WHERE site_id = ? ORDER BY id DESC LIMIT ?').all(siteId, limit)).map((r) => ({
     id: r.id, source: r.source, startedAt: r.started_at, days: r.days, receipts: r.receipts, observations: r.observations, written: r.written, forecasts: r.forecasts,
     rejected: r.rejected, unmapped: r.unmapped, parseErrors: r.parse_errors, note: r.note,
   }));
@@ -160,9 +161,9 @@ async function parseReceipt(site, r) {
 }
 
 // Resolve a pushed receipt's device (by external ref) to a device id of the home; null = the home itself.
-function deviceFor(site, ref) {
+async function deviceFor(site, ref) {
   if (ref == null || ref === '') return { id: null };
-  const d = db.prepare('SELECT id FROM device WHERE site_id = ? AND external_ref = ?').get(site.id, String(ref));
+  const d = await db.prepare('SELECT id FROM device WHERE site_id = ? AND external_ref = ?').get(site.id, String(ref));
   return d ? { id: d.id } : { missing: true };
 }
 
@@ -173,13 +174,13 @@ function deviceFor(site, ref) {
  * reason, count }], parseErrors, missingFiles, deviceMissing, capped, bySource: {...}, logId }.
  */
 export async function replay(siteId, { source = null, days = 30, ids = null, limit = 2000, dryRun = true, now = nowSec() } = {}) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(Number(siteId));
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(Number(siteId));
   if (!site) throw new ReplayError(404, 'not_found', 'No such home');
   if (source != null && !canReplay(source)) throw new ReplayError(400, 'not_replayable', `${source} cannot be replayed: ${whyNot(source)}`, 'source');
   if (source != null && source in PUSH_SOURCES && !(await pushReplayAvailable())) throw new ReplayError(400, 'not_replayable', 'Pushed receipts cannot be replayed: the push formats are not available in this build', 'source');
   const d = Number(days);
   if (!Number.isFinite(d) || d <= 0 || d > 3650) throw new ReplayError(400, 'bad_number', 'days must be between 1 and 3650', 'days');
-  const { receipts, capped } = receiptsOf(site.id, { source, days: d, ids, limit, now });
+  const { receipts, capped } = await receiptsOf(site.id, { source, days: d, ids, limit, now });
   const out = { dryRun, source, days: d, receipts: receipts.length, observations: 0, written: 0, forecasts: 0, derived: 0, rejected: 0, unmapped: [], stillRejected: [], parseErrors: 0, missingFiles: 0, deviceMissing: 0, capped, bySource: {} };
 
   // Parse first (outside any transaction: file reads and dynamic imports), then ingest all in one transaction.
@@ -191,13 +192,13 @@ export async function replay(siteId, { source = null, days = 30, ids = null, lim
     if (p.missing) { out.missingFiles++; continue; }
     if (p.error) { out.parseErrors++; continue; }
     let device = { id: null };
-    if (r.source in PUSH_SOURCES) { device = deviceFor(site, p.deviceRef); if (device.missing) { out.deviceMissing++; continue; } }
+    if (r.source in PUSH_SOURCES) { device = await deviceFor(site, p.deviceRef); if (device.missing) { out.deviceMissing++; continue; } }
     out.observations += p.observations.length; bs.observations += p.observations.length;
     parsed.push({ r, obs: p.observations, deviceId: device.id });
   }
 
-  const run = () => {
-    const maxReject = db.prepare('SELECT IFNULL(MAX(id), 0) AS m FROM channel_reject').get().m;
+  const run = async () => {
+    const maxReject = (await db.prepare('SELECT IFNULL(MAX(id), 0) AS m FROM channel_reject').get()).m;
     const unmapped = new Set();
     for (const { r, obs, deviceId } of parsed) {
       const res = ingestObservations(site.id, r.source, obs, r.id, { deviceId, now: r.fetched_at });
@@ -206,21 +207,21 @@ export async function replay(siteId, { source = null, days = 30, ids = null, lim
       for (const p of res.unmapped) unmapped.add(`${r.source}:${p}`);
     }
     // What this run would refuse again, from the refusal rows ingest just wrote; those rows are then removed (see the header).
-    out.stillRejected = db.prepare(`SELECT so.code AS source, r.point, r.reason, COUNT(*) AS count FROM channel_reject r JOIN source so ON so.id = r.source_id
-      WHERE r.id > ? AND r.reason <> 'unmapped_point' GROUP BY so.code, r.point, r.reason ORDER BY count DESC LIMIT 50`).all(maxReject).map((x) => ({ ...x }));
-    db.prepare('DELETE FROM channel_reject WHERE id > ?').run(maxReject);
+    out.stillRejected = (await db.prepare(`SELECT so.code AS source, r.point, r.reason, COUNT(*) AS count FROM channel_reject r JOIN source so ON so.id = r.source_id
+      WHERE r.id > ? AND r.reason <> 'unmapped_point' GROUP BY so.code, r.point, r.reason ORDER BY count DESC LIMIT 50`).all(maxReject)).map((x) => ({ ...x }));
+    await db.prepare('DELETE FROM channel_reject WHERE id > ?').run(maxReject);
     out.unmapped = [...unmapped].map((x) => { const i = x.indexOf(':'); return { source: x.slice(0, i), point: x.slice(i + 1) }; });
   };
   // tx() first: the fact writers open their own transactions, which nest inside it (a bare SAVEPOINT would start one SQLite then refuses to nest)
-  if (dryRun) { try { tx(() => rolledBack(run)); } finally { forgetSeriesCache(); } }   // a rolled-back run may have created series rows whose ids are cached
+  if (dryRun) { try { await tx(async () => await rolledBack(run)); } finally { forgetSeriesCache(); } }   // a rolled-back run may have created series rows whose ids are cached
   else {
     try {
-    tx(() => {
-      run();
-      out.logId = Number(db.prepare('INSERT INTO replay_log (site_id, source, started_at, days, receipts, observations, written, forecasts, rejected, unmapped, parse_errors, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(site.id, source, Date.now(), Math.floor(d), out.receipts, out.observations, out.written, out.forecasts, out.rejected, out.unmapped.length, out.parseErrors,
-          out.capped ? `capped at ${limit} receipts` : null).lastInsertRowid);
-    });
+    await tx(async () => {
+              await run();
+              out.logId = Number((await db.prepare('INSERT INTO replay_log (site_id, source, started_at, days, receipts, observations, written, forecasts, rejected, unmapped, parse_errors, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                          .run(site.id, source, Date.now(), Math.floor(d), out.receipts, out.observations, out.written, out.forecasts, out.rejected, out.unmapped.length, out.parseErrors,
+                            out.capped ? `capped at ${limit} receipts` : null)).lastInsertRowid);
+            });
     } catch (e) { forgetSeriesCache(); throw e; }
   }
   return out;

@@ -25,7 +25,7 @@ const synced = [];
 hooks.verify.octopus = async (c) => { if (!c.apiKey.startsWith('good')) throw new Error('HTTP 401'); return { accountNumber: c.accountNumber, properties: 1, postcode: 'BB12 9BY' }; };
 hooks.verify.sunsynk = async (c) => { if (!c.password.startsWith('good')) throw new Error('Sunsynk login failed: wrong password'); return { plantId: c.plantId || '4242', plantName: 'Roof', plants: 1 }; };
 hooks.plants.sunsynk = async (c) => { if (!c.password.startsWith('good')) throw new Error('Sunsynk login failed: wrong password'); return [{ id: '4242', name: 'Roof', address: '1 Test St' }, { id: '4343', name: 'Barn', address: null }]; };
-hooks.geo = async (site) => { db.prepare("UPDATE site SET gsp_region = 'G', carbon_region = 3, outcode = 'BB12', lat = 53.8, lon = -2.3 WHERE id = ?").run(site.id); return db.prepare('SELECT * FROM site WHERE id = ?').get(site.id); };
+hooks.geo = async (site) => { await db.prepare("UPDATE site SET gsp_region = 'G', carbon_region = 3, outcode = 'BB12', lat = 53.8, lon = -2.3 WHERE id = ?").run(site.id); return await db.prepare('SELECT * FROM site WHERE id = ?').get(site.id); };
 hooks.startSync = async (id) => { synced.push(id); };
 
 const server = app.listen(0);
@@ -43,7 +43,7 @@ function browser() {
   };
 }
 
-test('nobody signed in: every page sends to the sign-in page and the API answers only signing in', async () => {
+await test('nobody signed in: every page sends to the sign-in page and the API answers only signing in', async () => {
   const anon = browser();
   for (const page of ['/', '/my', '/my.html', '/timeline', '/onboarding', '/data', '/explorer', '/providers']) {
     const r = await globalThis.fetch(`${base()}${page}`, { redirect: 'manual' });
@@ -60,7 +60,7 @@ test('nobody signed in: every page sends to the sign-in page and the API answers
   assert.notEqual((await globalThis.fetch(`${base()}/api/ingest`, { method: 'POST', body: '{}' })).status, 401, 'device pushes have their own token');
 });
 
-test('sign-up makes an account, signs it in, and keeps only a scrypt hash of the PIN', async () => {
+await test('sign-up makes an account, signs it in, and keeps only a scrypt hash of the PIN', async () => {
   const b = browser();
   const r = await b('/api/auth/signup', { method: 'POST', body: { username: '  Bob ', pin: '4829', name: 'Bob' } });
   assert.equal(r.status, 201, r.text);
@@ -70,15 +70,15 @@ test('sign-up makes an account, signs it in, and keeps only a scrypt hash of the
   const me = await b('/api/auth/me');
   assert.equal(me.body.user.username, 'bob');
   assert.equal(me.body.switcher, false);
-  const row = db.prepare('SELECT pin_hash, email, password_hash FROM app_user WHERE username = ?').get('bob');
+  const row = await db.prepare('SELECT pin_hash, email, password_hash FROM app_user WHERE username = ?').get('bob');
   assert.match(row.pin_hash, /^scrypt\$16384\$8\$1\$/);
   assert.ok(!row.pin_hash.includes('4829'));
   assert.equal(row.email, null); assert.equal(row.password_hash, null);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_session').get().n, 1);
-  assert.ok(!db.prepare('SELECT token_hash FROM user_session').get().token_hash.includes(r.setCookie.split(';')[0].split('=')[1]), 'only a hash of the token is stored');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM user_session').get()).n, 1);
+  assert.ok(!(await db.prepare('SELECT token_hash FROM user_session').get()).token_hash.includes(r.setCookie.split(';')[0].split('=')[1]), 'only a hash of the token is stored');
 });
 
-test('sign-up refuses a bad username, a PIN that is not 4 digits, and a username already taken (any case)', async () => {
+await test('sign-up refuses a bad username, a PIN that is not 4 digits, and a username already taken (any case)', async () => {
   const b = browser();
   for (const username of ['ab', 'has space', '-dash', 'x'.repeat(31), 'émile', '']) {
     assert.equal((await b('/api/auth/signup', { method: 'POST', body: { username, pin: '4829' } })).status, 400, username);
@@ -90,10 +90,10 @@ test('sign-up refuses a bad username, a PIN that is not 4 digits, and a username
   const dup = await b('/api/auth/signup', { method: 'POST', body: { username: 'BOB', pin: '7302' } });
   assert.equal(dup.status, 409);
   assert.equal((await b('/api/auth/me')).body.user, null, 'a refused sign-up signs nobody in');
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM app_user WHERE username = 'eve'").get().n, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM app_user WHERE username = 'eve'").get()).n, 0);
 });
 
-test('sign-in: a wrong PIN and an unknown username get the same answer; sign-out ends the session', async () => {
+await test('sign-in: a wrong PIN and an unknown username get the same answer; sign-out ends the session', async () => {
   const b = browser();
   const wrong = await b('/api/auth/login', { method: 'POST', body: { username: 'bob', pin: '0001' } });
   const unknown = await b('/api/auth/login', { method: 'POST', body: { username: 'nobody', pin: '0001' } });
@@ -101,17 +101,17 @@ test('sign-in: a wrong PIN and an unknown username get the same answer; sign-out
   assert.deepEqual(wrong.body, unknown.body);
   const ok = await b('/api/auth/login', { method: 'POST', body: { username: 'BOB', pin: '4829' } });
   assert.equal(ok.status, 200);
-  assert.equal(db.prepare("SELECT failed_logins FROM app_user WHERE username = 'bob'").get().failed_logins, 0, 'a right PIN clears the count');
+  assert.equal((await db.prepare("SELECT failed_logins FROM app_user WHERE username = 'bob'").get()).failed_logins, 0, 'a right PIN clears the count');
   const stolen = ok.setCookie.split(';')[0];
   assert.equal((await b('/api/auth/me')).body.user.name, 'Bob');
   const out = await b('/api/auth/logout', { method: 'POST' });
   assert.match(out.setCookie, /Max-Age=0/);
   assert.equal((await b('/api/auth/me')).body.user, null);
-  const replay = await globalThis.fetch(`${base()}/api/auth/me`, { headers: { cookie: stolen } }).then((r) => r.json());
+  const replay = await globalThis.fetch(`${base()}/api/auth/me`, { headers: { cookie: stolen } }).then(async (r) => await r.json());
   assert.equal(replay.user, null, 'the old cookie no longer works');
 });
 
-test('five wrong PINs in a row lock the account, even against the right PIN, until the lock ends', async () => {
+await test('five wrong PINs in a row lock the account, even against the right PIN, until the lock ends', async () => {
   const { signIn, PIN_TRIES, LOCK_MINUTES } = await import('../src/core/users.js');
   const b = browser();
   await b('/api/auth/signup', { method: 'POST', body: { username: 'lockme', pin: '2718' } });
@@ -120,52 +120,52 @@ test('five wrong PINs in a row lock the account, even against the right PIN, unt
   assert.equal(last.status, 429); assert.match(last.body.error, /Too many wrong PINs/);
   const right = await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } });
   assert.equal(right.status, 429, 'locked: the right PIN is refused too');
-  const until = db.prepare("SELECT locked_until FROM app_user WHERE username = 'lockme'").get().locked_until;
+  const until = (await db.prepare("SELECT locked_until FROM app_user WHERE username = 'lockme'").get()).locked_until;
   assert.ok(until > Date.now() + (LOCK_MINUTES - 1) * 60000);
   // After the lock: the right PIN works and clears it.
-  assert.equal(signIn({ username: 'lockme', pin: '2718' }, until + 1).username, 'lockme');
-  assert.deepEqual({ ...db.prepare("SELECT failed_logins, locked_until FROM app_user WHERE username = 'lockme'").get() }, { failed_logins: 0, locked_until: null });
+  assert.equal((await signIn({ username: 'lockme', pin: '2718' }, until + 1)).username, 'lockme');
+  assert.deepEqual({ ...await db.prepare("SELECT failed_logins, locked_until FROM app_user WHERE username = 'lockme'").get() }, { failed_logins: 0, locked_until: null });
 });
 
-test('setPin (scripts/set-pin.js) gives an account a new PIN, unlocks it and signs it out everywhere', async () => {
+await test('setPin (scripts/set-pin.js) gives an account a new PIN, unlocks it and signs it out everywhere', async () => {
   const { setPin } = await import('../src/core/users.js');
   const b = browser();
   await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } });
   assert.equal((await b('/api/auth/me')).body.user.username, 'lockme');
-  assert.throws(() => setPin('lockme', '12345'), /4 digits/);
-  assert.throws(() => setPin('nobody-here', '5820'), /No user/);
-  setPin('LockMe', '5820');
+  await assert.rejects(async () => await setPin('lockme', '12345'), /4 digits/);
+  await assert.rejects(async () => await setPin('nobody-here', '5820'), /No user/);
+  await setPin('LockMe', '5820');
   assert.equal((await b('/api/auth/me')).body.user, null, 'signed out by the new PIN');
   assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } })).status, 401);
   assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '5820' } })).status, 200);
 });
 
-test('delta 079: accounts made before it get their email name as username (unique), and no PIN', async () => {
+await test('delta 079: accounts made before it get their email name as username (unique), and no PIN', async () => {
   const fs = await import('node:fs');
   const { applyDelta } = await import('../src/db/db.js');
   const ins = db.prepare('INSERT INTO app_user (name, email, role, created_at) VALUES (?, ?, ?, 0)');
-  const a = ins.run('Old One', 'Legacy@one.test', 'owner').lastInsertRowid;
-  const c = ins.run('Old Two', 'legacy@two.test', 'owner').lastInsertRowid;
-  const none = ins.run('No email', null, 'owner').lastInsertRowid;
+  const a = (await ins.run('Old One', 'Legacy@one.test', 'owner')).lastInsertRowid;
+  const c = (await ins.run('Old Two', 'legacy@two.test', 'owner')).lastInsertRowid;
+  const none = (await ins.run('No email', null, 'owner')).lastInsertRowid;
   applyDelta(fs.readFileSync(new URL('../src/db/deltas/079-pin-auth.sql', import.meta.url), 'utf8'));
-  const name = (id) => db.prepare('SELECT username, pin_hash FROM app_user WHERE id = ?').get(id);
-  assert.deepEqual({ ...name(a) }, { username: 'legacy', pin_hash: null });
-  assert.equal(name(c).username, `legacy${c}`);
-  assert.equal(name(none).username, null);
+  const name = async (id) => await db.prepare('SELECT username, pin_hash FROM app_user WHERE id = ?').get(id);
+  assert.deepEqual({ ...await name(a) }, { username: 'legacy', pin_hash: null });
+  assert.equal((await name(c)).username, `legacy${c}`);
+  assert.equal((await name(none)).username, null);
   const b = browser();
   assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'legacy', pin: '0001' } })).status, 401, 'no PIN yet: cannot sign in');
-  db.prepare('DELETE FROM app_user WHERE id IN (?, ?, ?)').run(a, c, none);
+  await db.prepare('DELETE FROM app_user WHERE id IN (?, ?, ?)').run(a, c, none);
 });
 
-test('the demo switch header is refused on the main app, so nobody can become someone else', async () => {
-  const bob = db.prepare('SELECT id FROM app_user WHERE username = ?').get('bob').id;
+await test('the demo switch header is refused on the main app, so nobody can become someone else', async () => {
+  const bob = (await db.prepare('SELECT id FROM app_user WHERE username = ?').get('bob')).id;
   const r = await globalThis.fetch(`${base()}/api/sites`, { headers: { 'x-user-id': String(bob) } });
   assert.equal(r.status, 403);
   assert.deepEqual(await (await globalThis.fetch(`${base()}/api/users`)).json(), []);
 });
 
 let gbHome; let bobB;
-test('step 1: a postcode makes a home for the signed-in user only (GB looked up at once)', async () => {
+await test('step 1: a postcode makes a home for the signed-in user only (GB looked up at once)', async () => {
   const anon = browser();
   assert.equal((await anon('/api/onboarding/home', { method: 'POST', body: { country: 'GB', postcode: 'BB12 9BY' } })).status, 401);
   bobB = browser();
@@ -187,11 +187,11 @@ test('step 1: a postcode makes a home for the signed-in user only (GB looked up 
   assert.deepEqual((await carol('/api/sites')).body, []);
   assert.equal((await carol(`/api/sites/${gbHome.id}/providers`)).status, 404);
   // The shared steps that always run have their connection rows, as the .env home has.
-  const conns = db.prepare('SELECT provider FROM connection WHERE site_id = ?').all(gbHome.id).map((c) => c.provider);
+  const conns = (await db.prepare('SELECT provider FROM connection WHERE site_id = ?').all(gbHome.id)).map((c) => c.provider);
   for (const p of ['weather', 'carbon']) assert.ok(conns.includes(p), `${p} in ${conns}`);
 });
 
-test('step 2: the providers its market lists, with the login each asks for and no values', async () => {
+await test('step 2: the providers its market lists, with the login each asks for and no values', async () => {
   const r = await bobB(`/api/sites/${gbHome.id}/providers`);
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.body.connect.map((c) => [c.adapter, c]));
@@ -211,34 +211,34 @@ test('step 2: the providers its market lists, with the login each asks for and n
   assert.equal((await bobB(`/api/sites/${fr.body.site.id}/providers/linky`, { method: 'POST', body: { credentials: {} } })).status, 400);
 });
 
-test('connect: a wrong or incomplete login is refused and nothing is stored', async () => {
+await test('connect: a wrong or incomplete login is refused and nothing is stored', async () => {
   const post = (provider, credentials) => bobB(`/api/sites/${gbHome.id}/providers/${provider}`, { method: 'POST', body: { credentials } });
   assert.equal((await post('octopus', { accountNumber: 'A-1234ABCD' })).status, 400, 'no API key');
   assert.equal((await post('octopus', { apiKey: 'good-key', accountNumber: '12345' })).status, 400, 'account number shape');
   const bad = await post('octopus', { apiKey: 'bad-key', accountNumber: 'A-1234ABCD' });
   assert.equal(bad.status, 400); assert.match(bad.body.error, /Octopus Energy did not accept this login/);
   assert.equal((await post('nope', {})).status, 400);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get().n, 0);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connection WHERE site_id = ? AND provider = 'octopus'").get(gbHome.id).n, 0);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get()).n, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM connection WHERE site_id = ? AND provider = 'octopus'").get(gbHome.id)).n, 0);
   assert.deepEqual(synced, []);
   // Nobody signed in may not connect even a home nobody owns.
-  const loose = db.prepare("INSERT INTO site (name, created_at) VALUES ('loose', 0) RETURNING id").get().id;
+  const loose = (await db.prepare("INSERT INTO site (name, created_at) VALUES ('loose', 0) RETURNING id").get()).id;
   assert.equal((await browser()(`/api/sites/${loose}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: 'good', accountNumber: 'A-1234ABCD' } } })).status, 401);
-  db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
-  db.prepare('DELETE FROM site WHERE id = ?').run(loose);
+  await db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
+  await db.prepare('DELETE FROM site WHERE id = ?').run(loose);
 });
 
-test('connect: SECRET_KEY missing -> 503, nothing stored', async () => {
+await test('connect: SECRET_KEY missing -> 503, nothing stored', async () => {
   const k = process.env.SECRET_KEY; delete process.env.SECRET_KEY;
   try {
     const r = await bobB(`/api/sites/${gbHome.id}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: 'good-key', accountNumber: 'A-1234ABCD' } } });
     assert.equal(r.status, 503); assert.match(r.body.error, /SECRET_KEY/);
     assert.equal((await bobB(`/api/sites/${gbHome.id}/providers`)).body.secrets_ready, false);
   } finally { process.env.SECRET_KEY = k; }
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get().n, 0);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get()).n, 0);
 });
 
-test('connect: a good login is stored encrypted, never sent back, read by the sync steps, and the first sync starts', async () => {
+await test('connect: a good login is stored encrypted, never sent back, read by the sync steps, and the first sync starts', async () => {
   const KEY = 'good-sk_live_ABCDEF0123456789'; const PW = 'good-sunsynk-pw-987';
   const o = await bobB(`/api/sites/${gbHome.id}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: KEY, accountNumber: 'a-1234abcd' } } });
   assert.equal(o.status, 201, o.text);
@@ -247,10 +247,10 @@ test('connect: a good login is stored encrypted, never sent back, read by the sy
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(synced, [gbHome.id, gbHome.id]);
   // The connection rows keep the non-secret reference only.
-  const conn = Object.fromEntries(db.prepare('SELECT provider, external_ref FROM connection WHERE site_id = ?').all(gbHome.id).map((c) => [c.provider, c.external_ref]));
+  const conn = Object.fromEntries((await db.prepare('SELECT provider, external_ref FROM connection WHERE site_id = ?').all(gbHome.id)).map((c) => [c.provider, c.external_ref]));
   assert.equal(conn.octopus, 'A-1234ABCD'); assert.equal(conn.sunsynk, '4242');
   // Encrypted at rest: neither secret appears in the stored bytes.
-  for (const r of db.prepare('SELECT ciphertext FROM connection_secret WHERE site_id = ?').all(gbHome.id)) {
+  for (const r of await db.prepare('SELECT ciphertext FROM connection_secret WHERE site_id = ?').all(gbHome.id)) {
     const bytes = Buffer.from(r.ciphertext).toString('latin1');
     assert.ok(!bytes.includes(KEY) && !bytes.includes(PW) && !bytes.includes('A-1234ABCD'));
   }
@@ -262,37 +262,37 @@ test('connect: a good login is stored encrypted, never sent back, read by the sy
   const by = Object.fromEntries(providers.body.connect.map((c) => [c.adapter, c]));
   assert.equal(by.octopus.connected, true, JSON.stringify(by.octopus)); assert.equal(by.octopus.login, 'stored'); assert.equal(by.sunsynk.connected, true, JSON.stringify(by.sunsynk));
   // The sync steps read them: the home's plan runs both, with no "no credentials" skip.
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(gbHome.id);
-  assert.deepEqual(siteCredentials(site, 'octopus', { apiKey: 'X', accountNumber: 'Y' }).creds, { apiKey: KEY, accountNumber: 'A-1234ABCD' });
-  assert.equal(siteCredentials(site, 'sunsynk', { username: 'X', password: 'Y' }, { plantId: 'Z' }).creds.plantId, '4242');
-  const run = plan(db, site).filter((e) => e.run).map((e) => e.adapter);
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(gbHome.id);
+  assert.deepEqual((await siteCredentials(site, 'octopus', { apiKey: 'X', accountNumber: 'Y' })).creds, { apiKey: KEY, accountNumber: 'A-1234ABCD' });
+  assert.equal((await siteCredentials(site, 'sunsynk', { username: 'X', password: 'Y' }, { plantId: 'Z' })).creds.plantId, '4242');
+  const run = (await plan(db, site)).filter((e) => e.run).map((e) => e.adapter);
   assert.ok(run.includes('octopus') && run.includes('sunsynk'), run.join(','));
-  const noCreds = plan(db, site).filter((e) => ['octopus', 'sunsynk'].includes(e.adapter) && /no credentials/.test(e.skipped ?? ''));
+  const noCreds = (await plan(db, site)).filter((e) => ['octopus', 'sunsynk'].includes(e.adapter) && /no credentials/.test(e.skipped ?? ''));
   assert.deepEqual(noCreds.map((e) => `${e.adapter}: ${e.skipped}`), []);
 });
 
-test('a stored login is bound to its home and key: copied to another home, or read with another key, it does not decrypt', () => {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(gbHome.id);
-  const other = db.prepare("INSERT INTO site (name, created_at) VALUES ('other', 0) RETURNING *").get();
-  db.prepare("INSERT INTO connection_secret (site_id, provider, iv, tag, ciphertext, recorded_at) SELECT ?, provider, iv, tag, ciphertext, recorded_at FROM connection_secret WHERE site_id = ? AND provider = 'octopus'").run(other.id, site.id);
-  assert.match(siteCredentials(other, 'octopus', { apiKey: 'X', accountNumber: 'Y' }).missing, /cannot be read/);
+await test('a stored login is bound to its home and key: copied to another home, or read with another key, it does not decrypt', async () => {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(gbHome.id);
+  const other = await db.prepare("INSERT INTO site (name, created_at) VALUES ('other', 0) RETURNING *").get();
+  await db.prepare("INSERT INTO connection_secret (site_id, provider, iv, tag, ciphertext, recorded_at) SELECT ?, provider, iv, tag, ciphertext, recorded_at FROM connection_secret WHERE site_id = ? AND provider = 'octopus'").run(other.id, site.id);
+  assert.match((await siteCredentials(other, 'octopus', { apiKey: 'X', accountNumber: 'Y' })).missing, /cannot be read/);
   const k = process.env.SECRET_KEY; process.env.SECRET_KEY = 'a-different-key-that-is-long-enough-0000';
-  try { assert.match(siteCredentials(site, 'octopus', { apiKey: 'X', accountNumber: 'Y' }).missing, /SECRET_KEY has changed/); } finally { process.env.SECRET_KEY = k; }
-  db.prepare('DELETE FROM binding WHERE site_id = ?').run(other.id);   // a home's bindings go with it
-  db.prepare('DELETE FROM site WHERE id = ?').run(other.id);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ?').get(other.id).n, 0, 'deleting a home deletes its logins');
+  try { assert.match((await siteCredentials(site, 'octopus', { apiKey: 'X', accountNumber: 'Y' })).missing, /SECRET_KEY has changed/); } finally { process.env.SECRET_KEY = k; }
+  await db.prepare('DELETE FROM binding WHERE site_id = ?').run(other.id);   // a home's bindings go with it
+  await db.prepare('DELETE FROM site WHERE id = ?').run(other.id);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ?').get(other.id)).n, 0, 'deleting a home deletes its logins');
 });
 
-test('the .env home still reads .env, as before', () => {
+await test('the .env home still reads .env, as before', async () => {
   const env = { id: 999, env_key: 'env' };
   process.env.OCTOPUS_API_KEY = 'env-key'; process.env.OCTOPUS_ACCOUNT_NUMBER = 'A-0000AAAA';
-  try { assert.deepEqual(siteCredentials(env, 'octopus', { apiKey: 'OCTOPUS_API_KEY', accountNumber: 'OCTOPUS_ACCOUNT_NUMBER' }).creds, { apiKey: 'env-key', accountNumber: 'A-0000AAAA' }); } finally {
+  try { assert.deepEqual((await siteCredentials(env, 'octopus', { apiKey: 'OCTOPUS_API_KEY', accountNumber: 'OCTOPUS_ACCOUNT_NUMBER' })).creds, { apiKey: 'env-key', accountNumber: 'A-0000AAAA' }); } finally {
     delete process.env.OCTOPUS_API_KEY; delete process.env.OCTOPUS_ACCOUNT_NUMBER;
   }
-  assert.match(siteCredentials({ id: 998, env_key: null }, 'octopus', { apiKey: 'OCTOPUS_API_KEY' }).missing, /no credentials/);
+  assert.match((await siteCredentials({ id: 998, env_key: null }, 'octopus', { apiKey: 'OCTOPUS_API_KEY' })).missing, /no credentials/);
 });
 
-test('Sunsynk: each login gets its own token and sees its own plant (no token shared between homes)', async () => {
+await test('Sunsynk: each login gets its own token and sees its own plant (no token shared between homes)', async () => {
   const { publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
   const pk = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
   const real = globalThis.fetch;
@@ -315,7 +315,7 @@ test('Sunsynk: each login gets its own token and sees its own plant (no token sh
   } finally { globalThis.fetch = real; }
 });
 
-test('postcodes: spaces anywhere are ignored, then written the one way', async () => {
+await test('postcodes: spaces anywhere are ignored, then written the one way', async () => {
   const { normalisePostcode } = await import('../src/core/signup.js');
   for (const p of ['BB 12 9BY', 'bb129by', ' BB12  9BY ', 'B B12 9BY']) assert.equal(normalisePostcode('GB', p), 'BB12 9BY', p);
   assert.equal(normalisePostcode('NL', '1012ab'), '1012 AB');
@@ -323,7 +323,7 @@ test('postcodes: spaces anywhere are ignored, then written the one way', async (
   assert.throws(() => normalisePostcode('GB', 'BB12 9B'), /not a United Kingdom postcode/);
 });
 
-test('a connected provider shows its account; disconnecting forgets the login and withdraws only its data; another account replaces the old one', async () => {
+await test('a connected provider shows its account; disconnecting forgets the login and withdraws only its data; another account replaces the old one', async () => {
   const { seriesId, putReadings, putIntervals } = await import('../src/core/facts.js');
   const { setAttribute } = await import('../src/core/attributes.js');
   const id = gbHome.id;
@@ -335,19 +335,19 @@ test('a connected provider shows its account; disconnecting forgets the login an
   assert.equal(card('sunsynk').can_disconnect, true);
   // Data each provider brought, and a shared provider's (weather), which must stay.
   const t = 1790000000;
-  const solar = seriesId('site', id, 'solar_w', 'sunsynk_5min');
-  const weather = seriesId('site', id, 'outdoor_temp_c', 'open_meteo');
-  putReadings(solar, [{ ts: t, value: 1200 }, { ts: t + 300, value: 1300 }]);
-  putReadings(weather, [{ ts: t, value: 11 }]);
-  const meter = db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'meter_import', 'octopus', 'MPAN-1', 'Import', '{}', ?) RETURNING id").get(id, Date.now()).id;
-  const imp = seriesId('device', meter, 'grid_import_kwh', 'octopus_meter');
-  putIntervals(imp, [{ start: t, end: t + 1800, value: 0.4 }]);
-  const tariff = db.prepare("INSERT INTO tariff (provider, tariff_code, fuel, direction, structure) VALUES ('octopus', 'E-1R-TEST-OLD-G', 'electricity', 'import', 'flat') RETURNING id").get().id;
-  db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?)').run(id, meter, tariff, t - 86400, Date.now());
-  const agreements = (current) => db.prepare(`SELECT COUNT(*) AS n FROM tariff_agreement WHERE device_id = ?${current ? ' AND superseded_at IS NULL' : ''}`).get(meter).n;
-  setAttribute(id, 'pv_kwp', 6.5, 'provider', 'Sunsynk plant 4242 record');
-  const live = (s) => db.prepare('SELECT COUNT(*) AS n FROM reading WHERE series_id = ? AND superseded_at IS NULL').get(s).n
-    + db.prepare('SELECT COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL').get(s).n;
+  const solar = await seriesId('site', id, 'solar_w', 'sunsynk_5min');
+  const weather = await seriesId('site', id, 'outdoor_temp_c', 'open_meteo');
+  await putReadings(solar, [{ ts: t, value: 1200 }, { ts: t + 300, value: 1300 }]);
+  await putReadings(weather, [{ ts: t, value: 11 }]);
+  const meter = (await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'meter_import', 'octopus', 'MPAN-1', 'Import', '{}', ?) RETURNING id").get(id, Date.now())).id;
+  const imp = await seriesId('device', meter, 'grid_import_kwh', 'octopus_meter');
+  await putIntervals(imp, [{ start: t, end: t + 1800, value: 0.4 }]);
+  const tariff = (await db.prepare("INSERT INTO tariff (provider, tariff_code, fuel, direction, structure) VALUES ('octopus', 'E-1R-TEST-OLD-G', 'electricity', 'import', 'flat') RETURNING id").get()).id;
+  await db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?)').run(id, meter, tariff, t - 86400, Date.now());
+  const agreements = async (current) => (await db.prepare(`SELECT COUNT(*) AS n FROM tariff_agreement WHERE device_id = ?${current ? ' AND superseded_at IS NULL' : ''}`).get(meter)).n;
+  await setAttribute(id, 'pv_kwp', 6.5, 'provider', 'Sunsynk plant 4242 record');
+  const live = async (s) => (await db.prepare('SELECT COUNT(*) AS n FROM reading WHERE series_id = ? AND superseded_at IS NULL').get(s)).n
+    + (await db.prepare('SELECT COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL').get(s)).n;
 
   // Someone else cannot disconnect it; the owner can.
   const eve = browser();
@@ -356,15 +356,15 @@ test('a connected provider shows its account; disconnecting forgets the login an
   const d = await bobB(`/api/sites/${id}/providers/sunsynk`, { method: 'DELETE' });
   assert.equal(d.status, 200, d.text);
   assert.equal(d.body.withdrawn, 2);
-  assert.equal(live(solar), 0, 'the inverter readings are withdrawn');
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM reading WHERE series_id = ?').get(solar).n, 2, '... but kept in the history');
-  assert.equal(live(weather), 1, 'weather is not the inverter\'s: it stays');
-  assert.equal(live(imp), 1, 'the meter is another provider: it stays');
-  assert.equal(agreements(true), 1, "the meter's tariff is another provider's: it stays");
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ? AND provider = 'sunsynk'").get(id).n, 0, 'the login is forgotten');
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(id).n, 0);
-  assert.match(db.prepare('SELECT reason FROM fact_correction WHERE site_id = ? AND series_id = ?').get(id, solar).reason, /Sunsynk was disconnected/);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM site_attribute WHERE site_id = ? AND attr = 'pv_kwp' AND source = 'provider' AND superseded_at IS NULL").get(id).n, 0, 'the panel size it gave is withdrawn');
+  assert.equal(await live(solar), 0, 'the inverter readings are withdrawn');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM reading WHERE series_id = ?').get(solar)).n, 2, '... but kept in the history');
+  assert.equal(await live(weather), 1, 'weather is not the inverter\'s: it stays');
+  assert.equal(await live(imp), 1, 'the meter is another provider: it stays');
+  assert.equal(await agreements(true), 1, "the meter's tariff is another provider's: it stays");
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ? AND provider = 'sunsynk'").get(id)).n, 0, 'the login is forgotten');
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(id)).n, 0);
+  assert.match((await db.prepare('SELECT reason FROM fact_correction WHERE site_id = ? AND series_id = ?').get(id, solar)).reason, /Sunsynk was disconnected/);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM site_attribute WHERE site_id = ? AND attr = 'pv_kwp' AND source = 'provider' AND superseded_at IS NULL").get(id)).n, 0, 'the panel size it gave is withdrawn');
   p = (await bobB(`/api/sites/${id}/providers`)).body;
   assert.equal(card('sunsynk').connected, false);
   assert.ok(card('sunsynk').fields.length, 'the form is back, to connect again');
@@ -376,36 +376,36 @@ test('a connected provider shows its account; disconnecting forgets the login an
 
   // Octopus: the same account again (a new key) keeps the data; another account replaces it.
   let r = await bobB(`/api/sites/${id}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: 'good-key-2', accountNumber: 'A-1234ABCD' } } });
-  assert.equal(r.status, 201, r.text); assert.equal(r.body.replaced, null); assert.equal(live(imp), 1);
+  assert.equal(r.status, 201, r.text); assert.equal(r.body.replaced, null); assert.equal(await live(imp), 1);
   r = await bobB(`/api/sites/${id}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: 'good-key-3', accountNumber: 'A-9999FFFF' } } });
   assert.equal(r.status, 201, r.text);
   assert.deepEqual(r.body.replaced, { withdrawn: 1 });
-  assert.equal(live(imp), 0, 'the old account\'s meter readings are withdrawn');
-  assert.ok(db.prepare('SELECT retired_at FROM device WHERE id = ?').get(meter).retired_at, 'and its meter retired');
-  assert.equal(agreements(true), 0, 'its tariff agreements no longer price the home');
-  assert.equal(agreements(false), 1, '... but are kept in the history');
+  assert.equal(await live(imp), 0, 'the old account\'s meter readings are withdrawn');
+  assert.ok((await db.prepare('SELECT retired_at FROM device WHERE id = ?').get(meter)).retired_at, 'and its meter retired');
+  assert.equal(await agreements(true), 0, 'its tariff agreements no longer price the home');
+  assert.equal(await agreements(false), 1, '... but are kept in the history');
   p = (await bobB(`/api/sites/${id}/providers`)).body;
   assert.equal(card('octopus').account.accountNumber, 'A-9999FFFF');
-  assert.equal(db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'octopus'").get(id).external_ref, 'A-9999FFFF');
+  assert.equal((await db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'octopus'").get(id)).external_ref, 'A-9999FFFF');
 });
 
-test('Sunsynk: the login lists its plants to pick from (nothing stored), and the picked one is connected', async () => {
+await test('Sunsynk: the login lists its plants to pick from (nothing stored), and the picked one is connected', async () => {
   const id = gbHome.id;
   const card = (await bobB(`/api/sites/${id}/providers`)).body.connect.find((c) => c.adapter === 'sunsynk');
   assert.deepEqual(card.fields.find((f) => f.key === 'plantId'), { key: 'plantId', label: 'Plant', type: 'text', required: false, pick: true }, 'picked, not typed');
-  const before = db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get().n;
+  const before = (await db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get()).n;
   assert.equal((await bobB(`/api/sites/${id}/providers/sunsynk/plants`, { method: 'POST', body: { credentials: { username: 'bob@example.com', password: 'wrong' } } })).status, 400);
   assert.equal((await bobB(`/api/sites/${id}/providers/sunsynk/plants`, { method: 'POST', body: { credentials: { username: 'bob@example.com' } } })).status, 400, 'the password is needed');
   const r = await bobB(`/api/sites/${id}/providers/sunsynk/plants`, { method: 'POST', body: { credentials: { username: 'bob@example.com', password: 'good-pw' } } });
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(r.body.plants.map((x) => x.name), ['Roof', 'Barn']);
   assert.ok(!r.text.includes('good-pw'));
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get().n, before, 'listing stores nothing');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM connection_secret').get()).n, before, 'listing stores nothing');
   assert.equal((await bobB(`/api/sites/${id}/providers/octopus/plants`, { method: 'POST', body: { credentials: {} } })).status, 400, 'Octopus has no plants');
   const eve = browser();
   await eve('/api/auth/signup', { method: 'POST', body: { username: 'eve2', pin: '6192' } });
   assert.equal((await eve(`/api/sites/${id}/providers/sunsynk/plants`, { method: 'POST', body: { credentials: { username: 'x', password: 'good' } } })).status, 404, 'not her home');
   const c = await bobB(`/api/sites/${id}/providers/sunsynk`, { method: 'POST', body: { credentials: { username: 'bob@example.com', password: 'good-pw', plantId: '4343' } } });
   assert.equal(c.status, 201, c.text);
-  assert.equal(db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(id).external_ref, '4343');
+  assert.equal((await db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(id)).external_ref, '4343');
 });

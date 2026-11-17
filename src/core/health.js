@@ -35,7 +35,7 @@ export const REASON_TEXT = {
   write_only: 'a point that can only be written', counter_without_time: 'a counter with no time', state_without_time: 'a setting with no time', event_without_time: 'an event with no time',
 };
 const parseJson = (t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } };
-const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+const tableExists = async (name) => Boolean(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
 // "5 minutes", "3 h", "2 days": for the plain-language reasons.
 export function human(s) {
@@ -48,24 +48,24 @@ export function human(s) {
 
 // The series a binding reads for a home: the device's own when the binding names one, otherwise the home's own and the series of
 // the regions it reads (carbon intensity and gas calorific value live under a region, shared by homes).
-function seriesOf(site, binding) {
+async function seriesOf(site, binding) {
   if (binding.deviceId != null) {
-    return db.prepare(`SELECT se.id, m.code AS metric, m.time_role AS time_role FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
+    return await db.prepare(`SELECT se.id, m.code AS metric, m.time_role AS time_role FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
       WHERE so.code = ? AND se.subject_kind = 'device' AND se.subject_id = ?`).all(binding.source, String(binding.deviceId));
   }
-  const ldz = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id).map((d) => parseJson(d.attrs)?.ldz).find(Boolean);
+  const ldz = (await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id)).map((d) => parseJson(d.attrs)?.ldz).find(Boolean);
   const regions = [carbonSubjectOf(site), ldz ? `ldz:${ldz}` : null].filter(Boolean);
-  return db.prepare(`SELECT se.id, m.code AS metric, m.time_role AS time_role FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
+  return await db.prepare(`SELECT se.id, m.code AS metric, m.time_role AS time_role FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
     WHERE so.code = ? AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
       ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''})`)
-    .all(binding.source, String(site.id), site.id, ...regions);
+      .all(binding.source, String(site.id), site.id, ...regions);
 }
 
 // Newest received fact of one series: { receivedAt (s), dataUntil (s), kind }.
-function newestOf(se) {
-  const r = db.prepare('SELECT MAX(recorded_at) AS rec, MAX(ts) AS until FROM reading WHERE series_id = ?').get(se.id);
-  const i = db.prepare('SELECT MAX(recorded_at) AS rec, MAX(end_ts) AS until FROM interval_fact WHERE series_id = ?').get(se.id);
-  const f = db.prepare('SELECT MAX(recorded_at) AS rec, MAX(end_ts) AS until FROM forecast_fact WHERE series_id = ?').get(se.id);
+async function newestOf(se) {
+  const r = await db.prepare('SELECT MAX(recorded_at) AS rec, MAX(ts) AS until FROM reading WHERE series_id = ?').get(se.id);
+  const i = await db.prepare('SELECT MAX(recorded_at) AS rec, MAX(end_ts) AS until FROM interval_fact WHERE series_id = ?').get(se.id);
+  const f = await db.prepare('SELECT MAX(recorded_at) AS rec, MAX(end_ts) AS until FROM forecast_fact WHERE series_id = ?').get(se.id);
   const cand = [['instant', r], ['interval', i], ['forecast', f]].filter(([, x]) => x.rec != null).sort((a, b) => b[1].rec - a[1].rec);
   if (!cand.length) return null;
   const [kind, x] = cand[0];
@@ -73,25 +73,25 @@ function newestOf(se) {
 }
 
 // The period a series reports, from its newest periods (median), for the default cadence of an interval kind.
-function periodOf(seriesId) {
-  const rows = db.prepare('SELECT end_ts - start_ts AS len FROM interval_fact WHERE series_id = ? ORDER BY end_ts DESC LIMIT 7').all(seriesId).map((x) => x.len).sort((a, b) => a - b);
+async function periodOf(seriesId) {
+  const rows = (await db.prepare('SELECT end_ts - start_ts AS len FROM interval_fact WHERE series_id = ? ORDER BY end_ts DESC LIMIT 7').all(seriesId)).map((x) => x.len).sort((a, b) => a - b);
   return rows.length ? rows[rows.length >> 1] : null;
 }
 
-function counterKind(siteId, binding, metric) {
-  return Boolean(db.prepare(`SELECT 1 FROM channel c JOIN metric m ON m.id = c.metric_id JOIN source so ON so.id = c.source_id
+async function counterKind(siteId, binding, metric) {
+  return Boolean(await db.prepare(`SELECT 1 FROM channel c JOIN metric m ON m.id = c.metric_id JOIN source so ON so.id = c.source_id
     WHERE c.site_id = ? AND so.code = ? AND m.code = ? AND c.kind = 'counter' AND c.superseded_at IS NULL`).get(siteId, binding.source, metric));
 }
 
 /** Health of one binding at `now`. Pure of everything but the database. */
-export function bindingHealth(site, binding, traits, now = nowSec()) {
-  const cands = seriesOf(site, binding).map(newestOf).filter(Boolean).sort((a, b) => b.receivedAt - a.receivedAt);
+export async function bindingHealth(site, binding, traits, now = nowSec()) {
+  const cands = (await seriesOf(site, binding)).map(newestOf).filter(Boolean).sort((a, b) => b.receivedAt - a.receivedAt);
   const top = cands[0] ?? null;
   const out = { bindingId: binding.id, role: binding.role, source: binding.source, deviceId: binding.deviceId ?? null, series: cands.length };
   if (!top) return { ...out, status: 'never', kind: null, expectedEveryS: null, lastReceivedAt: null, dataUntil: null, ageS: null, reason: `No data has arrived from ${binding.source} for this home yet.` };
   let kind = top.kind;
-  if (kind === 'instant' && counterKind(site.id, binding, top.metric)) kind = 'counter';
-  const every = traits.expectedEveryS ?? (kind === 'interval' ? (periodOf(top.seriesId) ?? DEFAULT_EVERY_S.interval) : DEFAULT_EVERY_S[kind]);
+  if (kind === 'instant' && await counterKind(site.id, binding, top.metric)) kind = 'counter';
+  const every = traits.expectedEveryS ?? (kind === 'interval' ? (await periodOf(top.seriesId) ?? DEFAULT_EVERY_S.interval) : DEFAULT_EVERY_S[kind]);
   const age = Math.max(0, now - top.receivedAt);
   let status;
   if (traits.irregular) status = 'ok';
@@ -112,15 +112,15 @@ const rank = { silent: 3, late: 2, never: 2, ok: 0 };
  * Also, per source, the values the channels refused in the last 24 hours (top reasons) and, when the push log exists, when the
  * last push arrived. Returns { siteId, now, roles: [{ role, status, bindings: [...] }], summary: { ok, late, silent, never, unbound } }.
  */
-export function health(siteId, { now = nowSec() } = {}) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function health(siteId, { now = nowSec() } = {}) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new RangeError(`no home ${siteId}`);
-  const rows = db.prepare(`SELECT b.id, b.role, b.device_id AS deviceId, b.valid_from AS valFrom, b.valid_to AS valTo, b.priority, so.code AS source, so.traits
+  const rows = await db.prepare(`SELECT b.id, b.role, b.device_id AS deviceId, b.valid_from AS valFrom, b.valid_to AS valTo, b.priority, so.code AS source, so.traits
     FROM binding b JOIN source so ON so.id = b.source_id WHERE b.site_id = ? AND b.superseded_at IS NULL ORDER BY b.role, b.valid_from IS NOT NULL, b.valid_from, b.priority, b.id`).all(siteId);
-  const hasPush = tableExists('push_log');
+  const hasPush = await tableExists('push_log');
   const sinceMs = (now - 86400) * 1000;
-  const refused = (code) => {
-    const rs = db.prepare(`SELECT r.reason, COUNT(*) AS n FROM channel_reject r JOIN source so ON so.id = r.source_id WHERE r.site_id = ? AND so.code = ? AND r.recorded_at >= ? GROUP BY r.reason ORDER BY n DESC`).all(siteId, code, sinceMs);
+  const refused = async (code) => {
+    const rs = await db.prepare(`SELECT r.reason, COUNT(*) AS n FROM channel_reject r JOIN source so ON so.id = r.source_id WHERE r.site_id = ? AND so.code = ? AND r.recorded_at >= ? GROUP BY r.reason ORDER BY n DESC`).all(siteId, code, sinceMs);
     return { total: rs.reduce((t, x) => t + x.n, 0), top: rs.slice(0, 3).map((x) => ({ reason: x.reason, text: REASON_TEXT[x.reason] ?? x.reason.replace(/_/g, ' '), count: x.n })) };
   };
   const roles = new Map();
@@ -128,9 +128,9 @@ export function health(siteId, { now = nowSec() } = {}) {
     const inForce = (b.valFrom == null || b.valFrom <= now) && (b.valTo == null || b.valTo > now);
     if (!inForce) continue;
     const traits = parseJson(b.traits) ?? {};
-    const h = bindingHealth(site, { id: b.id, role: b.role, source: b.source, deviceId: b.deviceId }, traits, now);
-    h.rejected24h = refused(b.source);
-    h.lastPushAt = hasPush ? (db.prepare("SELECT MAX(received_at) AS t FROM push_log WHERE site_id = ? AND source = ? AND status = 'ok'").get(siteId, b.source)?.t ?? null) : null;
+    const h = await bindingHealth(site, { id: b.id, role: b.role, source: b.source, deviceId: b.deviceId }, traits, now);
+    h.rejected24h = await refused(b.source);
+    h.lastPushAt = hasPush ? ((await db.prepare("SELECT MAX(received_at) AS t FROM push_log WHERE site_id = ? AND source = ? AND status = 'ok'").get(siteId, b.source))?.t ?? null) : null;
     if (!roles.has(b.role)) roles.set(b.role, []);
     roles.get(b.role).push(h);
   }

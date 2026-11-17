@@ -29,6 +29,7 @@
 import { db } from '../db/db.js';
 import { seriesId, putForecasts, readForecastOfRecord } from './facts.js';
 import { nowSec as clockNow, slotLength, slotPhase, slotFloor, slotOfDay, eachSlotOverlap } from './time.js';
+import { forEachAsync } from "./async.js";
 
 export const SOLAR_CASES_SOURCE = 'core_solar_cases';
 export const SOLAR_CASES = Object.freeze([
@@ -61,10 +62,10 @@ function bySlot(facts, slotS, phase) {
  * @returns {{ siteId, issuedAt, origin: 'derived', central, slots, samples, buckets, insufficient,
  *   stored, reason, cases: [{ slot_start, central, p10, p50, p90 }] }} reason is null, or why nothing was stored
  */
-export function deriveSolarCases(siteId, now = clockNow(), opts = {}) {
+export async function deriveSolarCases(siteId, now = clockNow(), opts = {}) {
   const o = { ...SOLAR_CASE_DEFAULTS, ...opts };
   if (!CENTRALS.includes(o.central)) throw new Error(`central must be one of ${CENTRALS.join(', ')}, not ${o.central}`);
-  const site = db.prepare('SELECT id, timezone, slot_s FROM site WHERE id = ?').get(siteId);
+  const site = await db.prepare('SELECT id, timezone, slot_s FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
   const tz = site.timezone;
   const slotS = slotLength(site);
@@ -73,15 +74,15 @@ export function deriveSolarCases(siteId, now = clockNow(), opts = {}) {
   const to = from + o.hours * 3600;
   const histFrom = from - o.historyDays * 86400;
   const minFc = (o.minForecastKwhPerHalfHour * slotS) / 1800;
-  const centralS = seriesId('site', siteId, 'solar_kwh', o.central);
+  const centralS = await seriesId('site', siteId, 'solar_kwh', o.central);
   const out = { siteId, issuedAt: now, origin: 'derived', central: { metric: 'solar_kwh', source: o.central, issued_at: null }, slots: 0, samples: 0,
     buckets: { usable: 0, short: 0 }, insufficient: 0, stored: Object.fromEntries(SOLAR_CASES.map((c) => [c.metric, 0])), reason: null, cases: [] };
 
   // ── 2 History: actual ÷ forecast of record, per local time of day ──
-  const hist = db.prepare(`SELECT slot_start, tod_min, solar FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND dur_s = ?
+  const hist = await db.prepare(`SELECT slot_start, tod_min, solar FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND dur_s = ?
       AND state != 'missing' AND solar IS NOT NULL ORDER BY slot_start`).all(siteId, histFrom, from, slotS);
-  const fcRows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
-    .all(centralS, histFrom, from);
+  const fcRows = await db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts')
+      .all(centralS, histFrom, from);
   const best = new Map();
   for (const f of fcRows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
   const fcPast = bySlot(best.values(), slotS, phase);
@@ -108,7 +109,7 @@ export function deriveSolarCases(siteId, now = clockNow(), opts = {}) {
   }
 
   // ── 1 Central for the horizon, 4 the cases ──
-  const central = readForecastOfRecord(centralS, from - 3600, to, now);
+  const central = await readForecastOfRecord(centralS, from - 3600, to, now);
   if (!central.length) { out.reason = `no ${o.central} solar forecast issued by ${now}`; return out; }
   out.central.issued_at = Math.max(...central.map((f) => f.issued_at));
   const fcFuture = bySlot(central, slotS, phase);
@@ -132,9 +133,9 @@ export function deriveSolarCases(siteId, now = clockNow(), opts = {}) {
   }
   if (!out.cases.length) { out.reason = 'insufficient history: no forecast slot has a time of day with enough ratios'; return out; }
   if (!o.dryRun) {
-    SOLAR_CASES.forEach((c, i) => {
-      out.stored[c.metric] = putForecasts(seriesId('site', siteId, c.metric, SOLAR_CASES_SOURCE), now, rows[i], null, o.recordedAt != null ? { recordedAt: o.recordedAt } : {});
-    });
+    await forEachAsync(SOLAR_CASES, async (c, i) => {
+                  out.stored[c.metric] = await putForecasts(await seriesId('site', siteId, c.metric, SOLAR_CASES_SOURCE), now, rows[i], null, o.recordedAt != null ? { recordedAt: o.recordedAt } : {});
+                });
   }
   return out;
 }

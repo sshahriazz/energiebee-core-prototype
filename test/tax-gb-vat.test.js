@@ -10,7 +10,7 @@ useDb();
 const { db } = await import('../src/db/db.js');
 const { vatAt } = await import('../src/core/pricing.js');
 
-test('the GB VAT seed rules are the registry VAT_RATES, field for field', () => {
+await test('the GB VAT seed rules are the registry VAT_RATES, field for field', () => {
   const asRules = GB_VAT_RULES.map((r) => ({ fuel: r.fuel, direction: r.direction, rate: r.value, validFrom: r.valid_from, validTo: r.valid_to }));
   assert.deepEqual(asRules, VAT_RATES.map((v) => ({ ...v, validTo: v.validTo ?? null })));
   for (const r of GB_VAT_RULES) {
@@ -31,8 +31,8 @@ const SAMPLES = [
   Date.UTC(2031, 2, 30, 1) / 1000,
 ];
 
-test('applyTaxes with the GB rules gives vatAt\'s rate at every sample date', () => {
-  const p = { vat: db.prepare('SELECT * FROM vat_rate').all() };
+await test('applyTaxes with the GB rules gives vatAt\'s rate at every sample date', async () => {
+  const p = { vat: await db.prepare('SELECT * FROM vat_rate').all() };
   assert.ok(p.vat.length >= 4);
   for (const [fuel, direction] of [['electricity', 'import'], ['electricity', 'export'], ['gas', 'import']]) {
     for (const ts of SAMPLES) {

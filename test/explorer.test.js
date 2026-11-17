@@ -22,7 +22,7 @@ const TS = await import('../src/adapters/tariffscanner.js');
 const X = await import('../src/core/explorer.js');
 const { dayBounds } = await import('../src/core/time.js');
 
-const homes = m.buildScenario();
+const homes = await m.buildScenario();
 const { gb, fr, nl } = homes;
 const server = app.listen(0);
 after(() => server.close());
@@ -39,12 +39,12 @@ const stamp = (b, site) => { assert.equal(b.site, site); assert.ok(Number.isInte
 
 // A Tariffscanner page (no home) and an Octopus-style rate payload of the GB home, landed raw.
 const page = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'fixtures', 'tariffscanner', 'page-1.json'), 'utf8'));
-const tsRaw = landRaw({ source: 'tariffscanner', siteId: null, request: { method: 'POST', path: TS.DOMESTIC, query: { offset: 0, limit: 5 } }, body: page }).rawId;
-TS.storeMapped(TS.mapRecords(page.data), { rawId: tsRaw });
-const octoRaw = landRaw({ source: 'octopus_rates', siteId: gb.site.id, request: { url: `https://api.octopus.energy/v1/x/?api_key=${SECRETS.OCTOPUS_API_KEY}&page_size=1500` }, body: { results: [] } }).rawId;
-const octoRaw2 = landRaw({ source: 'octopus_meter', siteId: gb.site.id, request: { url: 'https://api.octopus.energy/v1/y/' }, body: { results: [{ consumption: 1 }] } }).rawId;
+const tsRaw = (await landRaw({ source: 'tariffscanner', siteId: null, request: { method: 'POST', path: TS.DOMESTIC, query: { offset: 0, limit: 5 } }, body: page })).rawId;
+await TS.storeMapped(TS.mapRecords(page.data), { rawId: tsRaw });
+const octoRaw = (await landRaw({ source: 'octopus_rates', siteId: gb.site.id, request: { url: `https://api.octopus.energy/v1/x/?api_key=${SECRETS.OCTOPUS_API_KEY}&page_size=1500` }, body: { results: [] } })).rawId;
+const octoRaw2 = (await landRaw({ source: 'octopus_meter', siteId: gb.site.id, request: { url: 'https://api.octopus.energy/v1/y/' }, body: { results: [{ consumption: 1 }] } })).rawId;
 
-test('overview: range, slot length, currency, sources, raw payloads, timeline states and checks', async () => {
+await test('overview: range, slot length, currency, sources, raw payloads, timeline states and checks', async () => {
   const o = await get(`/api/explorer/overview?site=${gb.site.id}`);
   stamp(o, gb.site.id);
   assert.deepEqual(o.range, { first_date: m.GB.from, last_date: m.GB.to });
@@ -57,13 +57,13 @@ test('overview: range, slot length, currency, sources, raw payloads, timeline st
   assert.deepEqual(o.raw.by_source.map((x) => [x.source, x.count, x.unlinked]), [['octopus_meter', 1, 1], ['octopus_rates', 1, 1]]);
   assert.ok(o.raw.bytes > 0);
   const t = o.timeline;
-  assert.equal(t.slots, m.hhRows(gb.site.id, m.GB.from, m.GB.to).length);
+  assert.equal(t.slots, (await m.hhRows(gb.site.id, m.GB.from, m.GB.to)).length);
   assert.equal(t.final + t.provisional + t.missing, t.slots);
   assert.deepEqual(Object.keys(o.checks).sort(), ['fail', 'pass', 'skip', 'warn']);
   assert.equal((await get(`/api/explorer/overview?site=${nl.site.id}`)).slot_s, 900);
 });
 
-test('raw: keyset pages with filters; one payload with body, forward lineage and a credential-free request', async () => {
+await test('raw: keyset pages with filters; one payload with body, forward lineage and a credential-free request', async () => {
   const l1 = await get(`/api/explorer/raw?site=${gb.site.id}&limit=1`);
   stamp(l1, gb.site.id);
   assert.equal(l1.rows.length, 1);
@@ -85,7 +85,7 @@ test('raw: keyset pages with filters; one payload with body, forward lineage and
   assert.equal((await call('/api/explorer/raw/99999')).status, 404);
 });
 
-test('rederive: the Tariffscanner normaliser re-run on the stored page equals the stored rows; a tampered row is a diff', async () => {
+await test('rederive: the Tariffscanner normaliser re-run on the stored page equals the stored rows; a tampered row is a diff', async () => {
   const one = await get(`/api/explorer/raw/${tsRaw}`);
   assert.equal(one.site, null);
   assert.ok(one.facts.length > 0 && one.facts.every((f) => f.table === 'rate_interval' && f.metric.startsWith('rate:')));
@@ -95,18 +95,18 @@ test('rederive: the Tariffscanner normaliser re-run on the stored page equals th
   assert.equal(r.stored_count, one.facts_total);
   assert.equal(r.rederived_count >= r.stored_count, true);
   assert.deepEqual(r.diffs, []);
-  const victim = db.prepare('SELECT id, price_ex_vat FROM rate_interval WHERE raw_id = ? ORDER BY id LIMIT 1').get(tsRaw);
-  db.prepare('UPDATE rate_interval SET price_ex_vat = price_ex_vat + 1.5 WHERE id = ?').run(victim.id);
+  const victim = await db.prepare('SELECT id, price_ex_vat FROM rate_interval WHERE raw_id = ? ORDER BY id LIMIT 1').get(tsRaw);
+  await db.prepare('UPDATE rate_interval SET price_ex_vat = price_ex_vat + 1.5 WHERE id = ?').run(victim.id);
   try {
     const t = (await get(`/api/explorer/raw/${tsRaw}`)).rederive;
     assert.equal(t.ok, false);
     assert.equal(t.diffs.length, 1);
     near(t.diffs[0].stored.value - t.diffs[0].rederived.value, 1.5, 1e-9);
     assert.equal(t.diffs[0].stored.rate_id, victim.id);
-  } finally { db.prepare('UPDATE rate_interval SET price_ex_vat = ? WHERE id = ?').run(victim.price_ex_vat, victim.id); }
+  } finally { await db.prepare('UPDATE rate_interval SET price_ex_vat = ? WHERE id = ?').run(victim.price_ex_vat, victim.id); }
 });
 
-test('series and facts: the home\'s series with counts; points as known at a moment hide later versions', async () => {
+await test('series and facts: the home\'s series with counts; points as known at a moment hide later versions', async () => {
   const list = await get(`/api/explorer/series?site=${fr.site.id}`);
   assert.ok(Array.isArray(list) && list.length >= 8);
   for (const s of list) {
@@ -119,10 +119,10 @@ test('series and facts: the home\'s series with counts; points as known at a mom
   // A new version of one reading, recorded after `before`.
   const [d0] = dayBounds(m.FR.tz, m.FR.change);
   const ts = d0 + 12 * 3600;
-  const old = db.prepare('SELECT value FROM reading WHERE series_id = ? AND ts = ? AND superseded_at IS NULL').get(solar.series_id, ts).value;
+  const old = (await db.prepare('SELECT value FROM reading WHERE series_id = ? AND ts = ? AND superseded_at IS NULL').get(solar.series_id, ts)).value;
   const before = Date.now();
   await new Promise((r) => setTimeout(r, 5));
-  putReadings(seriesId('site', fr.site.id, 'solar_w', 'sunsynk_5min'), [{ ts, value: old + 1234 }]);
+  await putReadings(await seriesId('site', fr.site.id, 'solar_w', 'sunsynk_5min'), [{ ts, value: old + 1234 }]);
   const q = `/api/explorer/facts?series=${solar.series_id}&from=${ts}&to=${ts + 300}`;
   const now = await get(q);
   stamp(now, fr.site.id);
@@ -146,26 +146,26 @@ test('series and facts: the home\'s series with counts; points as known at a mom
   assert.equal((await call(`/api/explorer/facts?series=${meter.series_id}&site=${gb.site.id}`)).status, 404);
 });
 
-test('timeline: chosen columns with units and kinds, rows and day rows', async () => {
+await test('timeline: chosen columns with units and kinds, rows and day rows', async () => {
   const t = await get(`/api/explorer/timeline?site=${gb.site.id}&from=${m.GB.change}&to=${m.GB.change}&cols=solar,import_rate,total_cost,soc_end,carbon_intensity,outdoor_temp,rate_found`);
   stamp(t, gb.site.id);
   assert.equal(t.slot_s, 1800); assert.equal(t.currency, 'GBP');
   assert.deepEqual(t.cols.map((c) => [c.name, c.unit, c.kind]), [['solar', 'kWh', 'energy'], ['import_rate', 'minor/kWh', 'price'], ['total_cost', 'minor', 'money'], ['soc_end', '%', 'percent'],
     ['carbon_intensity', 'gCO2/kWh', 'carbon'], ['outdoor_temp', 'degC', 'temp'], ['rate_found', '0/1', 'flag']]);
   assert.equal(t.rows.length, 50);
-  const stored = m.hhRows(gb.site.id, m.GB.change, m.GB.change);
+  const stored = await m.hhRows(gb.site.id, m.GB.change, m.GB.change);
   for (const [i, r] of t.rows.entries()) {
     for (const k of ['slot_start', 'local_date', 'tod_min', 'state', 'quality', 'solar', 'import_rate', 'total_cost']) assert.ok(k in r, k);
     near(r.import_rate, m.inc(stored[i]), 1e-12);
   }
   assert.equal(t.days.length, 1); assert.equal(t.days[0].local_date, m.GB.change);
   const d = await get(`/api/explorer/timeline?site=${nl.site.id}&from=${m.NL.from}&to=${m.NL.to}`);
-  assert.ok(d.cols.length >= 10); assert.equal(d.rows.length, m.hhRows(nl.site.id, m.NL.from, m.NL.to).length);
+  assert.ok(d.cols.length >= 10); assert.equal(d.rows.length, (await m.hhRows(nl.site.id, m.NL.from, m.NL.to)).length);
   assert.equal((await get(`/api/explorer/timeline?site=${nl.site.id}&from=${m.NL.from}&to=${m.NL.to}&limit=10`)).truncated, true);
 });
 
-test('slot: the calculation trace over HTTP', async () => {
-  const row = m.hhRows(nl.site.id, m.NL.change, m.NL.change)[50];
+await test('slot: the calculation trace over HTTP', async () => {
+  const row = (await m.hhRows(nl.site.id, m.NL.change, m.NL.change))[50];
   const e = await get(`/api/explorer/slot?site=${nl.site.id}&slot=${row.slot_start}`);
   stamp(e, nl.site.id);
   for (const k of ['slot', 'local_time', 'dur_s', 'state', 'quality', 'row', 'recomputed', 'matches_stored', 'diffs', 'steps', 'flows', 'price', 'lineage']) assert.ok(k in e, k);
@@ -176,8 +176,8 @@ test('slot: the calculation trace over HTTP', async () => {
   assert.equal(e.flows.length, 10);
 });
 
-test('validate a slot: every check says what it compared; synthetic data pass; a corrupted stored row fails with an explanation', async () => {
-  const row = m.hhRows(gb.site.id, m.GB.change, m.GB.change)[20];
+await test('validate a slot: every check says what it compared; synthetic data pass; a corrupted stored row fails with an explanation', async () => {
+  const row = (await m.hhRows(gb.site.id, m.GB.change, m.GB.change))[20];
   const v = await get(`/api/explorer/validate?site=${gb.site.id}&slot=${row.slot_start}`);
   stamp(v, gb.site.id);
   const ids = new Set(v.checks.map((c) => c.id));
@@ -205,7 +205,7 @@ test('validate a slot: every check says what it compared; synthetic data pass; a
   assert.equal(byId(v.checks, 'rate_published').status, 'skip', 'synthetic rate rows have no payload');
   assert.match(byId(v.checks, 'rate_published').explanation, /not downloaded from a supplier/);
   // Corrupt the stored row: the rebuild comparison fails and names the column; the cost no longer adds up.
-  db.prepare('UPDATE site_hh SET total_cost = total_cost + 3 WHERE site_id = ? AND slot_start = ?').run(gb.site.id, row.slot_start);
+  await db.prepare('UPDATE site_hh SET total_cost = total_cost + 3 WHERE site_id = ? AND slot_start = ?').run(gb.site.id, row.slot_start);
   try {
     const bad = await get(`/api/explorer/validate?site=${gb.site.id}&slot=${row.slot_start}`);
     const s = byId(bad.checks, 'stored_vs_rebuild');
@@ -217,10 +217,10 @@ test('validate a slot: every check says what it compared; synthetic data pass; a
     const tr = await get(`/api/explorer/slot?site=${gb.site.id}&slot=${row.slot_start}`);
     assert.equal(tr.matches_stored, false);
     assert.ok(tr.diffs.some((d) => d.field === 'total_cost'));
-  } finally { db.prepare('UPDATE site_hh SET total_cost = ? WHERE site_id = ? AND slot_start = ?').run(row.total_cost, gb.site.id, row.slot_start); }
+  } finally { await db.prepare('UPDATE site_hh SET total_cost = ? WHERE site_id = ? AND slot_start = ?').run(row.total_cost, gb.site.id, row.slot_start); }
 });
 
-test('validate a range: per-slot checks aggregated per day, with the day checks', async () => {
+await test('validate a range: per-slot checks aggregated per day, with the day checks', async () => {
   const v = await get(`/api/explorer/validate?site=${nl.site.id}&from=${m.NL.from}&to=${m.NL.to}`);
   assert.equal(v.from, m.NL.from); assert.equal(v.to, m.NL.to);
   const dates = [...new Set(v.checks.filter((c) => c.date).map((c) => c.date))];
@@ -239,7 +239,7 @@ test('validate a range: per-slot checks aggregated per day, with the day checks'
   assert.equal((await call(`/api/explorer/validate?site=${nl.site.id}&from=2025-01-01&to=2025-03-01`)).status, 400);
 });
 
-test('correlate: Pearson, Spearman and the fit equal a hand computation; lag, groups; fewer than 8 points is an error, not NaN', async () => {
+await test('correlate: Pearson, Spearman and the fit equal a hand computation; lag, groups; fewer than 8 points is an error, not NaN', async () => {
   // The statistic on a tiny dataset, by hand.
   const xs = [1, 2, 3, 4, 5, 6, 7, 8]; const ys = [2, 4, 5, 4, 5, 7, 8, 9];
   const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
@@ -255,7 +255,7 @@ test('correlate: Pearson, Spearman and the fit equal a hand computation; lag, gr
   // Over HTTP on the stored timeline: grid import against total cost, by slot, for one day.
   const c = await get(`/api/explorer/correlate?site=${gb.site.id}&x=grid_import&y=total_cost&from=${m.GB.from}&to=${m.GB.from}&limit_points=10`);
   stamp(c, gb.site.id);
-  const rows = m.hhRows(gb.site.id, m.GB.from, m.GB.from).filter((r) => r.grid_import != null && r.total_cost != null);
+  const rows = (await m.hhRows(gb.site.id, m.GB.from, m.GB.from)).filter((r) => r.grid_import != null && r.total_cost != null);
   const h = X.stats(rows.map((r) => r.grid_import), rows.map((r) => r.total_cost));
   assert.equal(c.n, rows.length);
   near(c.pearson, h.pearson, 1e-12); near(c.spearman, h.spearman, 1e-12); near(c.slope, h.slope, 1e-12);
@@ -264,7 +264,7 @@ test('correlate: Pearson, Spearman and the fit equal a hand computation; lag, gr
   assert.deepEqual(Object.keys(c.points[0]), ['t', 'x', 'y']);
   // Lag: y one slot after x.
   const lag = await get(`/api/explorer/correlate?site=${gb.site.id}&x=solar&y=solar&lag=1&from=${m.GB.from}&to=${m.GB.from}`);
-  const all = m.hhRows(gb.site.id, m.GB.from, m.GB.from);
+  const all = await m.hhRows(gb.site.id, m.GB.from, m.GB.from);
   const pairs = all.slice(0, -1).map((r, i) => [r.solar, all[i + 1].solar]);
   near(lag.pearson, X.stats(pairs.map((p) => p[0]), pairs.map((p) => p[1])).pearson, 1e-12);
   // A series variable resampled by the planner read layer, by hour, grouped by hour.
@@ -278,7 +278,7 @@ test('correlate: Pearson, Spearman and the fit equal a hand computation; lag, gr
   assert.equal((await call(`/api/explorer/correlate?site=${gb.site.id}&x=series:99999&y=solar`)).status, 400);
 });
 
-test('heatmap and variables', async () => {
+await test('heatmap and variables', async () => {
   const hm = await get(`/api/explorer/heatmap?site=${nl.site.id}&var=import_rate&from=${m.NL.from}&to=${m.NL.to}`);
   stamp(hm, nl.site.id);
   assert.equal(hm.var, 'import_rate'); assert.equal(hm.unit, 'minor/kWh');
@@ -288,7 +288,7 @@ test('heatmap and variables', async () => {
   assert.ok(hm.min < 0 && hm.max > hm.min, 'the negative quarter is the minimum');
   const sum = await get(`/api/explorer/heatmap?site=${gb.site.id}&var=solar&agg=sum&from=${m.GB.change}&to=${m.GB.change}`);
   // 01:00-02:00 happens twice on the 25-hour day: its cells add both.
-  const rows = m.hhRows(gb.site.id, m.GB.change, m.GB.change).filter((r) => r.tod_min === 60);
+  const rows = (await m.hhRows(gb.site.id, m.GB.change, m.GB.change)).filter((r) => r.tod_min === 60);
   assert.equal(rows.length, 2);
   near(sum.rows[0].cells[2], rows[0].solar + rows[1].solar, 1e-12);
   const v = await get(`/api/explorer/variables?site=${gb.site.id}`);
@@ -298,7 +298,7 @@ test('heatmap and variables', async () => {
   for (const x of v.variables) for (const k of ['name', 'label', 'unit', 'kind', 'source']) assert.ok(k in x, k);
 });
 
-test('bad input is 400 { error }; an unknown home 404', async () => {
+await test('bad input is 400 { error }; an unknown home 404', async () => {
   for (const p of ['/api/explorer/overview', '/api/explorer/overview?site=abc', `/api/explorer/raw?site=${gb.site.id}&limit=500`, `/api/explorer/raw?site=${gb.site.id}&source=nope`,
     `/api/explorer/timeline?site=${gb.site.id}&from=2025-13-01`, `/api/explorer/timeline?site=${gb.site.id}&from=2025-10-27&to=2025-10-25`, `/api/explorer/timeline?site=${gb.site.id}&cols=solar,nope`,
     `/api/explorer/slot?site=${gb.site.id}`, `/api/explorer/slot?site=${gb.site.id}&slot=17`, `/api/explorer/facts`, `/api/explorer/facts?series=1&limit=9000`, `/api/explorer/facts?series=1&as_of_ms=1700000000`,
@@ -311,7 +311,7 @@ test('bad input is 400 { error }; an unknown home 404', async () => {
   assert.equal((await call('/api/explorer/facts?series=999999')).status, 404);
 });
 
-test('no credential leaves in any answer', () => {
+await test('no credential leaves in any answer', () => {
   assert.ok(seen.length > 30);
   for (const text of seen) for (const v of Object.values(SECRETS)) assert.equal(text.includes(v), false, `secret ${v} in an answer`);
   assert.ok(seen.some((t) => t.includes('[redacted]')));

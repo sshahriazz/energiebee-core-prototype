@@ -22,12 +22,12 @@ function redactEnv(text) {
 
 // A home the picked user (req.user, set in src/server.js) may not see is an unknown home: checked on the
 // home asked for, and on the home an answer turns out to be about (a payload or series asked by its id).
-const hidden = (user, id) => id != null && /^\d+$/.test(String(id)) && !canSee(user, Number(id));
-const handle = (fn) => (req, res) => {
+const hidden = async (user, id) => id != null && /^\d+$/.test(String(id)) && !await canSee(user, Number(id));
+const handle = (fn) => async (req, res) => {
   try {
-    if (hidden(req.user, req.query?.site)) return res.status(404).json({ error: `no home ${req.query.site}` });
+    if (await hidden(req.user, req.query?.site)) return res.status(404).json({ error: `no home ${req.query.site}` });
     const body = fn(req.query ?? {}, req.params ?? {});
-    if (hidden(req.user, body?.site)) return res.status(404).json({ error: 'not found' });
+    if (await hidden(req.user, body?.site)) return res.status(404).json({ error: 'not found' });
     res.type('application/json').send(redactEnv(JSON.stringify(body)));
   } catch (err) {
     const status = err.status ?? (err instanceof RangeError || err instanceof TypeError ? 400 : 500);
@@ -35,17 +35,17 @@ const handle = (fn) => (req, res) => {
   }
 };
 
-router.get('/overview', handle((q) => X.overview(q)));
-router.get('/raw', handle((q) => X.rawList(q)));
-router.get('/raw/:id', handle((q, p) => X.rawOne(p.id, q)));
-router.get('/series', handle((q) => X.seriesList(q)));
-router.get('/facts', handle((q) => X.facts(q)));
-router.get('/timeline', handle((q) => X.timeline(q)));
-router.get('/slot', handle((q) => X.slot(q)));
-router.get('/validate', handle((q) => X.validate(q)));
-router.get('/correlate', handle((q) => X.correlate(q)));
-router.get('/heatmap', handle((q) => X.heatmap(q)));
-router.get('/variables', handle((q) => X.variables(q)));
+router.get('/overview', handle(async (q) => await X.overview(q)));
+router.get('/raw', handle(async (q) => await X.rawList(q)));
+router.get('/raw/:id', handle(async (q, p) => await X.rawOne(p.id, q)));
+router.get('/series', handle(async (q) => await X.seriesList(q)));
+router.get('/facts', handle(async (q) => await X.facts(q)));
+router.get('/timeline', handle(async (q) => await X.timeline(q)));
+router.get('/slot', handle(async (q) => await X.slot(q)));
+router.get('/validate', handle(async (q) => await X.validate(q)));
+router.get('/correlate', handle(async (q) => await X.correlate(q)));
+router.get('/heatmap', handle(async (q) => await X.heatmap(q)));
+router.get('/variables', handle(async (q) => await X.variables(q)));
 router.use((req, res) => res.status(404).json({ error: `no explorer endpoint ${req.path}` }));
 
 export default router;

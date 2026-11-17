@@ -6,6 +6,7 @@ import { carbonSeriesOf, carbonSubjectOf } from './carbon-series.js';
 import { seriesId } from './facts.js';
 import { nowSec, dayBounds, slotsOfDay, daysBetween, localDate, slotLength, slotNoun } from './time.js';
 import { ATTRS, attributeAt, attributeHistory } from './attributes.js';
+import { mapAsync } from "./async.js";
 
 const HOUR = 3600; const DAY = 86400;
 
@@ -13,44 +14,44 @@ const HOUR = 3600; const DAY = 86400;
 // slot ends its data normally arrives (later = late; not yet = waiting). Counts per slot follow
 // the home's slot length: 5-minute samples fill a slot slotS/300 times, half-hourly facts once per
 // half-hour (a 15-minute slot is covered by one half-hour fact, an hour by two).
-function feedsFor(site, slotS) {
+async function feedsFor(site, slotS) {
   const perHalfHour = Math.max(1, slotS / 1800);
-  const sid = (metric, source) => seriesId('site', site.id, metric, source);
-  const dev = (kind) => db.prepare("SELECT * FROM device WHERE site_id = ? AND kind = ? AND provider NOT IN ('env', 'picker', 'tounify') AND retired_at IS NULL").get(site.id, kind);
+  const sid = async (metric, source) => await seriesId('site', site.id, metric, source);
+  const dev = async (kind) => await db.prepare("SELECT * FROM device WHERE site_id = ? AND kind = ? AND provider NOT IN ('env', 'picker', 'tounify') AND retired_at IS NULL").get(site.id, kind);
   const out = [];
   // Where each feed comes from, in words: a demo home's data is generated, so it never names a
   // provider; a price names the provider of the tariffs agreed (Octopus for the live home).
   const synthetic = (provider) => site.is_demo || provider === 'synthetic';
   const meterSource = (d) => (synthetic(d.provider) ? 'Synthetic (demo data)' : d.provider === 'octopus' ? 'Octopus' : d.provider);
-  const priceProviders = [...new Set(db.prepare('SELECT DISTINCT t.provider FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL').all(site.id).map((r) => r.provider))];
+  const priceProviders = [...new Set((await db.prepare('SELECT DISTINCT t.provider FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL').all(site.id)).map((r) => r.provider))];
   const priceSource = site.is_demo || (priceProviders.length && priceProviders.every((p) => p === 'synthetic')) ? 'Synthetic tariff (demo data)'
     : !priceProviders.length || priceProviders.every((p) => p === 'octopus') ? 'Octopus tariff' : `${priceProviders.join(', ')} tariff`;
-  if (db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(site.id)) {
-    out.push({ key: 'inverter', label: 'Inverter power, every 5 minutes', source: 'Sunsynk', kind: 'reading', series: sid('solar_w', 'sunsynk_5min'), perSlot: slotS / 300, dueS: HOUR,
+  if (await db.prepare("SELECT 1 FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(site.id)) {
+    out.push({ key: 'inverter', label: 'Inverter power, every 5 minutes', source: 'Sunsynk', kind: 'reading', series: await sid('solar_w', 'sunsynk_5min'), perSlot: slotS / 300, dueS: HOUR,
       use: `Solar, battery, house use and the grid clamp, ${slotNoun(slotS)} by ${slotNoun(slotS)}` });
   }
   const meters = [['meter_import', 'grid_import_kwh', 'Smart meter, import'], ['meter_export', 'grid_export_kwh', 'Smart meter, export'], ['meter_gas', null, 'Smart meter, gas']];
   for (const [kind, metric, label] of meters) {
-    const d = dev(kind);
+    const d = await dev(kind);
     if (!d) continue;
     const unit = JSON.parse(d.attrs || '{}').gasUnit?.unit;
     const m = metric || (unit === 'm3' ? 'gas_m3' : 'gas_kwh');
-    out.push({ key: kind, label, source: meterSource(d), kind: 'interval', series: seriesId('device', d.id, m, 'octopus_meter'), perSlot: perHalfHour, dueS: 2 * DAY,
+    out.push({ key: kind, label, source: meterSource(d), kind: 'interval', series: await seriesId('device', d.id, m, 'octopus_meter'), perSlot: perHalfHour, dueS: 2 * DAY,
       use: kind === 'meter_gas' ? 'Gas use (m³), converted with the calorific value' : 'Grid import and export for the bill; replaces the clamp when it arrives' });
     if (kind === 'meter_gas' && unit === 'm3') {
       const ldz = JSON.parse(d.attrs || '{}').ldz;
-      if (ldz) out.push({ key: 'gas_cv', label: `Gas calorific value (${ldz})`, source: 'National Gas', kind: 'cover', series: seriesId('region', `ldz:${ldz}`, 'gas_cv_mjm3', 'national_gas_cv'), dueS: 2 * DAY,
+      if (ldz) out.push({ key: 'gas_cv', label: `Gas calorific value (${ldz})`, source: 'National Gas', kind: 'cover', series: await seriesId('region', `ldz:${ldz}`, 'gas_cv_mjm3', 'national_gas_cv'), dueS: 2 * DAY,
         use: 'Converts gas m³ to kWh for each gas day' });
     }
   }
   out.push({ key: 'import_price', label: 'Import price', source: priceSource, kind: 'served', column: 'import_rate_ex', use: 'Cost of every imported kWh' });
-  if (dev('meter_export') || db.prepare("SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.direction = 'export'").get(site.id)) {
+  if (await dev('meter_export') || await db.prepare("SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.direction = 'export'").get(site.id)) {
     out.push({ key: 'export_price', label: 'Export price', source: priceSource, kind: 'served', column: 'export_rate', use: 'Credit for every exported kWh' });
   }
   const carbonSeries = carbonSeriesOf(site);
-  if (carbonSeries) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: carbonSeries.provider, kind: 'interval', series: seriesId('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source), perSlot: perHalfHour, dueS: DAY,
+  if (carbonSeries) out.push({ key: 'carbon', label: 'Grid carbon intensity', source: carbonSeries.provider, kind: 'interval', series: await seriesId('region', carbonSeries.subject, 'carbon_intensity', carbonSeries.source), perSlot: perHalfHour, dueS: DAY,
     use: 'Carbon of imported power and carbon avoided' });
-  out.push({ key: 'weather', label: 'Sunlight and temperature', source: 'Open-Meteo', kind: 'cover', series: sid('ghi_wm2', 'open_meteo'), dueS: DAY, use: 'Solar forecast learning and the temperature fit' });
+  out.push({ key: 'weather', label: 'Sunlight and temperature', source: 'Open-Meteo', kind: 'cover', series: await sid('ghi_wm2', 'open_meteo'), dueS: DAY, use: 'Solar forecast learning and the temperature fit' });
   out.push({ key: 'forecast', label: 'Solar forecast made in advance', source: 'Quartz / EnergieBee', kind: 'served', column: 'solar_forecast', startsWithFirst: true,
     use: `Compares each ${slotNoun(slotS)} with what was forecast before it` });
   return out;
@@ -59,24 +60,24 @@ function feedsFor(site, slotS) {
 // One character per slot: o on time · l late · h loaded with the history on first connection ·
 // p partial · w waiting (not due yet) · m missing (overdue) · n not expected.
 // Slots follow the home's grid: slotS long, from local midnight (phase = its offset from the epoch grid).
-function feedCells(feed, slots, now, served, slotS) {
+async function feedCells(feed, slots, now, served, slotS) {
   const first = new Map(); const count = new Map();
   let firstEver = null;
   const phase = ((slots[0] % slotS) + slotS) % slotS;
   if (feed.kind === 'reading') {
-    for (const r of db.prepare(`SELECT ts - ((ts - ${phase}) % ${slotS}) AS s, SUM(superseded_at IS NULL) AS n, MIN(recorded_at) AS t FROM reading
+    for (const r of await db.prepare(`SELECT ts - ((ts - ${phase}) % ${slotS}) AS s, SUM(superseded_at IS NULL) AS n, MIN(recorded_at) AS t FROM reading
         WHERE series_id = ? AND ts >= ? AND ts < ? GROUP BY s`).all(feed.series, slots[0], slots[slots.length - 1] + slotS)) { count.set(r.s, r.n); first.set(r.s, r.t); }
-    firstEver = db.prepare('SELECT MIN(recorded_at) AS t FROM reading WHERE series_id = ?').get(feed.series)?.t;
+    firstEver = (await db.prepare('SELECT MIN(recorded_at) AS t FROM reading WHERE series_id = ?').get(feed.series))?.t;
   } else if (feed.kind === 'interval' || feed.kind === 'cover') {
-    const rows = db.prepare('SELECT start_ts, end_ts, recorded_at, superseded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?')
-      .all(feed.series, slots[0], slots[slots.length - 1] + slotS);
+    const rows = await db.prepare('SELECT start_ts, end_ts, recorded_at, superseded_at FROM interval_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?')
+          .all(feed.series, slots[0], slots[slots.length - 1] + slotS);
     for (const f of rows) {
       for (let s = f.start_ts - ((((f.start_ts - phase) % slotS) + slotS) % slotS); s < f.end_ts; s += slotS) {
         if (f.superseded_at == null) count.set(s, (count.get(s) || 0) + 1);
         first.set(s, Math.min(first.get(s) ?? Infinity, f.recorded_at));
       }
     }
-    firstEver = db.prepare('SELECT MIN(recorded_at) AS t FROM interval_fact WHERE series_id = ?').get(feed.series)?.t;
+    firstEver = (await db.prepare('SELECT MIN(recorded_at) AS t FROM interval_fact WHERE series_id = ?').get(feed.series))?.t;
   }
   const firstServed = feed.startsWithFirst ? slots.find((s) => served.get(s)?.[feed.column] != null) : null;
   let cells = '';
@@ -102,81 +103,81 @@ function feedCells(feed, slots, now, served, slotS) {
   return { cells, delays };
 }
 
-export function trustFor(siteId, fromDate, toDate) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function trustFor(siteId, fromDate, toDate) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   const tz = site.timezone;
   const slotS = slotLength(site);
   const now = nowSec();
   const dates = daysBetween(fromDate, toDate);
   const slots = dates.flatMap((d) => slotsOfDay(tz, d, slotS));
   const [fromTs] = dayBounds(tz, fromDate); const [, toTs] = dayBounds(tz, toDate);
-  const hh = db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').all(siteId, fromTs, toTs);
+  const hh = await db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').all(siteId, fromTs, toTs);
   const served = new Map(hh.map((r) => [r.slot_start, r]));
-  const ldz = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean) ?? null;
+  const ldz = (await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId)).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean) ?? null;
 
   // ── Feeds: coverage and arrival ──
-  const feeds = feedsFor(site, slotS).map((f) => {
-    const { cells, delays } = feedCells(f, slots, now, served, slotS);
-    const byDay = dates.map((d) => {
-      const idx = slots.map((s, i) => [s, i]).filter(([s]) => localDate(tz, s) === d);
-      const cs = idx.map(([, i]) => cells[i]);
-      const ds = idx.map(([s]) => delays.get(s)).filter((v) => v != null).sort((a, b) => a - b);
-      const tally = (c) => cs.filter((x) => x === c).length;
-      return { date: d, onTime: tally('o'), late: tally('l'), history: tally('h'), partial: tally('p'), waiting: tally('w'), missing: tally('m'), notExpected: tally('n'),
-        medianDelayS: ds.length ? Math.round(ds[ds.length >> 1]) : null };
-    });
-    const { series, ...rest } = f;
-    return { ...rest, cells, byDay };
-  });
+  const feeds = await mapAsync(await feedsFor(site, slotS), async (f) => {
+        const { cells, delays } = await feedCells(f, slots, now, served, slotS);
+        const byDay = dates.map((d) => {
+          const idx = slots.map((s, i) => [s, i]).filter(([s]) => localDate(tz, s) === d);
+          const cs = idx.map(([, i]) => cells[i]);
+          const ds = idx.map(([s]) => delays.get(s)).filter((v) => v != null).sort((a, b) => a - b);
+          const tally = (c) => cs.filter((x) => x === c).length;
+          return { date: d, onTime: tally('o'), late: tally('l'), history: tally('h'), partial: tally('p'), waiting: tally('w'), missing: tally('m'), notExpected: tally('n'),
+            medianDelayS: ds.length ? Math.round(ds[ds.length >> 1]) : null };
+        });
+        const { series, ...rest } = f;
+        return { ...rest, cells, byDay };
+      });
 
   // ── Cross-checks ──
-  const checks = db.prepare('SELECT local_date, check_code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, check_code')
-    .all(siteId, fromDate, toDate);
+  const checks = await db.prepare('SELECT local_date, check_code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, check_code')
+      .all(siteId, fromDate, toDate);
 
   // ── Daily balance and the two-measurement comparisons ──
-  const days = db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date').all(siteId, fromDate, toDate);
-  const counterS = (metric) => seriesId('site', siteId, metric, 'sunsynk_daily');
+  const days = await db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date').all(siteId, fromDate, toDate);
+  const counterS = async (metric) => await seriesId('site', siteId, metric, 'sunsynk_daily');
   const counters = [['solar', 'solar_kwh', 'Solar'], ['load', 'load_kwh', 'House (inverter load)'], ['import', 'grid_import_kwh', 'Grid import (clamp)'],
     ['export', 'grid_export_kwh', 'Grid export (clamp)'], ['charge', 'battery_charge_kwh', 'Battery charge'], ['discharge', 'battery_discharge_kwh', 'Battery discharge']];
-  const balance = days.map((d) => {
-    const [a] = dayBounds(tz, d.local_date);
-    const rows = hh.filter((r) => r.local_date === d.local_date);
-    const meterImp = rows.filter((r) => JSON.parse(r.lineage || '{}').import === 'meter');
-    const meterExp = rows.filter((r) => JSON.parse(r.lineage || '{}').export === 'meter');
-    const ct = (rs, k) => rs.reduce((s, r) => s + (JSON.parse(r.lineage || '{}').ct?.[k] ?? 0), 0);
-    const sum = (rs, k) => rs.reduce((s, r) => s + (r[k] || 0), 0);
-    return {
-      date: d.local_date,
-      // Every kWh in goes to exactly one place (the flows are built that way).
-      in: { solar: d.solar, grid: d.grid_import, battery: d.battery_discharge },
-      to: { home: d.home, grid: (d.solar_to_grid || 0) + (d.battery_to_grid || 0), battery: (d.solar_to_battery || 0) + (d.grid_to_battery || 0),
-        inverter: (d.solar_to_loss || 0) + (d.battery_to_loss || 0) + (d.grid_to_loss || 0) },
-      // Measured exports and charging that no source covered in the same half-hour: measurement mismatch.
-      unmatched: { grid: (d.grid_export || 0) - (d.solar_to_grid || 0) - (d.battery_to_grid || 0), battery: (d.battery_charge || 0) - (d.solar_to_battery || 0) - (d.grid_to_battery || 0) },
-      counters: counters.map(([k, metric, label]) => {
-        const c = db.prepare('SELECT value FROM interval_fact WHERE series_id = ? AND start_ts = ? AND superseded_at IS NULL').get(counterS(metric), a)?.value ?? null;
-        const chk = checks.find((x) => x.local_date === d.local_date && x.check_code === `counter_fit_${k}`);
-        return { key: k, label, counterKwh: c, samplesKwh: c != null && chk?.measured ? c / chk.measured : null, status: chk?.status ?? null };
-      }),
-      meterVsClamp: {
-        import: meterImp.length ? { halfHours: meterImp.length, meterKwh: sum(meterImp, 'grid_import'), clampKwh: ct(meterImp, 'imp') } : null,
-        export: meterExp.length ? { halfHours: meterExp.length, meterKwh: sum(meterExp, 'grid_export'), clampKwh: ct(meterExp, 'exp') } : null,
-      },
-    };
-  });
+  const balance = await mapAsync(days, async (d) => {
+        const [a] = dayBounds(tz, d.local_date);
+        const rows = hh.filter((r) => r.local_date === d.local_date);
+        const meterImp = rows.filter((r) => JSON.parse(r.lineage || '{}').import === 'meter');
+        const meterExp = rows.filter((r) => JSON.parse(r.lineage || '{}').export === 'meter');
+        const ct = (rs, k) => rs.reduce((s, r) => s + (JSON.parse(r.lineage || '{}').ct?.[k] ?? 0), 0);
+        const sum = (rs, k) => rs.reduce((s, r) => s + (r[k] || 0), 0);
+        return {
+          date: d.local_date,
+          // Every kWh in goes to exactly one place (the flows are built that way).
+          in: { solar: d.solar, grid: d.grid_import, battery: d.battery_discharge },
+          to: { home: d.home, grid: (d.solar_to_grid || 0) + (d.battery_to_grid || 0), battery: (d.solar_to_battery || 0) + (d.grid_to_battery || 0),
+            inverter: (d.solar_to_loss || 0) + (d.battery_to_loss || 0) + (d.grid_to_loss || 0) },
+          // Measured exports and charging that no source covered in the same half-hour: measurement mismatch.
+          unmatched: { grid: (d.grid_export || 0) - (d.solar_to_grid || 0) - (d.battery_to_grid || 0), battery: (d.battery_charge || 0) - (d.solar_to_battery || 0) - (d.grid_to_battery || 0) },
+          counters: await mapAsync(counters, async ([k, metric, label]) => {
+                          const c = (await db.prepare('SELECT value FROM interval_fact WHERE series_id = ? AND start_ts = ? AND superseded_at IS NULL').get(await counterS(metric), a))?.value ?? null;
+                          const chk = checks.find((x) => x.local_date === d.local_date && x.check_code === `counter_fit_${k}`);
+                          return { key: k, label, counterKwh: c, samplesKwh: c != null && chk?.measured ? c / chk.measured : null, status: chk?.status ?? null };
+                        }),
+          meterVsClamp: {
+            import: meterImp.length ? { halfHours: meterImp.length, meterKwh: sum(meterImp, 'grid_import'), clampKwh: ct(meterImp, 'imp') } : null,
+            export: meterExp.length ? { halfHours: meterExp.length, meterKwh: sum(meterExp, 'grid_export'), clampKwh: ct(meterExp, 'exp') } : null,
+          },
+        };
+      });
 
   // ── Headline ──
   const state = (st) => hh.filter((r) => r.state === st).length;
   const tallyChecks = (st) => checks.filter((c) => c.status === st).length;
-  const factStats = db.prepare(`SELECT COUNT(*) AS n, SUM(raw_id IS NOT NULL) AS linked, COUNT(DISTINCT raw_id) AS payloads FROM (
+  const factStats = await db.prepare(`SELECT COUNT(*) AS n, SUM(raw_id IS NOT NULL) AS linked, COUNT(DISTINCT raw_id) AS payloads FROM (
       SELECT r.raw_id FROM reading r JOIN series se ON se.id = r.series_id WHERE r.superseded_at IS NULL AND r.ts >= ? AND r.ts < ?
         AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?)))
       UNION ALL
       SELECT f.raw_id FROM interval_fact f JOIN series se ON se.id = f.series_id WHERE f.superseded_at IS NULL AND f.end_ts > ? AND f.start_ts < ?
         AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
           OR (se.subject_kind = 'region' AND se.subject_id IN (?, ?))))`)
-    .get(fromTs, toTs, String(siteId), siteId, fromTs, toTs, String(siteId), siteId, carbonSubjectOf(site) ?? '', `ldz:${ldz ?? ''}`);
-  const revisions = db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, revised_at, id').all(siteId, fromDate, toDate)
+      .get(fromTs, toTs, String(siteId), siteId, fromTs, toTs, String(siteId), siteId, carbonSubjectOf(site) ?? '', `ldz:${ldz ?? ''}`);
+  const revisions = (await db.prepare('SELECT * FROM site_day_revision WHERE site_id = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date, revised_at, id').all(siteId, fromDate, toDate))
     .map((r) => ({ ...r, checks: JSON.parse(r.checks || '{}'), inputs: JSON.parse(r.inputs || '{}'), changed: r.changed ? JSON.parse(r.changed) : null }));
   const headline = {
     from: fromDate, to: toDate, halfHours: hh.length, final: state('final'), provisional: state('provisional'), missing: state('missing'),
@@ -188,12 +189,12 @@ export function trustFor(siteId, fromDate, toDate) {
     revisedDays: new Set(revisions.filter((r) => r.changed).map((r) => r.local_date)).size,
   };
 
-  const corrections = db.prepare(`SELECT c.*, m.code AS metric, so.code AS source FROM fact_correction c LEFT JOIN series se ON se.id = c.series_id
+  const corrections = await db.prepare(`SELECT c.*, m.code AS metric, so.code AS source FROM fact_correction c LEFT JOIN series se ON se.id = c.series_id
     LEFT JOIN metric m ON m.id = se.metric_id LEFT JOIN source so ON so.id = se.source_id WHERE c.site_id = ? ORDER BY c.corrected_at DESC`).all(siteId);
-  const details = ATTRS.map((a) => ({ attr: a, ...(attributeAt(siteId, a) || { value: null, source: null }),
-    versions: db.prepare('SELECT COUNT(*) AS n FROM site_attribute WHERE site_id = ? AND attr = ?').get(siteId, a).n }));
+  const details = await mapAsync(ATTRS, async (a) => ({ attr: a, ...(await attributeAt(siteId, a) || { value: null, source: null }),
+        versions: (await db.prepare('SELECT COUNT(*) AS n FROM site_attribute WHERE site_id = ? AND attr = ?').get(siteId, a)).n }));
 
   // The result of the build for each half-hour: f final · p provisional · m missing · n not built yet.
   const states = slots.map((sl) => ({ final: 'f', provisional: 'p', missing: 'm' }[served.get(sl)?.state] || 'n')).join('');
-  return { timezone: tz, slotStart: slots[0], slotTimes: slots, slots: slots.length, now, headline, feeds, states, checks, balance, revisions, corrections, details, detailHistory: attributeHistory(siteId) };
+  return { timezone: tz, slotStart: slots[0], slotTimes: slots, slots: slots.length, now, headline, feeds, states, checks, balance, revisions, corrections, details, detailHistory: await attributeHistory(siteId) };
 }

@@ -33,8 +33,8 @@ function compare(list) {
   return { halfHours: both.length, actual: both.length ? actual : null, expected: both.length ? expected : null, performance: expected > 0 ? actual / expected : null };
 }
 
-export function solarExpected(siteId, from, to) {
-  const site = db.prepare('SELECT timezone, slot_s FROM site WHERE id = ?').get(siteId);
+export async function solarExpected(siteId, from, to) {
+  const site = await db.prepare('SELECT timezone, slot_s FROM site WHERE id = ?').get(siteId);
   const tz = site.timezone;
   const slotS = slotLength(site);
   const today = localDate(tz, nowSec());
@@ -42,11 +42,11 @@ export function solarExpected(siteId, from, to) {
   const [start] = dayBounds(tz, from < winFrom ? from : winFrom);
   const [, end] = dayBounds(tz, to > today ? to : today);
   // Slots of the home's current length only (k = slot of the day from the local clock).
-  const rows = db.prepare('SELECT slot_start, local_date, tod_min, state, solar, solar_forecast FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND dur_s = ? ORDER BY slot_start')
-    .all(siteId, start, end, slotS)
+  const rows = (await db.prepare('SELECT slot_start, local_date, tod_min, state, solar, solar_forecast FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND dur_s = ? ORDER BY slot_start')
+      .all(siteId, start, end, slotS))
     .map(({ tod_min: tod, ...r }) => ({ ...r, k: Math.floor(tod / (slotS / 60)) }));
-  const ghiS = seriesId('site', siteId, 'ghi_wm2', 'open_meteo');
-  const sun = sunBySlot(readIntervals([ghiS], start, end), slotS, ((start % slotS) + slotS) % slotS);
+  const ghiS = await seriesId('site', siteId, 'ghi_wm2', 'open_meteo');
+  const sun = sunBySlot(await readIntervals([ghiS], start, end), slotS, ((start % slotS) + slotS) % slotS);
 
   // The window's built half-hours, filtered as the forecast filters its history.
   const hist = rows.filter((r) => r.local_date >= winFrom && r.local_date <= today && r.state !== 'missing');
@@ -94,7 +94,7 @@ export function solarExpected(siteId, from, to) {
   });
   const all = compare(period);
   const closed = days.filter((d) => d.whole && d.performance != null).map((d) => d.performance);
-  const stored = db.prepare('SELECT MIN(start_ts) AS a, MAX(end_ts) AS b, COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND value IS NOT NULL').get(ghiS);
+  const stored = await db.prepare('SELECT MIN(start_ts) AS a, MAX(end_ts) AS b, COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND value IS NOT NULL').get(ghiS);
 
   return {
     from, to, timezone: tz,

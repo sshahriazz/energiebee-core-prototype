@@ -46,7 +46,7 @@ async function api(token, pathAndQuery, siteId) {
   const url = `${BASE}/api${pathAndQuery}`;
   const { json } = await fetchJson(url, { headers: { authorization: `Bearer ${token}` } });
   if (json?.code !== 0) {
-    quarantine({ source: 'sunsynk_5min', siteId, request: { url }, body: json, reason: `code ${json?.code}: ${json?.msg}` });
+    await quarantine({ source: 'sunsynk_5min', siteId, request: { url }, body: json, reason: `code ${json?.code}: ${json?.msg}` });
     throw new Error(`Sunsynk ${pathAndQuery.split('?')[0]}: code ${json?.code} ${json?.msg || ''}`);
   }
   return { json, url };
@@ -159,12 +159,12 @@ export function normaliseFlow(siteId, json, rawId) {
 
 export async function syncSunsynk(site, { username, password, plantId: wanted }, dates) {
   const token = await login(username, password);
-  const conn = db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(site.id);
+  const conn = await db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(site.id);
   let plantId = wanted || conn?.external_ref;
   if (!plantId || plantId !== conn?.external_ref) {
     // One login can see several plants (installers often share accounts), so the plant must be named.
     const list = await api(token, '/v1/plants?page=1&limit=50', site.id);
-    landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: list.url }, body: list.json });
+    await landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: list.url }, body: list.json });
     const plants = list.json.data?.infos || [];
     const hit = wanted ? plants.find((p) => String(p.id) === String(wanted)) : plants.length === 1 ? plants[0] : null;
     if (!hit) {
@@ -172,28 +172,28 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
       throw new Error(wanted ? `Plant ${wanted} is not on this Sunsynk account (found ${names || 'none'})` : `Several plants on this account; set SUNSYNK_PLANT_ID to one of: ${names}`);
     }
     plantId = String(hit.id);
-    db.prepare("UPDATE connection SET external_ref = ? WHERE site_id = ? AND provider = 'sunsynk'").run(plantId, site.id);
+    await db.prepare("UPDATE connection SET external_ref = ? WHERE site_id = ? AND provider = 'sunsynk'").run(plantId, site.id);
   }
   const plant = await api(token, `/v1/plant/${plantId}?id=${plantId}&lan=en`, site.id);
-  landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: plant.url }, body: plant.json });
+  await landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: plant.url }, body: plant.json });
   const tz = plant.json.data?.timezone?.code || site.timezone;
   const kwp = Number(plant.json.data?.totalPower) || null;
   const lat = Number(plant.json.data?.lat) || null;
   const lon = Number(plant.json.data?.lon) || null;
-  db.prepare('UPDATE site SET timezone = ?, lat = COALESCE(lat, ?), lon = COALESCE(lon, ?) WHERE id = ?').run(tz, lat, lon, site.id);
-  if (kwp) setAttribute(site.id, 'pv_kwp', kwp, 'provider', `Sunsynk plant ${plantId} record (totalPower)`);
+  await db.prepare('UPDATE site SET timezone = ?, lat = COALESCE(lat, ?), lon = COALESCE(lon, ?) WHERE id = ?').run(tz, lat, lon, site.id);
+  if (kwp) await setAttribute(site.id, 'pv_kwp', kwp, 'provider', `Sunsynk plant ${plantId} record (totalPower)`);
 
   const out = { plantId, days: 0, months: 0, live: 0 };
   for (const date of dates) {
     const r = await api(token, `/v1/plant/energy/${plantId}/day?date=${date}&id=${plantId}&lan=en`, site.id);
-    const { rawId } = landRaw({ source: 'sunsynk_5min', siteId: site.id, request: { url: r.url }, body: r.json });
+    const { rawId } = await landRaw({ source: 'sunsynk_5min', siteId: site.id, request: { url: r.url }, body: r.json });
     const res = normaliseDay(site.id, tz, date, r.json, rawId);
-    if (res.error) quarantine({ source: 'sunsynk_5min', siteId: site.id, request: { url: r.url }, body: r.json, reason: res.error });
+    if (res.error) await quarantine({ source: 'sunsynk_5min', siteId: site.id, request: { url: r.url }, body: r.json, reason: res.error });
     else out.days += res.facts;
   }
   for (const month of [...new Set(dates.map((d) => d.slice(0, 7)))]) {
     const r = await api(token, `/v1/plant/energy/${plantId}/month?date=${month}&id=${plantId}&lan=en`, site.id);
-    const { rawId } = landRaw({ source: 'sunsynk_daily', siteId: site.id, request: { url: r.url }, body: r.json });
+    const { rawId } = await landRaw({ source: 'sunsynk_daily', siteId: site.id, request: { url: r.url }, body: r.json });
     out.months += normaliseMonth(site.id, tz, r.json, rawId).facts || 0;
   }
   // Live flow and battery size from the first inverter.
@@ -201,22 +201,22 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
   const sn = inv.json.data?.infos?.[0]?.sn;
   if (sn) {
     const flow = await api(token, `/v1/inverter/${sn}/flow`, site.id);
-    const { rawId } = landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: flow.url }, body: flow.json });
+    const { rawId } = await landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: flow.url }, body: flow.json });
     out.live = normaliseFlow(site.id, flow.json, rawId).facts || 0;
     if (!site.battery_kwh) {
       try {
         // Usable capacity = the battery's reported capacity (Ah) × its voltage at that moment.
         // The payload is kept and the inputs recorded, so the figure can be traced.
         const b = await api(token, `/v1/inverter/battery/${sn}/realtime?sn=${sn}&lan=en`, site.id);
-        const { rawId } = landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: b.url }, body: b.json });
+        const { rawId } = await landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: b.url }, body: b.json });
         const ah = Number(b.json.data?.correctCap) || Number(b.json.data?.capacity) || 0;
         const volts = Number(b.json.data?.voltage) || 0;
         if (ah > 0 && volts > 0) {
           const kwh = Math.round((ah * volts) / 100) / 10;
-          setAttribute(site.id, 'battery_kwh', kwh, 'provider', `battery reading: ${ah} Ah × ${volts} V`);
+          await setAttribute(site.id, 'battery_kwh', kwh, 'provider', `battery reading: ${ah} Ah × ${volts} V`);
           const meta = JSON.parse(conn?.meta || '{}');
           meta.batteryCapacity = { kwh, ah, volts, field: Number(b.json.data?.correctCap) ? 'correctCap' : 'capacity', rawId, at: nowSec() };
-          db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'sunsynk'").run(JSON.stringify(meta), site.id);
+          await db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'sunsynk'").run(JSON.stringify(meta), site.id);
         }
       } catch { /* battery details are optional */ }
     }

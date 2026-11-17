@@ -29,8 +29,8 @@ export async function syncCarbon(site, fromTs, toTs) {
     const url = `${BASE}/regional/intensity/${minute(a)}/${minute(b)}/postcode/${site.outcode}`;
     const { json } = await fetchJson(url);
     const slots = slotsOf(json);
-    if (!slots) { quarantine({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json, reason: 'unexpected shape' }); continue; }
-    const { rawId } = landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
+    if (!slots) { await quarantine({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json, reason: 'unexpected shape' }); continue; }
+    const { rawId } = await landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
     past += ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
       point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), value: s.intensity.forecast, quality: QUALITY.ESTIMATED,
     })), rawId, { subject }).written;
@@ -40,7 +40,7 @@ export async function syncCarbon(site, fromTs, toTs) {
   const url = `${BASE}/regional/intensity/${minute(now)}/fw48h/postcode/${site.outcode}`;
   const { json } = await fetchJson(url);
   const slots = slotsOf(json) || [];
-  const { rawId } = landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
+  const { rawId } = await landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
   const issuedAt = nowSec();
   const fwd = ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
     point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), issuedAt, value: s.intensity.forecast,

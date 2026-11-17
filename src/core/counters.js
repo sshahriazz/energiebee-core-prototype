@@ -48,21 +48,21 @@ export function deriveCounterPeriods(samples, ch = {}) {
 }
 
 // The stored (current) samples either side of ts.
-export function neighbours(seriesId, ts) {
-  const prev = db.prepare('SELECT ts, value FROM reading WHERE series_id = ? AND ts < ? AND value IS NOT NULL AND superseded_at IS NULL ORDER BY ts DESC LIMIT 1').get(seriesId, ts) ?? null;
-  const next = db.prepare('SELECT ts, value FROM reading WHERE series_id = ? AND ts > ? AND value IS NOT NULL AND superseded_at IS NULL ORDER BY ts LIMIT 1').get(seriesId, ts) ?? null;
+export async function neighbours(seriesId, ts) {
+  const prev = await db.prepare('SELECT ts, value FROM reading WHERE series_id = ? AND ts < ? AND value IS NOT NULL AND superseded_at IS NULL ORDER BY ts DESC LIMIT 1').get(seriesId, ts) ?? null;
+  const next = await db.prepare('SELECT ts, value FROM reading WHERE series_id = ? AND ts > ? AND value IS NOT NULL AND superseded_at IS NULL ORDER BY ts LIMIT 1').get(seriesId, ts) ?? null;
   return { prev, next };
 }
 
 // A late or corrected sample splits or changes periods already derived: the current derived periods inside [from, to] that
 // are not in `keep` (a Set of "start|end") are superseded (kept, never deleted) and the correction is logged.
-export function withdrawDerived(siteId, derivedSeriesId, from, to, keep, now = Date.now()) {
-  const rows = db.prepare('SELECT start_ts, end_ts FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND start_ts >= ? AND end_ts <= ?').all(derivedSeriesId, from, to)
+export async function withdrawDerived(siteId, derivedSeriesId, from, to, keep, now = Date.now()) {
+  const rows = (await db.prepare('SELECT start_ts, end_ts FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL AND start_ts >= ? AND end_ts <= ?').all(derivedSeriesId, from, to))
     .filter((r) => !keep.has(`${r.start_ts}|${r.end_ts}`));
   if (!rows.length) return 0;
   const up = db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND start_ts = ? AND end_ts = ? AND superseded_at IS NULL');
-  for (const r of rows) up.run(now, derivedSeriesId, r.start_ts, r.end_ts);
-  db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)')
-    .run(siteId, Math.floor(now / 1000), derivedSeriesId, rows.length, 'a late or corrected counter sample changed the periods derived from the counter; the old periods are superseded');
+  for (const r of rows) await up.run(now, derivedSeriesId, r.start_ts, r.end_ts);
+  await db.prepare('INSERT INTO fact_correction (site_id, corrected_at, series_id, rows, reason) VALUES (?, ?, ?, ?, ?)')
+        .run(siteId, Math.floor(now / 1000), derivedSeriesId, rows.length, 'a late or corrected counter sample changed the periods derived from the counter; the old periods are superseded');
   return rows.length;
 }

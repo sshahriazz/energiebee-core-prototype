@@ -14,7 +14,7 @@ const itemIds = new Map();   // LDZ → data item id, cached for the process
 
 async function itemIdFor(ldz, siteId) {
   if (itemIds.has(ldz)) return itemIds.get(ldz);
-  const conn = db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'gas_cv'").get(siteId);
+  const conn = await db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'gas_cv'").get(siteId);
   const meta = JSON.parse(conn?.meta || '{}');
   if (meta.ldz === ldz && meta.itemId) { itemIds.set(ldz, meta.itemId); return meta.itemId; }
   // The folder list is large (several MB), so it is read once and the id kept on the connection.
@@ -29,7 +29,7 @@ async function itemIdFor(ldz, siteId) {
   };
   walk(json?.data);
   if (!found) throw new Error(`National Gas has no data item named "${name}"`);
-  db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'gas_cv'").run(JSON.stringify({ ...meta, ldz, itemId: found, itemName: name }), siteId);
+  await db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'gas_cv'").run(JSON.stringify({ ...meta, ldz, itemId: found, itemName: name }), siteId);
   itemIds.set(ldz, found);
   return found;
 }
@@ -42,7 +42,7 @@ const gasDayBounds = (tz, d) => {
 };
 
 export async function syncGasCv(site, fromTs, toTs) {
-  const gas = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id)
+  const gas = (await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(site.id))
     .map((d) => JSON.parse(d.attrs || '{}')).find((a) => a.gasUnit?.unit === 'm3' && a.ldz);
   if (!gas) return { skipped: 'no gas meter in m3 with a known LDZ' };
   const ldz = gas.ldz;
@@ -54,10 +54,10 @@ export async function syncGasCv(site, fromTs, toTs) {
   const res = await fetchText(url, { headers: { 'user-agent': 'EnergieBee core prototype' }, timeoutMs: 60000 });
   const text = res.text;
   if (!res.ok || !text.startsWith('Applicable At')) {
-    quarantine({ source: 'national_gas_cv', siteId: site.id, request: { url }, body: text.slice(0, 2000), reason: `HTTP ${res.status} or unexpected format` });
+    await quarantine({ source: 'national_gas_cv', siteId: site.id, request: { url }, body: text.slice(0, 2000), reason: `HTTP ${res.status} or unexpected format` });
     throw new Error(`National Gas CV download failed (HTTP ${res.status})`);
   }
-  const { rawId } = landRaw({ source: 'national_gas_cv', siteId: site.id, request: { url, ldz, itemId: id }, body: text });
+  const { rawId } = await landRaw({ source: 'national_gas_cv', siteId: site.id, request: { url, ldz, itemId: id }, body: text });
   // CSV: Applicable At, Applicable For (DD/MM/YYYY = gas day), Data Item, Value, Generated Time, Quality Indicator
   const rows = [];
   for (const line of text.trim().split(/\r?\n/).slice(1)) {

@@ -260,24 +260,24 @@ export const ATTRIBUTE_DEF_COLUMNS = Object.freeze(['key', 'label', 'unit', 'val
 export const DEVICE_KIND_COLUMNS = Object.freeze(['kind', 'label', 'class', 'attribute_keys', 'action_codes', 'description']);
 
 // Rows missing from the database (read only: an up-to-date database is opened without writing).
-const missing = (db, table, keyCol, rows) => {
-  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return [];
-  const have = new Set(db.prepare(`SELECT ${keyCol} AS k FROM ${table}`).all().map((r) => r.k));
+const missing = async (db, table, keyCol, rows) => {
+  if (!await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return [];
+  const have = new Set((await db.prepare(`SELECT ${keyCol} AS k FROM ${table}`).all()).map((r) => r.k));
   return rows.filter((r) => !have.has(r[keyCol]));
 };
-export const attributeSeedPending = (db) => missing(db, 'attribute_def', 'key', ATTRIBUTE_DEFS).length > 0 || missing(db, 'device_kind', 'kind', DEVICE_KINDS).length > 0;
+export const attributeSeedPending = async (db) => (await missing(db, 'attribute_def', 'key', ATTRIBUTE_DEFS)).length > 0 || (await missing(db, 'device_kind', 'kind', DEVICE_KINDS)).length > 0;
 
 // Inserts the registry rows that are missing; an existing row (an operator's correction) is kept.
 // Returns the number of rows written.
-export function seedAttributeDefs(db) {
+export async function seedAttributeDefs(db) {
   let n = 0;
-  const ins = (table, cols, rows) => {
+  const ins = async (table, cols, rows) => {
     const st = db.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')}) ON CONFLICT DO NOTHING`);
-    for (const r of rows) n += Number(st.run(...cols.map((c) => r[c] ?? null)).changes);
+    for (const r of rows) n += Number((await st.run(...cols.map((c) => r[c] ?? null))).changes);
   };
   // Aliases point at another key, so the keys they name go in first.
-  const defs = missing(db, 'attribute_def', 'key', ATTRIBUTE_DEFS);
-  ins('attribute_def', ATTRIBUTE_DEF_COLUMNS, [...defs.filter((d) => !d.alias_of), ...defs.filter((d) => d.alias_of)]);
-  ins('device_kind', DEVICE_KIND_COLUMNS, missing(db, 'device_kind', 'kind', DEVICE_KINDS));
+  const defs = await missing(db, 'attribute_def', 'key', ATTRIBUTE_DEFS);
+  await ins('attribute_def', ATTRIBUTE_DEF_COLUMNS, [...defs.filter((d) => !d.alias_of), ...defs.filter((d) => d.alias_of)]);
+  await ins('device_kind', DEVICE_KIND_COLUMNS, await missing(db, 'device_kind', 'kind', DEVICE_KINDS));
   return n;
 }

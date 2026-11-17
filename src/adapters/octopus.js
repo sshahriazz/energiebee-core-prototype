@@ -7,6 +7,7 @@ import { landRaw, quarantine, QUALITY } from '../core/facts.js';
 import { ingestObservations, setDeviceChannel } from '../core/channels.js';
 import { setDeviceAttrs, supersedeAgreements } from '../core/devices.js';
 import { isoUtc, nowSec, parseIso } from '../core/time.js';
+import { mapAsync } from "../core/async.js";
 
 const BASE = 'https://api.octopus.energy/v1';
 const GQL = 'https://api.octopus.energy/v1/graphql/';
@@ -20,10 +21,10 @@ async function getAll(url, headers, source, siteId) {
   while (next && pages < 40) {
     const { json } = await fetchJson(next, { headers });
     if (!json || !Array.isArray(json.results)) {
-      quarantine({ source, siteId, request: { url: next }, body: json, reason: 'missing results array' });
+      await quarantine({ source, siteId, request: { url: next }, body: json, reason: 'missing results array' });
       break;
     }
-    const { rawId } = landRaw({ source, siteId, request: { url: next }, body: json });
+    const { rawId } = await landRaw({ source, siteId, request: { url: next }, body: json });
     for (const r of json.results) out.push({ ...r, _rawId: rawId });
     next = json.next;
     pages++;
@@ -59,18 +60,18 @@ export const nativePeriodOf = (structure) => PERIOD_OF[structure] ?? null;
 
 // Every Octopus tariff is a GB tariff in pounds, fetched from the provider (origin 'provider').
 // A row stored before these columns were written gets them filled in, never overwritten.
-export function upsertTariff({ provider = 'octopus', tariffCode, direction, name }) {
+export async function upsertTariff({ provider = 'octopus', tariffCode, direction, name }) {
   const p = parseTariffCode(tariffCode);
-  db.prepare(
-    `INSERT INTO tariff (provider, product_code, tariff_code, fuel, direction, structure, region, name, currency, country, kind, native_period_s, origin, origin_note)
+  await db.prepare(
+        `INSERT INTO tariff (provider, product_code, tariff_code, fuel, direction, structure, region, name, currency, country, kind, native_period_s, origin, origin_note)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'GBP', 'GB', ?, ?, 'provider', ?)
      ON CONFLICT(tariff_code) DO UPDATE SET name = COALESCE(excluded.name, tariff.name), currency = COALESCE(tariff.currency, excluded.currency),
        country = COALESCE(tariff.country, excluded.country), kind = COALESCE(tariff.kind, excluded.kind),
        native_period_s = COALESCE(tariff.native_period_s, excluded.native_period_s), origin = COALESCE(tariff.origin, excluded.origin),
        origin_note = COALESCE(tariff.origin_note, excluded.origin_note)`)
-    .run(provider, p.product, tariffCode, p.fuel, direction, p.structure, p.region, name ?? null, tariffKindOf(p.structure), nativePeriodOf(p.structure),
-      `Octopus public API: products/${p.product}/${p.fuel === 'gas' ? 'gas' : 'electricity'}-tariffs/${tariffCode}`);
-  return db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariffCode);
+        .run(provider, p.product, tariffCode, p.fuel, direction, p.structure, p.region, name ?? null, tariffKindOf(p.structure), nativePeriodOf(p.structure),
+          `Octopus public API: products/${p.product}/${p.fuel === 'gas' ? 'gas' : 'electricity'}-tariffs/${tariffCode}`);
+  return await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariffCode);
 }
 
 // ───────────── Rates (bitemporal) ─────────────
@@ -91,31 +92,31 @@ const insRate = db.prepare(
 
 // Store price rows. Identical rows are skipped; a changed row supersedes the
 // old version, so the overlap trigger only ever sees one current row per period.
-export function putRates(tariffId, component, register, rows, siteId = null) {
+export async function putRates(tariffId, component, register, rows, siteId = null) {
   const now = Date.now();
   let changed = 0;
   const sorted = [...rows].sort((a, b) => a.validFrom - b.validFrom);
-  tx(() => {
-    for (const r of sorted) {
-      const pm = r.paymentMethod || 'ANY';
-      const cur = curRate.get(tariffId, component, register, pm, siteId ?? 0, r.validFrom);
-      if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.priceExVat) < 1e-9) continue;
-      if (cur) {
-        supRate.run(now, cur.id);
-        // Same start, earlier end: the rest of the old period keeps its old price.
-        if (r.validTo != null && (cur.valid_to == null || cur.valid_to > r.validTo)) insRate.run(tariffId, siteId, component, register, pm, r.validTo, cur.valid_to, cur.price_ex_vat, now, cur.raw_id);
-      }
-      // A row that now overlaps the new one was replaced upstream. Keep the
-      // parts of it outside the new period, so no time is left without a price.
-      for (const o of overlapping.all(tariffId, component, register, pm, siteId ?? 0, r.validTo ?? 9000000000, r.validFrom)) {
-        supRate.run(now, o.id);
-        if (o.valid_from < r.validFrom) insRate.run(tariffId, siteId, component, register, pm, o.valid_from, r.validFrom, o.price_ex_vat, now, o.raw_id);
-        if (r.validTo != null && (o.valid_to == null || o.valid_to > r.validTo)) insRate.run(tariffId, siteId, component, register, pm, r.validTo, o.valid_to, o.price_ex_vat, now, o.raw_id);
-      }
-      insRate.run(tariffId, siteId, component, register, pm, r.validFrom, r.validTo ?? null, r.priceExVat, now, r.rawId ?? null);
-      changed++;
-    }
-  });
+  await tx(async () => {
+        for (const r of sorted) {
+          const pm = r.paymentMethod || 'ANY';
+          const cur = await curRate.get(tariffId, component, register, pm, siteId ?? 0, r.validFrom);
+          if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.priceExVat) < 1e-9) continue;
+          if (cur) {
+            await supRate.run(now, cur.id);
+            // Same start, earlier end: the rest of the old period keeps its old price.
+            if (r.validTo != null && (cur.valid_to == null || cur.valid_to > r.validTo)) await insRate.run(tariffId, siteId, component, register, pm, r.validTo, cur.valid_to, cur.price_ex_vat, now, cur.raw_id);
+          }
+          // A row that now overlaps the new one was replaced upstream. Keep the
+          // parts of it outside the new period, so no time is left without a price.
+          for (const o of await overlapping.all(tariffId, component, register, pm, siteId ?? 0, r.validTo ?? 9000000000, r.validFrom)) {
+            await supRate.run(now, o.id);
+            if (o.valid_from < r.validFrom) await insRate.run(tariffId, siteId, component, register, pm, o.valid_from, r.validFrom, o.price_ex_vat, now, o.raw_id);
+            if (r.validTo != null && (o.valid_to == null || o.valid_to > r.validTo)) await insRate.run(tariffId, siteId, component, register, pm, r.validTo, o.valid_to, o.price_ex_vat, now, o.raw_id);
+          }
+          await insRate.run(tariffId, siteId, component, register, pm, r.validFrom, r.validTo ?? null, r.priceExVat, now, r.rawId ?? null);
+          changed++;
+        }
+      });
   return changed;
 }
 
@@ -132,40 +133,40 @@ export async function syncTariffRates(tariff, fromTs, toTs, siteId) {
   let fetchedStandard = false;
   if (reg !== '2R') {
     const std = await getAll(`${base}/standard-unit-rates/?${window}`, {}, 'octopus_rates', siteId);
-    n += putRates(tariff.id, 'unit', 'single', toRows(std));
+    n += await putRates(tariff.id, 'unit', 'single', toRows(std));
     fetchedStandard = std.length > 0;
   }
   // Economy 7 and Intelligent Octopus Go publish day and night rates with no times.
   if (reg === '2R' || (tariff.structure === 'iog' && !fetchedStandard)) {
     for (const register of ['day', 'night']) {
       const rows = await getAll(`${base}/${register}-unit-rates/?${window}`, {}, 'octopus_rates', siteId);
-      n += putRates(tariff.id, 'unit', register, toRows(rows));
+      n += await putRates(tariff.id, 'unit', register, toRows(rows));
     }
   }
   if (tariff.direction === 'import') {
     const sc = await getAll(`${base}/standing-charges/?${window}`, {}, 'octopus_rates', siteId);
-    n += putRates(tariff.id, 'standing', 'single', toRows(sc));
+    n += await putRates(tariff.id, 'standing', 'single', toRows(sc));
   }
   return n;
 }
 
 // ───────────── Account, meters and agreements ─────────────
 
-function upsertDevice(siteId, kind, ref, label, fresh) {
+async function upsertDevice(siteId, kind, ref, label, fresh) {
   // Keep what the core learned about the device (e.g. the gas unit) when the account is re-read.
-  const old = db.prepare("SELECT attrs FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
+  const old = await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
   const attrs = { ...JSON.parse(old?.attrs || '{}'), ...fresh };
-  db.prepare(
-    `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'octopus', ?, ?, '{}', ?)
+  await db.prepare(
+        `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'octopus', ?, ?, '{}', ?)
      ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET kind = excluded.kind, label = excluded.label, retired_at = NULL`)
-    .run(siteId, kind, ref, label, Date.now());
-  const dev = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
-  setDeviceAttrs(dev.id, attrs);
+        .run(siteId, kind, ref, label, Date.now());
+  const dev = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND external_ref = ?").get(siteId, ref);
+  await setDeviceAttrs(dev.id, attrs);
   return { ...dev, attrs: JSON.stringify(attrs) };
 }
 
 // Agreements can overlap or be zero-width upstream; clip them into a clean, non-overlapping history.
-function replaceAgreements(siteId, deviceId, agreements, direction) {
+async function replaceAgreements(siteId, deviceId, agreements, direction) {
   const clean = agreements
     .map((a) => ({ code: a.tariff_code, from: parseIso(a.valid_from), to: a.valid_to ? parseIso(a.valid_to) : null }))
     .filter((a) => a.to === null || a.to > a.from)
@@ -175,11 +176,11 @@ function replaceAgreements(siteId, deviceId, agreements, direction) {
   }
   const kept = clean.filter((a) => a.to === null || a.to > a.from);
   // Unchanged history is left alone (no delete and re-insert on every sync).
-  const current = db.prepare('SELECT t.tariff_code AS code, a.valid_from AS "from", a.valid_to AS "to" FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.device_id = ? AND a.superseded_at IS NULL ORDER BY a.valid_from').all(deviceId);
+  const current = await db.prepare('SELECT t.tariff_code AS code, a.valid_from AS "from", a.valid_to AS "to" FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.device_id = ? AND a.superseded_at IS NULL ORDER BY a.valid_from').all(deviceId);
   const key = (list) => list.map((a) => `${a.code}|${a.from}|${a.to ?? ''}`).join(',');
   if (key(current) === key(kept)) return { kept, changed: false };
   // The previous history is superseded, not deleted, so earlier moments can still be priced as they were.
-  supersedeAgreements(siteId, deviceId, kept.map((a) => ({ tariffId: upsertTariff({ tariffCode: a.code, direction }).id, from: a.from, to: a.to })));
+  await supersedeAgreements(siteId, deviceId, await mapAsync(kept, async (a) => ({ tariffId: (await upsertTariff({ tariffCode: a.code, direction })).id, from: a.from, to: a.to })));
   return { kept, changed: true };
 }
 
@@ -200,28 +201,28 @@ export async function syncOctopusAccount(site, { apiKey, accountNumber }) {
   const url = `${BASE}/accounts/${accountNumber}/`;
   const { json } = await fetchJson(url, { headers: auth(apiKey) });
   if (!json?.properties?.length) {
-    quarantine({ source: 'octopus_meter', siteId: site.id, request: { url }, body: json, reason: 'no properties' });
+    await quarantine({ source: 'octopus_meter', siteId: site.id, request: { url }, body: json, reason: 'no properties' });
     throw new Error('Octopus account has no properties');
   }
-  landRaw({ source: 'octopus_meter', siteId: site.id, request: { url }, body: json });
+  await landRaw({ source: 'octopus_meter', siteId: site.id, request: { url }, body: json });
   const prop = [...json.properties].sort((a, b) => (b.moved_in_at || '').localeCompare(a.moved_in_at || '')).find((p) => !p.moved_out_at) || json.properties[0];
   // The supply address is the best source for the home's postcode when none is configured.
-  if (!site.postcode && prop.postcode) db.prepare('UPDATE site SET postcode = ? WHERE id = ?').run(prop.postcode, site.id);
+  if (!site.postcode && prop.postcode) await db.prepare('UPDATE site SET postcode = ? WHERE id = ?').run(prop.postcode, site.id);
   let agreementsChanged = false;
   const meters = [];
   for (const mp of prop.electricity_meter_points || []) {
     const kind = mp.is_export ? 'meter_export' : 'meter_import';
-    const dev = upsertDevice(site.id, kind, mp.mpan, mp.is_export ? 'Export meter' : 'Import meter', {
-      serials: (mp.meters || []).map((m) => m.serial_number), profileClass: mp.profile_class, annualKwh: mp.consumption_standard,
-    });
-    if (replaceAgreements(site.id, dev.id, mp.agreements || [], mp.is_export ? 'export' : 'import').changed) agreementsChanged = true;
+    const dev = await upsertDevice(site.id, kind, mp.mpan, mp.is_export ? 'Export meter' : 'Import meter', {
+          serials: (mp.meters || []).map((m) => m.serial_number), profileClass: mp.profile_class, annualKwh: mp.consumption_standard,
+        });
+    if ((await replaceAgreements(site.id, dev.id, mp.agreements || [], mp.is_export ? 'export' : 'import')).changed) agreementsChanged = true;
     meters.push(dev);
   }
   for (const gp of prop.gas_meter_points || []) {
-    const dev = upsertDevice(site.id, 'meter_gas', gp.mprn, 'Gas meter', {
-      serials: (gp.meters || []).map((m) => m.serial_number), annualKwh: gp.consumption_standard,
-    });
-    if (replaceAgreements(site.id, dev.id, gp.agreements || [], 'import').changed) agreementsChanged = true;
+    const dev = await upsertDevice(site.id, 'meter_gas', gp.mprn, 'Gas meter', {
+          serials: (gp.meters || []).map((m) => m.serial_number), annualKwh: gp.consumption_standard,
+        });
+    if ((await replaceAgreements(site.id, dev.id, gp.agreements || [], 'import')).changed) agreementsChanged = true;
     meters.push(dev);
   }
   meters.agreementsChanged = agreementsChanged;
@@ -246,7 +247,7 @@ function gasUnit(values, days, annualKwh) {
 }
 
 export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { gasFrom } = {}) {
-  const devices = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus'").all(site.id);
+  const devices = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus'").all(site.id);
   let n = 0;
   for (const dev of devices) {
     const attrs = JSON.parse(dev.attrs || '{}');
@@ -264,11 +265,11 @@ export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { g
         if (!u) continue;   // unit unknown: not stored rather than guessed
         if (!attrs.gasUnit && rows.length >= 96) {
           attrs.gasUnit = u;
-          setDeviceAttrs(dev.id, attrs);
+          await setDeviceAttrs(dev.id, attrs);
         }
         metric = u.unit === 'm3' ? 'gas_m3' : 'gas_kwh';
       }
-      n += normaliseConsumption(site.id, dev.id, metric, rows, rows[0]._rawId);
+      n += await normaliseConsumption(site.id, dev.id, metric, rows, rows[0]._rawId);
     }
   }
   return n;
@@ -278,8 +279,8 @@ export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { g
 // summer); Date.parse converts it to UTC.
 // The meter's one point, 'consumption', becomes the metric its kind (and, for gas, its unit) says; the
 // device channel records that choice, and the write goes through the same channel path as every vendor.
-export function normaliseConsumption(siteId, deviceId, metric, rows, rawId) {
-  setDeviceChannel(siteId, 'octopus_meter', deviceId, 'consumption', metric);
+export async function normaliseConsumption(siteId, deviceId, metric, rows, rawId) {
+  await setDeviceChannel(siteId, 'octopus_meter', deviceId, 'consumption', metric);
   const obs = rows.map((r) => ({ point: 'consumption', start: parseIso(r.interval_start), end: parseIso(r.interval_end), value: r.consumption, quality: QUALITY.MEASURED, rawId: r._rawId }));
   return ingestObservations(siteId, 'octopus_meter', obs, rawId, { deviceId }).written;
 }
@@ -306,10 +307,10 @@ async function gql(token, query, variables, siteId, { land = true } = {}) {
   const { json } = await fetchJson(GQL, { method: 'POST', headers: token ? { authorization: `JWT ${token}` } : {}, body: { query, variables } });
   if (json?.errors?.length) {
     // Kraken returns errors inside an HTTP 200 response.
-    quarantine({ source: 'octopus_kraken', siteId, request: { query: query.slice(0, 80) }, body: json, reason: json.errors[0].message });
+    await quarantine({ source: 'octopus_kraken', siteId, request: { query: query.slice(0, 80) }, body: json, reason: json.errors[0].message });
     throw new Error(`Kraken: ${json.errors[0].message}`);
   }
-  const rawId = land ? landRaw({ source: 'octopus_kraken', siteId, request: { query: query.slice(0, 120), variables: { ...variables, key: undefined } }, body: json }).rawId : null;
+  const rawId = land ? (await landRaw({ source: 'octopus_kraken', siteId, request: { query: query.slice(0, 120), variables: { ...variables, key: undefined } }, body: json })).rawId : null;
   return { ...json.data, _rawId: rawId };
 }
 
@@ -317,7 +318,7 @@ async function gql(token, query, variables, siteId, { land = true } = {}) {
 // That is the source of truth; the guess in gasUnit() is only a fallback.
 // Returns true when the unit changed, so the caller can re-read the gas history.
 export async function syncGasUnits(site, { apiKey, accountNumber }) {
-  const gasDevices = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND kind = 'meter_gas'").all(site.id);
+  const gasDevices = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'octopus' AND kind = 'meter_gas'").all(site.id);
   if (!gasDevices.length) return { changed: false };
   const tokenData = await gql(null, 'mutation($key:String!){obtainKrakenToken(input:{APIKey:$key}){token}}', { key: apiKey }, site.id, { land: false });
   const token = tokenData?.obtainKrakenToken?.token;
@@ -337,7 +338,7 @@ export async function syncGasUnits(site, { apiKey, accountNumber }) {
         attrs.gasUnit = unit;
         attrs.ldz = gp.ldz ?? null;
         attrs.exitZone = gp.exitZone ?? null;
-        setDeviceAttrs(dev.id, attrs);
+        await setDeviceAttrs(dev.id, attrs);
       }
     }
   }
@@ -357,11 +358,11 @@ export async function syncKraken(site, { apiKey, accountNumber }) {
     const devs = await gql(token, 'query($a:String!){devices(accountNumber:$a){id name deviceType status{current currentState isSuspended}}}', { a: accountNumber }, site.id);
     for (const d of devs?.devices || []) {
       if (d.deviceType !== 'ELECTRIC_VEHICLES') continue;
-      db.prepare(
-        `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'ev', 'octopus_kraken', ?, ?, '{}', ?)
+      await db.prepare(
+                `INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'ev', 'octopus_kraken', ?, ?, '{}', ?)
          ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET label = excluded.label, retired_at = NULL`)
-        .run(site.id, d.id, d.name || 'Electric vehicle', Date.now());
-      setDeviceAttrs(db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'octopus_kraken' AND external_ref = ?").get(site.id, d.id).id, { status: d.status });
+                .run(site.id, d.id, d.name || 'Electric vehicle', Date.now());
+      await setDeviceAttrs((await db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'octopus_kraken' AND external_ref = ?").get(site.id, d.id)).id, { status: d.status });
       out.devices++;
       const planned = await gql(token, 'query($d:String!){flexPlannedDispatches(deviceId:$d){start end type energyAddedKwh}}', { d: d.id }, site.id);
       out.planned += normalisePlanned(site.id, planned?.flexPlannedDispatches, nowSec(), planned?._rawId);

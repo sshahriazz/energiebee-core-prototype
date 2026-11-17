@@ -10,19 +10,19 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
 if (hasLive) useDb({ snapshot: true });
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { buildSite } = hasLive ? await import('../src/core/build.js') : {};
-const { localDate, addDays, nowSec } = hasLive ? await import('../src/core/time.js') : {};
+const { db } = await import('../src/db/db.js');
+const { buildSite } = await import('../src/core/build.js');
+const { localDate, addDays, nowSec } = await import('../src/core/time.js');
 
 const file = path.join(import.meta.dirname, 'fixtures', 'golden-gb.json');
 const SITE = 1;
 const round = (v) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v);
 
-function snapshot(asOf) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(SITE);
-  const first = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(SITE).d;
+async function snapshot(asOf) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(SITE);
+  const first = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(SITE)).d;
   const last = addDays(localDate(site.timezone, asOf), -1);
-  const res = buildSite(SITE, first, last, { asOf, dryRun: true });
+  const res = await buildSite(SITE, first, last, { asOf, dryRun: true });
   // dur_s and tod_min were added with per-home slot length; the hash keeps comparing the original columns.
   const volatile = new Set(['built_at', 'lineage', 'dur_s', 'tod_min']);
   const h = createHash('sha256');
@@ -37,14 +37,14 @@ function snapshot(asOf) {
   return { first, last, slots: res.slots, days: res.days, hash: h.digest('hex'), perDay };
 }
 
-test('GB home: a dry-run build as known at a fixed moment is unchanged', { skip }, () => {
+await test('GB home: a dry-run build as known at a fixed moment is unchanged', { skip }, async () => {
   if (process.env.UPDATE_GOLDEN === '1') {
     const asOf = nowSec();
-    fs.writeFileSync(file, JSON.stringify({ asOf, ...snapshot(asOf) }, null, 1));
+    fs.writeFileSync(file, JSON.stringify({ asOf, ...await snapshot(asOf) }, null, 1));
     return;
   }
   const g = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const now = snapshot(g.asOf);
+  const now = await snapshot(g.asOf);
   assert.equal(now.slots, g.slots, 'slot count');
   assert.deepEqual(now.perDay, g.perDay, 'per-day totals');
   assert.equal(now.hash, g.hash, 'row-for-row hash');

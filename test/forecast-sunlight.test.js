@@ -21,14 +21,14 @@ function history(solarOf) {
   return { hist, sun, whole };
 }
 
-test('solar that is always 0 is not fitted: ok false with a reason, no null r2', () => {
+await test('solar that is always 0 is not fitted: ok false with a reason, no null r2', () => {
   const { hist, sun, whole } = history(() => 0);
   const r = learnSunlight(hist, sun, whole);
   assert.equal(r.ok, false);
   assert.match(r.reason, /no solar recorded/);
 });
 
-test('solar that follows the sunlight is fitted with a numeric r2', () => {
+await test('solar that follows the sunlight is fitted with a numeric r2', () => {
   const { hist, sun, whole } = history((k) => 0.1 + (k % 5) / 20);
   const r = learnSunlight(hist, sun, whole);
   assert.equal(r.ok, true);

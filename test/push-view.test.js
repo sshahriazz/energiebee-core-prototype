@@ -6,8 +6,8 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 if (hasLive) useDb({ snapshot: true });
-const { app } = hasLive ? await import('../src/server.js') : {};
-const V = hasLive ? await import('../public/js/devices-view.js') : {};
+const { app } = await import('../src/server.js');
+const V = await import('../public/js/devices-view.js');
 const { runEmulator } = await import('../scripts/push-emulator.mjs');
 
 let server; let base;
@@ -17,10 +17,10 @@ after(() => { delete process.env.INGEST_TOKEN; server?.close(); });
 const SITE = 1;
 const T0 = Math.floor(Date.now() / 1000 / 300) * 300 - 3600;
 const bad = (html) => html.match(/.{30}(undefined|NaN|\[object|null\b).{30}/)?.[0];
-const get = async (p) => (await fetch(`${base}${p}`)).json();
-const post = async (body, query = '') => (await fetch(`${base}/api/ingest${query}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) })).json();
+const get = async (p) => await (await fetch(`${base}${p}`)).json();
+const post = async (body, query = '') => await (await fetch(`${base}/api/ingest${query}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) })).json();
 
-test('the log of a real server renders every kind of push in plain words, escaped, with nothing undefined', { skip }, async () => {
+await test('the log of a real server renders every kind of push in plain words, escaped, with nothing undefined', { skip }, async () => {
   await runEmulator({ url: base, site: SITE, device: 'view-plug', label: 'view-<b>plug</b>', format: 'native', every: 0, count: 5, log: () => {} });
   await post({ device: 'view-plug', observations: [{ point: 'mystery', ts: T0, value: 1 }, { point: 'power', ts: T0, value: 5 }] });
   await post({ device: 'nobody', points: { power: 1 } });
@@ -44,13 +44,13 @@ test('the log of a real server renders every kind of push in plain words, escape
   assert.ok(V.connectHtml({ connect, origin: 'http://x', siteId: SITE }).includes('http://x/api/ingest'));
 });
 
-test('the empty log says how to send the first push', () => {
+await test('the empty log says how to send the first push', () => {
   const html = V.pushLogHtml([], 'Europe/London');
   assert.match(html, /Nothing has been pushed/);
   assert.match(html, /npm run demo:push/);
 });
 
-test('the connect panel: the address, the token note both ways, the formats and the honest note about them', { skip }, async () => {
+await test('the connect panel: the address, the token note both ways, the formats and the honest note about them', { skip }, async () => {
   const open = (await get(`/api/sites/${SITE}/pushes`)).connect;
   assert.equal(open.tokenRequired, false);
   const a = V.connectHtml({ connect: open, origin: 'http://core:4100', siteId: SITE });
@@ -68,7 +68,7 @@ test('the connect panel: the address, the token note both ways, the formats and 
   assert.ok(!b.includes('secret'), 'the token itself is never shown');
 });
 
-test('the curl example: this home, the selected device and its real points; a token header only when one is needed; quotes survive the shell', () => {
+await test('the curl example: this home, the selected device and its real points; a token header only when one is needed; quotes survive the shell', () => {
   const connect = { endpoint: '/api/ingest', tokenRequired: false, maxObservations: 5000, maxBytes: 1048576, formats: [] };
   const c = V.curlExample({ origin: 'http://core:4100', connect, siteId: 3, device: { ref: 'plug-A', kind: 'smart_plug', label: "Anna's plug" }, points: ['energy_total', 'power', 'relay'], now: 1782000000 });
   assert.match(c, /^curl -X POST 'http:\/\/core:4100\/api\/ingest' \\\n/);
@@ -82,7 +82,7 @@ test('the curl example: this home, the selected device and its real points; a to
   assert.equal(JSON.parse(V.curlExample({ origin: 'http://core', connect, siteId: 1, device: { ref: 'inv', kind: 'inverter', label: 'Inv' } }).match(/-d '(.*)'$/s)[1]).kind, 'smart_plug', 'a home-level inverter is not offered as a kind to register');
 });
 
-test('an emulated device is badged as emulated with its last push; a real one keeps its Real badge', { skip }, async () => {
+await test('an emulated device is badged as emulated with its last push; a real one keeps its Real badge', { skip }, async () => {
   const list = await get(`/api/sites/${SITE}/devices`);
   const emu = list.find((d) => d.emulated);
   const real = list.find((d) => d.kind === 'meter_import');
@@ -93,7 +93,7 @@ test('an emulated device is badged as emulated with its last push; a real one ke
   assert.match(V.emulatedLine(), /push emulator/);
 });
 
-test('the page script is served and carries the panel', { skip }, async () => {
+await test('the page script is served and carries the panel', { skip }, async () => {
   const js = await (await fetch(`${base}/js/pages/devices.js`)).text();
   assert.match(js, /Connect a real device/); assert.match(js, /\/pushes\?limit=20/); assert.match(js, /dv-push-reload/);
   const css = await (await fetch(`${base}/css/devices.css`)).text();

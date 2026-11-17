@@ -35,7 +35,7 @@ function openInChild(file, body = '') {
 const schemaVersion = (file) => { const c = new DatabaseSync(file); const v = c.prepare('PRAGMA schema_version').get().schema_version; c.close(); return v; };
 const withDb = (file, fn) => { const c = new DatabaseSync(file); try { return fn(c); } finally { c.close(); } };
 
-test('an up-to-date database is opened without writing: no row changed, no schema change, every delta recorded once', async () => {
+await test('an up-to-date database is opened without writing: no row changed, no schema change, every delta recorded once', async () => {
   const file = newFile();
   const first = await openInChild(file);
   assert.equal(first.status, 0, first.err);
@@ -52,7 +52,7 @@ test('an up-to-date database is opened without writing: no row changed, no schem
   assert.deepEqual(names, first.deltas.map((f) => f.replace(/\.sql$/, '')).sort(), 'every delta of db.js DELTAS recorded, once');
 });
 
-test('a copy of the live database: the second open writes nothing either', { skip: hasLive ? false : 'no data/core.db' }, async () => {
+await test('a copy of the live database: the second open writes nothing either', { skip: hasLive ? false : 'no data/core.db' }, async () => {
   const file = newFile();
   const src = new DatabaseSync(liveDb, { readOnly: true });
   src.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
@@ -65,7 +65,7 @@ test('a copy of the live database: the second open writes nothing either', { ski
   assert.deepEqual([again.changes, again.schema], [0, v]);
 });
 
-test('delta 010 rebuilds market_provider only while it has an older owner CHECK', async () => {
+await test('delta 010 rebuilds market_provider only while it has an older owner CHECK', async () => {
   const file = newFile();
   assert.equal((await openInChild(file)).status, 0);
   const rows = (c) => c.prepare('SELECT * FROM market_provider ORDER BY market_code, role, adapter').all().map((r) => ({ ...r }));
@@ -97,7 +97,7 @@ test('delta 010 rebuilds market_provider only while it has an older owner CHECK'
   });
 });
 
-test('a recorded delta is applied again only when an object it creates is missing', async () => {
+await test('a recorded delta is applied again only when an object it creates is missing', async () => {
   const file = newFile();
   assert.equal((await openInChild(file)).status, 0);
   withDb(file, (c) => c.exec('DROP TRIGGER agreement_same_currency_insert'));
@@ -108,7 +108,7 @@ test('a recorded delta is applied again only when an object it creates is missin
   assert.equal(again.changes, 0);
 });
 
-test('seeds insert only missing rows: an operator\'s market, region, alias and provider priority edits are kept', async () => {
+await test('seeds insert only missing rows: an operator\'s market, region, alias and provider priority edits are kept', async () => {
   const file = newFile();
   assert.equal((await openInChild(file)).status, 0);
   withDb(file, (c) => c.exec(`
@@ -143,7 +143,7 @@ test('seeds insert only missing rows: an operator\'s market, region, alias and p
   assert.deepEqual([again.status, again.changes], [0, 0], 'and the open after that writes nothing');
 });
 
-test('a second connection holding a write: an up-to-date open does not wait or fail, one that must write waits for it', async () => {
+await test('a second connection holding a write: an up-to-date open does not wait or fail, one that must write waits for it', async () => {
   const file = newFile();
   assert.equal((await openInChild(file)).status, 0);
   const holder = new DatabaseSync(file);
@@ -172,7 +172,7 @@ test('a second connection holding a write: an up-to-date open does not wait or f
 
 // A database from before the deltas is not upgraded (those one-time upgrades were removed): the open
 // is refused with a message to start fresh, before anything is written.
-test('a database from before the deltas is refused with a clear message, and nothing is written to it', async () => {
+await test('a database from before the deltas is refused with a clear message, and nothing is written to it', async () => {
   const shapes = {
     // Tariff agreements not yet versioned: no recorded_at / superseded_at.
     tariff_agreement: `CREATE TABLE tariff_agreement (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, device_id INTEGER NOT NULL, tariff_id INTEGER NOT NULL,
@@ -203,7 +203,7 @@ test('a database from before the deltas is refused with a clear message, and not
   }
 });
 
-test('not refused: a database whose first open stopped after schema.sql, before the first delta (today\'s shape, no schema_delta yet)', async () => {
+await test('not refused: a database whose first open stopped after schema.sql, before the first delta (today\'s shape, no schema_delta yet)', async () => {
   const file = newFile();
   withDb(file, (c) => c.exec(fs.readFileSync(path.join(root, 'src', 'db', 'schema.sql'), 'utf8')));
   const r = await openInChild(file);

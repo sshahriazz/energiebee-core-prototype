@@ -17,4 +17,4 @@ if (!process.env.SECRET_KEY) {
   process.env.SECRET_KEY = fs.readFileSync(keyFile, 'utf8').trim();
 }
 const { start } = await import('../src/server.js');
-start();
+await start();

@@ -14,9 +14,9 @@ const PLANNING = ['indoor_temp_c', 'indoor_temp_setpoint_c', 'heating_demand_kwh
   'flow_temp_setpoint_c', 'radiator_temp_c', 'hot_water_temp_c', 'immersion_on', 'immersion_kwh', 'humidity_pct', 'dew_point_c', 'wind_speed_ms',
   'solar_kwh_p10', 'solar_kwh_p50', 'solar_kwh_p90', 'battery_calibrating', 'battery_temperature_c', 'ev_soc_pct', 'ev_charge_limit_pct', 'ev_connected'];
 
-test('every planning metric is a seeded row with a one-line description', () => {
+await test('every planning metric is a seeded row with a one-line description', async () => {
   assert.equal(new Set(METRICS.map((m) => m.code)).size, METRICS.length, 'codes are unique');
-  const rows = new Map(db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric').all().map((r) => [r.code, r]));
+  const rows = new Map((await db.prepare('SELECT code, label, unit, time_role, aggregation, domain FROM metric').all()).map((r) => [r.code, r]));
   for (const code of PLANNING) {
     const m = METRICS.find((x) => x.code === code);
     assert.ok(m, `${code} in registry.js`);
@@ -33,11 +33,11 @@ test('every planning metric is a seeded row with a one-line description', () => 
   for (const alias of ['outdoor_temp_forecast_c', 'cloud_cover_pct', 'solar_irradiance_wm2', 'load_forecast_kwh']) assert.ok(!rows.has(alias), `${alias}: an existing code holds it`);
 });
 
-test('the new sources have contracts in the shape of the others', () => {
+await test('the new sources have contracts in the shape of the others', async () => {
   const keys = Object.keys(SOURCES.find((s) => s.code === 'quartz').contract).sort();
   for (const code of ['core_solar_cases', 'core_heat_model', 'heating_telemetry']) {
     const s = SOURCES.find((x) => x.code === code);
     assert.deepEqual(Object.keys(s.contract).sort(), keys, code);
-    assert.equal(JSON.parse(db.prepare('SELECT contract FROM source WHERE code = ?').get(code).contract).timeZone, s.contract.timeZone);
+    assert.equal(JSON.parse((await db.prepare('SELECT contract FROM source WHERE code = ?').get(code)).contract).timeZone, s.contract.timeZone);
   }
 });

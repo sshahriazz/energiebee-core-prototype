@@ -4,6 +4,7 @@
 //   - a device no longer used is retired (retired_at), not removed;
 //   - a changed tariff history supersedes the old agreements and adds the new ones.
 import { db, tx } from '../db/db.js';
+import { mapAsync } from "./async.js";
 
 const atClause = (alias, ms, from = 'recorded_at', to = 'superseded_at') => {
   const a = alias ? `${alias}.` : '';
@@ -19,95 +20,95 @@ const atClause = (alias, ms, from = 'recorded_at', to = 'superseded_at') => {
 // row (triggers device_kind_known_*); checkDeviceKind says so first, in words.
 // The action codes are those the kind row lists plus any device_action (delta 030, the authority
 // on actions) defines for the kind, so the two registries cannot drift apart.
-const hasActions = () => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_action'").get();
-const parseKind = (r) => {
+const hasActions = async () => !!await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_action'").get();
+const parseKind = async (r) => {
   if (!r) return r;
   const listed = JSON.parse(r.action_codes);
-  const defined = hasActions() ? db.prepare('SELECT action FROM device_action WHERE device_kind = ? ORDER BY action').all(r.kind).map((a) => a.action) : [];
+  const defined = await hasActions() ? (await db.prepare('SELECT action FROM device_action WHERE device_kind = ? ORDER BY action').all(r.kind)).map((a) => a.action) : [];
   return { ...r, attribute_keys: JSON.parse(r.attribute_keys), action_codes: [...listed, ...defined.filter((a) => !listed.includes(a))] };
 };
-export const deviceKind = (kind) => parseKind(db.prepare('SELECT * FROM device_kind WHERE kind = ?').get(kind));
-export const deviceKinds = () => db.prepare('SELECT * FROM device_kind ORDER BY kind').all().map(parseKind);
-export function checkDeviceKind(kind) {
-  const k = deviceKind(kind);
-  if (!k) throw new RangeError(`unknown device kind ${kind}: one of ${deviceKinds().map((d) => d.kind).join(', ')} (a new kind is one device_kind row)`);
+export const deviceKind = async (kind) => await parseKind(await db.prepare('SELECT * FROM device_kind WHERE kind = ?').get(kind));
+export const deviceKinds = async () => (await db.prepare('SELECT * FROM device_kind ORDER BY kind').all()).map(parseKind);
+export async function checkDeviceKind(kind) {
+  const k = await deviceKind(kind);
+  if (!k) throw new RangeError(`unknown device kind ${kind}: one of ${(await deviceKinds()).map((d) => d.kind).join(', ')} (a new kind is one device_kind row)`);
   return k;
 }
 
 // Record a device's details; writes a version only when they changed. These are a provider's
 // free-form details; a planner's typed figures (rates, limits, curves) go through
 // setDeviceAttribute (src/core/attributes.js), checked against the attribute registry.
-export function setDeviceAttrs(deviceId, attrs) {
+export async function setDeviceAttrs(deviceId, attrs) {
   const json = JSON.stringify(attrs ?? {});
-  const cur = db.prepare('SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? AND superseded_at IS NULL').get(deviceId);
-  db.prepare('UPDATE device SET attrs = ? WHERE id = ?').run(json, deviceId);
+  const cur = await db.prepare('SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? AND superseded_at IS NULL').get(deviceId);
+  await db.prepare('UPDATE device SET attrs = ? WHERE id = ?').run(json, deviceId);
   if (cur?.attrs === json) return false;
   const now = Math.max(Date.now(), (cur?.recorded_at ?? 0) + 1);   // versions always move forward, even within one millisecond
-  tx(() => {
-    db.prepare('UPDATE device_attr_version SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
-    db.prepare('INSERT INTO device_attr_version (device_id, attrs, recorded_at) VALUES (?, ?, ?)').run(deviceId, json, now);
-  });
+  await tx(async () => {
+        await db.prepare('UPDATE device_attr_version SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
+        await db.prepare('INSERT INTO device_attr_version (device_id, attrs, recorded_at) VALUES (?, ?, ?)').run(deviceId, json, now);
+      });
   return true;
 }
 
 // A device's details as known at `atMs` (null = now). Before its first recorded version the
 // earliest one is used and flagged, because earlier details were not kept.
-export function deviceAttrsAt(deviceId, atMs = null) {
-  const v = db.prepare(`SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? AND ${atClause('', atMs)}`).get(deviceId);
+export async function deviceAttrsAt(deviceId, atMs = null) {
+  const v = await db.prepare(`SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? AND ${atClause('', atMs)}`).get(deviceId);
   if (v) return { attrs: JSON.parse(v.attrs), approximate: null };
-  const first = db.prepare('SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? ORDER BY recorded_at LIMIT 1').get(deviceId);
+  const first = await db.prepare('SELECT attrs, recorded_at FROM device_attr_version WHERE device_id = ? ORDER BY recorded_at LIMIT 1').get(deviceId);
   if (first) return { attrs: JSON.parse(first.attrs), approximate: first.recorded_at };
-  const cur = db.prepare('SELECT attrs FROM device WHERE id = ?').get(deviceId);
+  const cur = await db.prepare('SELECT attrs FROM device WHERE id = ?').get(deviceId);
   return { attrs: JSON.parse(cur?.attrs || '{}'), approximate: Date.now() };
 }
 
 // Devices in use at `atMs` (null = now), each with its details as known then.
-export function devicesAt(siteId, where = '1', atMs = null) {
+export async function devicesAt(siteId, where = '1', atMs = null) {
   const inUse = atMs == null ? 'retired_at IS NULL'
     : `(recorded_at IS NULL OR recorded_at <= ${Math.floor(atMs)}) AND (retired_at IS NULL OR retired_at > ${Math.floor(atMs)})`;
-  return db.prepare(`SELECT * FROM device WHERE site_id = ? AND ${inUse} AND ${where}`).all(siteId).map((d) => {
-    if (atMs == null) return { ...d, approximateAttrs: null };
-    const { attrs, approximate } = deviceAttrsAt(d.id, atMs);
-    return { ...d, attrs: JSON.stringify(attrs), approximateAttrs: approximate };
-  });
+  return await mapAsync((await db.prepare(`SELECT * FROM device WHERE site_id = ? AND ${inUse} AND ${where}`).all(siteId)), async (d) => {
+        if (atMs == null) return { ...d, approximateAttrs: null };
+        const { attrs, approximate } = await deviceAttrsAt(d.id, atMs);
+        return { ...d, attrs: JSON.stringify(attrs), approximateAttrs: approximate };
+      });
 }
 
 // Retiring a device ends its use, not the supply contract: tariff agreements belong to the supply
 // point, so they stay in force and the home keeps its prices (replace them with supersedeAgreements).
-export function retireDevice(deviceId) {
-  db.prepare('UPDATE device SET retired_at = ? WHERE id = ? AND retired_at IS NULL').run(Date.now(), deviceId);
+export async function retireDevice(deviceId) {
+  await db.prepare('UPDATE device SET retired_at = ? WHERE id = ? AND retired_at IS NULL').run(Date.now(), deviceId);
 }
 
 // Replace a meter's current agreements with a new list: the old ones are superseded, not deleted.
 // rows: [{ tariffId, from, to?, paymentMethod? }] (paymentMethod: how the home pays, delta 080; null = not stated).
-export function supersedeAgreements(siteId, deviceId, rows) {
+export async function supersedeAgreements(siteId, deviceId, rows) {
   const now = Date.now();
-  tx(() => {
-    db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
-    const ins = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    for (const r of rows) ins.run(siteId, deviceId, r.tariffId, r.from, r.to ?? null, now, r.paymentMethod ?? null);
-  });
+  await tx(async () => {
+        await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
+        const ins = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        for (const r of rows) await ins.run(siteId, deviceId, r.tariffId, r.from, r.to ?? null, now, r.paymentMethod ?? null);
+      });
 }
 
 // Databases from before devices were versioned: when each device and agreement was first known
 // is taken from the sync log (the first sync whose step for that provider succeeded); details
 // get a first version now, flagged as not kept before. Idempotent.
-export function seedDeviceHistory(siteId) {
-  const firstOk = (provider) => {
-    const runs = db.prepare("SELECT finished_at, detail FROM sync_run WHERE site_id = ? AND finished_at IS NOT NULL ORDER BY id").all(siteId);
+export async function seedDeviceHistory(siteId) {
+  const firstOk = async (provider) => {
+    const runs = await db.prepare("SELECT finished_at, detail FROM sync_run WHERE site_id = ? AND finished_at IS NOT NULL ORDER BY id").all(siteId);
     for (const r of runs) {
       try { if (JSON.parse(r.detail || '[]').some((s) => s.step === provider && s.ok)) return r.finished_at * 1000; } catch { /* unreadable log row */ }
     }
     return null;
   };
   const stepFor = { octopus: 'octopus', octopus_kraken: 'octopus', env: 'tariff' };
-  for (const d of db.prepare('SELECT * FROM device WHERE site_id = ? AND recorded_at IS NULL').all(siteId)) {
-    db.prepare('UPDATE device SET recorded_at = ? WHERE id = ?').run(firstOk(stepFor[d.provider] || d.provider) ?? Date.now(), d.id);
+  for (const d of await db.prepare('SELECT * FROM device WHERE site_id = ? AND recorded_at IS NULL').all(siteId)) {
+    await db.prepare('UPDATE device SET recorded_at = ? WHERE id = ?').run(await firstOk(stepFor[d.provider] || d.provider) ?? Date.now(), d.id);
   }
-  for (const a of db.prepare('SELECT a.id, d.recorded_at FROM tariff_agreement a JOIN device d ON d.id = a.device_id WHERE a.site_id = ? AND a.recorded_at IS NULL').all(siteId)) {
-    db.prepare('UPDATE tariff_agreement SET recorded_at = ? WHERE id = ?').run(a.recorded_at ?? Date.now(), a.id);
+  for (const a of await db.prepare('SELECT a.id, d.recorded_at FROM tariff_agreement a JOIN device d ON d.id = a.device_id WHERE a.site_id = ? AND a.recorded_at IS NULL').all(siteId)) {
+    await db.prepare('UPDATE tariff_agreement SET recorded_at = ? WHERE id = ?').run(a.recorded_at ?? Date.now(), a.id);
   }
-  for (const d of db.prepare('SELECT id, attrs FROM device WHERE site_id = ?').all(siteId)) {
-    if (!db.prepare('SELECT 1 FROM device_attr_version WHERE device_id = ?').get(d.id)) setDeviceAttrs(d.id, JSON.parse(d.attrs || '{}'));
+  for (const d of await db.prepare('SELECT id, attrs FROM device WHERE site_id = ?').all(siteId)) {
+    if (!await db.prepare('SELECT 1 FROM device_attr_version WHERE device_id = ?').get(d.id)) await setDeviceAttrs(d.id, JSON.parse(d.attrs || '{}'));
   }
 }

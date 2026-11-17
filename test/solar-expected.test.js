@@ -6,33 +6,33 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
 if (hasLive) useDb({ snapshot: true });
-const m = hasLive ? {
+const m = {
   ...(await import('../src/db/db.js')), ...(await import('../src/core/facts.js')),
   ...(await import('../src/core/solar-expected.js')), ...(await import('../src/core/time.js')),
-} : {};
+};
 
 const SITE = 1;
-const tz = () => m.db.prepare('SELECT timezone FROM site WHERE id = ?').get(SITE).timezone;
-const today = () => m.localDate(tz(), m.nowSec());
+const tz = async () => (await m.db.prepare('SELECT timezone FROM site WHERE id = ?').get(SITE)).timezone;
+const today = async () => m.localDate(await tz(), m.nowSec());
 const near = (a, b, eps = 1e-6) => a != null && b != null && Math.abs(a - b) <= eps;
 // The last whole day with daylight half-hours that have an expected value.
 const comparedDay = (r) => [...r.days].reverse().find((d) => d.whole && d.compared > 0 && d.expected > 0);
 // Inside a transaction that is always rolled back, so later tests see the copy unchanged.
-function rolledBack(fn) {
-  m.db.exec('BEGIN');
-  try { return fn(); } finally { m.db.exec('ROLLBACK'); }
+async function rolledBack(fn) {
+  await m.db.exec('BEGIN');
+  try { return fn(); } finally { await m.db.exec('ROLLBACK'); }
 }
 
-test('each half-hour: Open-Meteo sunlight × this home\'s response at that hour, fitted on the other days only', { skip }, (t) => {
-  const from = m.addDays(today(), 1 - m.FIT_DAYS);
-  const r = m.solarExpected(SITE, from, today());
+await test('each half-hour: Open-Meteo sunlight × this home\'s response at that hour, fitted on the other days only', { skip }, async (t) => {
+  const from = m.addDays(await today(), 1 - m.FIT_DAYS);
+  const r = await m.solarExpected(SITE, from, await today());
   const day = comparedDay(r);
   if (!day) return t.skip('no whole day with expected solar in the copy');
-  const zone = tz();
+  const zone = await tz();
   const hour = (ts) => m.zonedParts(zone, ts).hh;
   const sun = new Map(r.slots.map((s) => [s.slot_start, s.ghi_wm2]));
-  const rows = m.db.prepare("SELECT slot_start, local_date, solar FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND state != 'missing'")
-    .all(SITE, from, today());
+  const rows = await m.db.prepare("SELECT slot_start, local_date, solar FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND state != 'missing'")
+      .all(SITE, from, await today());
   const slot = r.slots.find((s) => m.localDate(zone, s.slot_start) === day.date && s.ghi_wm2 > 0 && s.expected > 0);
   // Least squares through the origin for that hour of day, written out again here.
   let ag = 0; let gg = 0; const fitDates = new Set();
@@ -48,40 +48,40 @@ test('each half-hour: Open-Meteo sunlight × this home\'s response at that hour,
   assert.equal(day.fit.days, fitDates.size, 'the fit uses the other days of the window, not the day itself');
 });
 
-test('a day\'s own output never changes its expected value (leave one day out)', { skip }, (t) => {
-  const from = m.addDays(today(), -6);
-  const before = m.solarExpected(SITE, from, today());
+await test('a day\'s own output never changes its expected value (leave one day out)', { skip }, async (t) => {
+  const from = m.addDays(await today(), -6);
+  const before = await m.solarExpected(SITE, from, await today());
   const day = comparedDay(before);
   if (!day) return t.skip('no whole day with expected solar in the copy');
   const other = before.days.find((d) => d.date !== day.date && d.expected > 0);
-  const after = rolledBack(() => {
-    m.db.prepare('UPDATE site_hh SET solar = solar * 3 WHERE site_id = ? AND local_date = ?').run(SITE, day.date);
-    return m.solarExpected(SITE, from, today());
-  });
+  const after = await rolledBack(async () => {
+      await m.db.prepare('UPDATE site_hh SET solar = solar * 3 WHERE site_id = ? AND local_date = ?').run(SITE, day.date);
+      return await m.solarExpected(SITE, from, await today());
+    });
   const of = (res, date) => res.days.find((d) => d.date === date);
   assert.equal(of(after, day.date).expected, day.expected, 'expected for the scaled day is unchanged');
   assert.ok(near(of(after, day.date).actual, day.actual * 3, 0.01), 'its actual output did change');
   assert.ok(of(after, other.date).expected > other.expected, 'other days, whose fits include it, expect more');
 });
 
-test('no sunlight fact: no expected value (null, never 0) and the half-hour is left out of both sides', { skip }, (t) => {
-  const from = m.addDays(today(), -6);
-  const before = m.solarExpected(SITE, from, today());
+await test('no sunlight fact: no expected value (null, never 0) and the half-hour is left out of both sides', { skip }, async (t) => {
+  const from = m.addDays(await today(), -6);
+  const before = await m.solarExpected(SITE, from, await today());
   const day = comparedDay(before);
   if (!day) return t.skip('no whole day with expected solar in the copy');
-  const zone = tz();
+  const zone = await tz();
   const lit = before.slots.filter((s) => m.localDate(zone, s.slot_start) === day.date && s.expected > 0);
-  const ghi = m.seriesId('site', SITE, 'ghi_wm2', 'open_meteo');
-  const fact = m.db.prepare('SELECT start_ts, end_ts FROM interval_fact WHERE series_id = ? AND start_ts <= ? AND end_ts > ? AND superseded_at IS NULL').get(ghi, lit[0].slot_start, lit[0].slot_start);
-  const after = rolledBack(() => {
-    m.db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND start_ts = ? AND superseded_at IS NULL').run(m.nowSec(), ghi, fact.start_ts);
-    return m.solarExpected(SITE, from, today());
-  });
+  const ghi = await m.seriesId('site', SITE, 'ghi_wm2', 'open_meteo');
+  const fact = await m.db.prepare('SELECT start_ts, end_ts FROM interval_fact WHERE series_id = ? AND start_ts <= ? AND end_ts > ? AND superseded_at IS NULL').get(ghi, lit[0].slot_start, lit[0].slot_start);
+  const after = await rolledBack(async () => {
+      await m.db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND start_ts = ? AND superseded_at IS NULL').run(m.nowSec(), ghi, fact.start_ts);
+      return await m.solarExpected(SITE, from, await today());
+    });
   const gone = after.slots.filter((s) => s.slot_start >= fact.start_ts && s.slot_start < fact.end_ts);
   assert.equal(gone.length, (fact.end_ts - fact.start_ts) / 1800);
   for (const s of gone) { assert.equal(s.expected, null); assert.equal(s.ghi_wm2, null); }
   const d = after.days.find((x) => x.date === day.date);
-  const solar = new Map(m.db.prepare("SELECT slot_start, solar FROM site_hh WHERE site_id = ? AND local_date = ? AND state != 'missing'").all(SITE, day.date).map((x) => [x.slot_start, x.solar]));
+  const solar = new Map((await m.db.prepare("SELECT slot_start, solar FROM site_hh WHERE site_id = ? AND local_date = ? AND state != 'missing'").all(SITE, day.date)).map((x) => [x.slot_start, x.solar]));
   // Half-hours that were compared before the sunlight was withdrawn.
   const was = before.slots.filter((s) => gone.some((g) => g.slot_start === s.slot_start) && s.expected != null && solar.get(s.slot_start) != null);
   assert.ok(was.length > 0);
@@ -93,8 +93,8 @@ test('no sunlight fact: no expected value (null, never 0) and the half-hour is l
   assert.ok(near(d.expected, day.expected - goneExpected, 0.002), 'expected drops by their expected value');
 });
 
-test('night gives 0 expected; days and totals add up from the half-hours', { skip }, (t) => {
-  const r = m.solarExpected(SITE, m.addDays(today(), -6), today());
+await test('night gives 0 expected; days and totals add up from the half-hours', { skip }, async (t) => {
+  const r = await m.solarExpected(SITE, m.addDays(await today(), -6), await today());
   if (!r.days.some((d) => d.compared)) return t.skip('nothing to compare in the copy');
   const night = r.slots.filter((s) => s.ghi_wm2 === 0);
   assert.ok(night.length > 0 && night.every((s) => s.expected === 0));
@@ -107,6 +107,6 @@ test('night gives 0 expected; days and totals add up from the half-hours', { ski
   for (const d of r.days) if (d.performance != null) assert.ok(near(d.performance, d.actual / d.expected, roundingSlack(d)), d.date);
   assert.ok(r.check.halfHours > 0 && r.check.r2 <= 1, 'out-of-sample check reported');
   // A day gets the same expected value in every view, because the fit window always ends today.
-  const month = m.solarExpected(SITE, m.addDays(today(), 1 - m.FIT_DAYS), today());
+  const month = await m.solarExpected(SITE, m.addDays(await today(), 1 - m.FIT_DAYS), await today());
   for (const d of r.days) assert.equal(month.days.find((x) => x.date === d.date).expected, d.expected, d.date);
 });

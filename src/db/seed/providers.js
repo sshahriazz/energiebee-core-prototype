@@ -85,22 +85,22 @@ export const PROVIDER_COLUMNS = Object.freeze(['market_code', 'role', 'adapter',
 const DESCRIPTIVE = ['owner', 'scope', 'needs_credentials', 'origin', 'note'];
 
 const keyOf = (r) => `${r.market_code}|${r.role}|${r.adapter}`;
-function pendingProviders(db, providers) {
-  const have = new Map(db.prepare(`SELECT market_code, role, adapter, ${DESCRIPTIVE.join(', ')} FROM market_provider`).all().map((r) => [keyOf(r), r]));
+async function pendingProviders(db, providers) {
+  const have = new Map((await db.prepare(`SELECT market_code, role, adapter, ${DESCRIPTIVE.join(', ')} FROM market_provider`).all()).map((r) => [keyOf(r), r]));
   return providers.filter((p) => { const r = have.get(keyOf(p)); return !r || DESCRIPTIVE.some((c) => r[c] !== (p[c] ?? null)); });
 }
 
 // Writes the rows into a database that has delta 008 applied (any node:sqlite DatabaseSync): the
 // missing rows in full, and on existing rows only the descriptive columns that differ.
 // Returns the number of rows written.
-export function seedProviders(db, providers = PROVIDERS) {
+export async function seedProviders(db, providers = PROVIDERS) {
   const up = db.prepare(`INSERT INTO market_provider (${PROVIDER_COLUMNS.join(', ')}) VALUES (${PROVIDER_COLUMNS.map(() => '?').join(', ')})
     ON CONFLICT (market_code, role, adapter) DO UPDATE SET ${DESCRIPTIVE.map((c) => `${c} = excluded.${c}`).join(', ')}`);
   let n = 0;
-  for (const p of pendingProviders(db, providers)) n += Number(up.run(...PROVIDER_COLUMNS.map((c) => p[c] ?? null)).changes);
+  for (const p of await pendingProviders(db, providers)) n += Number((await up.run(...PROVIDER_COLUMNS.map((c) => p[c] ?? null))).changes);
   return n;
 }
 // True when seedProviders would write a row (read only).
-export function providerSeedPending(db, providers = PROVIDERS) {
-  return pendingProviders(db, providers).length > 0;
+export async function providerSeedPending(db, providers = PROVIDERS) {
+  return (await pendingProviders(db, providers)).length > 0;
 }

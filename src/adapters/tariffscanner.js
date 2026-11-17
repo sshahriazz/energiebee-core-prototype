@@ -118,9 +118,9 @@ export function dbStore(provider = PROVIDER) {
       next_allowed_at = MAX(IFNULL(provider_state.next_allowed_at, 0), excluded.next_allowed_at),
       updated_at = excluded.updated_at`);
   return {
-    nextAllowedAt: () => get.get(provider)?.next_allowed_at ?? 0,
-    reason: () => get.get(provider)?.cooldown_reason ?? null,
-    setNextAllowedAt: (ms, why = null) => { put.run(provider, Math.ceil(ms), why, Date.now()); },
+    nextAllowedAt: async () => (await get.get(provider))?.next_allowed_at ?? 0,
+    reason: async () => (await get.get(provider))?.cooldown_reason ?? null,
+    setNextAllowedAt: async (ms, why = null) => { await put.run(provider, Math.ceil(ms), why, Date.now()); },
   };
 }
 
@@ -162,7 +162,7 @@ export function queryString(params) {
  * with no credential, token or response body. Methods: beginRun(budget), used, domestic(params),
  * paginate(params, { offset, limit, stop }).
  */
-export function createClient({ username, password, baseUrl = null, fetch: fetchFn = null, clock = null, store = memoryStore(), log = () => {} } = {}) {
+export async function createClient({ username, password, baseUrl = null, fetch: fetchFn = null, clock = null, store = memoryStore(), log = () => {} } = {}) {
   if (!username || !password) throw new TariffscannerError('no credentials: TARIFFSCAN_USERNAME and TARIFFSCAN_PASSWORD are needed', { kind: 'auth' });
   const base = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
   const clk = () => clockOf(clock);
@@ -170,7 +170,7 @@ export function createClient({ username, password, baseUrl = null, fetch: fetchF
   let token = null;          // { value, refreshAt }: memory only, never stored or logged
   let pendingAuth = null;
   let lastAt = -Infinity;    // end of the last request (ms, on the client's clock)
-  let tail = Promise.resolve();
+  let tail = await Promise.resolve();
   let budget = null;
   let used = 0;
   const scrub = (s) => [username, password, token?.value].filter(Boolean).reduce((o, x) => o.split(x).join('[redacted]'), String(s ?? ''));
@@ -179,7 +179,7 @@ export function createClient({ username, password, baseUrl = null, fetch: fetchF
 
   // One request at a time, in order, each at least minIntervalMs after the previous one ended and
   // not before the persisted next_allowed_at.
-  const serial = (fn) => { const r = tail.then(fn); tail = r.then(() => {}, () => {}); return r; };
+  const serial = async (fn) => { const r = await tail.then(fn); tail = await r.then(() => {}, () => {}); return r; };
   async function send(pathAndQuery, init) {
     const path = pathAndQuery.split('?')[0];
     if (budget != null && used >= budget) throw fail(`request budget of ${budget} reached`, { kind: 'budget' });
@@ -214,11 +214,11 @@ export function createClient({ username, password, baseUrl = null, fetch: fetchF
   }
 
   async function authenticate() {
-    const res = await serial(() => send(TOKEN_PATH, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: new URLSearchParams({ username, password }).toString(),
-    }));
+    const res = await serial(async () => await send(TOKEN_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+          body: new URLSearchParams({ username, password }).toString(),
+        }));
     const text = await res.text().catch(() => '');
     // A refused login's body is never put into a message or a log: it can echo the username.
     if (!res.ok) throw fail(`Tariffscanner authentication failed: HTTP ${res.status} (check TARIFFSCAN_USERNAME and TARIFFSCAN_PASSWORD)`, { kind: 'auth', status: res.status });
@@ -231,21 +231,21 @@ export function createClient({ username, password, baseUrl = null, fetch: fetchF
     note('Tariffscanner token obtained', { valid_s: Math.round(ttl / 1000) });
     return token.value;
   }
-  function getToken() {
-    if (token && clk().now() < token.refreshAt) return Promise.resolve(token.value);
-    pendingAuth ??= authenticate().finally(() => { pendingAuth = null; });
+  async function getToken() {
+    if (token && clk().now() < token.refreshAt) return await Promise.resolve(token.value);
+    pendingAuth ??= await authenticate().finally(() => { pendingAuth = null; });
     return pendingAuth;
   }
 
   async function post(path, params, retried = false) {
     const value = await getToken();
     const qs = queryString(params);
-    const res = await serial(() => send(`${path}${qs ? `?${qs}` : ''}`, { method: 'POST', headers: { authorization: `Bearer ${value}`, accept: 'application/json' } }));
+    const res = await serial(async () => await send(`${path}${qs ? `?${qs}` : ''}`, { method: 'POST', headers: { authorization: `Bearer ${value}`, accept: 'application/json' } }));
     if (res.status === 401 && !retried) {
       await res.text().catch(() => '');
       if (token?.value === value) token = null;   // most likely expired: one new token, one retry
       note('Tariffscanner answered 401: new token, one retry', { path });
-      return post(path, params, true);
+      return await post(path, params, true);
     }
     const text = await res.text().catch(() => '');
     if (!res.ok) {
@@ -279,7 +279,7 @@ export function createClient({ username, password, baseUrl = null, fetch: fetchF
     get clock() { return clk(); },
     get used() { return used; },
     beginRun(n = policy.budget) { budget = n ?? null; used = 0; },
-    domestic: (params) => post(DOMESTIC, params),
+    domestic: async (params) => await post(DOMESTIC, params),
     paginate,
     scrub,
   };
@@ -287,9 +287,9 @@ export function createClient({ username, password, baseUrl = null, fetch: fetchF
 
 // One client per credential in this process, so every caller shares its queue and its token.
 const clients = new Map();
-export function clientFor(creds) {
+export async function clientFor(creds) {
   const key = createHash('sha256').update([creds.baseUrl ?? '', creds.username, creds.password].join('\u0000')).digest('hex');
-  if (!clients.has(key)) clients.set(key, createClient({ ...creds, store: dbStore(), log: (m, f) => { if (process.env.TARIFFSCAN_LOG === '1') console.log(m, JSON.stringify(f)); } }));
+  if (!clients.has(key)) clients.set(key, await createClient({ ...creds, store: dbStore(), log: (m, f) => { if (process.env.TARIFFSCAN_LOG === '1') console.log(m, JSON.stringify(f)); } }));
   return clients.get(key);
 }
 export const resetClients = () => clients.clear();
@@ -451,14 +451,14 @@ const TARIFF_FIELDS = [['product_code', 'productCode'], ['fuel', 'fuel'], ['dire
   ['name', 'name'], ['kind', 'kind'], ['country', 'country'], ['currency', 'currency'], ['native_period_s', 'nativePeriodS'], ['origin', 'origin'],
   ['origin_note', 'originNote'], ['default_register', 'defaultRegister']];
 
-function upsertTariffRow(t) {
-  const cur = db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(t.tariffCode);
-  if (!cur) return { row: createTariff(t), created: 1, updated: 0 };
+async function upsertTariffRow(t) {
+  const cur = await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(t.tariffCode);
+  if (!cur) return { row: await createTariff(t), created: 1, updated: 0 };
   if (cur.provider !== PROVIDER) throw new Error(`tariff code ${t.tariffCode} belongs to ${cur.provider}: not overwritten`);
   const diff = TARIFF_FIELDS.filter(([col, key]) => (cur[col] ?? null) !== (t[key] ?? null));
   if (!diff.length) return { row: cur, created: 0, updated: 0 };
-  db.prepare(`UPDATE tariff SET ${diff.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...diff.map(([, k]) => t[k] ?? null), cur.id);
-  return { row: db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
+  await db.prepare(`UPDATE tariff SET ${diff.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...diff.map(([, k]) => t[k] ?? null), cur.id);
+  return { row: await db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
 }
 
 const KEY = 'tariff_id = ? AND site_id IS NULL AND component = ? AND register = ? AND payment_method = ? AND charge_period IS NULL AND superseded_at IS NULL';
@@ -473,72 +473,75 @@ const insRate = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, compo
 // supersedes every current row it overlaps; the part of an old row before the new start keeps its
 // old price (a new copy), what lies after it is upstream's latest word: the new row. Returns the
 // rows written.
-export function putCatalogueRates(tariffId, rows, { rawId = null, recordedAt = Date.now() } = {}) {
+export async function putCatalogueRates(tariffId, rows, { rawId = null, recordedAt = Date.now() } = {}) {
   let changed = 0;
-  tx(() => {
-    for (const r of [...rows].sort((a, b) => a.validFrom - b.validFrom)) {
-      const k = [tariffId, r.component, r.register, r.paymentMethod];
-      const cur = covering.get(...k, r.validFrom, r.validFrom);
-      if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.price) < 1e-9) continue;
-      for (const o of overlapping.all(...k, r.validTo ?? 9000000000, r.validFrom)) {
-        supRate.run(recordedAt, o.id);
-        if (o.valid_from < r.validFrom) insRate.run(tariffId, o.component, o.register, o.payment_method, o.valid_from, r.validFrom, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note);
-      }
-      insRate.run(tariffId, r.component, r.register, r.paymentMethod, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null);
-      changed++;
-    }
-  });
+  await tx(async () => {
+        for (const r of [...rows].sort((a, b) => a.validFrom - b.validFrom)) {
+          const k = [tariffId, r.component, r.register, r.paymentMethod];
+          const cur = await covering.get(...k, r.validFrom, r.validFrom);
+          if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.price) < 1e-9) continue;
+          for (const o of await overlapping.all(...k, r.validTo ?? 9000000000, r.validFrom)) {
+            await supRate.run(recordedAt, o.id);
+            if (o.valid_from < r.validFrom) await insRate.run(tariffId, o.component, o.register, o.payment_method, o.valid_from, r.validFrom, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note);
+          }
+          await insRate.run(tariffId, r.component, r.register, r.paymentMethod, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null);
+          changed++;
+        }
+      });
   return changed;
 }
 
 // The overnight hours of a day/night tariff: a different set supersedes the current one (kept);
 // a record without hours never removes known ones.
-function putCatalogueWindows(tariffId, windows, recordedAt) {
+async function putCatalogueWindows(tariffId, windows, recordedAt) {
   if (!windows.length) return 0;
-  const cur = db.prepare('SELECT register, start_min, end_min, weekdays, clock FROM register_window WHERE tariff_id = ? AND device_id IS NULL AND superseded_at IS NULL').all(tariffId);
+  const cur = await db.prepare('SELECT register, start_min, end_min, weekdays, clock FROM register_window WHERE tariff_id = ? AND device_id IS NULL AND superseded_at IS NULL').all(tariffId);
   const key = (ws) => ws.map((w) => [w.register, w.start_min, w.end_min, w.weekdays ?? 127, w.clock ?? 'local'].join('|')).sort().join(',');
   if (key(cur) === key(windows)) return 0;
-  db.prepare('UPDATE register_window SET superseded_at = ? WHERE tariff_id = ? AND device_id IS NULL AND superseded_at IS NULL').run(recordedAt, tariffId);
-  return putWindows(tariffId, windows, {
-    origin: 'provider', recordedAt,
-    originNote: 'Tariffscanner overnight_start / overnight_end: the supplier\'s stated night hours; a meter\'s own switch times may differ, so the tariff (structure e7) is not priced from them',
-  });
+  await db.prepare('UPDATE register_window SET superseded_at = ? WHERE tariff_id = ? AND device_id IS NULL AND superseded_at IS NULL').run(recordedAt, tariffId);
+  return await putWindows(tariffId, windows, {
+      origin: 'provider', recordedAt,
+      originNote: 'Tariffscanner overnight_start / overnight_end: the supplier\'s stated night hours; a meter\'s own switch times may differ, so the tariff (structure e7) is not priced from them',
+    });
 }
 
 /** Write mapRecords' result in one transaction: { tariffs_created, tariffs_updated, rate_rows, windows }. */
-export function storeMapped(mapped, { rawId = null, recordedAt = Date.now() } = {}) {
+export async function storeMapped(mapped, { rawId = null, recordedAt = Date.now() } = {}) {
   const out = { tariffs_created: 0, tariffs_updated: 0, rate_rows: 0, windows: 0 };
-  tx(() => {
-    for (const { tariff, rows, windows } of mapped.tariffs.values()) {
-      const u = upsertTariffRow(tariff);
-      // The supplier as its own row (delta 080), so the tariff picker lists suppliers alike for every source.
-      const sup = tariffscannerSupplierOf(tariff.name);
-      if (sup) linkSupplier(u.row.id, { provider: PROVIDER, country: tariff.country ?? 'GB', externalId: sup, name: sup });
-      out.tariffs_created += u.created;
-      out.tariffs_updated += u.updated;
-      out.rate_rows += putCatalogueRates(u.row.id, rows, { rawId, recordedAt });
-      if (tariff.structure === 'e7') out.windows += putCatalogueWindows(u.row.id, windows, recordedAt);
-    }
-  });
+  await tx(async () => {
+        for (const { tariff, rows, windows } of mapped.tariffs.values()) {
+          const u = await upsertTariffRow(tariff);
+          // The supplier as its own row (delta 080), so the tariff picker lists suppliers alike for every source.
+          const sup = tariffscannerSupplierOf(tariff.name);
+          if (sup) await linkSupplier(u.row.id, { provider: PROVIDER, country: tariff.country ?? 'GB', externalId: sup, name: sup });
+          out.tariffs_created += u.created;
+          out.tariffs_updated += u.updated;
+          out.rate_rows += await putCatalogueRates(u.row.id, rows, { rawId, recordedAt });
+          if (tariff.structure === 'e7') out.windows += await putCatalogueWindows(u.row.id, windows, recordedAt);
+        }
+      });
   return out;
 }
 
 // ───────────── Sweep ─────────────
 
-export function readState() {
-  const r = db.prepare('SELECT state FROM provider_state WHERE provider = ?').get(PROVIDER);
+export async function readState() {
+  const r = await db.prepare('SELECT state FROM provider_state WHERE provider = ?').get(PROVIDER);
   try { return JSON.parse(r?.state || '{}'); } catch { return {}; }
 }
-function writeState(s) {
-  db.prepare(`INSERT INTO provider_state (provider, state, updated_at) VALUES (?, ?, ?)
+async function writeState(s) {
+  await db.prepare(`INSERT INTO provider_state (provider, state, updated_at) VALUES (?, ?, ?)
     ON CONFLICT (provider) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`).run(PROVIDER, JSON.stringify(s), Date.now());
 }
 
 // When the next unforced sweep may start (ms): a day after the last one started, whatever its outcome.
-export const nextSweepAt = (state = readState()) => (state.last_run_at ? state.last_run_at + policy.sweepEveryMs : 0);
+export const nextSweepAt = async (state) => {
+  const s = state ?? await readState();
+  return s.last_run_at ? s.last_run_at + policy.sweepEveryMs : 0;
+};
 // Whether an unforced sweep would run now: due, and not cooling down after a 429.
-export function sweepDue(nowMs = clockOf(null).now()) {
-  return nextSweepAt() <= nowMs && dbStore().nextAllowedAt() - nowMs <= policy.maxWaitMs;
+export async function sweepDue(nowMs = clockOf(null).now()) {
+  return await nextSweepAt() <= nowMs && await dbStore().nextAllowedAt() - nowMs <= policy.maxWaitMs;
 }
 
 let sweeping = false;
@@ -555,11 +558,11 @@ export async function sweepCatalogue({ client, force = false, budget = policy.bu
   if (sweeping) return { skipped: 'a Tariffscanner sweep is already running' };
   const clock = client.clock;
   const t0 = clock.now();
-  const st = readState();
-  if (!force && nextSweepAt(st) > t0) return { skipped: `not due: one sweep a day at most, the next after ${iso(nextSweepAt(st))}` };
+  const st = await readState();
+  if (!force && await nextSweepAt(st) > t0) return { skipped: `not due: one sweep a day at most, the next after ${iso(await nextSweepAt(st))}` };
   const store = dbStore();
-  if (store.nextAllowedAt() - t0 > policy.maxWaitMs) {
-    return { skipped: `cooling down: no request to Tariffscanner before ${iso(store.nextAllowedAt())}${store.reason() ? ` (${store.reason()})` : ''}` };
+  if (await store.nextAllowedAt() - t0 > policy.maxWaitMs) {
+    return { skipped: `cooling down: no request to Tariffscanner before ${iso(await store.nextAllowedAt())}${await store.reason() ? ` (${await store.reason()})` : ''}` };
   }
   sweeping = true;
   try {
@@ -574,7 +577,7 @@ async function sweepRun({ client, clock, t0, st, budget, pageSize }) {
   const rep = { mode: st.last_complete_at ? 'incremental' : 'full', requests: 0, pages: 0, records: 0, tariffs_created: 0, tariffs_updated: 0, rate_rows: 0, windows: 0, skipped_records: {}, warnings: 0, complete: false };
   const samples = [];
   st.last_run_at = t0;
-  writeState(st);
+  await writeState(st);
 
   // One query's pages from the cursor (one page back when resuming a run: rows that moved up since
   // are read again rather than missed). Each page is landed raw, then written with the cursor in
@@ -583,14 +586,14 @@ async function sweepRun({ client, clock, t0, st, budget, pageSize }) {
     const stop = {};
     const start = cursor.offset > 0 ? Math.max(0, cursor.offset - pageSize) : 0;
     for await (const { page, offset, next } of client.paginate(query, { offset: start, limit: pageSize, stop })) {
-      const { rawId } = landRaw({ source: PROVIDER, siteId: null, request: { method: 'POST', path: DOMESTIC, query: { ...query, offset, limit: pageSize } }, body: page });
+      const { rawId } = await landRaw({ source: PROVIDER, siteId: null, request: { method: 'POST', path: DOMESTIC, query: { ...query, offset, limit: pageSize } }, body: page });
       const mapped = mapRecords(page.data);
-      tx(() => {
-        const n = storeMapped(mapped, { rawId });
-        for (const k of Object.keys(n)) rep[k] += n[k];
-        cursor.offset = next ?? offset + page.data.length;
-        writeState(st);
-      });
+      await tx(async () => {
+                const n = await storeMapped(mapped, { rawId });
+                for (const k of Object.keys(n)) rep[k] += n[k];
+                cursor.offset = next ?? offset + page.data.length;
+                await writeState(st);
+              });
       rep.pages++;
       rep.records += page.data.length;
       for (const [reason, n] of Object.entries(mapped.skipped)) rep.skipped_records[reason] = (rep.skipped_records[reason] ?? 0) + n;
@@ -609,7 +612,7 @@ async function sweepRun({ client, clock, t0, st, budget, pageSize }) {
         await batch({ active: true, dno_region_id: id }, st.full, `region ${id}`);
         st.full.region++;
         st.full.offset = 0;
-        writeState(st);
+        await writeState(st);
       }
       st.last_complete_at = st.full.started_at;
       st.full = null;
@@ -626,7 +629,7 @@ async function sweepRun({ client, clock, t0, st, budget, pageSize }) {
     if (err?.kind !== 'budget') {
       st.last_error = client.scrub(err?.message ?? String(err));
       st.last_error_at = clock.now();
-      writeState(st);
+      await writeState(st);
       throw err;
     }
     rep.stopped = `${err.message}: the sweep goes on from its saved cursor next time`;
@@ -636,15 +639,15 @@ async function sweepRun({ client, clock, t0, st, budget, pageSize }) {
   st.last_ok_at = clock.now();
   st.last_error = null;
   st.last_summary = summary(rep);
-  writeState(st);
+  await writeState(st);
   return rep;
 }
 
 // For providerStatus: the catalogue's own state, whichever home ran it.
-export function sweepStatus() {
-  const st = readState();
+export async function sweepStatus() {
+  const st = await readState();
   if (st.last_error && (st.last_error_at ?? 0) >= (st.last_ok_at ?? 0)) return { status: 'error', reason: st.last_error };
-  if (st.last_ok_at) return { status: 'ok', reason: `${st.last_summary ?? 'swept'} (${iso(st.last_ok_at)}); next sweep after ${iso(nextSweepAt(st))}` };
+  if (st.last_ok_at) return { status: 'ok', reason: `${st.last_summary ?? 'swept'} (${iso(st.last_ok_at)}); next sweep after ${iso(await nextSweepAt(st))}` };
   return { status: 'skipped', reason: 'no sweep yet' };
 }
 
@@ -654,12 +657,12 @@ export function sweepStatus() {
  * from the environment; returns the sweep's report or { skipped: reason }.
  */
 export async function forceTariffscannerSweep({ budget = policy.budget, env = process.env } = {}) {
-  const row = db.prepare("SELECT enabled, licence_confirmed, owner FROM market_provider WHERE market_code = 'GB' AND role = 'tariff_catalogue' AND adapter = ?").get(PROVIDER);
+  const row = await db.prepare("SELECT enabled, licence_confirmed, owner FROM market_provider WHERE market_code = 'GB' AND role = 'tariff_catalogue' AND adapter = ?").get(PROVIDER);
   if (!row) return { skipped: `${PROVIDER} is not in the market provider registry` };
   if (!row.enabled) return { skipped: `${PROVIDER} is disabled in the market provider registry` };
   if (!row.licence_confirmed) return { skipped: `${PROVIDER}: licence unconfirmed in the market provider registry` };
   assertOwner({ code: PROVIDER, owner: row.owner });
   const c = credentialsFromEnv(env);
   if (c.missing) return { skipped: c.missing };
-  return sweepCatalogue({ client: clientFor(c.creds), force: true, budget });
+  return await sweepCatalogue({ client: await clientFor(c.creds), force: true, budget });
 }

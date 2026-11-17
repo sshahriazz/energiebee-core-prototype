@@ -27,7 +27,7 @@ import { inputsProvenance, weakest } from './provenance.js';
 export async function discoverReferenceProducts(siteId) {
   const url = 'https://api.octopus.energy/v1/products/?brand=OCTOPUS_ENERGY&is_business=false&page_size=100';
   const { json } = await fetchJson(url);
-  landRaw({ source: 'octopus_rates', siteId, request: { url }, body: json });
+  await landRaw({ source: 'octopus_rates', siteId, request: { url }, body: json });
   const live = (json.results || []).filter((p) => !p.available_to || Date.parse(p.available_to) > Date.now());
   const pick = (re, dir) => live.filter((p) => re.test(p.code) && p.direction === dir).sort((a, b) => b.code.localeCompare(a.code))[0]?.code;
   return {
@@ -47,10 +47,10 @@ export function scenarios(region, products) {
 
 // The Octopus GSP letter of a GB home: the one stored from its postcode, else its distribution
 // region's octopus_gsp alias. Null for a home outside GB or with no region.
-export function octopusRegion(site) {
+export async function octopusRegion(site) {
   if ((site.market_code ?? 'GB') !== 'GB') return null;
   if (site.gsp_region) return site.gsp_region;
-  const dno = regionsOf(site.id).find((r) => r.scheme === 'gb_dno');
+  const dno = (await regionsOf(site.id)).find((r) => r.scheme === 'gb_dno');
   return dno ? aliasesOf({ scheme: 'gb_dno', code: dno.code }).find((a) => a.alias_scheme === 'octopus_gsp')?.alias_code ?? null : null;
 }
 
@@ -58,17 +58,17 @@ export function octopusRegion(site) {
 // Only GB has a reference catalogue (Octopus); other markets compare the tariffs already held.
 export async function syncComparison(site, fromTs, toTs) {
   if ((site.market_code ?? 'GB') !== 'GB') return { skipped: `no reference catalogue for market ${site.market_code}` };
-  const region = octopusRegion(site);
+  const region = await octopusRegion(site);
   if (!region) return { skipped: 'no region' };
   const products = await discoverReferenceProducts(site.id);
-  db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'compare'").run(JSON.stringify({ products }), site.id);
+  await db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'compare'").run(JSON.stringify({ products }), site.id);
   let rates = 0;
   const done = new Set();
   for (const sc of scenarios(region, products)) {
     for (const [codeStr, direction] of [[sc.import, 'import'], [sc.export, 'export']]) {
       if (!codeStr || done.has(codeStr)) continue;
       done.add(codeStr);
-      const t = upsertTariff({ tariffCode: codeStr, direction });
+      const t = await upsertTariff({ tariffCode: codeStr, direction });
       rates += await syncTariffRates(t, fromTs, toTs, site.id);
     }
   }
@@ -77,38 +77,38 @@ export async function syncComparison(site, fromTs, toTs) {
 
 // Other import tariffs of a non-GB home's country and currency, with prices over [start, end),
 // as comparison scenarios (each with the home's current export).
-function marketScenarios(site, start, end, currentIds) {
-  return db.prepare(`SELECT t.* FROM tariff t WHERE t.country = ? AND t.currency = ? AND t.direction = 'import' AND t.fuel = 'electricity'
+async function marketScenarios(site, start, end, currentIds) {
+  return (await db.prepare(`SELECT t.* FROM tariff t WHERE t.country = ? AND t.currency = ? AND t.direction = 'import' AND t.fuel = 'electricity'
       AND EXISTS (SELECT 1 FROM rate_interval r WHERE r.tariff_id = t.id AND r.component = 'unit' AND r.superseded_at IS NULL
         AND (r.site_id IS NULL OR r.site_id = ?) AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ?)
-    ORDER BY t.tariff_code`).all(site.country, site.currency, site.id, end, start)
+    ORDER BY t.tariff_code`).all(site.country, site.currency, site.id, end, start))
     .filter((t) => !currentIds.has(t.id))
     .map((t) => ({ key: `alt:${t.tariff_code}`, name: t.name || t.tariff_code, note: `${t.tariff_code} import, your current export`, import: t.tariff_code, export: null }));
 }
 
 const OFF_PEAK = /^(night|hc|[a-z]+_hc|off_?peak)$/;
 
-export function compareSite(siteId, from, to) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function compareSite(siteId, from, to) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   const gb = (site.market_code ?? 'GB') === 'GB';
-  const conn = db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'compare'").get(siteId);
+  const conn = await db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'compare'").get(siteId);
   const products = JSON.parse(conn?.meta || '{}').products;
   const slotS = slotLength(site);
   const currency = site.currency ?? 'GBP';
-  const region = gb ? octopusRegion(site) : null;
+  const region = gb ? await octopusRegion(site) : null;
   if (gb && (!products || !region)) return { ready: false, currency, slot_s: slotS, reason: 'Comparison prices have not been fetched yet. Press Sync.' };
-  const rows = db.prepare(`SELECT slot_start, local_date, grid_import, grid_export, state FROM site_hh
+  const rows = await db.prepare(`SELECT slot_start, local_date, grid_import, grid_export, state FROM site_hh
     WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND state != 'missing' AND dur_s = ? ORDER BY slot_start`).all(siteId, from, to, slotS);
   if (!rows.length) return { ready: false, currency, slot_s: slotS, reason: `No ${slotNoun(slotS)}s in this period yet.` };
   const start = rows[0].slot_start; const end = rows[rows.length - 1].slot_start + slotS;
-  const pricing = loadPricing(siteId, start, end);
-  const sc = gb ? scenarios(region, products) : marketScenarios(site, start, end, new Set(pricing.agreements.map((a) => a.tariff_id)));
+  const pricing = await loadPricing(siteId, start, end);
+  const sc = gb ? scenarios(region, products) : await marketScenarios(site, start, end, new Set(pricing.agreements.map((a) => a.tariff_id)));
   if (!sc.length) return { ready: false, currency, slot_s: slotS, reason: `No other tariffs of market ${site.market_code} are held to compare with.` };
   const codes = [...new Set(sc.flatMap((x) => [x.import, x.export]).filter(Boolean))];
-  const tariffs = new Map(db.prepare(`SELECT * FROM tariff WHERE tariff_code IN (${codes.map(() => '?').join(',')})`).all(...codes).map((t) => [t.tariff_code, t]));
+  const tariffs = new Map((await db.prepare(`SELECT * FROM tariff WHERE tariff_code IN (${codes.map(() => '?').join(',')})`).all(...codes)).map((t) => [t.tariff_code, t]));
   const ids = [...tariffs.values()].map((t) => t.id);
   // The alternatives are taxed by the same rules as the home's own tariff (its country's tax_rule).
-  const altRates = ids.length ? db.prepare(`SELECT * FROM rate_interval WHERE tariff_id IN (${ids.map(() => '?').join(',')})
+  const altRates = ids.length ? await db.prepare(`SELECT * FROM rate_interval WHERE tariff_id IN (${ids.map(() => '?').join(',')})
       AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ? AND (site_id IS NULL OR site_id = ?)`).all(...ids, end, start - 2 * 86400, siteId) : [];
   // A stand-in agreement puts the home on the alternative for the whole period, so it is priced
   // exactly as the home's own tariff is: over the whole slot, time-weighted when the slot spans
@@ -241,11 +241,11 @@ export function compareSite(siteId, from, to) {
     if (Math.abs(standingDiff) > 5) ins.push({ tone: 'info', title: `Standing charges differ by ${money(standingDiff)}`, detail: `${standingDiff > 0 ? alt : 'Your tariff'} has the higher daily charge over these days.` });
     if (negativeSlots) ins.push({ tone: 'info', title: `${alt} went below 0${mu} in ${negativeSlots} ${slotsWord}`, detail: `On ${alt} the home would have been paid for energy imported in those ${slotsWord}.` });
   }
-  const ev = db.prepare("SELECT label, attrs FROM device WHERE site_id = ? AND kind = 'ev'").all(siteId)
+  const ev = (await db.prepare("SELECT label, attrs FROM device WHERE site_id = ? AND kind = 'ev'").all(siteId))
     .find((e) => JSON.parse(e.attrs || '{}').status?.currentState === 'SMART_CONTROL_NOT_AVAILABLE');
   if (ev && /iog|intelli/i.test(cur.import || '')) {
-    const dispatches = db.prepare(`SELECT COUNT(*) AS n FROM interval_fact f JOIN series s ON s.id = f.series_id JOIN metric m ON m.id = s.metric_id
-      JOIN source src ON src.id = s.source_id WHERE s.subject_kind = 'site' AND s.subject_id = ? AND m.code = 'ev_charge_kwh' AND src.code = 'octopus_kraken'`).get(String(siteId)).n;
+    const dispatches = (await db.prepare(`SELECT COUNT(*) AS n FROM interval_fact f JOIN series s ON s.id = f.series_id JOIN metric m ON m.id = s.metric_id
+      JOIN source src ON src.id = s.source_id WHERE s.subject_kind = 'site' AND s.subject_id = ? AND m.code = 'ev_charge_kwh' AND src.code = 'octopus_kraken'`).get(String(siteId))).n;
     ins.push({ tone: 'warn', title: `${ev.label}: smart control not available`, detail: `Octopus reports the car's state as SMART_CONTROL_NOT_AVAILABLE, and ${dispatches} smart-charge slot${dispatches === 1 ? ' was' : 's were'} recorded. Without slots, the cheap rate in this comparison applies only in the off-peak window.` });
   }
   ins.push({ tone: 'info', title: 'Same use, different prices', detail: `Every ${slotNoun(slotS)} is re-priced with exactly what the home imported and exported. The comparison does not change when energy is used.` });

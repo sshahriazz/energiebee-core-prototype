@@ -14,6 +14,7 @@ import { GB_VAT_RULES } from '../src/core/tax.js';
 import { CURRENCIES } from '../src/core/money.js';
 import { MARKETS, MARKET_COLUMNS, seedMarkets } from '../src/db/seed/markets.js';
 import { GB_REGIONS, GB_REGION_ALIASES, seedRegionsGb } from '../src/db/seed/regions-gb.js';
+import { mapAsync } from "../src/core/async.js";
 
 const dbDir = path.resolve(import.meta.dirname, '..', 'src', 'db');
 const SCHEMA = fs.readFileSync(path.join(dbDir, 'schema.sql'), 'utf8');
@@ -37,17 +38,17 @@ function statements(sql) {
   return out;
 }
 
-function applyDelta(db, sql) {
-  db.exec('BEGIN');
+async function applyDelta(db, sql) {
+  await db.exec('BEGIN');
   try {
     for (const s of statements(sql)) {
       const add = /^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/im.exec(s.replace(/--.*$/gm, ''));
-      if (add && db.prepare(`SELECT 1 FROM pragma_table_info('${add[1]}') WHERE name = ?`).get(add[2])) continue;
-      db.exec(s);
+      if (add && await db.prepare(`SELECT 1 FROM pragma_table_info('${add[1]}') WHERE name = ?`).get(add[2])) continue;
+      await db.exec(s);
     }
-    db.exec('COMMIT');
+    await db.exec('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    await db.exec('ROLLBACK');
     throw err;
   }
 }
@@ -69,22 +70,22 @@ function existingDb() {
   return db;
 }
 
-const applyAll = (db) => { for (const d of DELTAS) applyDelta(db, d); };
-const snapshot = (db) => {
-  const objects = db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all().map((r) => ({ ...r }));
-  const counts = Object.fromEntries(objects.filter((o) => o.type === 'table').map((o) => [o.name, db.prepare(`SELECT COUNT(*) n FROM "${o.name}"`).get().n]));
+const applyAll = async (db) => { for (const d of DELTAS) await applyDelta(db, d); };
+const snapshot = async (db) => {
+  const objects = (await db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all()).map((r) => ({ ...r }));
+  const counts = Object.fromEntries(await mapAsync(objects.filter((o) => o.type === 'table'), async (o) => [o.name, (await db.prepare(`SELECT COUNT(*) n FROM "${o.name}"`).get()).n]));
   return { objects, counts };
 };
-const cols = (db, t) => db.prepare(`SELECT name FROM pragma_table_info('${t}')`).all().map((c) => c.name);
+const cols = async (db, t) => (await db.prepare(`SELECT name FROM pragma_table_info('${t}')`).all()).map((c) => c.name);
 
-test('the deltas apply cleanly on top of the current schema and backfill GB / GBP', () => {
+await test('the deltas apply cleanly on top of the current schema and backfill GB / GBP', async () => {
   const db = existingDb();
-  applyAll(db);
-  for (const c of ['currency', 'country', 'market_code']) assert.ok(cols(db, 'site').includes(c), `site.${c}`);
-  for (const c of ['currency', 'country', 'native_period_s']) assert.ok(cols(db, 'tariff').includes(c), `tariff.${c}`);
+  await applyAll(db);
+  for (const c of ['currency', 'country', 'market_code']) assert.ok((await cols(db, 'site')).includes(c), `site.${c}`);
+  for (const c of ['currency', 'country', 'native_period_s']) assert.ok((await cols(db, 'tariff')).includes(c), `tariff.${c}`);
   assert.deepEqual({ ...db.prepare('SELECT country, currency, market_code FROM site WHERE id = 1').get() }, { country: 'GB', currency: 'GBP', market_code: 'GB' });
   assert.deepEqual(db.prepare('SELECT DISTINCT country, currency FROM tariff').all().map((r) => ({ ...r })), [{ country: 'GB', currency: 'GBP' }]);
-  assert.ok(cols(db, 'site').includes('slot_s'), 'schema.sql slot_s left as it is');
+  assert.ok((await cols(db, 'site')).includes('slot_s'), 'schema.sql slot_s left as it is');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM vat_rate').get().n, VAT_RATES.length, 'vat_rate left in place');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
   assert.deepEqual(db.prepare('SELECT name FROM schema_delta ORDER BY name').all().map((r) => r.name), DELTA_FILES.map((f) => f.replace(/\.sql$/, '')));
@@ -93,10 +94,10 @@ test('the deltas apply cleanly on top of the current schema and backfill GB / GB
   assert.equal(db.prepare('SELECT currency FROM site_day WHERE site_id = 1').get().currency, 'GBP');
 });
 
-test('delta 004: a home is billed in its market\'s currency, and tariff kinds are the contract\'s', () => {
+await test('delta 004: a home is billed in its market\'s currency, and tariff kinds are the contract\'s', async () => {
   const db = existingDb();
-  applyAll(db);
-  seedMarkets(db);
+  await applyAll(db);
+  await seedMarkets(db);
   assert.throws(() => db.exec("INSERT INTO site (name, created_at, country, market_code, currency) VALUES ('Paris', 1, 'FR', 'FR', 'GBP')"), /differs from its market currency/);
   assert.doesNotThrow(() => db.exec("INSERT INTO site (name, created_at, country, market_code, currency) VALUES ('Paris', 1, 'FR', 'FR', 'EUR')"));
   assert.throws(() => db.exec("UPDATE site SET market_code = 'NL' WHERE id = 1"), /differs from its market currency/);
@@ -104,9 +105,9 @@ test('delta 004: a home is billed in its market\'s currency, and tariff kinds ar
   db.exec("UPDATE tariff SET kind = 'calendar_tou' WHERE id = 1");
 });
 
-test('reference rows in the SQL match the JS registries', () => {
+await test('reference rows in the SQL match the JS registries', async () => {
   const db = existingDb();
-  applyAll(db);
+  await applyAll(db);
   const sqlCurrencies = db.prepare('SELECT code, minor_exponent, symbol FROM currency ORDER BY code').all().map((r) => ({ ...r }));
   assert.deepEqual(sqlCurrencies, Object.values(CURRENCIES).map((c) => ({ code: c.code, minor_exponent: c.minorExponent, symbol: c.symbol })).sort((a, b) => a.code.localeCompare(b.code)));
   const gb = MARKETS.find((m) => m.code === 'GB');
@@ -119,35 +120,35 @@ test('reference rows in the SQL match the JS registries', () => {
   assert.deepEqual(rules, want);
 });
 
-test('applying again changes nothing, and the backfill runs on the first application only', () => {
+await test('applying again changes nothing, and the backfill runs on the first application only', async () => {
   const db = existingDb();
-  applyAll(db);
+  await applyAll(db);
   db.exec("INSERT INTO site (id, name, created_at) VALUES (2, 'New home', 1800000000)");   // written after the delta, no country yet
-  const before = snapshot(db);
-  applyAll(db);
-  applyAll(db);
-  assert.deepEqual(snapshot(db), before);
+  const before = await snapshot(db);
+  await applyAll(db);
+  await applyAll(db);
+  assert.deepEqual(await snapshot(db), before);
   assert.deepEqual({ ...db.prepare('SELECT country, currency, market_code FROM site WHERE id = 2').get() }, { country: null, currency: null, market_code: null });
   // db.js runs schema.sql on every open: still fine after the deltas.
   db.exec(SCHEMA);
-  assert.deepEqual(snapshot(db), before);
+  assert.deepEqual(await snapshot(db), before);
 });
 
-test('GB VAT is copied once vat_rate is seeded, even when the delta ran before the seed', () => {
+await test('GB VAT is copied once vat_rate is seeded, even when the delta ran before the seed', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(SCHEMA);
-  applyAll(db);
+  await applyAll(db);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM tax_rule').get().n, 0);
   const vat = db.prepare('INSERT INTO vat_rate (fuel, direction, rate, valid_from, valid_to) VALUES (?, ?, ?, ?, ?)');
   for (const v of VAT_RATES) vat.run(v.fuel, v.direction, v.rate, v.validFrom, v.validTo ?? null);
-  applyAll(db);
-  applyAll(db);
+  await applyAll(db);
+  await applyAll(db);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM tax_rule WHERE country = 'GB' AND code = 'vat'").get().n, VAT_RATES.length);
 });
 
-test('a tariff in another currency cannot be agreed for a home (trigger)', () => {
+await test('a tariff in another currency cannot be agreed for a home (trigger)', async () => {
   const db = existingDb();
-  applyAll(db);
+  await applyAll(db);
   db.exec(`INSERT INTO tariff (id, provider, tariff_code, fuel, direction, structure, currency, country) VALUES (3, 'tibber', 'NL-DYN', 'electricity', 'import', 'dynamic', 'EUR', 'NL');
     INSERT INTO device (id, site_id, kind, provider, external_ref) VALUES (3, 1, 'meter_export', 'octopus', 'MPAN2');`);
   const agree = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, recorded_at) VALUES (1, 3, ?, 1700000000, 2)');
@@ -162,9 +163,9 @@ test('a tariff in another currency cannot be agreed for a home (trigger)', () =>
   assert.doesNotThrow(() => db.exec("UPDATE site SET currency = 'EUR' WHERE id = 2"));
 });
 
-test('CHECK constraints and triggers refuse bad rows', () => {
+await test('CHECK constraints and triggers refuse bad rows', async () => {
   const db = existingDb();
-  applyAll(db);
+  await applyAll(db);
   const tax = (over) => {
     const r = { country: 'NL', code: 'btw', fuel: 'electricity', direction: 'import', applies_to: 'all', kind: 'percent', value: 0.21, currency: null, charge_period: null, seq: 100, valid_from: 0, valid_to: null, source: 'test', recorded_at: 1, ...over };
     const k = Object.keys(r);
@@ -184,13 +185,13 @@ test('CHECK constraints and triggers refuse bad rows', () => {
   assert.throws(() => tax({ country: 'GB', code: 'vat', fuel: 'gas', value: 0.2, valid_from: 4000000000 }), /overlapping current tax rule/);
 });
 
-test('market, region and site_region constraints', () => {
+await test('market, region and site_region constraints', async () => {
   const db = existingDb();
-  applyAll(db);
-  seedMarkets(db);
-  seedRegionsGb(db);
-  seedMarkets(db);
-  seedRegionsGb(db);   // seeds are re-runnable
+  await applyAll(db);
+  await seedMarkets(db);
+  await seedRegionsGb(db);
+  await seedMarkets(db);
+  await seedRegionsGb(db);   // seeds are re-runnable
   assert.equal(db.prepare('SELECT COUNT(*) n FROM market').get().n, MARKETS.length);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM region').get().n, GB_REGIONS.length);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM region_alias').get().n, GB_REGION_ALIASES.length);
@@ -224,10 +225,10 @@ test('market, region and site_region constraints', () => {
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
 });
 
-test('region aliases round-trip in SQL for all 14 GB regions in three numberings', () => {
+await test('region aliases round-trip in SQL for all 14 GB regions in three numberings', async () => {
   const db = existingDb();
-  applyAll(db);
-  seedRegionsGb(db);
+  await applyAll(db);
+  await seedRegionsGb(db);
   const resolve = db.prepare(`SELECT r.scheme, r.code, r.name FROM region_alias a JOIN region r ON r.scheme = a.scheme AND r.code = a.code
     WHERE a.alias_scheme = ? AND a.alias_code = ?`);
   const back = db.prepare('SELECT alias_scheme, alias_code FROM region_alias WHERE scheme = ? AND code = ? ORDER BY alias_scheme');
@@ -242,12 +243,12 @@ test('region aliases round-trip in SQL for all 14 GB regions in three numberings
   assert.deepEqual({ ...row }, { code: '16', name: 'North West England' });
 });
 
-test('delta 005: every reference and price row carries an origin in the vocabulary', () => {
+await test('delta 005: every reference and price row carries an origin in the vocabulary', async () => {
   const db = existingDb();
   db.exec(`INSERT INTO rate_interval (tariff_id, component, register, valid_from, valid_to, price_ex_vat, recorded_at) VALUES (1, 'unit', 'single', 1700000000, 1700001800, 21.3, 1)`);
-  applyAll(db);
+  await applyAll(db);
   for (const t of ['tax_rule', 'tariff', 'rate_interval', 'market', 'region']) {
-    assert.ok(cols(db, t).includes('origin') && cols(db, t).includes('origin_note'), `${t}.origin`);
+    assert.ok((await cols(db, t)).includes('origin') && (await cols(db, t)).includes('origin_note'), `${t}.origin`);
   }
   // Backfill: tariffs and rates already held were fetched from Octopus; GB VAT and the GB market are sourced.
   assert.deepEqual(db.prepare('SELECT DISTINCT origin FROM tariff').all().map((r) => r.origin), ['provider']);
@@ -255,8 +256,8 @@ test('delta 005: every reference and price row carries an origin in the vocabula
   assert.deepEqual(db.prepare("SELECT DISTINCT origin FROM tax_rule WHERE country = 'GB'").all().map((r) => r.origin), ['sourced']);
   assert.equal(db.prepare("SELECT origin FROM market WHERE code = 'GB'").get().origin, 'sourced');
   // The seeds label FR/NL/DE/BE/ES as placeholders and the 14 GB regions as sourced.
-  seedMarkets(db);
-  seedRegionsGb(db);
+  await seedMarkets(db);
+  await seedRegionsGb(db);
   assert.deepEqual(db.prepare("SELECT code FROM market WHERE origin = 'placeholder' ORDER BY code").all().map((r) => r.code), ['BE', 'DE', 'ES', 'FR', 'NL']);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM region WHERE scheme = 'gb_dno' AND origin = 'sourced'").get().n, 14);
   // CHECK: an origin outside the vocabulary is refused on every table.
@@ -267,13 +268,13 @@ test('delta 005: every reference and price row carries an origin in the vocabula
   assert.throws(() => db.exec("UPDATE region SET origin = 'x' WHERE scheme = 'gb_dno'"), /CHECK/);
   // A tariff written after the delta is NOT backfilled (first application only): its writer labels it.
   db.exec("INSERT INTO tariff (id, provider, tariff_code, fuel, direction, structure) VALUES (9, 'octopus', 'E-1R-LATER-G', 'electricity', 'import', 'flat')");
-  applyAll(db);
+  await applyAll(db);
   assert.equal(db.prepare('SELECT origin FROM tariff WHERE id = 9').get().origin, null);
 });
 
-test('delta 006: register windows, calendars and estimated rate rows', () => {
+await test('delta 006: register windows, calendars and estimated rate rows', async () => {
   const db = existingDb();
-  applyAll(db);
+  await applyAll(db);
   db.exec("INSERT INTO calendar (code, day_start_min, origin) VALUES ('fr_tempo', 360, 'synthetic')");
   const win = db.prepare(`INSERT INTO register_window (tariff_id, device_id, register, start_min, end_min, weekdays, calendar, day_type, clock, recorded_at, origin)
     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'synthetic')`);
@@ -291,30 +292,30 @@ test('delta 006: register windows, calendars and estimated rate rows', () => {
   assert.throws(() => day.run('2026-03-29', 'red', 2, null), /UNIQUE/);   // one current type per day
   day.run('2026-03-29', 'red', 3, 2);
   assert.throws(() => day.run('29/03/2026', 'red', 4, null), /CHECK/);
-  assert.ok(cols(db, 'tariff').includes('default_register'));
+  assert.ok((await cols(db, 'tariff')).includes('default_register'));
   assert.equal(db.prepare('SELECT estimated FROM rate_interval LIMIT 1').get()?.estimated ?? 0, 0);
   db.exec("INSERT INTO rate_interval (tariff_id, component, register, valid_from, valid_to, price_ex_vat, recorded_at, estimated) VALUES (1, 'unit', 'red_hp', 10, 20, 64.7, 1, 1)");
   assert.throws(() => db.exec("INSERT INTO rate_interval (tariff_id, component, register, valid_from, valid_to, price_ex_vat, recorded_at, estimated) VALUES (1, 'unit', 'x', 10, 20, 1, 1, 2)"), /CHECK/);
 });
 
-test('delta 007: a contracted capacity is positive and labelled', () => {
+await test('delta 007: a contracted capacity is positive and labelled', async () => {
   const db = existingDb();
-  applyAll(db);
+  await applyAll(db);
   db.exec("UPDATE site SET contracted_kva = 6, contracted_kva_origin = 'user', contracted_kva_note = 'bill: puissance souscrite 6 kVA' WHERE id = 1");
   assert.throws(() => db.exec('UPDATE site SET contracted_kva = 0 WHERE id = 1'), /CHECK/);
   assert.throws(() => db.exec("UPDATE site SET contracted_kva_origin = 'bill' WHERE id = 1"), /CHECK/);
 });
 
-test('delta 008: the market provider registry takes its seed and refuses what it should', async () => {
+await test('delta 008: the market provider registry takes its seed and refuses what it should', async () => {
   const { PROVIDERS, seedProviders } = await import('../src/db/seed/providers.js');
   const db = existingDb();
-  applyAll(db);
-  seedProviders(db);
+  await applyAll(db);
+  await seedProviders(db);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM market_provider').get().n, PROVIDERS.length);
-  const before = snapshot(db);
-  seedProviders(db);
-  applyAll(db);
-  assert.deepEqual(snapshot(db), before, 'seed and delta again change nothing');
+  const before = await snapshot(db);
+  await seedProviders(db);
+  await applyAll(db);
+  assert.deepEqual(await snapshot(db), before, 'seed and delta again change nothing');
   const ins = (vals) => db.exec(`INSERT INTO market_provider (market_code, role, adapter, scope, origin, enabled) VALUES (${vals})`);
   assert.throws(() => ins("'GB', 'weather', 'x1', 'everyone', 'provider', 1"), /CHECK/);
   assert.throws(() => ins("'GB', 'weather', 'x2', 'shared', 'guess', 1"), /CHECK/);
@@ -324,32 +325,32 @@ test('delta 008: the market provider registry takes its seed and refuses what it
   ins("'*', 'inverter', 'x5', 'home', 'placeholder', 0");
 });
 
-test('delta 009: one provider_state row per provider, its state JSON only', () => {
+await test('delta 009: one provider_state row per provider, its state JSON only', async () => {
   const db = existingDb();
-  applyAll(db);
-  const before = snapshot(db);
-  applyAll(db);
-  assert.deepEqual(snapshot(db), before, 'applying again changes nothing');
+  await applyAll(db);
+  const before = await snapshot(db);
+  await applyAll(db);
+  assert.deepEqual(await snapshot(db), before, 'applying again changes nothing');
   db.exec("INSERT INTO provider_state (provider, next_allowed_at, state, updated_at) VALUES ('tariffscanner', 1, '{\"last_run_at\":1}', 1)");
   assert.throws(() => db.exec("INSERT INTO provider_state (provider, updated_at) VALUES ('tariffscanner', 2)"), /UNIQUE|PRIMARY/);
   assert.throws(() => db.exec("INSERT INTO provider_state (provider, state, updated_at) VALUES ('other', 'not json', 2)"), /CHECK/);
 });
 
-test('delta 010: a market_provider made with an older owner CHECK is rebuilt, its other owner becoming external', async () => {
+await test('delta 010: a market_provider made with an older owner CHECK is rebuilt, its other owner becoming external', async () => {
   const { PROVIDERS, seedProviders } = await import('../src/db/seed/providers.js');
   const db = existingDb();
   // A database from before 010: deltas up to 007, then 008's table with another second owner value.
-  for (const d of DELTAS.slice(0, DELTA_FILES.indexOf('008-market-provider.sql'))) applyDelta(db, d);
+  for (const d of DELTAS.slice(0, DELTA_FILES.indexOf('008-market-provider.sql'))) await applyDelta(db, d);
   const d008 = DELTAS[DELTA_FILES.indexOf('008-market-provider.sql')];
   assert.match(d008, /CHECK \(owner IN \('core', 'external'\)\)/);
-  applyDelta(db, d008.replace("CHECK (owner IN ('core', 'external'))", "CHECK (owner IN ('core', 'old_owner'))"));
-  seedProviders(db);
+  await applyDelta(db, d008.replace("CHECK (owner IN ('core', 'external'))", "CHECK (owner IN ('core', 'old_owner'))"));
+  await seedProviders(db);
   db.exec("UPDATE market_provider SET enabled = 0, note = 'set by an operator' WHERE market_code = 'GB' AND role = 'carbon'");
   db.exec("INSERT INTO market_provider (market_code, role, adapter, priority, owner, scope, origin, note) VALUES ('GB', 'tariff_catalogue', 'remote', 5, 'old_owner', 'shared', 'provider', 'synced elsewhere')");
   assert.throws(() => db.exec("UPDATE market_provider SET owner = 'external' WHERE adapter = 'remote'"), /CHECK/);
   const rows = (x) => x.prepare('SELECT * FROM market_provider ORDER BY market_code, role, adapter').all().map((r) => ({ ...r }));
   const before = rows(db);
-  applyAll(db);
+  await applyAll(db);
   // Every row kept as it was, the other owner now 'external'.
   assert.deepEqual(rows(db), before.map((r) => ({ ...r, owner: r.owner === 'core' ? 'core' : 'external' })));
   assert.equal(db.prepare("SELECT owner FROM market_provider WHERE adapter = 'remote'").get().owner, 'external');
@@ -357,7 +358,7 @@ test('delta 010: a market_provider made with an older owner CHECK is rebuilt, it
   assert.equal(db.prepare('SELECT COUNT(*) n FROM market_provider').get().n, PROVIDERS.length + 1);
   // The same table as a fresh 008 + 010 gives: CHECKs, primary key, WITHOUT ROWID, the index.
   const fresh = existingDb();
-  applyAll(fresh);
+  await applyAll(fresh);
   const def = (x) => x.prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'market_provider' ORDER BY type, name").all().map((r) => ({ ...r }));
   assert.deepEqual(def(db), def(fresh));
   assert.deepEqual(def(db).map((o) => [o.type, o.name]), [['index', 'market_provider_role'], ['table', 'market_provider']]);
@@ -372,13 +373,13 @@ test('delta 010: a market_provider made with an older owner CHECK is rebuilt, it
   assert.equal(db.prepare("SELECT 1 FROM sqlite_temp_master WHERE name LIKE 'market_provider%'").get(), undefined, 'no temporary copy left');
   // Applying again changes nothing, and the seed still upserts into the rebuilt table.
   db.exec("DELETE FROM market_provider WHERE adapter = 'x'");
-  seedProviders(db);   // refreshes the descriptive columns (the note), keeps enabled
+  await seedProviders(db);   // refreshes the descriptive columns (the note), keeps enabled
   assert.equal(db.prepare("SELECT enabled FROM market_provider WHERE market_code = 'GB' AND role = 'carbon'").get().enabled, 0);
-  const snap = snapshot(db);
+  const snap = await snapshot(db);
   const keep = rows(db);
-  applyAll(db);
-  seedProviders(db);
-  assert.deepEqual(snapshot(db), snap);
+  await applyAll(db);
+  await seedProviders(db);
+  assert.deepEqual(await snapshot(db), snap);
   assert.deepEqual(rows(db), keep);
   assert.ok(db.prepare("SELECT 1 FROM schema_delta WHERE name = '010-provider-owner'").get());
 });

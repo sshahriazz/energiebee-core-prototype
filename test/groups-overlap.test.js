@@ -6,19 +6,19 @@ import { useDb } from './helpers.js';
 useDb();
 const { db } = await import('../src/db/db.js');
 
-const site = Number(db.prepare("INSERT INTO site (name, created_at) VALUES ('m', 0)").run().lastInsertRowid);
-const owner = Number(db.prepare("INSERT INTO app_user (name, created_at) VALUES ('o', 0)").run().lastInsertRowid);
-const group = (name) => Number(db.prepare("INSERT INTO site_group (name, owner_id, timezone, created_at) VALUES (?, ?, 'Europe/London', 0)").run(name, owner).lastInsertRowid);
-const add = (g, from, to) => db.prepare('INSERT INTO site_group_member (group_id, site_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, 0)').run(g, site, from, to);
+const site = Number((await db.prepare("INSERT INTO site (name, created_at) VALUES ('m', 0)").run()).lastInsertRowid);
+const owner = Number((await db.prepare("INSERT INTO app_user (name, created_at) VALUES ('o', 0)").run()).lastInsertRowid);
+const group = async (name) => Number((await db.prepare("INSERT INTO site_group (name, owner_id, timezone, created_at) VALUES (?, ?, 'Europe/London', 0)").run(name, owner)).lastInsertRowid);
+const add = async (g, from, to) => await db.prepare('INSERT INTO site_group_member (group_id, site_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, 0)').run(g, site, from, to);
 
-test('overlapping current membership is refused; a later period, another group, and a superseded row are allowed', () => {
-  const g = group('a');
-  add(g, 100, 200);
-  assert.throws(() => add(g, 150, 250), /overlapping current membership/);
-  assert.throws(() => add(g, null, null), /overlapping current membership/);
-  assert.doesNotThrow(() => add(g, 200, 300), 'starts where the other ends');
-  assert.doesNotThrow(() => add(group('b'), 100, 200), 'another group');
-  db.prepare('UPDATE site_group_member SET superseded_at = 1 WHERE group_id = ? AND valid_from = 100').run(g);
-  assert.doesNotThrow(() => add(g, 100, 200), 'a superseded row no longer counts');
-  assert.throws(() => db.prepare('UPDATE site_group_member SET valid_to = 250 WHERE group_id = ? AND valid_from = 100 AND superseded_at IS NULL').run(g), /overlapping/, 'widening a row into another is refused too');
+await test('overlapping current membership is refused; a later period, another group, and a superseded row are allowed', async () => {
+  const g = await group('a');
+  await add(g, 100, 200);
+  await assert.rejects(async () => await add(g, 150, 250), /overlapping current membership/);
+  await assert.rejects(async () => await add(g, null, null), /overlapping current membership/);
+  await assert.doesNotReject(async () => await add(g, 200, 300), 'starts where the other ends');
+  await assert.doesNotReject(async () => await add(await group('b'), 100, 200), 'another group');
+  await db.prepare('UPDATE site_group_member SET superseded_at = 1 WHERE group_id = ? AND valid_from = 100').run(g);
+  await assert.doesNotReject(async () => await add(g, 100, 200), 'a superseded row no longer counts');
+  await assert.rejects(async () => await db.prepare('UPDATE site_group_member SET valid_to = 250 WHERE group_id = ? AND valid_from = 100 AND superseded_at IS NULL').run(g), /overlapping/, 'widening a row into another is refused too');
 });

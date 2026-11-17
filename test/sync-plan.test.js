@@ -28,13 +28,13 @@ const { syncSite, syncAll } = await import('../src/jobs/sync.js');
 const P = await import('../src/core/providers.js');
 const { createSite } = await import('../src/core/sites.js');
 
-const conn = (siteId, ...providers) => { for (const p of providers) db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(siteId, p); };
+const conn = async (siteId, ...providers) => { for (const p of providers) await db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(siteId, p); };
 // A GB home whose location keys are known (so the postcode look-ups make no call), on the .env
 // tariff codes, at one location and in one carbon and price region unless told otherwise.
-function gbHome(name, { carbon = 3, gsp = 'G' } = {}) {
-  const s = createSite({ name, postcode: 'BB12 9BY', lat: 53.79, lon: -2.24, gspRegion: gsp, carbonRegion: carbon });
-  db.prepare("UPDATE site SET outcode = 'BB12' WHERE id = ?").run(s.id);
-  conn(s.id, 'tariff', 'weather', 'carbon', 'solar_forecast', 'compare');
+async function gbHome(name, { carbon = 3, gsp = 'G' } = {}) {
+  const s = await createSite({ name, postcode: 'BB12 9BY', lat: 53.79, lon: -2.24, gspRegion: gsp, carbonRegion: carbon });
+  await db.prepare("UPDATE site SET outcode = 'BB12' WHERE id = ?").run(s.id);
+  await conn(s.id, 'tariff', 'weather', 'carbon', 'solar_forecast', 'compare');
   return s.id;
 }
 const kind = (c) => (c.host === 'api.carbonintensity.org.uk' || c.host === 'odre.opendatasoft.com' ? 'carbon' : c.host === 'api.open-meteo.com' ? 'weather'
@@ -42,11 +42,11 @@ const kind = (c) => (c.host === 'api.carbonintensity.org.uk' || c.host === 'odre
 const counts = () => calls.reduce((o, c) => ({ ...o, [kind(c)]: (o[kind(c)] ?? 0) + 1 }), {});
 const steps = (log) => log.map((l) => l.step);
 const entry = (log, name) => log.find((l) => l.step === name);
-const lastLog = (siteId) => JSON.parse(db.prepare('SELECT detail FROM sync_run WHERE site_id = ? ORDER BY id DESC LIMIT 1').get(siteId).detail);
+const lastLog = async (siteId) => JSON.parse((await db.prepare('SELECT detail FROM sync_run WHERE site_id = ? ORDER BY id DESC LIMIT 1').get(siteId)).detail);
 
 let single;
-test('one home on its own: today\'s steps in today\'s order, nothing shared', async () => {
-  const id = gbHome('Single');
+await test('one home on its own: today\'s steps in today\'s order, nothing shared', async () => {
+  const id = await gbHome('Single');
   calls.length = 0;
   const [r] = await syncAll([id]);
   single = counts();
@@ -57,9 +57,9 @@ test('one home on its own: today\'s steps in today\'s order, nothing shared', as
   assert.deepEqual(unexpected, []);
 });
 
-test('two homes on the same tariff, region and location: each shared provider is called once', async () => {
-  const a = gbHome('A');
-  const b = gbHome('B');
+await test('two homes on the same tariff, region and location: each shared provider is called once', async () => {
+  const a = await gbHome('A');
+  const b = await gbHome('B');
   calls.length = 0;
   const [ra, rb] = await syncAll([a, b]);
   assert.deepEqual(counts(), single, 'the same calls as one home alone');
@@ -72,16 +72,16 @@ test('two homes on the same tariff, region and location: each shared provider is
   assert.ok(!('shared' in entry(rb.log, 'weather')));
   // B's connections are up to date, and it has A's comparison product codes.
   for (const p of ['carbon', 'compare', 'tariff', 'weather']) {
-    assert.equal(db.prepare('SELECT status FROM connection WHERE site_id = ? AND provider = ?').get(b, p).status, 'ok', p);
+    assert.equal((await db.prepare('SELECT status FROM connection WHERE site_id = ? AND provider = ?').get(b, p)).status, 'ok', p);
   }
-  const meta = (id) => db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'compare'").get(id).meta;
-  assert.equal(meta(b), meta(a));
+  const meta = async (id) => (await db.prepare("SELECT meta FROM connection WHERE site_id = ? AND provider = 'compare'").get(id)).meta;
+  assert.equal(await meta(b), await meta(a));
   assert.deepEqual(unexpected, []);
 });
 
-test('homes in different carbon regions each fetch their region; the tariff is still shared', async () => {
-  const e = gbHome('E', { carbon: 5 });
-  const f = gbHome('F', { carbon: 3 });
+await test('homes in different carbon regions each fetch their region; the tariff is still shared', async () => {
+  const e = await gbHome('E', { carbon: 5 });
+  const f = await gbHome('F', { carbon: 3 });
   calls.length = 0;
   const [, rf] = await syncAll([e, f]);
   const c = counts();
@@ -91,12 +91,12 @@ test('homes in different carbon regions each fetch their region; the tariff is s
   assert.ok('shared' in entry(rf.log, 'compare'));
 });
 
-test('missing credentials: the step is skipped with a reason, no call is made, the rest runs', async () => {
+await test('missing credentials: the step is skipped with a reason, no call is made, the rest runs', async () => {
   // The .env home with its account and inverter connected, the server started without --env-file.
-  const env = createSite({ name: 'Env home, no .env', postcode: 'BB12 9BY', envKey: 'env', lat: 53.79, lon: -2.24, gspRegion: 'G', carbonRegion: 3 });
-  db.prepare("UPDATE site SET outcode = 'BB12' WHERE id = ?").run(env.id);
-  conn(env.id, 'octopus', 'sunsynk', 'weather', 'carbon', 'compare', 'solar_forecast');
-  db.prepare("UPDATE connection SET external_ref = 'A-OLD', status = 'ok' WHERE site_id = ? AND provider = 'octopus'").run(env.id);
+  const env = await createSite({ name: 'Env home, no .env', postcode: 'BB12 9BY', envKey: 'env', lat: 53.79, lon: -2.24, gspRegion: 'G', carbonRegion: 3 });
+  await db.prepare("UPDATE site SET outcode = 'BB12' WHERE id = ?").run(env.id);
+  await conn(env.id, 'octopus', 'sunsynk', 'weather', 'carbon', 'compare', 'solar_forecast');
+  await db.prepare("UPDATE connection SET external_ref = 'A-OLD', status = 'ok' WHERE site_id = ? AND provider = 'octopus'").run(env.id);
   calls.length = 0;
   const r = await syncSite(env.id);
   assert.deepEqual(entry(r.log, 'octopus'), { step: 'octopus', ok: true, ms: 0, skipped: 'no credentials: OCTOPUS_API_KEY, OCTOPUS_ACCOUNT_NUMBER not set (start the server with --env-file=.env)' });
@@ -105,20 +105,20 @@ test('missing credentials: the step is skipped with a reason, no call is made, t
   assert.ok(!calls.some((c) => /accounts|graphql/.test(c.url) || c.host === 'api.sunsynk.net'), 'no call to Octopus accounts, Kraken or Sunsynk');
   assert.ok(!calls.some((c) => c.url.includes('undefined')), 'no request built from an undefined value');
   assert.deepEqual(steps(r.log).filter((s) => !['octopus', 'sunsynk'].includes(s)), ['geo', 'weather', 'carbon', 'compare', 'solar_forecast', 'build', 'forecast']);
-  const status = Object.fromEntries(db.prepare('SELECT provider, status FROM connection WHERE site_id = ?').all(env.id).map((c) => [c.provider, c.status]));
+  const status = Object.fromEntries((await db.prepare('SELECT provider, status FROM connection WHERE site_id = ?').all(env.id)).map((c) => [c.provider, c.status]));
   assert.deepEqual([status.octopus, status.sunsynk, status.weather], ['skipped', 'skipped', 'ok']);
-  const meter = P.providerStatus(db, db.prepare('SELECT * FROM site WHERE id = ?').get(env.id)).find((p) => p.role === 'meter');
+  const meter = (await P.providerStatus(db, await db.prepare('SELECT * FROM site WHERE id = ?').get(env.id))).find((p) => p.role === 'meter');
   assert.deepEqual([meter.status, meter.reason], ['skipped', entry(r.log, 'octopus').skipped]);
   // Any other home with an account connected is skipped the same way: there is no secret store.
-  const other = gbHome('Other');
-  conn(other, 'octopus');
+  const other = await gbHome('Other');
+  await conn(other, 'octopus');
   const ro = await syncSite(other);
   assert.match(entry(ro.log, 'octopus').skipped, /^no credentials: secrets are read from \.env for the \.env home only/);
   assert.deepEqual(unexpected, []);
 });
 
-test('a French home: weather and carbon (RTE) run; the unbuilt and unlicensed providers (tounify) are skipped, never called', async () => {
-  const fr = createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 }).id;
+await test('a French home: weather and carbon (RTE) run; the unbuilt and unlicensed providers (tounify) are skipped, never called', async () => {
+  const fr = (await createSite({ name: 'Maison', country: 'FR', lat: 48.85, lon: 2.35 })).id;
   calls.length = 0;
   let r = await syncSite(fr);
   assert.deepEqual(r.log.filter((l) => !['build', 'forecast'].includes(l.step)).map((l) => [l.step, l.ok, l.skipped ?? null]), [
@@ -141,21 +141,21 @@ test('a French home: weather and carbon (RTE) run; the unbuilt and unlicensed pr
   restore();
 });
 
-test('assertOwner: a provider another process owns is never called by the core\'s sync', async () => {
-  const id = gbHome('Owner check');
+await test('assertOwner: a provider another process owns is never called by the core\'s sync', async () => {
+  const id = await gbHome('Owner check');
   let called = 0;
   const restore = P.registerAdapter('remote_catalogue', { owner: 'external', roles: { tariff_catalogue: [{ step: 'remote_catalogue', order: 75, run: async () => { called++; return {}; } }] } });
-  db.prepare("INSERT INTO market_provider (market_code, role, adapter, priority, owner, scope, origin, note) VALUES ('GB', 'tariff_catalogue', 'remote_catalogue', 1, 'external', 'shared', 'provider', 'a catalogue another process syncs')").run();
+  await db.prepare("INSERT INTO market_provider (market_code, role, adapter, priority, owner, scope, origin, note) VALUES ('GB', 'tariff_catalogue', 'remote_catalogue', 1, 'external', 'shared', 'provider', 'a catalogue another process syncs')").run();
   const r = await syncSite(id);
   assert.equal(called, 0);
   assert.match(entry(r.log, 'remote_catalogue').skipped, /^remote_catalogue is owned by another process: the core must not call it/);
-  db.prepare("DELETE FROM market_provider WHERE adapter = 'remote_catalogue'").run();
+  await db.prepare("DELETE FROM market_provider WHERE adapter = 'remote_catalogue'").run();
   restore();
 });
 
-test('a failing adapter fails only its own step: the home\'s other steps and the next home still run', async () => {
-  const x = gbHome('X fails');
-  const y = gbHome('Y');
+await test('a failing adapter fails only its own step: the home\'s other steps and the next home still run', async () => {
+  const x = await gbHome('X fails');
+  const y = await gbHome('Y');
   const seen = [];
   const restore = P.registerAdapter('neso', {
     roles: {
@@ -171,18 +171,18 @@ test('a failing adapter fails only its own step: the home\'s other steps and the
   assert.deepEqual(entry(rx.log, 'carbon').error, 'NESO answered HTTP 503');
   assert.equal(rx.ok, false);
   for (const s of ['geo', 'weather', 'tariff', 'compare', 'solar_forecast', 'build']) assert.equal(entry(rx.log, s)?.ok, true, `X ${s}`);
-  assert.equal(db.prepare("SELECT status, last_error FROM connection WHERE site_id = ? AND provider = 'carbon'").get(x).last_error, 'NESO answered HTTP 503');
+  assert.equal((await db.prepare("SELECT status, last_error FROM connection WHERE site_id = ? AND provider = 'carbon'").get(x)).last_error, 'NESO answered HTTP 503');
   // A failure is not shared: Y asked again, and succeeded.
   assert.deepEqual(seen, [x, y]);
   assert.deepEqual([entry(ry.log, 'carbon').ok, 'shared' in entry(ry.log, 'carbon')], [true, false]);
-  assert.equal(lastLog(y).find((l) => l.step === 'carbon').past, 1);
+  assert.equal((await lastLog(y)).find((l) => l.step === 'carbon').past, 1);
   assert.deepEqual(unexpected, []);
 });
 
-test('changed tariff agreements on a home already built rebuild every day built, not the last two', async () => {
+await test('changed tariff agreements on a home already built rebuild every day built, not the last two', async () => {
   // A meter connected after the inverter: its account brings tariff agreements and meter days
   // reaching back past the usual window, so all of them must be priced again.
-  const id = gbHome('Meter later');
+  const id = await gbHome('Meter later');
   const first = entry((await syncSite(id)).log, 'build').rebuilt.find((b) => b.siteId === id);
   assert.ok(first.days > 3, JSON.stringify(first));
   let r = await syncSite(id);
@@ -195,29 +195,29 @@ test('changed tariff agreements on a home already built rebuild every day built,
   assert.equal(again.days, first.days);
 });
 
-test('an inverter connected after the home was first built fetches the full initial window, then only the recent days', async () => {
+await test('an inverter connected after the home was first built fetches the full initial window, then only the recent days', async () => {
   const { INITIAL_DAYS } = await import('../src/jobs/steps.js');
-  const id = gbHome('Postcode first');
+  const id = await gbHome('Postcode first');
   await syncSite(id);   // built from the postcode alone
-  conn(id, 'sunsynk');
+  await conn(id, 'sunsynk');
   const prep = P.adapterFor('sunsynk').roles.inverter.steps[0].prepare;
   const ctx = { siteId: id, tz: 'Europe/London', today: '2026-10-28', firstRun: false };
   assert.equal(prep(ctx).dates.length, INITIAL_DAYS + 1, 'never synced: the full window');
-  db.prepare("UPDATE connection SET last_success_at = ? WHERE site_id = ? AND provider = 'sunsynk'").run(Date.UTC(2026, 9, 28, 9) / 1000, id);
+  await db.prepare("UPDATE connection SET last_success_at = ? WHERE site_id = ? AND provider = 'sunsynk'").run(Date.UTC(2026, 9, 28, 9) / 1000, id);
   assert.deepEqual(prep(ctx).dates, ['2026-10-27', '2026-10-28'], 'synced before: yesterday and today');
 });
 
-test('a sync asked for while one runs (a provider connected meanwhile) runs again as soon as it ends, once', async () => {
-  const id = gbHome('Asked twice');
-  const runs = () => db.prepare('SELECT id, finished_at FROM sync_run WHERE site_id = ? ORDER BY id').all(id);
-  const first = syncSite(id);
+await test('a sync asked for while one runs (a provider connected meanwhile) runs again as soon as it ends, once', async () => {
+  const id = await gbHome('Asked twice');
+  const runs = async () => await db.prepare('SELECT id, finished_at FROM sync_run WHERE site_id = ? ORDER BY id').all(id);
+  const first = await syncSite(id);
   assert.deepEqual(await syncSite(id), { skipped: 'already running', queued: true });
   assert.deepEqual(await syncSite(id), { skipped: 'already running', queued: true }, 'asked again: still one more run, not two');
   await first;
-  for (let i = 0; i < 200 && !(runs().length === 2 && runs()[1].finished_at); i++) await new Promise((r) => setTimeout(r, 25));
-  const r = runs();
+  for (let i = 0; i < 200 && !((await runs()).length === 2 && (await runs())[1].finished_at); i++) await new Promise((r) => setTimeout(r, 25));
+  const r = await runs();
   assert.equal(r.length, 2, 'the first run, then one more');
   assert.ok(r[1].finished_at, 'the second run finished');
   await new Promise((res) => setTimeout(res, 100));
-  assert.equal(runs().length, 2, 'and no third');
+  assert.equal((await runs()).length, 2, 'and no third');
 });

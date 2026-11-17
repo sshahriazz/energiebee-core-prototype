@@ -20,26 +20,26 @@ before(async () => {
 });
 after(() => server.close());
 
-test('retries 503 and 429, then succeeds', async () => {
+await test('retries 503 and 429, then succeeds', async () => {
   reset([[503], [429], [200]]);
   const { json } = await fetchJson(`${base}/x`);
   assert.equal(json.status, 200);
   assert.equal(hits, 3);
 });
 
-test('does not retry 401 (a bad key gives the same answer every time)', async () => {
+await test('does not retry 401 (a bad key gives the same answer every time)', async () => {
   reset([[401]]);
-  await assert.rejects(fetchJson(`${base}/x`), /HTTP 401$/);
+  await assert.rejects(await fetchJson(`${base}/x`), /HTTP 401$/);
   assert.equal(hits, 1);
 });
 
-test('gives up after the last attempt and says how many were made', async () => {
+await test('gives up after the last attempt and says how many were made', async () => {
   reset([[500], [502], [503]]);
-  await assert.rejects(fetchJson(`${base}/x`), /HTTP 503 \(3 attempts\)/);
+  await assert.rejects(await fetchJson(`${base}/x`), /HTTP 503 \(3 attempts\)/);
   assert.equal(hits, 3);
 });
 
-test('waits as long as Retry-After asks', async () => {
+await test('waits as long as Retry-After asks', async () => {
   reset([[429, { 'retry-after': '1' }], [200]]);
   const t0 = Date.now();
   await fetchJson(`${base}/x`);
@@ -47,15 +47,15 @@ test('waits as long as Retry-After asks', async () => {
   assert.equal(hits, 2);
 });
 
-test('retries network errors', async () => {
+await test('retries network errors', async () => {
   const s = http.createServer();
   await new Promise((r) => s.listen(0, '127.0.0.1', r));
   const port = s.address().port;
   await new Promise((r) => s.close(r));
-  await assert.rejects(fetchJson(`http://127.0.0.1:${port}/x`), /3 attempts/);
+  await assert.rejects(await fetchJson(`http://127.0.0.1:${port}/x`), /3 attempts/);
 });
 
-test('fetchText returns the final status for the caller to check', async () => {
+await test('fetchText returns the final status for the caller to check', async () => {
   reset([[404]]);
   const r = await fetchText(`${base}/x`);
   assert.equal(r.ok, false);

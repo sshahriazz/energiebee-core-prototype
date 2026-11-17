@@ -22,10 +22,10 @@ export async function syncQuartz(site) {
   const { json } = await fetchJson(url, { method: 'POST', body: { site: site_ }, timeoutMs: 45000 });
   const power = json?.predictions?.power_kw;
   if (!power || typeof power !== 'object') {
-    quarantine({ source: 'quartz', siteId: site.id, request: { url, site: site_ }, body: json, reason: 'no predictions' });
+    await quarantine({ source: 'quartz', siteId: site.id, request: { url, site: site_ }, body: json, reason: 'no predictions' });
     return { skipped: 'no predictions' };
   }
-  const { rawId } = landRaw({ source: 'quartz', siteId: site.id, request: { url, site: site_ }, body: json });
+  const { rawId } = await landRaw({ source: 'quartz', siteId: site.id, request: { url, site: site_ }, body: json });
   // Keys and the issue timestamp have no zone but are UTC.
   const asUtc = (s) => Math.floor(Date.parse(s.endsWith('Z') ? s : `${s}Z`) / 1000);
   const issued = json.timestamp ? asUtc(json.timestamp) : nowSec();

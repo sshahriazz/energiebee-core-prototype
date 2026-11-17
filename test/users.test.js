@@ -17,12 +17,12 @@ const { app } = await import('../src/server.js');
 const { landRaw } = await import('../src/core/facts.js');
 const { createUser, giveHome, canSee, visibleSiteIds } = await import('../src/core/users.js');
 
-const { gb, fr, nl } = m.buildScenario();
-const alice = createUser({ name: 'Alice', role: 'owner' }); giveHome(alice.id, gb.site.id);
-const pierre = createUser({ name: 'Pierre', role: 'owner' }); giveHome(pierre.id, fr.site.id);
-const ivan = createUser({ name: 'Ivan', role: 'installer' }); giveHome(ivan.id, fr.site.id); giveHome(ivan.id, nl.site.id);
-const nora = createUser({ name: 'Nora', role: 'owner' });
-const admin = createUser({ name: 'Admin', role: 'admin' });
+const { gb, fr, nl } = await m.buildScenario();
+const alice = await createUser({ name: 'Alice', role: 'owner' }); await giveHome(alice.id, gb.site.id);
+const pierre = await createUser({ name: 'Pierre', role: 'owner' }); await giveHome(pierre.id, fr.site.id);
+const ivan = await createUser({ name: 'Ivan', role: 'installer' }); await giveHome(ivan.id, fr.site.id); await giveHome(ivan.id, nl.site.id);
+const nora = await createUser({ name: 'Nora', role: 'owner' });
+const admin = await createUser({ name: 'Admin', role: 'admin' });
 const ALL = [gb.site.id, fr.site.id, nl.site.id].sort((a, b) => a - b);
 
 const server = app.listen(0);
@@ -38,22 +38,22 @@ const siteIds = async (user) => {
   return r.body.map((s) => s.id).sort((a, b) => a - b);
 };
 
-test('no user header: only the homes no user owns (all of them before any home is owned)', async () => {
+await test('no user header: only the homes no user owns (all of them before any home is owned)', async () => {
   // Every home here is owned, so nobody signed in sees none of them...
   assert.deepEqual(await siteIds(null), []);
   for (const id of ALL) assert.equal((await call(`/api/sites/${id}/summary?period=7d`)).status, 404);
-  assert.equal(canSee(null, fr.site.id), false);
+  assert.equal(await canSee(null, fr.site.id), false);
   // ...and a home nobody owns (the .env home) is seen as before.
-  const loose = db.prepare("INSERT INTO site (name, created_at) VALUES ('nobody owns this', 0) RETURNING id").get().id;
+  const loose = (await db.prepare("INSERT INTO site (name, created_at) VALUES ('nobody owns this', 0) RETURNING id").get()).id;
   assert.deepEqual(await siteIds(null), [loose]);
   assert.equal((await call(`/api/sites/${loose}/now`)).status, 200);
   assert.equal((await call(`/api/sites/${loose}/now`, alice.id)).status, 404, 'a user sees only their own homes');
-  db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
-  db.prepare('DELETE FROM site WHERE id = ?').run(loose);
-  assert.equal(visibleSiteIds(admin), null);
+  await db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
+  await db.prepare('DELETE FROM site WHERE id = ?').run(loose);
+  assert.equal(await visibleSiteIds(admin), null);
 });
 
-test('the switch only works where USER_SWITCHER=1; elsewhere the header is refused and no user is listed', async () => {
+await test('the switch only works where USER_SWITCHER=1; elsewhere the header is refused and no user is listed', async () => {
   delete process.env.USER_SWITCHER;
   try {
     const r = await call('/api/sites', alice.id);
@@ -63,7 +63,7 @@ test('the switch only works where USER_SWITCHER=1; elsewhere the header is refus
   } finally { process.env.USER_SWITCHER = '1'; }
 });
 
-test('each user sees only their own homes in the list', async () => {
+await test('each user sees only their own homes in the list', async () => {
   assert.deepEqual(await siteIds(alice.id), [gb.site.id]);
   assert.deepEqual(await siteIds(pierre.id), [fr.site.id]);
   assert.deepEqual(await siteIds(ivan.id), [fr.site.id, nl.site.id].sort((a, b) => a - b));
@@ -71,7 +71,7 @@ test('each user sees only their own homes in the list', async () => {
   assert.deepEqual(await siteIds(admin.id), ALL);
 });
 
-test("another user's home answers 404 on every home route, the same as a home that does not exist", async () => {
+await test("another user's home answers 404 on every home route, the same as a home that does not exist", async () => {
   const routes = ['summary?period=7d', 'now', 'timeline?period=7d', 'tariffs', 'breakdown?period=7d', 'trust?period=7d', 'health', 'system', 'devices', 'insights', 'forecast'];
   for (const r of routes) {
     const own = await call(`/api/sites/${gb.site.id}/${r}`, alice.id);
@@ -87,7 +87,7 @@ test("another user's home answers 404 on every home route, the same as a home th
   assert.equal((await call(`/api/sites/${gb.site.id}/now`, admin.id)).status, 200, 'an admin sees every home');
 });
 
-test('an unknown or malformed user is refused, not shown every home', async () => {
+await test('an unknown or malformed user is refused, not shown every home', async () => {
   for (const u of ['999999', 'abc', '1; DROP TABLE site']) {
     const r = await call('/api/sites', u);
     assert.equal(r.status, 401, u);
@@ -96,7 +96,7 @@ test('an unknown or malformed user is refused, not shown every home', async () =
   assert.equal((await call(`/api/sites/${gb.site.id}/now`, '999999')).status, 401);
 });
 
-test('the user list names each user with the number of homes they see', async () => {
+await test('the user list names each user with the number of homes they see', async () => {
   const r = await call('/api/users');
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.body.map((u) => [u.name, u]));
@@ -105,9 +105,9 @@ test('the user list names each user with the number of homes they see', async ()
   assert.ok(r.body.every((u) => !('pin_hash' in u) && !('password_hash' in u)));
 });
 
-test("raw payloads: another user's home is not found; shared payloads (no home) are for everyone", async () => {
-  const mine = landRaw({ source: 'octopus_meter', siteId: gb.site.id, request: { url: 'https://example.test/a' }, body: { results: [1] } }).rawId;
-  const shared = landRaw({ source: 'tariffscanner', siteId: null, request: { url: 'https://example.test/b' }, body: { results: [2] } }).rawId;
+await test("raw payloads: another user's home is not found; shared payloads (no home) are for everyone", async () => {
+  const mine = (await landRaw({ source: 'octopus_meter', siteId: gb.site.id, request: { url: 'https://example.test/a' }, body: { results: [1] } })).rawId;
+  const shared = (await landRaw({ source: 'tariffscanner', siteId: null, request: { url: 'https://example.test/b' }, body: { results: [2] } })).rawId;
   assert.equal((await call(`/api/raw/${mine}`, alice.id)).status, 200);
   assert.equal((await call(`/api/raw/${mine}`, pierre.id)).status, 404);
   assert.equal((await call(`/api/raw/${mine}`)).status, 404, 'nobody signed in: an owned home is hidden');
@@ -116,19 +116,19 @@ test("raw payloads: another user's home is not found; shared payloads (no home) 
   assert.equal((await call(`/api/explorer/raw/${mine}`, alice.id)).status, 200);
 });
 
-test("Data Explorer: another user's home is not found, by ?site= or by a series id", async () => {
+await test("Data Explorer: another user's home is not found, by ?site= or by a series id", async () => {
   assert.equal((await call(`/api/explorer/overview?site=${gb.site.id}`, alice.id)).status, 200);
   assert.equal((await call(`/api/explorer/overview?site=${fr.site.id}`, alice.id)).status, 404);
   assert.equal((await call(`/api/explorer/series?site=${fr.site.id}`, alice.id)).status, 404);
   assert.equal((await call(`/api/explorer/overview?site=${fr.site.id}`)).status, 404, 'nobody signed in: an owned home is hidden');
-  const frSeries = db.prepare("SELECT id FROM series WHERE subject_kind = 'site' AND subject_id = ? ORDER BY id LIMIT 1").get(String(fr.site.id))
-    ?? db.prepare("SELECT id FROM series WHERE subject_kind = 'device' AND subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?) ORDER BY id LIMIT 1").get(fr.site.id);
+  const frSeries = await db.prepare("SELECT id FROM series WHERE subject_kind = 'site' AND subject_id = ? ORDER BY id LIMIT 1").get(String(fr.site.id))
+    ?? await db.prepare("SELECT id FROM series WHERE subject_kind = 'device' AND subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?) ORDER BY id LIMIT 1").get(fr.site.id);
   assert.ok(frSeries, 'the French home has a series');
   assert.equal((await call(`/api/explorer/facts?series=${frSeries.id}`, pierre.id)).status, 200);
   assert.equal((await call(`/api/explorer/facts?series=${frSeries.id}`, alice.id)).status, 404);
 });
 
-test('a home added while a user is picked is theirs, and only theirs', async () => {
+await test('a home added while a user is picked is theirs, and only theirs', async () => {
   const r = await call('/api/sites', nora.id, { method: 'POST', body: JSON.stringify({ name: 'Nora home' }) });
   assert.equal(r.status, 201);
   assert.deepEqual(await siteIds(nora.id), [r.body.id]);
@@ -137,19 +137,19 @@ test('a home added while a user is picked is theirs, and only theirs', async () 
   assert.ok(!(await siteIds(null)).includes(r.body.id), 'nobody signed in does not see it');
 });
 
-test('delta 076 is listed, runs again without change, and deleting a home drops its links', () => {
+await test('delta 076 is listed, runs again without change, and deleting a home drops its links', async () => {
   assert.ok(DELTAS.indexOf('076-users.sql') > DELTAS.indexOf('060-coverage.sql'));
-  const before = db.prepare('SELECT COUNT(*) AS n FROM user_site').get().n;
+  const before = (await db.prepare('SELECT COUNT(*) AS n FROM user_site').get()).n;
   applyDelta(fs.readFileSync(new URL('../src/db/deltas/076-users.sql', import.meta.url), 'utf8'));
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_site').get().n, before);
-  const tmp = db.prepare("INSERT INTO site (name, created_at) VALUES ('tmp', 0) RETURNING id").get().id;
-  giveHome(nora.id, tmp);
-  db.prepare('DELETE FROM binding WHERE site_id = ?').run(tmp);   // a home's bindings go with it
-  db.prepare('DELETE FROM site WHERE id = ?').run(tmp);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_site WHERE site_id = ?').get(tmp).n, 0);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM user_site').get()).n, before);
+  const tmp = (await db.prepare("INSERT INTO site (name, created_at) VALUES ('tmp', 0) RETURNING id").get()).id;
+  await giveHome(nora.id, tmp);
+  await db.prepare('DELETE FROM binding WHERE site_id = ?').run(tmp);   // a home's bindings go with it
+  await db.prepare('DELETE FROM site WHERE id = ?').run(tmp);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM user_site WHERE site_id = ?').get(tmp)).n, 0);
 });
 
-test('demo server: "+ Sign up" makes a user the dropdown picks (no cookie), who adds a home and then appears in the list', async () => {
+await test('demo server: "+ Sign up" makes a user the dropdown picks (no cookie), who adds a home and then appears in the list', async () => {
   const s = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/signup`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'dee', pin: '8402', name: 'Dee' }) });
   assert.equal(s.status, 201);
@@ -165,10 +165,10 @@ test('demo server: "+ Sign up" makes a user the dropdown picks (no cookie), who 
   assert.equal(listed.homes, 1);
 });
 
-test('demo server: the dropdown wins over a session cookie, so switching always works', async () => {
+await test('demo server: the dropdown wins over a session cookie, so switching always works', async () => {
   const { startSession } = await import('../src/core/users.js');
-  const cookie = `eb_session=${startSession(alice.id)}`;
-  const get = (user) => fetch(`http://127.0.0.1:${server.address().port}/api/sites`, { headers: { cookie, ...(user ? { 'x-user-id': String(user) } : {}) } }).then((r) => r.json());
+  const cookie = `eb_session=${await startSession(alice.id)}`;
+  const get = async (user) => await fetch(`http://127.0.0.1:${server.address().port}/api/sites`, { headers: { cookie, ...(user ? { 'x-user-id': String(user) } : {}) } }).then(async (r) => await r.json());
   assert.deepEqual((await get(pierre.id)).map((x) => x.id), [fr.site.id]);
   assert.deepEqual((await get(null)).map((x) => x.id), [gb.site.id], 'no dropdown pick: the cookie');
 });

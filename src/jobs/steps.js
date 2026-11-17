@@ -32,16 +32,16 @@ export const INITIAL_DAYS = Math.min(Number(env.INITIAL_DAYS) || 14, 60);
 // After an outage of the server or the provider, it reaches back to that provider's last
 // successful sync, less `overlapDays` for data that arrives late or is revised, so the gap
 // is filled on the next good sync. Never further back than `maxDays`, what the provider keeps.
-export function resumeDate(siteId, provider, tz, today, normalDate, overlapDays, maxDays) {
-  const last = db.prepare('SELECT last_success_at FROM connection WHERE site_id = ? AND provider = ?').get(siteId, provider)?.last_success_at;
+export async function resumeDate(siteId, provider, tz, today, normalDate, overlapDays, maxDays) {
+  const last = (await db.prepare('SELECT last_success_at FROM connection WHERE site_id = ? AND provider = ?').get(siteId, provider))?.last_success_at;
   let d = normalDate;
   if (last != null) { const r = addDays(localDate(tz, last), -overlapDays); if (r < d) d = r; }
   const floor = addDays(today, -maxDays);
   return d < floor ? floor : d;
 }
 const daysAgo = (today, date) => daysBetween(date, today).length - 1;
-const reread = (ctx) => { ctx.site = db.prepare('SELECT * FROM site WHERE id = ?').get(ctx.siteId); };
-const lastSuccess = (siteId, provider) => db.prepare('SELECT last_success_at FROM connection WHERE site_id = ? AND provider = ?').get(siteId, provider)?.last_success_at;
+const reread = async (ctx) => { ctx.site = await db.prepare('SELECT * FROM site WHERE id = ?').get(ctx.siteId); };
+const lastSuccess = async (siteId, provider) => (await db.prepare('SELECT last_success_at FROM connection WHERE site_id = ? AND provider = ?').get(siteId, provider))?.last_success_at;
 
 // A tariff's public prices are the same for every home on it: within one cycle a window already
 // fetched for another home is not fetched again (the rates are in rate_interval, shared). The look-
@@ -67,7 +67,7 @@ export async function tariffRates(ctx, tariff, fromTs, toTs) {
 registerAdapter('sunsynk', {
   connection: 'sunsynk',
   // The home's stored login (src/core/secrets.js) when it has one, else .env for the .env home.
-  credentials: (site) => siteCredentials(site, 'sunsynk', { username: 'SUNSYNK_USERNAME', password: 'SUNSYNK_PASSWORD' }, { plantId: 'SUNSYNK_PLANT_ID' }),
+  credentials: async (site) => await siteCredentials(site, 'sunsynk', { username: 'SUNSYNK_USERNAME', password: 'SUNSYNK_PASSWORD' }, { plantId: 'SUNSYNK_PLANT_ID' }),
   externalRef: (c) => c.plantId ?? null,
   publicFields: ['plantId'],
   roles: {
@@ -76,11 +76,11 @@ registerAdapter('sunsynk', {
       step: 'sunsynk', order: 10, connection: 'sunsynk',
       // The 5-minute history is kept upstream for 90 days only. An inverter connected after the home
       // was first built (a home added from its postcode, then connected) still needs the full initial window.
-      prepare: (ctx) => ({ dates: daysBetween(ctx.firstRun || !lastSuccess(ctx.siteId, 'sunsynk') ? addDays(ctx.today, -Math.min(INITIAL_DAYS, 89)) : resumeDate(ctx.siteId, 'sunsynk', ctx.tz, ctx.today, addDays(ctx.today, -1), 1, 89), ctx.today) }),
-      run: (ctx, a, creds) => syncSunsynk(ctx.site, creds, a.dates),
-      after: (ctx) => {
-        try { measureBatteryCapacity(ctx.siteId); } catch (err) { console.error('battery capacity:', err.message); }
-        reread(ctx);
+      prepare: async (ctx) => ({ dates: daysBetween(ctx.firstRun || !await lastSuccess(ctx.siteId, 'sunsynk') ? addDays(ctx.today, -Math.min(INITIAL_DAYS, 89)) : await resumeDate(ctx.siteId, 'sunsynk', ctx.tz, ctx.today, addDays(ctx.today, -1), 1, 89), ctx.today) }),
+      run: async (ctx, a, creds) => await syncSunsynk(ctx.site, creds, a.dates),
+      after: async (ctx) => {
+        try { await measureBatteryCapacity(ctx.siteId); } catch (err) { console.error('battery capacity:', err.message); }
+        await reread(ctx);
       },
     }],
   },
@@ -103,14 +103,14 @@ registerAdapter('open_meteo', {
   roles: {
     weather: [{
       step: 'weather', order: 30, connection: 'weather', shareResponses: true,
-      prepare: (ctx) => {
+      prepare: async (ctx) => {
         // Sunlight history must cover the forecast's 14-day learning window; fetch it all until it does.
-        const ghiFrom = db.prepare(`SELECT MIN(f.start_ts) AS t FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
-          WHERE se.subject_kind = 'site' AND se.subject_id = ? AND m.code = 'ghi_wm2'`).get(String(ctx.siteId))?.t;
+        const ghiFrom = (await db.prepare(`SELECT MIN(f.start_ts) AS t FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
+          WHERE se.subject_kind = 'site' AND se.subject_id = ? AND m.code = 'ghi_wm2'`).get(String(ctx.siteId)))?.t;
         const sunShort = !ghiFrom || ghiFrom > nowSec() - INITIAL_DAYS * 86400;
-        return { days: ctx.firstRun || sunShort ? INITIAL_DAYS + 1 : Math.max(3, daysAgo(ctx.today, resumeDate(ctx.siteId, 'weather', ctx.tz, ctx.today, ctx.today, 1, 92)) + 1) };
+        return { days: ctx.firstRun || sunShort ? INITIAL_DAYS + 1 : Math.max(3, daysAgo(ctx.today, await resumeDate(ctx.siteId, 'weather', ctx.tz, ctx.today, ctx.today, 1, 92)) + 1) };
       },
-      run: (ctx, a) => syncWeather(ctx.site, a.days),
+      run: async (ctx, a) => await syncWeather(ctx.site, a.days),
     }],
   },
 });
@@ -121,9 +121,9 @@ registerAdapter('neso', {
   roles: {
     carbon: [{
       step: 'carbon', order: 40, connection: 'carbon',
-      prepare: (ctx) => ({ from: dayBounds(ctx.tz, resumeDate(ctx.siteId, 'carbon', ctx.tz, ctx.today, ctx.fromDate, 1, 60))[0] }),
+      prepare: async (ctx) => ({ from: dayBounds(ctx.tz, await resumeDate(ctx.siteId, 'carbon', ctx.tz, ctx.today, ctx.fromDate, 1, 60))[0] }),
       share: (ctx, a) => (ctx.site.carbon_region != null && ctx.site.outcode ? { key: `carbon:${ctx.site.carbon_region}`, from: a.from } : null),
-      run: (ctx, a) => syncCarbon(ctx.site, a.from, nowSec()),
+      run: async (ctx, a) => await syncCarbon(ctx.site, a.from, nowSec()),
     }],
   },
 });
@@ -135,9 +135,9 @@ registerAdapter('rte', {
   roles: {
     carbon: [{
       step: 'carbon', order: 40, connection: 'carbon',
-      prepare: (ctx) => ({ from: dayBounds(ctx.tz, resumeDate(ctx.siteId, 'carbon', ctx.tz, ctx.today, ctx.fromDate, 1, 60))[0] }),
+      prepare: async (ctx) => ({ from: dayBounds(ctx.tz, await resumeDate(ctx.siteId, 'carbon', ctx.tz, ctx.today, ctx.fromDate, 1, 60))[0] }),
       share: (ctx, a) => ({ key: RTE_REGION, from: a.from }),
-      run: (ctx, a) => syncRteCarbon(ctx.site, a.from, nowSec()),
+      run: async (ctx, a) => await syncRteCarbon(ctx.site, a.from, nowSec()),
     }],
   },
 });
@@ -149,24 +149,24 @@ registerAdapter('rte', {
 // As soon as the account syncs, its own meters and agreements replace these.
 async function syncEnvTariffs(ctx) {
   const { site, fromTs } = ctx;
-  if (db.prepare("SELECT 1 FROM device WHERE site_id = ? AND provider = 'octopus' AND retired_at IS NULL").get(site.id)) {
+  if (await db.prepare("SELECT 1 FROM device WHERE site_id = ? AND provider = 'octopus' AND retired_at IS NULL").get(site.id)) {
     // Retired, not deleted: the .env tariffs still priced the half-hours before the account was read.
-    for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'env' AND retired_at IS NULL").all(site.id)) { retireDevice(d.id); supersedeAgreements(site.id, d.id, []); }
+    for (const d of await db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'env' AND retired_at IS NULL").all(site.id)) { await retireDevice(d.id); await supersedeAgreements(site.id, d.id, []); }
     // A tariff the user picked from a list (src/core/tariff-picker.js) ends where the account's agreements begin.
-    const picked = retirePickedMeters(site.id);
+    const picked = await retirePickedMeters(site.id);
     return { skipped: 'using Octopus account agreements', ...(picked ? { picked_meters_retired: picked } : {}) };
   }
   let rates = 0;
   const used = [];
   for (const [kind, code, direction] of [['meter_import', env.IMPORT_TARIFF_CODE, 'import'], ['meter_export', env.EXPORT_TARIFF_CODE, 'export']]) {
     if (!code) continue;
-    db.prepare(`INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'env', ?, ?, '{}', ?)
+    await db.prepare(`INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'env', ?, ?, '{}', ?)
                 ON CONFLICT(site_id, provider, external_ref) DO UPDATE SET retired_at = NULL`).run(site.id, kind, kind, `${direction === 'import' ? 'Import' : 'Export'} tariff (.env)`, Date.now());
-    const dev = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'env' AND external_ref = ?").get(site.id, kind);
-    const tariff = upsertTariff({ tariffCode: code, direction });
-    const current = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').get(dev.id);
+    const dev = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'env' AND external_ref = ?").get(site.id, kind);
+    const tariff = await upsertTariff({ tariffCode: code, direction });
+    const current = await db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').get(dev.id);
     if (!current || current.tariff_id !== tariff.id || current.valid_from > fromTs) {
-      supersedeAgreements(site.id, dev.id, [{ tariffId: tariff.id, from: Math.min(fromTs, current?.valid_from ?? fromTs), to: null }]);
+      await supersedeAgreements(site.id, dev.id, [{ tariffId: tariff.id, from: Math.min(fromTs, current?.valid_from ?? fromTs), to: null }]);
     }
     rates += await tariffRates(ctx, tariff, fromTs - 86400, nowSec() + 2 * 86400);
     used.push(code);
@@ -180,31 +180,31 @@ async function syncOctopusMeters(ctx, a, creds) {
   const meters = await syncOctopusAccount(site, creds);
   ctx.agreementsChanged = !!meters.agreementsChanged;
   // The account now prices the home: a tariff the user picked from a list ends where the account's begin.
-  if (retirePickedMeters(siteId)) ctx.agreementsChanged = true;
+  if (await retirePickedMeters(siteId)) ctx.agreementsChanged = true;
   // Gas units straight from Octopus; if they changed, re-read the whole gas history.
   let gasUnits = null;
   try { gasUnits = await syncGasUnits(site, creds); } catch (err) { gasUnits = { error: err.message }; }
   // Meter data arrives about a day late and can be revised, so always look back a few days.
-  const meterFrom = octoFirst ? octoFrom : dayBounds(tz, resumeDate(siteId, 'octopus', tz, today, addDays(today, -4), 4, 365))[0];
+  const meterFrom = octoFirst ? octoFrom : dayBounds(tz, await resumeDate(siteId, 'octopus', tz, today, addDays(today, -4), 4, 365))[0];
   // Re-read the whole gas history when the unit changed, or when m3 readings are not stored yet.
-  const noGasM3 = !db.prepare(`SELECT 1 FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
+  const noGasM3 = !await db.prepare(`SELECT 1 FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
     JOIN device d ON se.subject_kind = 'device' AND se.subject_id = CAST(d.id AS TEXT) WHERE d.site_id = ? AND m.code = 'gas_m3' LIMIT 1`).get(siteId);
   const gasFrom = gasUnits?.changed || noGasM3 ? dayBounds(tz, addDays(today, -INITIAL_DAYS))[0] : undefined;
   const consumption = await syncOctopusConsumption(site, creds, meterFrom, nowSec(), { gasFrom });
   // Only tariffs in force somewhere in the window; the account history goes back years.
-  const tariffs = db.prepare(`SELECT DISTINCT t.* FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
+  const tariffs = await db.prepare(`SELECT DISTINCT t.* FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
                               WHERE a.site_id = ? AND a.superseded_at IS NULL AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
   let rates = 0;
   for (const t of tariffs) rates += await tariffRates(ctx, t, octoFrom - 86400, nowSec() + 2 * 86400);
   // Intelligent Octopus Go tariffs that publish day/night prices give no times. The window
   // is learned from Octopus's time-stamped prices of the home's earlier IOG tariffs, so fetch
   // the last two weeks of those when no such prices are held yet.
-  if (tariffs.some((t) => t.structure === 'iog') && !learnIogWindow(site.gsp_region, tz)) {
-    const earlier = db.prepare(`SELECT DISTINCT t.*, a.valid_to AS ended FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
+  if (tariffs.some((t) => t.structure === 'iog') && !await learnIogWindow(site.gsp_region, tz)) {
+    const earlier = await db.prepare(`SELECT DISTINCT t.*, a.valid_to AS ended FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
       WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.structure = 'iog' AND a.valid_to IS NOT NULL ORDER BY a.valid_to DESC`).all(siteId);
     for (const t of earlier) {
       rates += await tariffRates(ctx, t, t.ended - 14 * 86400, t.ended);
-      if (learnIogWindow(site.gsp_region, tz)) break;
+      if (await learnIogWindow(site.gsp_region, tz)) break;
     }
   }
   let kraken = null;
@@ -214,7 +214,7 @@ async function syncOctopusMeters(ctx, a, creds) {
 
 registerAdapter('octopus', {
   connection: 'octopus',
-  credentials: (site) => siteCredentials(site, 'octopus', { apiKey: 'OCTOPUS_API_KEY', accountNumber: 'OCTOPUS_ACCOUNT_NUMBER' }),
+  credentials: async (site) => await siteCredentials(site, 'octopus', { apiKey: 'OCTOPUS_API_KEY', accountNumber: 'OCTOPUS_ACCOUNT_NUMBER' }),
   externalRef: (c) => c.accountNumber ?? null,
   publicFields: ['accountNumber'],
   roles: {
@@ -224,23 +224,23 @@ registerAdapter('octopus', {
         step: 'octopus', order: 5, connection: 'octopus', when: (p) => !p.site.postcode,
         run: async (ctx, a, creds) => {
           await syncOctopusAccount(ctx.site, creds);
-          reread(ctx);
+          await reread(ctx);
           return { postcodeFromAccount: !!ctx.site.postcode };
         },
       },
       {
         step: 'octopus', order: 50, connection: 'octopus',
-        prepare: (ctx) => {
+        prepare: async (ctx) => {
           // A provider connected after the home was first built still needs the full initial window.
-          const octoFirst = ctx.firstRun || !lastSuccess(ctx.siteId, 'octopus');
-          const octoFrom = octoFirst ? dayBounds(ctx.tz, addDays(ctx.today, -INITIAL_DAYS))[0] : dayBounds(ctx.tz, resumeDate(ctx.siteId, 'octopus', ctx.tz, ctx.today, ctx.fromDate, 1, 365))[0];
+          const octoFirst = ctx.firstRun || !await lastSuccess(ctx.siteId, 'octopus');
+          const octoFrom = octoFirst ? dayBounds(ctx.tz, addDays(ctx.today, -INITIAL_DAYS))[0] : dayBounds(ctx.tz, await resumeDate(ctx.siteId, 'octopus', ctx.tz, ctx.today, ctx.fromDate, 1, 365))[0];
           return { octoFirst, octoFrom };
         },
         run: syncOctopusMeters,
       },
     ],
     tariff_prices: {
-      steps: [{ step: 'tariff', order: 70, connection: 'tariff', when: (p) => p.conns.has('tariff'), run: (ctx) => syncEnvTariffs(ctx) }],
+      steps: [{ step: 'tariff', order: 70, connection: 'tariff', when: (p) => p.conns.has('tariff'), run: async (ctx) => await syncEnvTariffs(ctx) }],
       via: ['octopus'],
       idle: 'priced in the meter step from the home\'s Octopus account, or from tariff codes in .env',
     },
@@ -250,7 +250,7 @@ registerAdapter('octopus', {
 
 // ───────────── Gas calorific value: National Gas (GB), one series per zone ─────────────
 
-const gasZone = (siteId) => db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId)
+const gasZone = async (siteId) => (await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId))
   .map((d) => JSON.parse(d.attrs || '{}')).find((a) => a.gasUnit?.unit === 'm3' && a.ldz)?.ldz ?? null;
 
 registerAdapter('national_gas', {
@@ -259,13 +259,13 @@ registerAdapter('national_gas', {
       steps: [{
         // Daily calorific value for the gas meter's zone, to convert m3 to kWh.
         step: 'gas_cv', order: 60, connection: 'gas_cv', ensure: true,
-        applies: (ctx) => !!db.prepare("SELECT 1 FROM device WHERE site_id = ? AND kind = 'meter_gas'").get(ctx.siteId),
-        prepare: (ctx) => ({
-          from: !lastSuccess(ctx.siteId, 'gas_cv') ? dayBounds(ctx.tz, addDays(ctx.today, -INITIAL_DAYS))[0]
-            : dayBounds(ctx.tz, resumeDate(ctx.siteId, 'gas_cv', ctx.tz, ctx.today, ctx.fromDate, 2, 365))[0] - 86400,
+        applies: async (ctx) => !!await db.prepare("SELECT 1 FROM device WHERE site_id = ? AND kind = 'meter_gas'").get(ctx.siteId),
+        prepare: async (ctx) => ({
+          from: !await lastSuccess(ctx.siteId, 'gas_cv') ? dayBounds(ctx.tz, addDays(ctx.today, -INITIAL_DAYS))[0]
+            : dayBounds(ctx.tz, await resumeDate(ctx.siteId, 'gas_cv', ctx.tz, ctx.today, ctx.fromDate, 2, 365))[0] - 86400,
         }),
-        share: (ctx, a) => { const ldz = gasZone(ctx.siteId); return ldz ? { key: `gas_cv:${ldz}`, from: a.from } : null; },
-        run: (ctx, a) => syncGasCv(ctx.site, a.from, nowSec()),
+        share: async (ctx, a) => { const ldz = await gasZone(ctx.siteId); return ldz ? { key: `gas_cv:${ldz}`, from: a.from } : null; },
+        run: async (ctx, a) => await syncGasCv(ctx.site, a.from, nowSec()),
       }],
       idle: 'runs once the home has a gas meter',
     },
@@ -289,13 +289,13 @@ registerAdapter('tariffscanner', {
     tariff_catalogue: {
       steps: [{
         step: 'tariffscanner', order: 75, connection: 'tariffscanner', ensure: true,
-        applies: (ctx) => !ctx.cycle.shared.has(TARIFFSCANNER_KEY) && sweepDue(),
-        run: (ctx, a, creds) => {
+        applies: async (ctx) => !ctx.cycle.shared.has(TARIFFSCANNER_KEY) && await sweepDue(),
+        run: async (ctx, a, creds) => {
           ctx.cycle.shared.set(TARIFFSCANNER_KEY, { siteId: ctx.siteId, from: Infinity, startedMs: Date.now() });
-          return sweepCatalogue({ client: clientFor(creds) });
+          return await sweepCatalogue({ client: await clientFor(creds) });
         },
       }],
-      status: () => sweepStatus(),
+      status: async () => await sweepStatus(),
     },
   },
 });
@@ -321,26 +321,26 @@ registerAdapter('tounify', {
     tariff_prices: {
       steps: [{
         step: 'tounify', order: 70, connection: 'tounify',
-        applies: (ctx) => TU.priceReadDue(ctx.siteId).due,
+        applies: async (ctx) => (await TU.priceReadDue(ctx.siteId)).due,
         run: async (ctx, a, creds) => {
-          const r = await TU.syncTounifyHome({ site: ctx.site, client: TU.clientFor(creds), dev: creds?.dev ?? null });
+          const r = await TU.syncTounifyHome({ site: ctx.site, client: await TU.clientFor(creds), dev: creds?.dev ?? null });
           if (r.agreements_changed) ctx.agreementsChanged = true;
           if (r.failed) throw new Error(r.error);   // soft: the step fails, the sync goes on
           return r;
         },
       }],
-      status: (d, site) => TU.homeStatus(site),
+      status: async (d, site) => await TU.homeStatus(site),
     },
     tariff_catalogue: {
       steps: [{
         step: 'tounify_catalogue', order: 75, connection: null,
-        applies: (ctx) => !ctx.cycle.shared.has(tounifyCatalogueKey(ctx)) && TU.catalogueDue(ctx.site.market_code ?? ctx.site.country),
-        run: (ctx, a, creds) => {
+        applies: async (ctx) => !ctx.cycle.shared.has(tounifyCatalogueKey(ctx)) && await TU.catalogueDue(ctx.site.market_code ?? ctx.site.country),
+        run: async (ctx, a, creds) => {
           ctx.cycle.shared.set(tounifyCatalogueKey(ctx), { siteId: ctx.siteId, from: Infinity, startedMs: Date.now() });
-          return TU.refreshCatalogue({ country: ctx.site.market_code ?? ctx.site.country, client: TU.clientFor(creds) });
+          return await TU.refreshCatalogue({ country: ctx.site.market_code ?? ctx.site.country, client: await TU.clientFor(creds) });
         },
       }],
-      status: (d, site) => TU.catalogueStatus(site.market_code ?? site.country),
+      status: async (d, site) => await TU.catalogueStatus(site.market_code ?? site.country),
     },
   },
 });
@@ -351,17 +351,17 @@ registerAdapter('compare', {
   roles: {
     compare: [{
       step: 'compare', order: 80, connection: 'compare', ensure: true,
-      prepare: (ctx) => {
-        const cmpFirst = !lastSuccess(ctx.siteId, 'compare');
-        const cmpFrom = cmpFirst ? dayBounds(ctx.tz, addDays(ctx.today, -Math.max(INITIAL_DAYS, 30)))[0] : dayBounds(ctx.tz, resumeDate(ctx.siteId, 'compare', ctx.tz, ctx.today, ctx.fromDate, 1, 365))[0];
+      prepare: async (ctx) => {
+        const cmpFirst = !await lastSuccess(ctx.siteId, 'compare');
+        const cmpFrom = cmpFirst ? dayBounds(ctx.tz, addDays(ctx.today, -Math.max(INITIAL_DAYS, 30)))[0] : dayBounds(ctx.tz, await resumeDate(ctx.siteId, 'compare', ctx.tz, ctx.today, ctx.fromDate, 1, 365))[0];
         return { from: cmpFrom - 86400 };
       },
       // One set of reference tariffs per region: a later home in the region takes the product
       // codes the first one found (connection meta) and the prices already stored.
-      share: (ctx, a) => { const region = octopusRegion(ctx.site); return region ? { key: `compare:${ctx.site.market_code ?? 'GB'}:${region}`, from: a.from } : null; },
-      onShared: (ctx, hit) => db.prepare(`UPDATE connection SET meta = (SELECT meta FROM connection WHERE site_id = ? AND provider = 'compare')
+      share: async (ctx, a) => { const region = await octopusRegion(ctx.site); return region ? { key: `compare:${ctx.site.market_code ?? 'GB'}:${region}`, from: a.from } : null; },
+      onShared: async (ctx, hit) => await db.prepare(`UPDATE connection SET meta = (SELECT meta FROM connection WHERE site_id = ? AND provider = 'compare')
         WHERE site_id = ? AND provider = 'compare'`).run(hit.siteId, ctx.siteId),
-      run: (ctx, a) => syncComparison(ctx.site, a.from, nowSec() + 2 * 86400),
+      run: async (ctx, a) => await syncComparison(ctx.site, a.from, nowSec() + 2 * 86400),
     }],
   },
 });
@@ -370,7 +370,7 @@ registerAdapter('compare', {
 
 registerAdapter('quartz', {
   roles: {
-    solar_forecast: [{ step: 'solar_forecast', order: 90, connection: 'solar_forecast', shareResponses: true, run: (ctx) => syncQuartz(ctx.site) }],
+    solar_forecast: [{ step: 'solar_forecast', order: 90, connection: 'solar_forecast', shareResponses: true, run: async (ctx) => await syncQuartz(ctx.site) }],
   },
 });
 

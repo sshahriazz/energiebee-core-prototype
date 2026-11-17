@@ -36,6 +36,7 @@ import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { buildHeat, hasHeatingSeries } from './heat.js';
+import { reduceAsync, flatMapAsync, mapAsync } from "./async.js";
 
 export const METHOD_VERSION = 'v3-stock-follows-charge';
 
@@ -110,8 +111,8 @@ const slotSum = (intervals, slot, slotS) => slotAgg(intervals, slot, slotS, 'sum
 // one of its two half-hours read is not measured); otherwise null, so the clamp fills in.
 const meterSum = (intervals, slot, slotS, shape = null) => { const r = slotAgg(intervals, slot, slotS, 'sum', shape); return r.cover >= slotS ? r.value : null; };
 
-export function buildSite(siteId, fromDate, toDate, opts = {}) {
-  return opts.asOf != null ? withKnownAt(opts.asOf * 1000, () => build(siteId, fromDate, toDate, opts)) : build(siteId, fromDate, toDate, opts);
+export async function buildSite(siteId, fromDate, toDate, opts = {}) {
+  return opts.asOf != null ? withKnownAt(opts.asOf * 1000, async () => await build(siteId, fromDate, toDate, opts)) : await build(siteId, fromDate, toDate, opts);
 }
 
 // Counter-fit check codes, one per inverter daily counter.
@@ -144,11 +145,11 @@ export function dayChanges(before, beforeChecks, after, afterChecks) {
   return changed;
 }
 
-function build(siteId, fromDate, toDate, opts) {
+async function build(siteId, fromDate, toDate, opts) {
   // As known at asOf: the home's zone, slot length, currency, sizes ... as they stood then
   // (site_version, H5). { currentSettings: true } keeps today's settings (a what-if on old facts).
   const versioned = opts.asOf != null && !opts.currentSettings;
-  const site = versioned ? siteAt(siteId, opts.asOf * 1000) : db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+  const site = versioned ? await siteAt(siteId, opts.asOf * 1000) : await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
   const tz = site.timezone;
   // The home's slot grid: its length, and where local midnight sits on it (0 for whole-hour zones).
@@ -156,9 +157,9 @@ function build(siteId, fromDate, toDate, opts) {
   const asOf = opts.asOf ?? null;
   const now = asOf ?? nowSec();
   // Battery size as known then; before details were versioned, only today's value exists.
-  const battAttr = asOf != null ? attributeAt(siteId, 'battery_kwh', asOf * 1000) : null;
+  const battAttr = asOf != null ? await attributeAt(siteId, 'battery_kwh', asOf * 1000) : null;
   const batteryKwh = asOf != null ? (battAttr?.value ?? site.battery_kwh) : site.battery_kwh;
-  const batterySource = asOf != null ? (battAttr ? battAttr.source : 'current value (no earlier record)') : (attributeAt(siteId, 'battery_kwh')?.source ?? null);
+  const batterySource = asOf != null ? (battAttr ? battAttr.source : 'current value (no earlier record)') : ((await attributeAt(siteId, 'battery_kwh'))?.source ?? null);
   const today = localDate(tz, now);
   if (toDate > today) toDate = today;
   if (fromDate > toDate) return { days: 0 };
@@ -166,7 +167,7 @@ function build(siteId, fromDate, toDate, opts) {
   const [, winEnd] = dayBounds(tz, toDate);
   const phase = ((winStart % slotS) + slotS) % slotS;
   const fl = (t) => slotFloor(t, slotS, phase);
-  const sid = (metric, source) => seriesId('site', siteId, metric, source);
+  const sid = async (metric, source) => await seriesId('site', siteId, metric, source);
   // The calculation trace of one slot (opts.trace), or null: every `if (T…)` line below is then skipped.
   const T = opts.trace && Number.isFinite(opts.trace.slot) ? opts.trace : null;
   if (T) Object.assign(T, { slotS, tz, phase, now, asOf, winStart, winEnd, batteryKwh, batterySource, forecastSource: new Map() });
@@ -176,13 +177,13 @@ function build(siteId, fromDate, toDate, opts) {
   // device, for a period. Units that follow one another take turns; units that overlap in time are two
   // devices (two inverters, two batteries) and their figures are added. Each unit is integrated on its own
   // (its own samples and hold), then summed per slot, so interleaved samples never cut each other's hold.
-  const bound5 = bindingsFor(siteId, 'inverter_5min', asOf);
-  const boundDaily = bindingsFor(siteId, 'inverter_daily', asOf);
+  const bound5 = await bindingsFor(siteId, 'inverter_5min', asOf);
+  const boundDaily = await bindingsFor(siteId, 'inverter_daily', asOf);
   const powerIds = Object.fromEntries(Object.keys(NODES).map((k) => [k, `power:${k}`]));
   const dailyIds = Object.fromEntries(Object.keys(NODES).map((k) => [k, `daily:${k}`]));
   const socId = 'soc';
-  const unitSeries = (bd, metric) => (bd.deviceId == null ? sid(metric, bd.source) : seriesId('device', bd.deviceId, metric, bd.source));
-  const unitRows = (bd, metric) => { const hold = holdSOf(bd.source); return readReadings([unitSeries(bd, metric)], Math.max(winStart - 600, bd.from), Math.min(winEnd, bd.to)).map((r) => ({ ...r, hold })); };
+  const unitSeries = async (bd, metric) => (bd.deviceId == null ? await sid(metric, bd.source) : await seriesId('device', bd.deviceId, metric, bd.source));
+  const unitRows = async (bd, metric) => { const hold = await holdSOf(bd.source); return (await readReadings([await unitSeries(bd, metric)], Math.max(winStart - 600, bd.from), Math.min(winEnd, bd.to))).map((r) => ({ ...r, hold })); };
   const unitsAt = (units, t) => units.filter((bd) => t >= bd.from && t < bd.to);
   // Sum the units' slot energies; a slot is covered as far as its least covered active unit is.
   const sumUnits = (parts) => {
@@ -195,12 +196,12 @@ function build(siteId, fromDate, toDate, opts) {
     }
     return { energy, cover };
   };
-  const nodeRows = Object.fromEntries(Object.entries(NODES).map(([k, [w]]) => [k, bound5.map((bd) => ({ bd, rows: unitRows(bd, w) }))]));
+  const nodeRows = Object.fromEntries(await mapAsync(Object.entries(NODES), async ([k, [w]]) => [k, await mapAsync(bound5, async (bd) => ({ bd, rows: await unitRows(bd, w) }))]));
   const aligned = Object.fromEntries(Object.keys(NODES).map((k) => [k, sumUnits(nodeRows[k].map(({ bd, rows }) => ({ bd, it: integrate(rows, slotS, fl) })))]));
   // Charge level: one unit as it is; several batteries at once as the average weighted by each one's size
   // (device attribute battery_kwh, else the home's); a timestamp where a size or a reading is missing is left out.
-  const capOf = (bd) => { if (bd.deviceId == null) return batteryKwh ?? null; try { return JSON.parse(db.prepare('SELECT attrs FROM device WHERE id = ?').get(bd.deviceId)?.attrs || '{}').battery_kwh ?? null; } catch { return null; } };
-  const socUnits = bound5.map((bd) => ({ bd, cap: capOf(bd), byTs: new Map(unitRows(bd, 'battery_soc_pct').map((r) => [r.ts, r])) }));
+  const capOf = async (bd) => { if (bd.deviceId == null) return batteryKwh ?? null; try { return JSON.parse((await db.prepare('SELECT attrs FROM device WHERE id = ?').get(bd.deviceId))?.attrs || '{}').battery_kwh ?? null; } catch { return null; } };
+  const socUnits = await mapAsync(bound5, async (bd) => ({ bd, cap: await capOf(bd), byTs: new Map((await unitRows(bd, 'battery_soc_pct')).map((r) => [r.ts, r])) }));
   const socRows = (() => {
     if (socUnits.length === 1) return [...socUnits[0].byTs.values()];
     const out = [];
@@ -219,8 +220,8 @@ function build(siteId, fromDate, toDate, opts) {
   const socBySlot = new Map(socRows.map((r) => [fl(r.ts), r.value]));
   // The inverters' daily totals, one list per unit; a day's total is the sum over the units active that day, and
   // unknown when any of them has no total for it.
-  const dailyUnits = Object.fromEntries(Object.entries(NODES).map(([k, [, kwh]]) => [k, boundDaily.map((bd) => ({ bd,
-    rows: readIntervals([unitSeries(bd, kwh)], Math.max(winStart, bd.from), Math.min(winEnd, bd.to)).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to) }))]));
+  const dailyUnits = Object.fromEntries(await mapAsync(Object.entries(NODES), async ([k, [, kwh]]) => [k, await mapAsync(boundDaily, async (bd) => ({ bd,
+                            rows: (await readIntervals([await unitSeries(bd, kwh)], Math.max(winStart, bd.from), Math.min(winEnd, bd.to))).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to) }))]));
   const dailyTotal = (k, dayStart) => {
     const act = dailyUnits[k].filter(({ bd }) => dayStart >= bd.from && dayStart < bd.to);
     const hit = act.map(({ rows }) => rows.find((f) => f.start_ts === dayStart));
@@ -233,7 +234,7 @@ function build(siteId, fromDate, toDate, opts) {
   // Tariff-only meters carry a tariff but no readings: the .env tariff codes ('env'), a tariff the user picked from a
   // list ('picker', src/core/tariff-picker.js) and a tounify connection's ('tounify'). They price the home; they are never
   // waited for as meter data (else every day would stay provisional for readings that never come).
-  const meters = devicesAt(siteId, "kind IN ('meter_import','meter_export','meter_gas') AND provider NOT IN ('env', 'picker', 'tounify')", asOf != null ? asOf * 1000 : null);
+  const meters = await devicesAt(siteId, "kind IN ('meter_import','meter_export','meter_gas') AND provider NOT IN ('env', 'picker', 'tounify')", asOf != null ? asOf * 1000 : null);
   // Inputs read as they are now because no earlier version was kept (as-of rebuilds only).
   const approximations = [];
   for (const m of meters) if (m.approximateAttrs) approximations.push(`${m.kind} details as first recorded at ${new Date(m.approximateAttrs).toISOString()}`);
@@ -241,13 +242,13 @@ function build(siteId, fromDate, toDate, opts) {
   if (versioned && site.approximateSettings != null) approximations.push(`home settings as first recorded at ${new Date(site.approximateSettings).toISOString()}`);
   // Every other input is a role too (inputs.js): the sources bound to it, each for the period it applies.
   // Facts of all of them are merged by time; a home without a source for a role has no such input.
-  const meterBound = bindingsFor(siteId, 'meter_energy', asOf);
-  const cvBound = bindingsFor(siteId, 'gas_cv', asOf);
-  const carbonBound = bindingsFor(siteId, 'carbon', asOf);
-  const weatherBound = bindingsFor(siteId, 'weather_temp', asOf);
-  const evBound = bindingsFor(siteId, 'ev_dispatch', asOf);
-  const forecastBound = bindingsFor(siteId, 'solar_forecast', asOf);
-  const intervalsFrom = (bound, series, lo, hi) => bound.flatMap((bd) => readIntervals([series(bd.source)], Math.max(lo, bd.from), Math.min(hi, bd.to)).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to)).sort((a, b) => a.start_ts - b.start_ts);
+  const meterBound = await bindingsFor(siteId, 'meter_energy', asOf);
+  const cvBound = await bindingsFor(siteId, 'gas_cv', asOf);
+  const carbonBound = await bindingsFor(siteId, 'carbon', asOf);
+  const weatherBound = await bindingsFor(siteId, 'weather_temp', asOf);
+  const evBound = await bindingsFor(siteId, 'ev_dispatch', asOf);
+  const forecastBound = await bindingsFor(siteId, 'solar_forecast', asOf);
+  const intervalsFrom = async (bound, series, lo, hi) => (await flatMapAsync(bound, async (bd) => (await readIntervals([series(bd.source)], Math.max(lo, bd.from), Math.min(hi, bd.to))).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to))).sort((a, b) => a.start_ts - b.start_ts);
   const meterSource = (slot) => sourceAt(meterBound, slot) ?? meterBound[0]?.source ?? null;
   const meterFacts = {};
   // Gas in m3 is converted per gas day with National Gas's calorific value for the meter's zone:
@@ -258,15 +259,15 @@ function build(siteId, fromDate, toDate, opts) {
     if (m.kind === 'meter_gas') {
       const attrs = JSON.parse(m.attrs || '{}');
       if (attrs.gasUnit?.unit === 'm3') {
-        gasM3 = intervalsFrom(meterBound, (src) => seriesId('device', m.id, 'gas_m3', src), winStart, winEnd);
+        gasM3 = await intervalsFrom(meterBound, async (src) => await seriesId('device', m.id, 'gas_m3', src), winStart, winEnd);
         gasLdz = attrs.ldz || null;
-        gasCv = gasLdz ? intervalsFrom(cvBound, (src) => seriesId('region', `ldz:${gasLdz}`, 'gas_cv_mjm3', src), winStart - 86400, winEnd + 86400) : [];
+        gasCv = gasLdz ? await intervalsFrom(cvBound, async (src) => await seriesId('region', `ldz:${gasLdz}`, 'gas_cv_mjm3', src), winStart - 86400, winEnd + 86400) : [];
         meterFacts.meter_gas = gasM3;
         continue;
       }
     }
     const metric = m.kind === 'meter_gas' ? 'gas_kwh' : m.kind === 'meter_export' ? 'grid_export_kwh' : 'grid_import_kwh';
-    const facts = intervalsFrom(meterBound, (src) => seriesId('device', m.id, metric, src), winStart, winEnd);
+    const facts = await intervalsFrom(meterBound, async (src) => await seriesId('device', m.id, metric, src), winStart, winEnd);
     // An account can list a second meter point of the same kind that sends nothing (an old Economy 7 MPAN whose
     // agreement ended years ago). The device query has no order, so without this an empty meter read last would
     // replace the live one's readings and every day would show no usage. A meter with readings always wins.
@@ -276,26 +277,26 @@ function build(siteId, fromDate, toDate, opts) {
   const VOLUME_CORRECTION = 1.02264;   // Gas (Calculation of Thermal Energy) Regulations 1996
   const hasImportMeter = !!meterFacts.meter_import;
   // A configured supplier account means meter data is expected, even before its meters are known.
-  const expectMeter = hasImportMeter || !!db.prepare("SELECT 1 FROM connection c JOIN market_provider mp ON mp.adapter = c.provider AND mp.role = 'meter' WHERE c.site_id = ?").get(siteId);
+  const expectMeter = hasImportMeter || !!await db.prepare("SELECT 1 FROM connection c JOIN market_provider mp ON mp.adapter = c.provider AND mp.role = 'meter' WHERE c.site_id = ?").get(siteId);
   // Commands the devices of this home confirmed to run (acked by read-back, or found already running) during the
   // window: each slot's lineage names those whose window overlaps it, so a slot shows what was acting on the home.
-  const controlCmds = db.prepare(`SELECT c.id, c.action, c.window_start, c.window_end, c.verify_status FROM command c JOIN device d ON d.id = c.device_id
+  const controlCmds = await db.prepare(`SELECT c.id, c.action, c.window_start, c.window_end, c.verify_status FROM command c JOIN device d ON d.id = c.device_id
     WHERE d.site_id = ? AND c.status IN ('acked', 'skipped_unchanged') AND c.window_start IS NOT NULL AND c.window_end > ? AND c.window_start < ?${asOf != null ? ' AND c.acked_at <= ?' : ''}
     ORDER BY c.id`).all(siteId, winStart, winEnd, ...(asOf != null ? [asOf * 1000] : []));
-  const evFacts = intervalsFrom(evBound, (src) => sid('ev_charge_kwh', src), winStart, winEnd);
+  const evFacts = await intervalsFrom(evBound, async (src) => await sid('ev_charge_kwh', src), winStart, winEnd);
   // The home's carbon series (a NESO region, or a country's national series: carbon-series.js), from every bound source.
   const carbonSubject = carbonSubjectOf(site);
   const carbonFacts = carbonSubject != null
-    ? intervalsFrom(carbonBound, (src) => seriesId('region', carbonSubject, 'carbon_intensity', src), winStart, winEnd) : [];
-  const tempByHour = new Map(weatherBound.flatMap((bd) => readReadings([sid('outdoor_temp_c', bd.source)], Math.max(winStart - 3600, bd.from), Math.min(winEnd, bd.to))).map((r) => [r.ts, r.value]));
+    ? await intervalsFrom(carbonBound, async (src) => await seriesId('region', carbonSubject, 'carbon_intensity', src), winStart, winEnd) : [];
+  const tempByHour = new Map((await flatMapAsync(weatherBound, async (bd) => await readReadings([await sid('outdoor_temp_c', bd.source)], Math.max(winStart - 3600, bd.from), Math.min(winEnd, bd.to)))).map((r) => [r.ts, r.value]));
   // Solar forecast of record: for each period, the latest issue made before it started,
   // so a past slot is compared only with what was known in advance. Quartz when it
   // was used (panel angles known), otherwise our own stored forecast. Each forecast period
   // goes to the slots it overlaps, split by overlap (a 30-minute forecast feeds two 15-minute slots).
   const solarFc = [];
   for (const source of [...new Set(forecastBound.map((bd) => bd.source))]) {   // in priority order: the first source with a forecast for a slot wins
-    const rows = db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts AND issued_at <= ?')
-      .all(sid('solar_kwh', source), winStart, winEnd, now);
+    const rows = await db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts AND issued_at <= ?')
+          .all(await sid('solar_kwh', source), winStart, winEnd, now);
     const best = new Map();
     for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
     const covered = new Set(solarFc.map((f) => fl(f.start_ts)));
@@ -310,24 +311,24 @@ function build(siteId, fromDate, toDate, opts) {
       (solarFcBySlot.get(s) || solarFcBySlot.set(s, []).get(s)).push(part);
     }
   }
-  const pricing = loadPricing(siteId, winStart, winEnd, versioned ? site : null);
+  const pricing = await loadPricing(siteId, winStart, winEnd, versioned ? site : null);
   const dataOrigin = dataOriginOf(site);
   if (T) Object.assign(T, { pricing, ids: { power: powerIds, daily: dailyIds, soc: socId }, hasInverter, hasImportMeter, expectMeter, gasM3: !!gasM3, gasLdz, approximations });
 
   // Rows as stored now: for the "revised" flag and the revision log. An as-of rebuild has no "before".
-  const previous = asOf != null ? new Map() : new Map(db.prepare('SELECT slot_start, dur_s, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
-    .all(siteId, winStart, winEnd).map((r) => [r.slot_start, r]));
-  const previousDays = asOf != null ? new Map() : new Map(db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(siteId, fromDate, toDate).map((r) => [r.local_date, r]));
+  const previous = asOf != null ? new Map() : new Map((await db.prepare('SELECT slot_start, dur_s, state, quality, home, total_cost FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?')
+          .all(siteId, winStart, winEnd)).map((r) => [r.slot_start, r]));
+  const previousDays = asOf != null ? new Map() : new Map((await db.prepare('SELECT * FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(siteId, fromDate, toDate)).map((r) => [r.local_date, r]));
   const previousChecks = new Map();
   if (asOf == null) {
-    for (const c of db.prepare('SELECT local_date, check_code, status FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(siteId, fromDate, toDate)) {
+    for (const c of await db.prepare('SELECT local_date, check_code, status FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').all(siteId, fromDate, toDate)) {
       previousChecks.set(c.local_date, { ...(previousChecks.get(c.local_date) || {}), [c.check_code]: c.status });
     }
   }
   // This home's daily inverter loss before the window (completed days), for the balance check.
-  const lossHistory = asOf != null ? [] : db.prepare(`SELECT solar_to_loss + battery_to_loss + grid_to_loss AS loss FROM site_day WHERE site_id = ? AND local_date < ? AND local_date >= ?
+  const lossHistory = asOf != null ? [] : (await db.prepare(`SELECT solar_to_loss + battery_to_loss + grid_to_loss AS loss FROM site_day WHERE site_id = ? AND local_date < ? AND local_date >= ?
       AND solar_to_loss + battery_to_loss + grid_to_loss IS NOT NULL AND solar_to_loss + battery_to_loss + grid_to_loss != 0 ORDER BY local_date`)
-    .all(siteId, fromDate, addDays(fromDate, -LOSS_HISTORY_DAYS)).map((r) => r.loss);
+      .all(siteId, fromDate, addDays(fromDate, -LOSS_HISTORY_DAYS))).map((r) => r.loss);
 
   // Battery round trip for each day, measured from the inverter's own daily counters over
   // the 30 days ending that day: energy out ÷ (energy in − change in stored energy).
@@ -336,15 +337,14 @@ function build(siteId, fromDate, toDate, opts) {
   const counterSum = db.prepare(`SELECT SUM(value) AS v FROM interval_fact WHERE series_id = ? AND ${inForce()} AND start_ts >= ? AND start_ts < ?`);
   const firstSoc = db.prepare(`SELECT ts, value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1`);
   const lastSoc = db.prepare(`SELECT ts, value FROM reading WHERE series_id = ? AND ${inForce()} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1`);
-  const efficiencyFor = (date) => {
+  const efficiencyFor = async (date) => {
     const [a] = dayBounds(tz, addDays(date, -29)); const [, b] = dayBounds(tz, date);
-    const dailySum = (k) => boundDaily.reduce((t, bd) => (Math.min(b, bd.to) > Math.max(a, bd.from) ? t + (counterSum.get(unitSeries(bd, NODES[k][1]), Math.max(a, bd.from), Math.min(b, bd.to))?.v || 0) : t), 0);
-    const inKwh = dailySum('chg'); const outKwh = dailySum('dis');
+    const dailySum = async (k) => await reduceAsync(boundDaily, async (t, bd) => (Math.min(b, bd.to) > Math.max(a, bd.from) ? t + ((await counterSum.get(await unitSeries(bd, NODES[k][1]), Math.max(a, bd.from), Math.min(b, bd.to)))?.v || 0) : t), 0);
+    const inKwh = await dailySum('chg'); const outKwh = await dailySum('dis');
     // The charge level at an end of the window: the units reading within ten minutes of the earliest (or latest)
     // reading are one moment; one unit as it is, several weighted by size.
-    const socAt = (stmt, first) => {
-      const got = socUnits.filter((u) => Math.min(b, u.bd.to) > Math.max(a, u.bd.from))
-        .map((u) => ({ u, r: stmt.get(unitSeries(u.bd, 'battery_soc_pct'), Math.max(a, u.bd.from), Math.min(b, u.bd.to)) })).filter((x) => x.r);
+    const socAt = async (stmt, first) => {
+      const got = (await mapAsync(socUnits.filter((u) => Math.min(b, u.bd.to) > Math.max(a, u.bd.from)), async (u) => ({ u, r: stmt.get(await unitSeries(u.bd, 'battery_soc_pct'), Math.max(a, u.bd.from), Math.min(b, u.bd.to)) }))).filter((x) => x.r);
       if (!got.length) return undefined;
       const edge = first ? Math.min(...got.map((x) => x.r.ts)) : Math.max(...got.map((x) => x.r.ts));
       const near = got.filter((x) => Math.abs(x.r.ts - edge) <= 600);
@@ -353,7 +353,7 @@ function build(siteId, fromDate, toDate, opts) {
       const cap = near.reduce((t, x) => t + x.u.cap, 0);
       return near.reduce((t, x) => t + x.r.value * x.u.cap, 0) / cap;
     };
-    const s0 = socAt(firstSoc, true); const s1 = socAt(lastSoc, false);
+    const s0 = await socAt(firstSoc, true); const s1 = await socAt(lastSoc, false);
     if (!batteryKwh || s0 == null || s1 == null || inKwh <= 5) return { eff: 1, note: 'not enough battery data to measure; no loss applied' };
     const stored = ((s1 - s0) / 100) * batteryKwh; const net = inKwh - stored; const r = net > 0 ? outKwh / net : null;
     if (r == null || r <= 0.5 || r > 1.02) return { eff: 1, note: `measured ${r?.toFixed(3) ?? '–'}, outside what is possible; no loss applied` };
@@ -364,7 +364,7 @@ function build(siteId, fromDate, toDate, opts) {
   // of the day before. On the first day the energy already in the battery at the first
   // charge-level reading is the opening layer; its cost is unknown (p = null).
   // An as-of rebuild starts from the opening layer (it always runs from the first day).
-  const prevDay = asOf != null ? null : db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(siteId, addDays(fromDate, -1));
+  const prevDay = asOf != null ? null : await db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(siteId, addDays(fromDate, -1));
   const socSeries = readings.get(socId) || [];
   const stock = prevDay?.battery_stock ? JSON.parse(prevDay.battery_stock).map(([kwh, p]) => ({ kwh, p })) : [];
   if (!prevDay?.battery_stock && batteryKwh && socSeries.length) stock.push({ kwh: (socSeries[0].value / 100) * batteryKwh, p: null });
@@ -385,7 +385,7 @@ function build(siteId, fromDate, toDate, opts) {
     // each slot's share of the day's real length, so 23 and 25-hour days are exact too.
     const [dayStart, dayEnd] = dayBounds(tz, date);
     const nSlotsDay = (dayEnd - dayStart) / slotS;
-    const { eff, note: effNote } = efficiencyFor(date);
+    const { eff, note: effNote } = await efficiencyFor(date);
     lastEff = { date, eff, note: effNote };
     // The traced slot's day: its length, battery round trip and (below) each node's fit.
     const TD = T && T.slot >= dayStart && T.slot < dayEnd ? (T.day = { date, today, dayStart, dayEnd, nSlotsDay, eff, effNote, align: {} }) : null;
@@ -682,7 +682,7 @@ function build(siteId, fromDate, toDate, opts) {
     const nowChecks = checksByDay.get(r.local_date) || {};
     const changed = before ? dayChanges(before, previousChecks.get(r.local_date) || {}, r, nowChecks) : [];
     // A day built before this log existed has no earlier record: its first row is where history starts.
-    const first = !db.prepare('SELECT 1 FROM site_day_revision WHERE site_id = ? AND local_date = ? LIMIT 1').get(siteId, r.local_date);
+    const first = !await db.prepare('SELECT 1 FROM site_day_revision WHERE site_id = ? AND local_date = ? LIMIT 1').get(siteId, r.local_date);
     if (before && !first && !changed.length) continue;
     revisions.push([siteId, r.local_date, now, r.method_version, first && before ? `${opts.reason || 'rebuild'} (first record of this day)` : (opts.reason || null),
       r.slots_final, r.slots_provisional, r.slots_missing, r.solar, r.home, r.grid_import, r.grid_export, r.gas, r.total_cost, r.saving,
@@ -690,33 +690,33 @@ function build(siteId, fromDate, toDate, opts) {
   }
 
   // ── Write serving rows (replace the window) ──
-  tx(() => {
-    db.prepare('DELETE FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').run(siteId, winStart, winEnd);
-    db.prepare('DELETE FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').run(siteId, fromDate, toDate);
-    db.prepare('DELETE FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').run(siteId, fromDate, toDate);
-    if (hhRows.length) {
-      const cols = Object.keys(hhRows[0]);
-      const ins = db.prepare(`INSERT INTO site_hh (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
-      for (const r of hhRows) ins.run(...cols.map((c) => r[c] ?? null));
-    }
-    if (dayRows.length) {
-      const cols = Object.keys(dayRows[0]);
-      const ins = db.prepare(`INSERT INTO site_day (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
-      for (const r of dayRows) ins.run(...cols.map((c) => (typeof r[c] === 'number' && !Number.isFinite(r[c]) ? null : r[c] ?? null)));
-    }
-    const insC = db.prepare('INSERT OR REPLACE INTO check_result (site_id, local_date, check_code, status, measured, tolerance, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    for (const c of checks) insC.run(siteId, ...c);
-    const insR = db.prepare(`INSERT INTO site_day_revision (site_id, local_date, revised_at, method_version, reason, slots_final, slots_provisional, slots_missing,
+  await tx(async () => {
+        await db.prepare('DELETE FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?').run(siteId, winStart, winEnd);
+        await db.prepare('DELETE FROM site_day WHERE site_id = ? AND local_date >= ? AND local_date <= ?').run(siteId, fromDate, toDate);
+        await db.prepare('DELETE FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ?').run(siteId, fromDate, toDate);
+        if (hhRows.length) {
+          const cols = Object.keys(hhRows[0]);
+          const ins = db.prepare(`INSERT INTO site_hh (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+          for (const r of hhRows) await ins.run(...cols.map((c) => r[c] ?? null));
+        }
+        if (dayRows.length) {
+          const cols = Object.keys(dayRows[0]);
+          const ins = db.prepare(`INSERT INTO site_day (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+          for (const r of dayRows) await ins.run(...cols.map((c) => (typeof r[c] === 'number' && !Number.isFinite(r[c]) ? null : r[c] ?? null)));
+        }
+        const insC = db.prepare('INSERT OR REPLACE INTO check_result (site_id, local_date, check_code, status, measured, tolerance, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        for (const c of checks) await insC.run(siteId, ...c);
+        const insR = db.prepare(`INSERT INTO site_day_revision (site_id, local_date, revised_at, method_version, reason, slots_final, slots_provisional, slots_missing,
       solar, home, grid_import, grid_export, gas, total_cost, saving, checks, inputs, changed) VALUES (${Array(18).fill('?').join(',')})`);
-    for (const r of revisions) insR.run(...r);
-  });
+        for (const r of revisions) await insR.run(...r);
+      });
   return { days: dayRows.length, slots: hhRows.length };
 }
 
 // The first and last instant of a home's own energy data (inverter samples or meter readings).
-export function factSpan(siteId) {
-  const sources = [...new Set(bindingsFor(siteId, 'inverter_5min').map((b) => b.source))];
-  return db.prepare(`SELECT MIN(a) AS first, MAX(b) AS last FROM (
+export async function factSpan(siteId) {
+  const sources = [...new Set((await bindingsFor(siteId, 'inverter_5min')).map((b) => b.source))];
+  return await db.prepare(`SELECT MIN(a) AS first, MAX(b) AS last FROM (
       SELECT MIN(r.ts) AS a, MAX(r.ts) AS b FROM reading r JOIN series se ON se.id = r.series_id JOIN source so ON so.id = se.source_id
         WHERE se.subject_kind = 'site' AND se.subject_id = ? AND so.code IN (${sources.map(() => '?').join(',') || "''"})
       UNION ALL SELECT MIN(f.start_ts), MAX(f.end_ts) - 1 FROM interval_fact f JOIN series se ON se.id = f.series_id
@@ -729,42 +729,42 @@ export function factSpan(siteId) {
 // built before it was saved). The range never starts before the home's first energy data, and a
 // request that ends in the past (a slot-length change of a home whose data stops there) is not
 // stretched to today, so no run of empty days is built.
-export function processQueue() {
-  const pending = db.prepare('SELECT site_id, MIN(from_ts) AS from_ts, MAX(to_ts) AS to_ts FROM rebuild_queue WHERE done_at IS NULL GROUP BY site_id').all();
+export async function processQueue() {
+  const pending = await db.prepare('SELECT site_id, MIN(from_ts) AS from_ts, MAX(to_ts) AS to_ts FROM rebuild_queue WHERE done_at IS NULL GROUP BY site_id').all();
   const out = [];
   for (const p of pending) {
-    const site = db.prepare('SELECT * FROM site WHERE id = ?').get(p.site_id);
+    const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(p.site_id);
     if (!site) continue;
-    const firstDay = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id)?.d;
-    const lastDay = db.prepare('SELECT MAX(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id)?.d;
+    const firstDay = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id))?.d;
+    const lastDay = (await db.prepare('SELECT MAX(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id))?.d;
     let from = localDate(site.timezone, p.from_ts);
     const today = localDate(site.timezone, nowSec());
     let to = p.to_ts != null && p.to_ts > p.from_ts ? localDate(site.timezone, p.to_ts - 1) : today;
     if (to > today) to = today;
     // Never before the home's own first energy data (inverter or meter readings): a change
     // elsewhere (a price list starting months earlier, weather history) must not create empty half-hours.
-    const firstFact = factSpan(p.site_id).first;
+    const firstFact = (await factSpan(p.site_id)).first;
     if (firstFact != null && from < localDate(site.timezone, firstFact)) from = localDate(site.timezone, firstFact);
     // Rows of another slot length (the home's slot_s was changed): everything is rebuilt, so the
     // timeline never mixes lengths and the battery stock runs through one grid.
-    if (firstDay && db.prepare('SELECT 1 FROM site_hh WHERE site_id = ? AND dur_s != ? LIMIT 1').get(p.site_id, slotLength(site))) {
+    if (firstDay && await db.prepare('SELECT 1 FROM site_hh WHERE site_id = ? AND dur_s != ? LIMIT 1').get(p.site_id, slotLength(site))) {
       if (from > firstDay) from = firstDay;
       if (lastDay && to < lastDay) to = lastDay < today ? lastDay : today;
     }
     if (firstDay && from > firstDay) {
-      const prev = db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(p.site_id, addDays(from, -1));
+      const prev = await db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(p.site_id, addDays(from, -1));
       if (!prev?.battery_stock) from = firstDay;
     }
     const t0 = Date.now();
-    const reasons = db.prepare('SELECT DISTINCT reason FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL AND reason IS NOT NULL').all(p.site_id).map((r) => r.reason);
-    const res = from <= to ? buildSite(p.site_id, from, to, { reason: reasons.join('; ') || null }) : { days: 0, slots: 0 };
+    const reasons = (await db.prepare('SELECT DISTINCT reason FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL AND reason IS NOT NULL').all(p.site_id)).map((r) => r.reason);
+    const res = from <= to ? await buildSite(p.site_id, from, to, { reason: reasons.join('; ') || null }) : { days: 0, slots: 0 };
     // Heating rows (site_heat_slot, src/core/heat.js) only for a home with a heating series: one query otherwise.
-    const heat = from <= to && hasHeatingSeries(p.site_id) ? buildHeat(p.site_id, from, to) : null;
+    const heat = from <= to && await hasHeatingSeries(p.site_id) ? await buildHeat(p.site_id, from, to) : null;
     // Processed requests are removed; the sync run records what was rebuilt.
-    db.prepare('DELETE FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL').run(p.site_id);
+    await db.prepare('DELETE FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL').run(p.site_id);
     out.push({ siteId: p.site_id, from, to, ms: Date.now() - t0, ...res, ...(heat ? { heat: { days: heat.days, slots: heat.slots } } : {}) });
   }
   // Fresh planner statistics after a rebuild (cheap when nothing is out of date).
-  if (out.length) optimizeDb();
+  if (out.length) await optimizeDb();
   return out;
 }

@@ -6,14 +6,14 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 if (hasLive) useDb({ snapshot: true });
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { loadClasses } = hasLive ? await import('../src/core/groups.js') : {};
-const { buildSite } = hasLive ? await import('../src/core/build.js') : {};
-const { nowSec, localDate, addDays } = hasLive ? await import('../src/core/time.js') : {};
+const { db } = await import('../src/db/db.js');
+const { loadClasses } = await import('../src/core/groups.js');
+const { buildSite } = await import('../src/core/build.js');
+const { nowSec, localDate, addDays } = await import('../src/core/time.js');
 
-test('every site_hh column has an aggregation class, and every class row names a real column', { skip }, () => {
-  const cols = db.prepare("SELECT name FROM pragma_table_info('site_hh')").all().map((c) => c.name);
-  const classes = loadClasses();
+await test('every site_hh column has an aggregation class, and every class row names a real column', { skip }, async () => {
+  const cols = (await db.prepare("SELECT name FROM pragma_table_info('site_hh')").all()).map((c) => c.name);
+  const classes = await loadClasses();
   assert.deepEqual(cols.filter((c) => !classes.has(c)), [], 'columns without a class');
   assert.deepEqual([...classes.keys()].filter((c) => !cols.includes(c)), [], 'classes for columns that do not exist');
   for (const [name, { cls, weightBy }] of classes) {
@@ -21,11 +21,11 @@ test('every site_hh column has an aggregation class, and every class row names a
   }
 });
 
-test('the builder writes the currency of each slot, and the stored rows were backfilled', { skip }, () => {
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM site_hh WHERE currency IS NULL').get().n, 0, 'no stored slot without a currency');
-  const site = db.prepare('SELECT id, timezone, currency FROM site WHERE id = 1').get();
-  const first = db.prepare('SELECT MIN(local_date) d FROM site_day WHERE site_id = 1').get().d;
-  const res = buildSite(1, first, addDays(localDate(site.timezone, nowSec()), -1), { asOf: nowSec() + 1, dryRun: true });
+await test('the builder writes the currency of each slot, and the stored rows were backfilled', { skip }, async () => {
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM site_hh WHERE currency IS NULL').get()).n, 0, 'no stored slot without a currency');
+  const site = await db.prepare('SELECT id, timezone, currency FROM site WHERE id = 1').get();
+  const first = (await db.prepare('SELECT MIN(local_date) d FROM site_day WHERE site_id = 1').get()).d;
+  const res = await buildSite(1, first, addDays(localDate(site.timezone, nowSec()), -1), { asOf: nowSec() + 1, dryRun: true });
   assert.ok(res.hhRows.length > 100);
   assert.ok(res.hhRows.every((r) => r.currency === site.currency), 'every built slot carries the home\'s currency');
 });

@@ -85,21 +85,21 @@ export const onLocalGrid = (tz, ts, slotS) => slotFloor(ts, slotS, slotPhase(tz,
 // ───────────── Device actions and capabilities ─────────────
 
 const actionRow = db.prepare('SELECT * FROM device_action WHERE device_kind = ? AND action = ?');
-export function actionsFor(kind) {
-  return db.prepare('SELECT * FROM device_action WHERE device_kind = ? ORDER BY is_default DESC, action').all(kind).map((a) => ({ ...a, params_schema: JSON.parse(a.params_schema) }));
+export async function actionsFor(kind) {
+  return (await db.prepare('SELECT * FROM device_action WHERE device_kind = ? ORDER BY is_default DESC, action').all(kind)).map((a) => ({ ...a, params_schema: JSON.parse(a.params_schema) }));
 }
-export const defaultAction = (kind) => db.prepare('SELECT action FROM device_action WHERE device_kind = ? AND is_default = 1').get(kind)?.action ?? null;
+export const defaultAction = async (kind) => (await db.prepare('SELECT action FROM device_action WHERE device_kind = ? AND is_default = 1').get(kind))?.action ?? null;
 
 // Record what one device can do. supported false = known not to (plans refuse it); true = known to
 // (the only state a command accepts). source: adapter, vendor_doc, probe, installer, user, placeholder.
-export function setCapability(deviceId, action, supported, { source = 'adapter', note = null, now = Date.now() } = {}) {
-  db.prepare(`INSERT INTO device_capability (device_id, action, supported, source, note, recorded_at) VALUES (?, ?, ?, ?, ?, ?)
+export async function setCapability(deviceId, action, supported, { source = 'adapter', note = null, now = Date.now() } = {}) {
+  await db.prepare(`INSERT INTO device_capability (device_id, action, supported, source, note, recorded_at) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT (device_id, action) DO UPDATE SET supported = excluded.supported, source = excluded.source, note = excluded.note, recorded_at = excluded.recorded_at`)
-    .run(deviceId, action, supported ? 1 : 0, source, note, now);
+        .run(deviceId, action, supported ? 1 : 0, source, note, now);
 }
 // true (known yes), false (known no) or null (not known).
-export function capability(deviceId, action) {
-  const r = db.prepare('SELECT supported FROM device_capability WHERE device_id = ? AND action = ?').get(deviceId, action);
+export async function capability(deviceId, action) {
+  const r = await db.prepare('SELECT supported FROM device_capability WHERE device_id = ? AND action = ?').get(deviceId, action);
   return r ? r.supported === 1 : null;
 }
 
@@ -133,8 +133,8 @@ export function checkParams(kind, action, schemaJson, slot) {
 
 // ───────────── Saving a plan ─────────────
 
-export function currentPlan(siteId, { scenario = 'live', variant = '' } = {}) {
-  return db.prepare("SELECT * FROM plan_run WHERE site_id = ? AND scenario = ? AND variant = ? AND status IN ('ok', 'stale_inputs')").get(siteId, scenario, variant) ?? null;
+export async function currentPlan(siteId, { scenario = 'live', variant = '' } = {}) {
+  return await db.prepare("SELECT * FROM plan_run WHERE site_id = ? AND scenario = ? AND variant = ? AND status IN ('ok', 'stale_inputs')").get(siteId, scenario, variant) ?? null;
 }
 
 // A reference to what a plan read, with the hash of the rows (re-read them as known at asOf and
@@ -155,9 +155,9 @@ export const verifyInput = (ref, rows) => ref.ref_hash === hashOf(rows);
  * plan_slot keeps only decisions) or 'both'.
  * @returns {{ written: boolean, reason?: string, runId: number, planHash: string, slots?: number, superseded?: number|null, forecasts?: number, skippedMetrics?: string[] }}
  */
-export function savePlan(p) {
+export async function savePlan(p) {
   const now = p.now ?? Date.now();
-  const site = db.prepare('SELECT id, timezone, currency FROM site WHERE id = ?').get(p.siteId);
+  const site = await db.prepare('SELECT id, timezone, currency FROM site WHERE id = ?').get(p.siteId);
   if (!site) throw new Error(`no home ${p.siteId}`);
   const scenario = p.scenario ?? 'live';
   if (!SCENARIOS.includes(scenario)) throw new Error(`scenario must be one of ${SCENARIOS.join(', ')}`);
@@ -179,9 +179,9 @@ export function savePlan(p) {
   for (const d of p.devices || []) {
     const role = d.role ?? 'controlled';
     if (!ROLES.includes(role)) throw new Error(`role must be one of ${ROLES.join(', ')}`);
-    const dev = db.prepare('SELECT id, site_id, kind FROM device WHERE id = ?').get(d.deviceId);
+    const dev = await db.prepare('SELECT id, site_id, kind FROM device WHERE id = ?').get(d.deviceId);
     if (!dev || dev.site_id !== site.id) throw new Error(`device ${d.deviceId} is not a device of home ${site.id}`);
-    scope.set(dev.id, { role, kind: dev.kind, default: defaultAction(dev.kind) });
+    scope.set(dev.id, { role, kind: dev.kind, default: await defaultAction(dev.kind) });
   }
   const slots = p.slots || [];
   if (status === 'error' && slots.length) throw new Error('an error run has no slots');
@@ -194,9 +194,9 @@ export function savePlan(p) {
     if (dev.role === 'observed') throw new Error(`device ${s.deviceId} is observed only: it gets no action`);
     const t = Number(s.slotStart);
     if (!(t >= planStart && t < horizonEnd && (t - planStart) % slotS === 0)) throw new RangeError(`slot ${t} is not on the run's ${slotS} s grid from ${planStart} within ${horizonH} h`);
-    const a = actionRow.get(dev.kind, s.action);
+    const a = await actionRow.get(dev.kind, s.action);
     if (!a) throw new Error(`action ${s.action} is not defined for device kind ${dev.kind} (device_action)`);
-    if (capability(s.deviceId, s.action) === false) throw new Error(`device ${s.deviceId} cannot deliver ${s.action} (device_capability)`);
+    if (await capability(s.deviceId, s.action) === false) throw new Error(`device ${s.deviceId} cannot deliver ${s.action} (device_capability)`);
     const values = checkParams(dev.kind, s.action, a.params_schema, s);
     if ((s.startOffsetMin ?? 0) % 5 !== 0 || (s.startOffsetMin ?? 0) * 60 >= slotS) throw new RangeError(`start_offset_min ${s.startOffsetMin} must be a multiple of 5 and less than the slot`);
     const pred = {}; const extra = {};
@@ -234,39 +234,39 @@ export function savePlan(p) {
   const inputs = (p.inputs || []).map((r) => ({ ...r, refKey: String(r.refKey ?? '') }));
   const inputsHash = p.inputsHash ?? (inputs.length ? hashOf(inputs.map((r) => [r.kind, r.refTable, r.refKey, r.refHash ?? null, r.asOf]).sort()) : null);
 
-  return tx(() => {
-    const cur = currentPlan(site.id, { scenario, variant });
-    if (cur && status !== 'error' && cur.status === status && cur.plan_hash === planHash) return { written: false, reason: 'unchanged', runId: cur.id, planHash };
-    if (cur) db.prepare("UPDATE plan_run SET status = 'superseded', superseded_at = ? WHERE id = ?").run(now, cur.id);
-    const m = p.metrics || {};
-    const json = (v) => (v == null ? null : canonical(v));
-    const runId = Number(db.prepare(`INSERT INTO plan_run (site_id, scenario, variant, created_at, plan_start, slot_s, horizon_h, step_s, facts_as_of, method_version,
+  return await tx(async () => {
+      const cur = await currentPlan(site.id, { scenario, variant });
+      if (cur && status !== 'error' && cur.status === status && cur.plan_hash === planHash) return { written: false, reason: 'unchanged', runId: cur.id, planHash };
+      if (cur) await db.prepare("UPDATE plan_run SET status = 'superseded', superseded_at = ? WHERE id = ?").run(now, cur.id);
+      const m = p.metrics || {};
+      const json = (v) => (v == null ? null : canonical(v));
+      const runId = Number((await db.prepare(`INSERT INTO plan_run (site_id, scenario, variant, created_at, plan_start, slot_s, horizon_h, step_s, facts_as_of, method_version,
         plan_hash, settings_snapshot, inputs_hash, soc_start_kwh, currency, metric_base, metric_best, metric_best10, cost_pv50, cost_pv10, duration_ms, status, error, parent_run_id,
         record_end, soc_max_kwh, reserve_kwh, control_mode, metric_base10, summary, carry_state, debug_raw_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      site.id, scenario, variant, now, planStart, slotS, horizonH, stepS, p.factsAsOf ?? now, p.methodVersion,
-      planHash, json(p.settings), inputsHash, p.socStartKwh ?? null, p.currency ?? site.currency ?? null,
-      m.base ?? null, m.best ?? null, m.best10 ?? null, m.costPv50 ?? null, m.costPv10 ?? null, p.durationMs ?? null, status, p.error ?? null, p.parentRunId ?? null,
-      p.recordEnd ?? null, p.socMaxKwh ?? null, p.reserveKwh ?? null, p.controlMode ?? null, m.base10 ?? null, json(p.summary), json(p.carryState), p.debugRawId ?? null,
-    ).lastInsertRowid);
-    const insDev = db.prepare('INSERT INTO plan_run_device (plan_run_id, device_id, role) VALUES (?, ?, ?)');
-    for (const [id, d] of scope) insDev.run(runId, id, d.role);
-    const cols = Object.keys(rows[0] || {});
-    if (rows.length) {
-      const ins = db.prepare(`INSERT INTO plan_slot (plan_run_id, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`);
-      for (const r of rows) ins.run(runId, ...cols.map((c) => r[c]));
-    }
-    const insRef = db.prepare('INSERT INTO plan_input_ref (plan_run_id, kind, ref_table, ref_key, ref_hash, as_of, from_ts, to_ts, row_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    for (const r of inputs) insRef.run(runId, r.kind, r.refTable, r.refKey, r.refHash ?? null, r.asOf, r.fromTs ?? null, r.toTs ?? null, r.rowCount ?? null);
-    const out = { written: true, runId, planHash, slots: rows.length, superseded: cur?.id ?? null };
-    if (predictionsTo !== 'slot') Object.assign(out, writePredictions(site.id, slotS, Math.floor(now / 1000), forecastRows));
-    return out;
-  });
+                site.id, scenario, variant, now, planStart, slotS, horizonH, stepS, p.factsAsOf ?? now, p.methodVersion,
+                planHash, json(p.settings), inputsHash, p.socStartKwh ?? null, p.currency ?? site.currency ?? null,
+                m.base ?? null, m.best ?? null, m.best10 ?? null, m.costPv50 ?? null, m.costPv10 ?? null, p.durationMs ?? null, status, p.error ?? null, p.parentRunId ?? null,
+                p.recordEnd ?? null, p.socMaxKwh ?? null, p.reserveKwh ?? null, p.controlMode ?? null, m.base10 ?? null, json(p.summary), json(p.carryState), p.debugRawId ?? null,
+              )).lastInsertRowid);
+      const insDev = db.prepare('INSERT INTO plan_run_device (plan_run_id, device_id, role) VALUES (?, ?, ?)');
+      for (const [id, d] of scope) await insDev.run(runId, id, d.role);
+      const cols = Object.keys(rows[0] || {});
+      if (rows.length) {
+        const ins = db.prepare(`INSERT INTO plan_slot (plan_run_id, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`);
+        for (const r of rows) await ins.run(runId, ...cols.map((c) => r[c]));
+      }
+      const insRef = db.prepare('INSERT INTO plan_input_ref (plan_run_id, kind, ref_table, ref_key, ref_hash, as_of, from_ts, to_ts, row_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const r of inputs) await insRef.run(runId, r.kind, r.refTable, r.refKey, r.refHash ?? null, r.asOf, r.fromTs ?? null, r.toTs ?? null, r.rowCount ?? null);
+      const out = { written: true, runId, planHash, slots: rows.length, superseded: cur?.id ?? null };
+      if (predictionsTo !== 'slot') Object.assign(out, await writePredictions(site.id, slotS, Math.floor(now / 1000), forecastRows));
+      return out;
+    });
 }
 
 // Plan predictions as forecast issues (source core_plan), so they can be scored like any forecast.
-function writePredictions(siteId, slotS, issuedAt, items) {
-  const known = new Set(db.prepare('SELECT code FROM metric').all().map((r) => r.code));
+async function writePredictions(siteId, slotS, issuedAt, items) {
+  const known = new Set((await db.prepare('SELECT code FROM metric').all()).map((r) => r.code));
   const groups = new Map(); const skipped = new Set();
   for (const it of items) {
     const [subject, metric] = PREDICTION_METRICS[it.col];
@@ -277,14 +277,14 @@ function writePredictions(siteId, slotS, issuedAt, items) {
   let forecasts = 0;
   for (const [key, rows] of groups) {
     const [subject, id, metric] = key.split('|');
-    forecasts += putForecasts(seriesId(subject, id, metric, 'core_plan'), issuedAt, rows);
+    forecasts += await putForecasts(await seriesId(subject, id, metric, 'core_plan'), issuedAt, rows);
   }
   return { forecasts, skippedMetrics: [...skipped] };
 }
 
 // A run's slots as stored (params and predicted parsed).
-export function planSlots(runId) {
-  return db.prepare('SELECT * FROM plan_slot WHERE plan_run_id = ? ORDER BY slot_start, device_id').all(runId)
+export async function planSlots(runId) {
+  return (await db.prepare('SELECT * FROM plan_slot WHERE plan_run_id = ? ORDER BY slot_start, device_id').all(runId))
     .map((r) => ({ ...r, params: r.params ? JSON.parse(r.params) : null, predicted: r.predicted ? JSON.parse(r.predicted) : null }));
 }
 
@@ -295,21 +295,21 @@ const SCORED = ['import_kwh', 'export_kwh', 'pv_kwh', 'load_kwh', 'cost_minor', 
 // Fill plan_score from v_plan_vs_actual for one run: every figure the plan predicted for a ledger
 // slot that exists (final ledger slots only unless finalOnly is false). Run again after the ledger
 // is rebuilt: a score is replaced, never duplicated. Returns the number of scores written.
-export function scorePlan(runId, { finalOnly = true, now = Date.now() } = {}) {
-  const rows = db.prepare(`SELECT * FROM v_plan_vs_actual WHERE plan_run_id = ? ${finalOnly ? "AND state = 'final'" : ''}`).all(runId);
+export async function scorePlan(runId, { finalOnly = true, now = Date.now() } = {}) {
+  const rows = await db.prepare(`SELECT * FROM v_plan_vs_actual WHERE plan_run_id = ? ${finalOnly ? "AND state = 'final'" : ''}`).all(runId);
   const ins = db.prepare(`INSERT OR REPLACE INTO plan_score (plan_run_id, slot_start, device_id, metric, predicted, actual, error, actual_source, scored_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'site_hh', ?)`);
   let n = 0;
-  tx(() => {
-    for (const r of rows) {
-      for (const m of SCORED) {
-        const pred = r[`${m}_pred`];
-        if (pred == null) continue;
-        ins.run(runId, r.slot_start, r.device_id, m, pred, r[`${m}_actual`], r[`${m}_err`], now);
-        n++;
-      }
-    }
-  });
+  await tx(async () => {
+        for (const r of rows) {
+          for (const m of SCORED) {
+            const pred = r[`${m}_pred`];
+            if (pred == null) continue;
+            await ins.run(runId, r.slot_start, r.device_id, m, pred, r[`${m}_actual`], r[`${m}_err`], now);
+            n++;
+          }
+        }
+      });
   return n;
 }
 
@@ -327,15 +327,15 @@ const IN_FORCE = `r.status <> 'error' AND (ps.slot_start + r.slot_s) * 1000 > r.
  * kept. dryRun (the default) only counts.
  * @returns {{ dryRun: boolean, cutoff: number, runs: number, slotsToDelete: number, slotsKept: number, deleted: number }}
  */
-export function prunePlanSlots({ now = Date.now(), keepDays = PLAN_RETENTION_DAYS, dryRun = true, siteId = null } = {}) {
+export async function prunePlanSlots({ now = Date.now(), keepDays = PLAN_RETENTION_DAYS, dryRun = true, siteId = null } = {}) {
   const cutoff = now - keepDays * 86400000;
   const site = siteId == null ? '' : ` AND r.site_id = ${Math.floor(Number(siteId))}`;
   const old = `FROM plan_slot ps JOIN plan_run r ON r.id = ps.plan_run_id WHERE r.created_at < ?${site}`;
-  const toDelete = db.prepare(`SELECT COUNT(*) AS n, COUNT(DISTINCT ps.plan_run_id) AS runs ${old} AND NOT (${IN_FORCE})`).get(cutoff);
-  const kept = db.prepare(`SELECT COUNT(*) AS n ${old} AND ${IN_FORCE}`).get(cutoff).n;
+  const toDelete = await db.prepare(`SELECT COUNT(*) AS n, COUNT(DISTINCT ps.plan_run_id) AS runs ${old} AND NOT (${IN_FORCE})`).get(cutoff);
+  const kept = (await db.prepare(`SELECT COUNT(*) AS n ${old} AND ${IN_FORCE}`).get(cutoff)).n;
   const out = { dryRun, cutoff, runs: toDelete.runs, slotsToDelete: toDelete.n, slotsKept: kept, deleted: 0 };
   if (dryRun || !toDelete.n) return out;
-  out.deleted = tx(() => Number(db.prepare(`DELETE FROM plan_slot AS ps WHERE EXISTS (
-      SELECT 1 FROM plan_run r WHERE r.id = ps.plan_run_id AND r.created_at < ?${site} AND NOT (${IN_FORCE}))`).run(cutoff).changes));
+  out.deleted = await tx(async () => Number((await db.prepare(`DELETE FROM plan_slot AS ps WHERE EXISTS (
+      SELECT 1 FROM plan_run r WHERE r.id = ps.plan_run_id AND r.created_at < ?${site} AND NOT (${IN_FORCE}))`).run(cutoff)).changes));
   return out;
 }

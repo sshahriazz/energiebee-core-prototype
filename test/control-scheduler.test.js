@@ -6,29 +6,29 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 if (hasLive) useDb({ snapshot: true });
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const cmd = hasLive ? await import('../src/core/commands.js') : {};
-const plans = hasLive ? await import('../src/core/plans.js') : {};
-const { ensureControlChannels } = hasLive ? await import('../src/core/control.js') : {};
-const { createSimulatedDriver } = hasLive ? await import('../src/core/executor.js') : {};
-const { controlTick, registerControlDriver, registeredDrivers } = hasLive ? await import('../src/jobs/control.js') : {};
+const { db } = await import('../src/db/db.js');
+const cmd = await import('../src/core/commands.js');
+const plans = await import('../src/core/plans.js');
+const { ensureControlChannels } = await import('../src/core/control.js');
+const { createSimulatedDriver } = await import('../src/core/executor.js');
+const { controlTick, registerControlDriver, registeredDrivers } = await import('../src/jobs/control.js');
 
 const SITE = 1;
 const BASE = Math.ceil((Date.now() / 1000 + 7200) / 1800) * 1800;
 
-test('a tick does nothing without drivers or commands, runs a driver for a home with a pending command, and survives a failing driver', { skip }, async () => {
+await test('a tick does nothing without drivers or commands, runs a driver for a home with a pending command, and survives a failing driver', { skip }, async () => {
   assert.deepEqual(await controlTick({ now: BASE * 1000 }), [], 'no driver registered: idle');
-  db.prepare("INSERT INTO source (code, name, contract) VALUES ('ctl_sim', 'Simulated control', '{}')").run();
-  const id = Number(db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'battery', 'sim', 'sched-1', 'battery', '{}', 0)").run(SITE).lastInsertRowid);
-  plans.setCapability(id, 'charge', true, { source: 'adapter' });
-  ensureControlChannels(SITE, 'ctl_sim', id);
+  await db.prepare("INSERT INTO source (code, name, contract) VALUES ('ctl_sim', 'Simulated control', '{}')").run();
+  const id = Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'battery', 'sim', 'sched-1', 'battery', '{}', 0)").run(SITE)).lastInsertRowid);
+  await plans.setCapability(id, 'charge', true, { source: 'adapter' });
+  await ensureControlChannels(SITE, 'ctl_sim', id);
   const driver = createSimulatedDriver({ source: 'ctl_sim' });
   driver.handles = (d) => d.id === id;
   const unregister = registerControlDriver(driver);
   assert.equal(registeredDrivers().length, 1);
   assert.deepEqual(await controlTick({ now: BASE * 1000 }), [], 'a driver but no open command: idle');
 
-  cmd.enqueueIfChanged({ deviceId: id, desired: { action: 'charge', windowStart: BASE + 600, windowEnd: BASE + 3600, limitPct: 100 }, validFrom: BASE, validUntil: BASE + 7200, now: (BASE - 60) * 1000 });
+  await cmd.enqueueIfChanged({ deviceId: id, desired: { action: 'charge', windowStart: BASE + 600, windowEnd: BASE + 3600, limitPct: 100 }, validFrom: BASE, validUntil: BASE + 7200, now: (BASE - 60) * 1000 });
   const bad = { source: 'ctl_bad', read: async () => { throw new Error('device offline'); }, send: async () => ({}) };
   const r = await controlTick({ now: BASE * 1000, driversList: [bad, driver] });
   assert.equal(r.length, 2);

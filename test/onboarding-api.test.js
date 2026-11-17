@@ -8,10 +8,10 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
 if (hasLive) useDb({ snapshot: true });
-const { db } = hasLive ? await import('../src/db/db.js') : {};
-const { app } = hasLive ? await import('../src/server.js') : {};
-const inputs = hasLive ? await import('../src/core/inputs.js') : {};
-const { ingestObservations } = hasLive ? await import('../src/core/channels.js') : {};
+const { db } = await import('../src/db/db.js');
+const { app } = await import('../src/server.js');
+const inputs = await import('../src/core/inputs.js');
+const { ingestObservations } = await import('../src/core/channels.js');
 
 let server; let base;
 before(async () => {
@@ -24,9 +24,9 @@ after(() => server?.close());
 const SITE = 1;
 const get = async (p) => { const r = await fetch(`${base}${p}`); return { status: r.status, body: await r.json() }; };
 const post = async (p, body) => { const r = await fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
-const count = (table) => db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n;
+const count = async (table) => (await db.prepare(`SELECT COUNT(*) n FROM ${table}`).get()).n;
 
-test('GET /api/sources lists the sources with traits, contract and default channels, and the roles from inputs.js', { skip }, async () => {
+await test('GET /api/sources lists the sources with traits, contract and default channels, and the roles from inputs.js', { skip }, async () => {
   const { status, body } = await get('/api/sources');
   assert.equal(status, 200);
   assert.deepEqual(body.roles.map((r) => r.role), inputs.ROLES);
@@ -39,7 +39,7 @@ test('GET /api/sources lists the sources with traits, contract and default chann
   assert.deepEqual(body.parts, ['all', 'positive', 'negative', 'abs']);
 });
 
-test('GET /api/sites/:id/onboarding: every role, its bindings with periods and data held, devices, channels, rejects', { skip }, async () => {
+await test('GET /api/sites/:id/onboarding: every role, its bindings with periods and data held, devices, channels, rejects', { skip }, async () => {
   const { status, body } = await get(`/api/sites/${SITE}/onboarding`);
   assert.equal(status, 200);
   assert.deepEqual(body.roles.map((r) => r.role), inputs.ROLES);
@@ -56,8 +56,8 @@ test('GET /api/sites/:id/onboarding: every role, its bindings with periods and d
   assert.equal(body.site.timezone, 'Europe/London');
 });
 
-test('errors carry a status, a machine code and a plain message', { skip }, async () => {
-  const bind = (o) => post(`/api/sites/${SITE}/bindings/preview`, { action: 'bind', role: 'inverter_5min', source: 'sunsynk_5min', ...o });
+await test('errors carry a status, a machine code and a plain message', { skip }, async () => {
+  const bind = async (o) => await post(`/api/sites/${SITE}/bindings/preview`, { action: 'bind', role: 'inverter_5min', source: 'sunsynk_5min', ...o });
   const cases = [
     [await bind({ role: 'nope' }), 400, 'unknown_role'],
     [await bind({ source: 'nope' }), 400, 'unknown_source'],
@@ -80,8 +80,8 @@ test('errors carry a status, a machine code and a plain message', { skip }, asyn
   assert.equal((await bind({ role: 'nope' })).body.field, 'role');
 });
 
-test('a preview keeps nothing and shows the impact; "from now on" touches no built slot and needs no reason', { skip }, async () => {
-  const before = [count('binding'), count('channel'), count('rebuild_queue')];
+await test('a preview keeps nothing and shows the impact; "from now on" touches no built slot and needs no reason', { skip }, async () => {
+  const before = [await count('binding'), await count('channel'), await count('rebuild_queue')];
   const past = await post(`/api/sites/${SITE}/bindings/preview`, { action: 'unbind', role: 'inverter_5min', at: '2026-10-20' });
   assert.equal(past.status, 200);
   assert.equal(past.body.needsReason, true);
@@ -91,28 +91,28 @@ test('a preview keeps nothing and shows the impact; "from now on" touches no bui
   const now = await post(`/api/sites/${SITE}/bindings/preview`, { action: 'bind', role: 'inverter_5min', source: 'sunsynk_5min', from: 'now' });
   assert.equal(now.body.needsReason, false);
   assert.equal(now.body.impact.changed, 0);
-  assert.deepEqual([count('binding'), count('channel'), count('rebuild_queue')], before, 'previews wrote nothing');
+  assert.deepEqual([await count('binding'), await count('channel'), await count('rebuild_queue')], before, 'previews wrote nothing');
 });
 
-test('a dry run on every write returns what would happen and keeps nothing', { skip }, async () => {
-  const before = [count('binding'), count('channel')];
+await test('a dry run on every write returns what would happen and keeps nothing', { skip }, async () => {
+  const before = [await count('binding'), await count('channel')];
   const b = await post(`/api/sites/${SITE}/bindings`, { dryRun: true, role: 'weather_temp', source: 'open_meteo', from: 'now' });
   assert.equal(b.status, 200); assert.equal(b.body.dryRun, true);
   const u = await post(`/api/sites/${SITE}/bindings/unbind?dryRun=1`, { role: 'weather_temp', at: 'now' });
   assert.equal(u.status, 200); assert.equal(u.body.dryRun, true);
   const c = await post(`/api/sites/${SITE}/channels`, { dryRun: true, source: 'open_meteo', point: 'temp_dry', metric: 'outdoor_temp_c' });
   assert.equal(c.status, 200); assert.equal(c.body.dryRun, true); assert.equal(c.body.channel.point, 'temp_dry');
-  const r = await post(`/api/sites/${SITE}/channels/retire`, { dryRun: true, id: db.prepare('SELECT id FROM channel LIMIT 1').get()?.id ?? 1 });
+  const r = await post(`/api/sites/${SITE}/channels/retire`, { dryRun: true, id: (await db.prepare('SELECT id FROM channel LIMIT 1').get())?.id ?? 1 });
   assert.ok([200, 404].includes(r.status));
-  assert.deepEqual([count('binding'), count('channel')], before, 'nothing was kept');
+  assert.deepEqual([await count('binding'), await count('channel')], before, 'nothing was kept');
 });
 
-test('a change that alters built slots is refused without a reason (409, nothing written), accepted with one, and queues a rebuild', { skip }, async () => {
-  const before = count('binding');
+await test('a change that alters built slots is refused without a reason (409, nothing written), accepted with one, and queues a rebuild', { skip }, async () => {
+  const before = await count('binding');
   const refused = await post(`/api/sites/${SITE}/bindings`, { role: 'weather_temp', source: 'open_meteo', from: '2026-10-20' });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.code, 'reason_required');
-  assert.equal(count('binding'), before, 'a refused change wrote nothing');
+  assert.equal(await count('binding'), before, 'a refused change wrote nothing');
   const ok = await post(`/api/sites/${SITE}/bindings`, { role: 'weather_temp', source: 'open_meteo', from: '2026-10-20', reason: 'test: switch the weather feed on this date', rebuild: true });
   assert.equal(ok.status, 201);
   assert.equal(ok.body.role, 'weather_temp');
@@ -124,8 +124,8 @@ test('a change that alters built slots is refused without a reason (409, nothing
   assert.ok(ok.body.rebuilt.length >= 1 && ok.body.rebuilt[0].days > 0, 'the affected days were rebuilt');
 });
 
-test('round trip: bind a source from now on, then end it; history keeps every row', { skip }, async () => {
-  const hist = () => get(`/api/sites/${SITE}/onboarding`).then((r) => r.body);
+await test('round trip: bind a source from now on, then end it; history keeps every row', { skip }, async () => {
+  const hist = async () => await get(`/api/sites/${SITE}/onboarding`).then((r) => r.body);
   const b = await post(`/api/sites/${SITE}/bindings`, { role: 'carbon', source: 'carbon_regional', from: 'now', keep: true, priority: 3 });
   assert.equal(b.status, 201);
   assert.ok(b.body.bindings.some((x) => x.priority === 3 && !x.toDate), 'the new binding sits beside the current one');
@@ -143,10 +143,10 @@ test('round trip: bind a source from now on, then end it; history keeps every ro
   assert.ok(again.body.warnings.some((w) => /nothing to end/.test(w)));
 });
 
-test('channels: define, list, replace (the old one is superseded), remove, and the screen\'s device scoping', { skip }, async () => {
+await test('channels: define, list, replace (the old one is superseded), remove, and the screen\'s device scoping', { skip }, async () => {
   const made = await post(`/api/sites/${SITE}/channels`, { source: 'acme_test_kw', point: 'x' , metric: 'solar_w' });   // unknown source first
   assert.equal(made.status, 400);
-  db.prepare("INSERT INTO source (code, name, contract) VALUES ('acme_test_kw', 'Acme (test)', '{}')").run();
+  await db.prepare("INSERT INTO source (code, name, contract) VALUES ('acme_test_kw', 'Acme (test)', '{}')").run();
   const c1 = await post(`/api/sites/${SITE}/channels`, { source: 'acme_test_kw', point: 'pv_kw', metric: 'solar_w', scale: 1000, part: 'positive', min: 0, max: 60000 });
   assert.equal(c1.status, 201);
   assert.deepEqual([c1.body.channel.scale, c1.body.channel.part, c1.body.channel.min, c1.body.channel.max, c1.body.channel.unit], [1000, 'positive', 0, 60000, 'W']);
@@ -157,7 +157,7 @@ test('channels: define, list, replace (the old one is superseded), remove, and t
   assert.equal((await get(`/api/sites/${SITE}/channels?source=acme_test_kw`)).body.channels.length, 1, 'one current channel');
   assert.equal((await get(`/api/sites/${SITE}/channels?source=acme_test_kw&all=1`)).body.channels.length, 2, 'the replaced one is kept');
   // a device-scoped channel is listed with its device
-  const dev = Number(db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'inverter', 'acme', 'onb-dev', 'second inverter', '{}', 0)").run(SITE).lastInsertRowid);
+  const dev = Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'inverter', 'acme', 'onb-dev', 'second inverter', '{}', 0)").run(SITE)).lastInsertRowid);
   const cd = await post(`/api/sites/${SITE}/channels`, { source: 'acme_test_kw', point: 'pv_kw', metric: 'solar_w', deviceId: dev });
   assert.equal(cd.body.channel.deviceId, dev);
   const rm = await post(`/api/sites/${SITE}/channels/retire`, { id: c2.body.id });
@@ -165,8 +165,8 @@ test('channels: define, list, replace (the old one is superseded), remove, and t
   assert.equal((await get(`/api/sites/${SITE}/channels?source=acme_test_kw`)).body.channels.length, 1, 'only the device channel is left');
 });
 
-test('device scoping: a second device is bound beside the home, and "home" ends only the home\'s own binding', { skip }, async () => {
-  const dev = db.prepare("SELECT id FROM device WHERE external_ref = 'onb-dev'").get().id;
+await test('device scoping: a second device is bound beside the home, and "home" ends only the home\'s own binding', { skip }, async () => {
+  const dev = (await db.prepare("SELECT id FROM device WHERE external_ref = 'onb-dev'").get()).id;
   const b = await post(`/api/sites/${SITE}/bindings`, { role: 'inverter_daily', source: 'sunsynk_daily', from: 'now', deviceId: dev });
   assert.equal(b.status, 201);
   assert.equal(b.body.bindings.filter((x) => !x.toDate).length, 2, 'the home binding and the device binding are both open');
@@ -175,8 +175,8 @@ test('device scoping: a second device is bound beside the home, and "home" ends 
   assert.deepEqual(u.body.bindings.filter((x) => !x.toDate).map((x) => x.deviceId), [dev], 'only the device binding stays open');
 });
 
-test('rejected values and unmapped points are reported by reason and by point', { skip }, async () => {
-  db.prepare("INSERT OR IGNORE INTO source (code, name, contract) VALUES ('acme_test_kw', 'Acme (test)', '{}')").run();
+await test('rejected values and unmapped points are reported by reason and by point', { skip }, async () => {
+  await db.prepare("INSERT OR IGNORE INTO source (code, name, contract) VALUES ('acme_test_kw', 'Acme (test)', '{}')").run();
   assert.equal((await post(`/api/sites/${SITE}/channels`, { source: 'acme_test_kw', point: 'pv_kw', metric: 'solar_w', min: 0, max: 60000 })).status, 201);
   ingestObservations(SITE, 'acme_test_kw', [
     { point: 'pv_kw', ts: 1900000000, value: 1e9 }, { point: 'pv_kw', ts: 1900000300, value: 'abc' }, { point: 'firmware_temp', ts: 1900000000, value: 41 }, { point: 'firmware_temp', ts: 1900000300, value: 43 }]);
@@ -191,7 +191,7 @@ test('rejected values and unmapped points are reported by reason and by point', 
   assert.equal(model.rejects.total, 3);
 });
 
-test('roles are read from inputs.js at call time: a role added later appears with a readable name and can be bound', { skip }, async () => {
+await test('roles are read from inputs.js at call time: a role added later appears with a readable name and can be bound', { skip }, async () => {
   inputs.ROLES.push('test_new_role_energy');
   try {
     const m = (await get(`/api/sites/${SITE}/onboarding`)).body;

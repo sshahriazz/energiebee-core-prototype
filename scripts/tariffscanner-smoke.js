@@ -18,7 +18,7 @@ process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
 const TS = await import('../src/adapters/tariffscanner.js');
 const { creds } = TS.credentialsFromEnv();
-const client = TS.createClient({ ...creds, store: TS.memoryStore() });
+const client = await TS.createClient({ ...creds, store: TS.memoryStore() });
 const say = (...a) => console.log(...a.map((x) => client.scrub(typeof x === 'string' ? x : JSON.stringify(x, null, 2))));
 client.beginRun(3);
 try {

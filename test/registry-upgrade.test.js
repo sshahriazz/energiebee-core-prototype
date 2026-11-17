@@ -56,23 +56,23 @@ const { attributeDef } = await import('../src/core/attributes.js');
 const { settingDef } = await import('../src/core/settings.js');
 const { deviceKind } = await import('../src/core/devices.js');
 
-test('023 adds refs and replaces the unused first-seed rows with the current seed', () => {
-  for (const t of ['attribute_def', 'setting_def']) assert.ok(db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = 'refs'`).get(), `${t}.refs`);
-  const hl = attributeDef('heat_loss_w_per_k');
+await test('023 adds refs and replaces the unused first-seed rows with the current seed', async () => {
+  for (const t of ['attribute_def', 'setting_def']) assert.ok(await db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = 'refs'`).get(), `${t}.refs`);
+  const hl = await attributeDef('heat_loss_w_per_k');
   assert.deepEqual([hl.unverified, hl.refs], [0, ['PH-MOD-01']]);
-  assert.equal(attributeDef('min_output_kw'), null, 'a dropped first-seed key is gone');
-  assert.equal(attributeDef('heating_zone_count').description, 'old key with a value', 'a key with values is kept as it was');
-  assert.equal(settingDef('plan_interval_min').default, 30);
-  assert.equal(settingDef('heating_mode'), null);
-  assert.ok(deviceKind('battery').action_codes.includes('charge'));
-  assert.ok(deviceKind('heat_pump'), 'every current kind is seeded');
-  assert.ok(db.prepare("SELECT 1 FROM schema_delta WHERE name = '023-registry-refs'").get());
+  assert.equal(await attributeDef('min_output_kw'), null, 'a dropped first-seed key is gone');
+  assert.equal((await attributeDef('heating_zone_count')).description, 'old key with a value', 'a key with values is kept as it was');
+  assert.equal((await settingDef('plan_interval_min')).default, 30);
+  assert.equal(await settingDef('heating_mode'), null);
+  assert.ok((await deviceKind('battery')).action_codes.includes('charge'));
+  assert.ok(await deviceKind('heat_pump'), 'every current kind is seeded');
+  assert.ok(await db.prepare("SELECT 1 FROM schema_delta WHERE name = '023-registry-refs'").get());
 });
 
-test('a later row without refs (an operator\'s) is never removed: the deletes ran once', async () => {
-  db.prepare(`INSERT INTO setting_def (key, label, value_type, default_value, planner, applies_to) VALUES ('my_knob', 'Mine', 'number', '1', 'predbat', 'planner')`).run();
+await test('a later row without refs (an operator\'s) is never removed: the deletes ran once', async () => {
+  await db.prepare(`INSERT INTO setting_def (key, label, value_type, default_value, planner, applies_to) VALUES ('my_knob', 'Mine', 'number', '1', 'predbat', 'planner')`).run();
   const { applyDelta } = await import('../src/db/db.js');
   applyDelta(fs.readFileSync(path.join(dbDir, 'deltas', '023-registry-refs.sql'), 'utf8'));
-  assert.ok(settingDef('my_knob'));
-  assert.ok(deviceKind('battery'));
+  assert.ok(await settingDef('my_knob'));
+  assert.ok(await deviceKind('battery'));
 });

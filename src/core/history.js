@@ -16,20 +16,20 @@ import { db, tx } from '../db/db.js';
 import { buildSite, dayChanges, METHOD_VERSION } from './build.js';
 import { localDate } from './time.js';
 
-export function reconstructHistory(siteId, { force = false } = {}) {
-  const site = db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
+export async function reconstructHistory(siteId, { force = false } = {}) {
+  const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new Error(`no site ${siteId}`);
   const tz = site.timezone;
-  const existing = db.prepare("SELECT COUNT(*) AS n FROM site_day_revision WHERE site_id = ? AND kind = 'reconstructed'").get(siteId).n;
+  const existing = (await db.prepare("SELECT COUNT(*) AS n FROM site_day_revision WHERE site_id = ? AND kind = 'reconstructed'").get(siteId)).n;
   if (existing && !force) return { skipped: `${existing} reconstructed versions already stored (pass force to redo)` };
-  const firstDay = db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId).d;
-  const agreementsFrom = db.prepare('SELECT MIN(recorded_at) AS t FROM tariff_agreement WHERE site_id = ?').get(siteId).t;
+  const firstDay = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId)).d;
+  const agreementsFrom = (await db.prepare('SELECT MIN(recorded_at) AS t FROM tariff_agreement WHERE site_id = ?').get(siteId)).t;
   if (!firstDay || agreementsFrom == null) return { skipped: 'no built days or no recorded tariff agreements' };
 
   // Each day's first live record: reconstruction fills in only the time before it.
-  const firstRecorded = new Map(db.prepare("SELECT local_date, MIN(revised_at) AS t FROM site_day_revision WHERE site_id = ? AND kind = 'recorded' GROUP BY local_date").all(siteId).map((r) => [r.local_date, r.t]));
+  const firstRecorded = new Map((await db.prepare("SELECT local_date, MIN(revised_at) AS t FROM site_day_revision WHERE site_id = ? AND kind = 'recorded' GROUP BY local_date").all(siteId)).map((r) => [r.local_date, r.t]));
   const logStart = Math.min(...firstRecorded.values(), Infinity);
-  const moments = [...new Set(db.prepare('SELECT finished_at FROM sync_run WHERE site_id = ? AND finished_at IS NOT NULL ORDER BY finished_at').all(siteId)
+  const moments = [...new Set((await db.prepare('SELECT finished_at FROM sync_run WHERE site_id = ? AND finished_at IS NOT NULL ORDER BY finished_at').all(siteId))
     .map((r) => r.finished_at).filter((t) => t * 1000 >= agreementsFrom && t < logStart))];
 
   const prev = new Map();
@@ -37,7 +37,7 @@ export function reconstructHistory(siteId, { force = false } = {}) {
   for (const T of moments) {
     const today = localDate(tz, T);
     if (today <= firstDay) continue;
-    const r = buildSite(siteId, firstDay, today, { asOf: T, dryRun: true });
+    const r = await buildSite(siteId, firstDay, today, { asOf: T, dryRun: true });
     const checksBy = new Map();
     for (const [d, code, status] of r.checks) checksBy.set(d, { ...(checksBy.get(d) || {}), [code]: status });
     for (const d of r.dayRows) {
@@ -56,22 +56,22 @@ export function reconstructHistory(siteId, { force = false } = {}) {
   }
 
   let linked = 0;
-  tx(() => {
-    if (force) db.prepare("DELETE FROM site_day_revision WHERE site_id = ? AND kind = 'reconstructed'").run(siteId);
-    const ins = db.prepare(`INSERT INTO site_day_revision (site_id, local_date, revised_at, method_version, reason, slots_final, slots_provisional, slots_missing,
+  await tx(async () => {
+        if (force) await db.prepare("DELETE FROM site_day_revision WHERE site_id = ? AND kind = 'reconstructed'").run(siteId);
+        const ins = db.prepare(`INSERT INTO site_day_revision (site_id, local_date, revised_at, method_version, reason, slots_final, slots_provisional, slots_missing,
       solar, home, grid_import, grid_export, gas, total_cost, saving, checks, inputs, changed, kind) VALUES (${Array(18).fill('?').join(',')}, 'reconstructed')`);
-    for (const row of rows) ins.run(...row);
-    // Each day's first live record now follows a reconstructed version: say what changed since it.
-    for (const [date, t] of firstRecorded) {
-      const last = prev.get(date);
-      if (!last) continue;
-      const rec = db.prepare("SELECT * FROM site_day_revision WHERE site_id = ? AND local_date = ? AND kind = 'recorded' AND revised_at = ? ORDER BY id LIMIT 1").get(siteId, date, t);
-      if (!rec) continue;
-      const changed = dayChanges(last.row, last.checks, rec, JSON.parse(rec.checks || '{}'));
-      db.prepare('UPDATE site_day_revision SET changed = ?, reason = ? WHERE id = ?')
-        .run(JSON.stringify(changed), String(rec.reason || '').replace(' (first record of this day)', ''), rec.id);
-      linked++;
-    }
-  });
+        for (const row of rows) await ins.run(...row);
+        // Each day's first live record now follows a reconstructed version: say what changed since it.
+        for (const [date, t] of firstRecorded) {
+          const last = prev.get(date);
+          if (!last) continue;
+          const rec = await db.prepare("SELECT * FROM site_day_revision WHERE site_id = ? AND local_date = ? AND kind = 'recorded' AND revised_at = ? ORDER BY id LIMIT 1").get(siteId, date, t);
+          if (!rec) continue;
+          const changed = dayChanges(last.row, last.checks, rec, JSON.parse(rec.checks || '{}'));
+          await db.prepare('UPDATE site_day_revision SET changed = ?, reason = ? WHERE id = ?')
+                    .run(JSON.stringify(changed), String(rec.reason || '').replace(' (first record of this day)', ''), rec.id);
+          linked++;
+        }
+      });
   return { moments: moments.length, versions: rows.length, days: new Set(rows.map((r) => r[1])).size, linked };
 }

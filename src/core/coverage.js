@@ -26,7 +26,7 @@ export const TARGET_KINDS = Object.freeze(['table_column', 'registry_key', 'metr
  * opts.jsonKeys: documentedJsonKeys(docs/database.md) for table_column targets with a json_key.
  */
 export function targetChecker(db, { readModules = {}, jsonKeys = new Map() } = {}) {
-  const q = (sql) => { const st = db.prepare(sql); return (...a) => { try { return !!st.get(...a); } catch { return false; } }; };
+  const q = (sql) => { const st = db.prepare(sql); return async (...a) => { try { return !!await st.get(...a); } catch { return false; } }; };
   const has = {
     column: q('SELECT 1 FROM pragma_table_info(?) WHERE name = ?'),
     attribute: q('SELECT 1 FROM attribute_def WHERE key = ?'),
@@ -37,26 +37,26 @@ export function targetChecker(db, { readModules = {}, jsonKeys = new Map() } = {
     action: q('SELECT 1 FROM device_action WHERE device_kind = ? AND action = ?'),
     view: q("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?"),
   };
-  return function exists(t) {
+  return async function exists(t) {
     const ref = String(t?.ref ?? '');
     const after = (p) => ref.slice(p.length);
     switch (t?.kind) {
       case 'table_column': {
         const [table, col] = ref.split('.');
-        return has.column(table, col) && (!t.json_key || !!jsonKeys.get(ref)?.has(t.json_key));
+        return await has.column(table, col) && (!t.json_key || !!jsonKeys.get(ref)?.has(t.json_key));
       }
       case 'registry_key':
-        return ref.startsWith('attribute_def:') ? has.attribute(after('attribute_def:'))
-          : ref.startsWith('setting_def:') ? has.setting(after('setting_def:'))
-            : ref.startsWith('device_kind:') ? has.kind(after('device_kind:')) : false;
-      case 'metric': return ref.startsWith('metric:') && has.metric(after('metric:'));
-      case 'source': return ref.startsWith('source:') && has.source(after('source:'));
+        return ref.startsWith('attribute_def:') ? await has.attribute(after('attribute_def:'))
+          : ref.startsWith('setting_def:') ? await has.setting(after('setting_def:'))
+            : ref.startsWith('device_kind:') ? await has.kind(after('device_kind:')) : false;
+      case 'metric': return ref.startsWith('metric:') && await has.metric(after('metric:'));
+      case 'source': return ref.startsWith('source:') && await has.source(after('source:'));
       case 'device_action': {
         if (!ref.startsWith('device_action:')) return false;
         const [kind, action] = after('device_action:').split('.');
-        return has.action(kind, action);
+        return await has.action(kind, action);
       }
-      case 'view': return ref.startsWith('view:') && has.view(after('view:'));
+      case 'view': return ref.startsWith('view:') && await has.view(after('view:'));
       case 'read_function': {
         const dot = ref.indexOf('.');
         if (dot < 1) return false;

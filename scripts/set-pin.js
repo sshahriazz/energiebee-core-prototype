@@ -8,9 +8,9 @@ if (!username || !pin) { console.error('usage: npm run user:pin -- <username> <4
 const { setPin } = await import('../src/core/users.js');
 const { closeDb } = await import('../src/db/db.js');
 try {
-  const u = setPin(username, pin);
+  const u = await setPin(username, pin);
   console.log(`PIN set for ${u.username} (user ${u.id}, ${u.name}): sign in with that username and PIN`);
 } catch (err) {
   console.error(err.message);
   process.exitCode = 1;
-} finally { closeDb(); }
+} finally { await closeDb(); }

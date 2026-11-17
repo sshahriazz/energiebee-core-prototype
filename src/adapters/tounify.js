@@ -174,15 +174,15 @@ export function limitsFor(kind, env = process.env) {
 
 // ───────────── Persisted state (provider_state, delta 009; never a token) ─────────────
 
-export function readState(d = db) {
-  const r = d.prepare('SELECT state FROM provider_state WHERE provider = ?').get(PROVIDER);
+export async function readState(d = db) {
+  const r = await d.prepare('SELECT state FROM provider_state WHERE provider = ?').get(PROVIDER);
   try { return JSON.parse(r?.state || '{}'); } catch { return {}; }
 }
-function writeState(s) {
-  db.prepare(`INSERT INTO provider_state (provider, state, updated_at) VALUES (?, ?, ?)
+async function writeState(s) {
+  await db.prepare(`INSERT INTO provider_state (provider, state, updated_at) VALUES (?, ?, ?)
     ON CONFLICT (provider) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`).run(PROVIDER, JSON.stringify(s), Date.now());
 }
-function updateState(fn) { const s = readState(); fn(s); writeState(s); return s; }
+async function updateState(fn) { const s = await readState(); fn(s); await writeState(s); return s; }
 
 // next_allowed_at only ever moves later: a 429's cooldown is not shortened by the normal gap.
 export function dbStore() {
@@ -193,9 +193,9 @@ export function dbStore() {
       next_allowed_at = MAX(IFNULL(provider_state.next_allowed_at, 0), excluded.next_allowed_at),
       updated_at = excluded.updated_at`);
   return {
-    nextAllowedAt: () => get.get(PROVIDER)?.next_allowed_at ?? 0,
-    reason: () => get.get(PROVIDER)?.cooldown_reason ?? null,
-    setNextAllowedAt: (ms, why = null) => { put.run(PROVIDER, Math.ceil(ms), why, Date.now()); },
+    nextAllowedAt: async () => (await get.get(PROVIDER))?.next_allowed_at ?? 0,
+    reason: async () => (await get.get(PROVIDER))?.cooldown_reason ?? null,
+    setNextAllowedAt: async (ms, why = null) => { await put.run(PROVIDER, Math.ceil(ms), why, Date.now()); },
   };
 }
 
@@ -210,12 +210,12 @@ function allowanceOf(s, nowMs) {
 }
 
 /** The allowance counters for display (never the token): requests today, distinct companies and tariffs, limits, cooldown. */
-export function tounifyAllowance(d = db, { env = process.env, nowMs = clockOf(null).now() } = {}) {
+export async function tounifyAllowance(d = db, { env = process.env, nowMs = clockOf(null).now() } = {}) {
   const kind = tokenKind(env.TOUNIFY_API_KEY);
   const limits = limitsFor(kind ?? 'test', env);
-  const s = readState(d);
-  const a = allowanceOf(structuredClone(s), nowMs);
-  const cd = d.prepare('SELECT next_allowed_at, cooldown_reason FROM provider_state WHERE provider = ?').get(PROVIDER);
+  const s = await readState(d);
+  const a = allowanceOf(await structuredClone(s), nowMs);
+  const cd = await d.prepare('SELECT next_allowed_at, cooldown_reason FROM provider_state WHERE provider = ?').get(PROVIDER);
   return {
     token_kind: kind,
     token: kind ? `${kind} token set (TOUNIFY_API_KEY)` : 'no token: TOUNIFY_API_KEY not set',
@@ -253,7 +253,7 @@ const intHeader = (res, name) => { const v = header(res, name); const n = Number
  * request(method, path, { query, body, etag, ifMatch, scope: { endpoint, thing }, names: { companies, tariffs } })
  * -> { status, body, etag, notModified, requestId }; kind, limits, clock, scrub.
  */
-export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null, clock = null, store = dbStore(), env = process.env, log = () => {} } = {}) {
+export async function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null, clock = null, store = dbStore(), env = process.env, log = () => {} } = {}) {
   if (!token) throw new TounifyError('no credentials: TOUNIFY_API_KEY not set', { kind: 'auth' });
   const base = String(baseUrl).replace(/\/+$/, '');
   const kind = tokenKind(token);
@@ -264,8 +264,8 @@ export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null,
   const fail = (msg, opts) => new TounifyError(scrub(msg), opts);
   const note = (msg, fields = {}) => { try { log(scrub(msg), JSON.parse(scrub(JSON.stringify(fields)))); } catch { /* a logger never breaks a sync */ } };
   let lastAt = -Infinity;
-  let tail = Promise.resolve();
-  const serial = (fn) => { const r = tail.then(fn); tail = r.then(() => {}, () => {}); return r; };
+  let tail = await Promise.resolve();
+  const serial = async (fn) => { const r = await tail.then(fn); tail = await r.then(() => {}, () => {}); return r; };
 
   // Refused before any call: the reason, or null when the call may be sent. Pure on the state.
   function refusal(a, { scope, names }) {
@@ -294,22 +294,22 @@ export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null,
     const now0 = clk().now();
     // 1. The allowance, persisted: refused here means no call at all.
     let why = null;
-    updateState((s) => {
-      const a = allowanceOf(s, now0);
-      why = refusal(a, { scope, names });
-      if (!why) a.requests++;   // counted before it is sent, so a failed call still counts
-    });
+    await updateState((s) => {
+            const a = allowanceOf(s, now0);
+            why = refusal(a, { scope, names });
+            if (!why) a.requests++;   // counted before it is sent, so a failed call still counts
+          });
     if (why) throw fail(why, { kind: 'allowance' });
     // 2. The gap and the persisted cooldown.
-    const at = Math.max(lastAt + policy.minIntervalMs, store.nextAllowedAt() ?? 0);
+    const at = Math.max(lastAt + policy.minIntervalMs, await store.nextAllowedAt() ?? 0);
     if (at - now0 > policy.maxWaitMs) {
-      updateState((s) => { const a = allowanceOf(s, now0); a.requests = Math.max(0, a.requests - 1); });
-      const r = store.reason?.();
+      await updateState((s) => { const a = allowanceOf(s, now0); a.requests = Math.max(0, a.requests - 1); });
+      const r = await store.reason?.();
       throw fail(`cooling down: no request to tounify before ${iso(at)}${r ? ` (${r})` : ''}`, { kind: 'cooldown' });
     }
     if (at > now0) await clk().sleep(at - now0);
     const started = clk().now();
-    store.setNextAllowedAt(started + policy.minIntervalMs);
+    await store.setNextAllowedAt(started + policy.minIntervalMs);
     const qs = query ? new URLSearchParams(Object.entries(query).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])).toString() : '';
     const headers = { authorization: `Bearer ${token}`, accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
@@ -320,12 +320,12 @@ export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null,
       res = await doFetch(`${base}${pathname}${qs ? `?${qs}` : ''}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(policy.timeoutMs) });
     } catch (err) {
       lastAt = clk().now();
-      store.setNextAllowedAt(lastAt + policy.minIntervalMs);
+      await store.setNextAllowedAt(lastAt + policy.minIntervalMs);
       const what = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? `timed out after ${policy.timeoutMs} ms` : (err?.message ?? String(err));
       throw fail(`tounify ${method} ${pathname} -> ${what}`, { kind: 'network' });
     }
     lastAt = clk().now();
-    store.setNextAllowedAt(lastAt + policy.minIntervalMs);
+    await store.setNextAllowedAt(lastAt + policy.minIntervalMs);
     const requestId = header(res, 'x-request-id');
     const text = res.status === 304 ? '' : await res.text().catch(() => '');
     let json = null;
@@ -333,15 +333,15 @@ export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null,
     // What tounify says is left of a testing token's totals (no header counts requests).
     const up = { companies_remaining: intHeader(res, 'x-testing-companies-remaining'), tariffs_remaining: intHeader(res, 'x-testing-tariffs-remaining'), new_things_remaining: intHeader(res, 'x-ratelimit-remaining') };
     const ok = res.status >= 200 && res.status < 300;
-    updateState((s) => {
-      const a = allowanceOf(s, lastAt);
-      for (const [k, v] of Object.entries(up)) if (v != null) a.upstream[k] = v;
-      if (Object.values(up).some((v) => v != null)) a.upstream.at = iso(lastAt);
-      if (ok || res.status === 304) {
-        if (scope) { const seen = a.scopes[scope.endpoint] ?? []; if (!seen.includes(scope.thing)) a.scopes[scope.endpoint] = [...seen, scope.thing]; }
-        for (const k of ['companies', 'tariffs']) for (const id of names?.[k] ?? []) if (id && !a[k].includes(id)) a[k].push(id);
-      }
-    });
+    await updateState((s) => {
+            const a = allowanceOf(s, lastAt);
+            for (const [k, v] of Object.entries(up)) if (v != null) a.upstream[k] = v;
+            if (Object.values(up).some((v) => v != null)) a.upstream.at = iso(lastAt);
+            if (ok || res.status === 304) {
+              if (scope) { const seen = a.scopes[scope.endpoint] ?? []; if (!seen.includes(scope.thing)) a.scopes[scope.endpoint] = [...seen, scope.thing]; }
+              for (const k of ['companies', 'tariffs']) for (const id of names?.[k] ?? []) if (id && !a[k].includes(id)) a[k].push(id);
+            }
+          });
     note('tounify request', { method, path: pathname, status: res.status, request_id: requestId });
     const code = isObj(json) && typeof json.code === 'string' ? json.code : null;
     const where = `tounify ${method} ${pathname}`;
@@ -352,17 +352,17 @@ export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null,
       // A 429 with neither Retry-After nor rateLimit is a daily limit: no request before midnight UTC.
       const daily = ra == null && !Number.isFinite(resetAt) && code !== 'concurrent_request';
       const until = Math.max(lastAt + policy.cooldown429Ms, ra != null ? lastAt + ra : 0, Number.isFinite(resetAt) ? resetAt : 0, daily ? nextUtcMidnight(lastAt) : 0);
-      store.setNextAllowedAt(until, `HTTP 429${code ? ` ${code}` : ''} at ${iso(lastAt)}`);
+      await store.setNextAllowedAt(until, `HTTP 429${code ? ` ${code}` : ''} at ${iso(lastAt)}`);
       throw fail(`${where} -> HTTP 429${code ? ` (${code})` : ''}: run stopped, no request before ${iso(until)}`, { kind: 'rate_limited', status: 429, code });
     }
     if (res.status === 403 && isObj(json?.testingLimit)) {
       const t = json.testingLimit;
       const k = t.kind === 'companies' || t.kind === 'tariffs' ? t.kind : String(t.kind ?? 'unknown');
-      updateState((s) => {
-        const a = allowanceOf(s, lastAt);
-        a.exhausted[k] = { at: iso(lastAt), limit: t.limit ?? null, used: t.used ?? null, remaining: t.remaining ?? null, blocked: Array.isArray(t.blocked) ? t.blocked.map(String) : [] };
-        a.upstream[`${k}_remaining`] = num(t.remaining) ? t.remaining : 0;
-      });
+      await updateState((s) => {
+                const a = allowanceOf(s, lastAt);
+                a.exhausted[k] = { at: iso(lastAt), limit: t.limit ?? null, used: t.used ?? null, remaining: t.remaining ?? null, blocked: Array.isArray(t.blocked) ? t.blocked.map(String) : [] };
+                a.upstream[`${k}_remaining`] = num(t.remaining) ? t.remaining : 0;
+              });
       throw fail(`${where} -> HTTP 403 (${code ?? 'testing limit'}): the testing allowance of ${k} is used up${t.blocked?.length ? ` (blocked: ${t.blocked.join(', ')})` : ''}; run stopped`, { kind: 'allowance_exhausted', status: 403, code });
     }
     if (!ok) {
@@ -376,15 +376,15 @@ export function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn = null,
   return {
     kind, limits, scrub,
     get clock() { return clk(); },
-    request: (method, pathname, opts) => serial(() => send(method, pathname, opts)),
+    request: async (method, pathname, opts) => await serial(async () => await send(method, pathname, opts)),
   };
 }
 
 // One client per token in this process, so every caller shares its queue and its gap.
 const clients = new Map();
-export function clientFor(creds) {
+export async function clientFor(creds) {
   const key = createHash('sha256').update(String(creds?.token ?? '')).digest('hex');
-  if (!clients.has(key)) clients.set(key, createClient({ token: creds?.token, log: (m, f) => { if (process.env.TOUNIFY_LOG === '1') console.log(m, JSON.stringify(f)); } }));
+  if (!clients.has(key)) clients.set(key, await createClient({ token: creds?.token, log: (m, f) => { if (process.env.TOUNIFY_LOG === '1') console.log(m, JSON.stringify(f)); } }));
   return clients.get(key);
 }
 export const resetClients = () => clients.clear();
@@ -634,14 +634,14 @@ export function mapComponents(body, { currency = null, zone = 'UTC', captureDayS
 const TARIFF_FIELDS = [['product_code', 'productCode'], ['fuel', 'fuel'], ['direction', 'direction'], ['structure', 'structure'], ['name', 'name'], ['kind', 'kind'],
   ['country', 'country'], ['currency', 'currency'], ['native_period_s', 'nativePeriodS'], ['origin', 'origin'], ['origin_note', 'originNote'], ['taxes_in_price', 'taxesInPrice']];
 
-function upsertTariff(t) {
-  const cur = db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(t.tariffCode);
-  if (!cur) return { row: createTariff(t), created: 1, updated: 0 };
+async function upsertTariff(t) {
+  const cur = await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(t.tariffCode);
+  if (!cur) return { row: await createTariff(t), created: 1, updated: 0 };
   if (cur.provider !== PROVIDER) throw new Error(`tariff code ${t.tariffCode} belongs to ${cur.provider}: not overwritten`);
   const diff = TARIFF_FIELDS.filter(([col, key]) => (cur[col] ?? null) !== (t[key] ?? null));
   if (!diff.length) return { row: cur, created: 0, updated: 0 };
-  db.prepare(`UPDATE tariff SET ${diff.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...diff.map(([, k]) => t[k] ?? null), cur.id);
-  return { row: db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
+  await db.prepare(`UPDATE tariff SET ${diff.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...diff.map(([, k]) => t[k] ?? null), cur.id);
+  return { row: await db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
 }
 
 const KEY = "tariff_id = ? AND site_id = ? AND component = ? AND register = ? AND payment_method = 'ANY' AND IFNULL(charge_period, '') = ? AND superseded_at IS NULL";
@@ -653,30 +653,30 @@ const END = 9000000000;
  * every current row it overlaps, the parts of those rows before and after it kept at their old price
  * (new copies). Returns the rows written.
  */
-export function putRates(tariffId, siteId, rows, { component = 'unit', rawId = null, recordedAt = recordedNow() } = {}) {
+export async function putRates(tariffId, siteId, rows, { component = 'unit', rawId = null, recordedAt = recordedNow() } = {}) {
   const covering = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from <= ? AND IFNULL(valid_to, ${END}) > ? ORDER BY valid_from DESC LIMIT 1`);
   const overlapping = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from < ? AND IFNULL(valid_to, ${END}) > ?`);
   const sup = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
   const ins = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin, origin_note, estimated)
     VALUES (?, ?, ?, ?, ?, 'ANY', ?, ?, ?, ?, ?, 'provider', ?, ?)`);
   let changed = 0;
-  tx(() => {
-    for (const r of [...rows].sort((a, b) => a.validFrom - b.validFrom)) {
-      const register = r.register ?? 'single';
-      const period = r.chargePeriod ?? null;
-      const k = [tariffId, siteId, component, register, period ?? ''];
-      const est = r.estimated ? 1 : 0;
-      const cur = covering.get(...k, r.validFrom, r.validFrom);
-      if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.price) < 1e-9 && cur.estimated === est) continue;
-      for (const o of overlapping.all(...k, r.validTo ?? END, r.validFrom)) {
-        sup.run(recordedAt, o.id);
-        if (o.valid_from < r.validFrom) ins.run(tariffId, siteId, component, register, period, o.valid_from, r.validFrom, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note, o.estimated);
-        if (r.validTo != null && (o.valid_to ?? END) > r.validTo) ins.run(tariffId, siteId, component, register, period, r.validTo, o.valid_to, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note, o.estimated);
-      }
-      ins.run(tariffId, siteId, component, register, period, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null, est);
-      changed++;
-    }
-  });
+  await tx(async () => {
+        for (const r of [...rows].sort((a, b) => a.validFrom - b.validFrom)) {
+          const register = r.register ?? 'single';
+          const period = r.chargePeriod ?? null;
+          const k = [tariffId, siteId, component, register, period ?? ''];
+          const est = r.estimated ? 1 : 0;
+          const cur = await covering.get(...k, r.validFrom, r.validFrom);
+          if (cur && (cur.valid_to ?? null) === (r.validTo ?? null) && Math.abs(cur.price_ex_vat - r.price) < 1e-9 && cur.estimated === est) continue;
+          for (const o of await overlapping.all(...k, r.validTo ?? END, r.validFrom)) {
+            await sup.run(recordedAt, o.id);
+            if (o.valid_from < r.validFrom) await ins.run(tariffId, siteId, component, register, period, o.valid_from, r.validFrom, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note, o.estimated);
+            if (r.validTo != null && (o.valid_to ?? END) > r.validTo) await ins.run(tariffId, siteId, component, register, period, r.validTo, o.valid_to, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note, o.estimated);
+          }
+          await ins.run(tariffId, siteId, component, register, period, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null, est);
+          changed++;
+        }
+      });
   return changed;
 }
 
@@ -684,33 +684,33 @@ export function putRates(tariffId, siteId, rows, { component = 'unit', rawId = n
 // when another meter of the same kind already prices the home (an Octopus or typed-in tariff): the
 // rates are stored, the warning says why they do not price it. A changed tariff ends the old
 // agreement at the capture day and starts the new one there. Returns { agreed, changed, warning }.
-function ensureAgreement(site, tariffId, { kind, externalRef, label, fromTs, captureDayStart }) {
-  let dev = db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'tounify' AND external_ref = ?").get(site.id, externalRef);
-  const others = db.prepare(`SELECT t.tariff_code FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
+async function ensureAgreement(site, tariffId, { kind, externalRef, label, fromTs, captureDayStart }) {
+  let dev = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'tounify' AND external_ref = ?").get(site.id, externalRef);
+  const others = await db.prepare(`SELECT t.tariff_code FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
     WHERE a.site_id = ? AND d.kind = ? AND d.id <> ? AND d.retired_at IS NULL AND a.superseded_at IS NULL AND IFNULL(a.valid_to, ${END}) > ?`).all(site.id, kind, dev?.id ?? -1, fromTs);
   if (others.length) return { agreed: false, changed: false, warning: `the home is already priced by ${others[0].tariff_code} (${kind}): tounify rates stored, not agreed` };
-  if (!dev) dev = addDevice({ siteId: site.id, kind, provider: PROVIDER, externalRef, label });
-  else if (dev.retired_at) db.prepare('UPDATE device SET retired_at = NULL WHERE id = ?').run(dev.id);
-  const cur = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(dev.id);
+  if (!dev) dev = await addDevice({ siteId: site.id, kind, provider: PROVIDER, externalRef, label });
+  else if (dev.retired_at) await db.prepare('UPDATE device SET retired_at = NULL WHERE id = ?').run(dev.id);
+  const cur = await db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(dev.id);
   const open = cur.find((a) => a.valid_to == null);
   const closed = cur.filter((a) => a !== open).map((a) => ({ tariffId: a.tariff_id, from: a.valid_from, to: a.valid_to }));
   if (open?.tariff_id === tariffId) return { agreed: true, changed: false };
   if (open) {
     const at = Math.max(captureDayStart, open.valid_from);
     const keepOld = at > open.valid_from ? [{ tariffId: open.tariff_id, from: open.valid_from, to: at }] : [];
-    supersedeAgreements(site.id, dev.id, [...closed, ...keepOld, { tariffId, from: at, to: null }]);
+    await supersedeAgreements(site.id, dev.id, [...closed, ...keepOld, { tariffId, from: at, to: null }]);
     return { agreed: true, changed: true };
   }
   const after = Math.max(fromTs, ...closed.map((a) => a.to ?? 0));
-  supersedeAgreements(site.id, dev.id, [...closed, { tariffId, from: after, to: null }]);
+  await supersedeAgreements(site.id, dev.id, [...closed, { tariffId, from: after, to: null }]);
   return { agreed: true, changed: true };
 }
 
 // ───────────── VAT cross-check ─────────────
 
 // Our VAT rate (the percent rules, compounded across seq) for a home's country at ts, or null.
-function ourVat(country, ts) {
-  const rules = rulesFor(db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL').all(country), { country, fuel: 'electricity', direction: 'import', ts }).filter((r) => r.kind === 'percent');
+async function ourVat(country, ts) {
+  const rules = rulesFor(await db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL').all(country), { country, fuel: 'electricity', direction: 'import', ts }).filter((r) => r.kind === 'percent');
   if (rules.length) {
     const bySeq = new Map();
     for (const r of rules) bySeq.set(r.seq, (bySeq.get(r.seq) ?? 0) + r.value);
@@ -721,11 +721,11 @@ function ourVat(country, ts) {
 }
 
 /** Each VAT rate tounify states, against ours: [{ from_utc, tounify, ours, rules, match }] and warnings. Never changes a rule. */
-export function vatCheck(country, vat) {
+export async function vatCheck(country, vat) {
   const checks = [];
   const warnings = [];
   for (const v of vat) {
-    const o = ourVat(country, v.fromUtc);
+    const o = await ourVat(country, v.fromUtc);
     const match = o != null && Math.abs(o.rate - v.rate) < 1e-9;
     checks.push({ from_utc: v.fromUtc, tounify: v.rate, ours: o?.rate ?? null, rules: o?.rules ?? [], match });
     if (!o) warnings.push(`VAT: tounify states ${pct(v.rate)} from ${iso(v.fromUtc * 1000)}; we hold no VAT rule for ${country} then (our rules are kept as they are)`);
@@ -736,8 +736,8 @@ export function vatCheck(country, vat) {
 
 // ───────────── One home's daily read ─────────────
 
-function connectionOf(siteId) {
-  const c = db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'tounify'").get(siteId);
+async function connectionOf(siteId) {
+  const c = await db.prepare("SELECT * FROM connection WHERE site_id = ? AND provider = 'tounify'").get(siteId);
   if (!c) return null;
   let meta = {};
   try { meta = JSON.parse(c.meta || '{}'); } catch { meta = {}; }
@@ -753,29 +753,29 @@ function dueOf(cs, nowMs) {
 }
 
 /** Whether the home's daily price read may run now ({ due, reason }): registered, read at most once a UTC day, not before `next`, not cooling down. */
-export function priceReadDue(siteId, nowMs = clockOf(null).now()) {
-  const c = connectionOf(siteId);
+export async function priceReadDue(siteId, nowMs = clockOf(null).now()) {
+  const c = await connectionOf(siteId);
   if (!c?.external_ref) return { due: false, reason: 'no tounify tariff recorded for this home' };
   if (!c.meta.tariffs?.consumption) return { due: false, reason: 'no tounify tariff chosen yet for this home' };
-  const d = dueOf(readState().connections?.[c.external_ref] ?? {}, nowMs);
+  const d = dueOf((await readState()).connections?.[c.external_ref] ?? {}, nowMs);
   if (!d.due) return d;
-  const until = dbStore().nextAllowedAt();
+  const until = await dbStore().nextAllowedAt();
   if (until - nowMs > policy.maxWaitMs) return { due: false, reason: `cooling down: no request to tounify before ${iso(until)}` };
   return d;
 }
 
-function rawBody(rawId) {
-  const r = rawId ? db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(rawId) : null;
+async function rawBody(rawId) {
+  const r = rawId ? await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(rawId) : null;
   if (!r) return null;
   try { return JSON.parse(fs.readFileSync(path.join(dataDir, r.file), 'utf8')); } catch { return null; }
 }
 
 // The home's own off-peak hours on a French heures creuses tariff: what the choice stored on the connection, else
 // the meter's own windows. [{ from, to }] or null.
-function offPeakWindowsOf(site, meta) {
+async function offPeakWindowsOf(site, meta) {
   const stated = Array.isArray(meta?.off_peak_hours) ? meta.off_peak_hours.filter((w) => isObj(w) && typeof w.from === 'string' && typeof w.to === 'string') : [];
   if (stated.length) return stated;
-  return offPeakOf(site.id)?.all_year ?? null;
+  return (await offPeakOf(site.id))?.all_year ?? null;
 }
 
 /**
@@ -787,7 +787,7 @@ function offPeakWindowsOf(site, meta) {
  * auth failure is thrown: it stops the run.
  */
 export async function syncTounifyHome({ site, client, dev = null, force = false } = {}) {
-  const c = connectionOf(site.id);
+  const c = await connectionOf(site.id);
   if (!c?.external_ref) return { skipped: 'no tounify tariff recorded for this home (the tariff picker records it)' };
   const ref = c.external_ref;
   const consumption = c.meta.tariffs?.consumption ?? null;
@@ -795,13 +795,13 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   const cc = c.meta.country ?? site.country ?? site.market_code;
   const postal = String(c.meta.postal_code ?? site.postcode ?? '').trim();
   const nowMs = client.clock.now();
-  const prev = readState().connections?.[ref] ?? {};
+  const prev = (await readState()).connections?.[ref] ?? {};
   if (!force) { const d = dueOf(prev, nowMs); if (!d.due) return { skipped: d.reason }; }
   const kind = client.kind === 'prod' ? 'prod' : 'test';
   const out = { reference: ref, country: cc, warnings: [] };
-  const saveConn = (patch) => updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, ...patch }; });
+  const saveConn = async (patch) => await updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, ...patch }; });
   const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : 3600;
-  const catalogue = Object.fromEntries(Object.values(readState().catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
+  const catalogue = Object.fromEntries(Object.values((await readState()).catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
   const company = c.meta.company ?? catalogue[consumption]?.companyid ?? null;
   if (!postal) out.warnings.push('no postal code: priced without the grid operator\'s charge and local levies');
 
@@ -817,59 +817,59 @@ export async function syncTounifyHome({ site, client, dev = null, force = false 
   }
   const today = utcDay(nowMs);
   const request = { ...pReq, request_id: r.requestId ?? null };
-  const offPeak = { windows: offPeakWindowsOf(site, c.meta) };
+  const offPeak = { windows: await offPeakWindowsOf(site, c.meta) };
   const mp = mapPrices(r.body, { country: cc, currency: site.currency ?? null, catalogue, company, offPeak, kind, dev });
   if (!mp.ok) {
     const reason = `unexpected shape: ${mp.problems.join('; ')}`;
-    const qr = quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason });
-    saveConn({ last_price_day: today, last_read_at: iso(nowMs), last_error: reason });
+    const qr = await quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason });
+    await saveConn({ last_price_day: today, last_read_at: iso(nowMs), last_error: reason });
     return { ...out, failed: true, error: `tounify prices for ${ref}: ${reason}`, quarantined: qr.rawId };
   }
-  const pRaw = landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body }).rawId;
-  saveConn({ last_price_day: today, last_read_at: iso(nowMs), next_at: mp.next * 1000, prices_raw: pRaw, company: mp.company ?? prev.company ?? null, last_error: null, api: 'v2' });
+  const pRaw = (await landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body })).rawId;
+  await saveConn({ last_price_day: today, last_read_at: iso(nowMs), next_at: mp.next * 1000, prices_raw: pRaw, company: mp.company ?? prev.company ?? null, last_error: null, api: 'v2' });
   const zone = mp.zone || site.timezone;
   const captureDayStart = dayBounds(zone, localDate(zone, Math.floor(nowMs / 1000)))[0];
 
   // Write: tariff, unit rows, the meter's agreement, the connection's applied info.
   const recordedAt = recordedNow();
-  tx(() => {
-    const u = upsertTariff(mp.tariff);
-    // The supplier as its own row (delta 080): tounify's company id, named as the catalogue lists it.
-    if (mp.company) {
-      const listed = readState().catalogue?.[mp.tariff.country]?.companies?.find((x) => x.id === mp.company);
-      linkSupplier(u.row.id, { provider: PROVIDER, country: mp.tariff.country, externalId: mp.company, name: listed?.name ?? mp.company });
-    }
-    out.tariff = mp.tariff.tariffCode;
-    out.kind = mp.tariff.kind;
-    out.taxes_in_price = mp.taxesInPrice;
-    out.tariff_created = u.created;
-    const note = `${originNote({ kind, dev })}${mp.offPeak ? `; off-peak prices on the home's own hours ${mp.offPeak}` : ''}`;
-    out.unit_rows = putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: note })), { component: 'unit', rawId: pRaw, recordedAt });
-    out.points = r.body.consumption.length;
-    out.rows = mp.rows.length;
-    if (mp.offPeak) out.off_peak_hours = mp.offPeak;
-    const ag = ensureAgreement(site, u.row.id, { kind: 'meter_import', externalRef: ref, label: `tounify tariff ${consumption} (import)`, fromTs: mp.window.from, captureDayStart });
-    if (ag.warning) out.warnings.push(ag.warning);
-    out.agreed = ag.agreed;
-    out.agreements_changed = ag.changed;
-    if (mp.feedin) {
-      const f = upsertTariff(mp.feedin.tariff);
-      out.feedin_tariff = mp.feedin.tariff.tariffCode;
-      out.feedin_rows = putRates(f.row.id, site.id, mp.feedin.rows.map((x) => ({ ...x, originNote: originNote({ kind, dev }) })), { component: 'unit', rawId: pRaw, recordedAt });
-      const fa = ensureAgreement(site, f.row.id, { kind: 'meter_export', externalRef: `${ref}:export`, label: `tounify tariff ${mp.feedin.tariff.productCode} (export)`, fromTs: mp.window.from, captureDayStart });
-      if (fa.warning) out.warnings.push(fa.warning);
-      out.agreements_changed = out.agreements_changed || fa.changed;
-    }
-    // Fixed charges: none in v2. Say whether the home holds any (kept as they are) or has none.
-    const held = db.prepare("SELECT COUNT(*) AS n FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND superseded_at IS NULL AND valid_to IS NULL").get(u.row.id, site.id).n;
-    out.fixed = held ? `${held} fixed charge(s) held from before, kept (tounify v2 serves none)` : 'none: tounify v2 serves per-kWh prices only (subscription and standing charges are not in it)';
-    const applied = {
-      ...c.meta, country: cc, consumption_tariff: mp.tariff.productCode, company: mp.company ?? c.meta.company ?? null, grid_tariff: mp.grid,
-      resolution: mp.resolutionS, taxes_in_price: mp.taxesInPrice, api: 'v2',
-    };
-    db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'tounify'").run(JSON.stringify(applied), site.id);
-  });
-  const v = vatCheck(site.country ?? cc, mp.vat);
+  await tx(async () => {
+        const u = await upsertTariff(mp.tariff);
+        // The supplier as its own row (delta 080): tounify's company id, named as the catalogue lists it.
+        if (mp.company) {
+          const listed = (await readState()).catalogue?.[mp.tariff.country]?.companies?.find((x) => x.id === mp.company);
+          await linkSupplier(u.row.id, { provider: PROVIDER, country: mp.tariff.country, externalId: mp.company, name: listed?.name ?? mp.company });
+        }
+        out.tariff = mp.tariff.tariffCode;
+        out.kind = mp.tariff.kind;
+        out.taxes_in_price = mp.taxesInPrice;
+        out.tariff_created = u.created;
+        const note = `${originNote({ kind, dev })}${mp.offPeak ? `; off-peak prices on the home's own hours ${mp.offPeak}` : ''}`;
+        out.unit_rows = await putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: note })), { component: 'unit', rawId: pRaw, recordedAt });
+        out.points = r.body.consumption.length;
+        out.rows = mp.rows.length;
+        if (mp.offPeak) out.off_peak_hours = mp.offPeak;
+        const ag = await ensureAgreement(site, u.row.id, { kind: 'meter_import', externalRef: ref, label: `tounify tariff ${consumption} (import)`, fromTs: mp.window.from, captureDayStart });
+        if (ag.warning) out.warnings.push(ag.warning);
+        out.agreed = ag.agreed;
+        out.agreements_changed = ag.changed;
+        if (mp.feedin) {
+          const f = await upsertTariff(mp.feedin.tariff);
+          out.feedin_tariff = mp.feedin.tariff.tariffCode;
+          out.feedin_rows = await putRates(f.row.id, site.id, mp.feedin.rows.map((x) => ({ ...x, originNote: originNote({ kind, dev }) })), { component: 'unit', rawId: pRaw, recordedAt });
+          const fa = await ensureAgreement(site, f.row.id, { kind: 'meter_export', externalRef: `${ref}:export`, label: `tounify tariff ${mp.feedin.tariff.productCode} (export)`, fromTs: mp.window.from, captureDayStart });
+          if (fa.warning) out.warnings.push(fa.warning);
+          out.agreements_changed = out.agreements_changed || fa.changed;
+        }
+        // Fixed charges: none in v2. Say whether the home holds any (kept as they are) or has none.
+        const held = (await db.prepare("SELECT COUNT(*) AS n FROM rate_interval WHERE tariff_id = ? AND site_id = ? AND component = 'fixed' AND superseded_at IS NULL AND valid_to IS NULL").get(u.row.id, site.id)).n;
+        out.fixed = held ? `${held} fixed charge(s) held from before, kept (tounify v2 serves none)` : 'none: tounify v2 serves per-kWh prices only (subscription and standing charges are not in it)';
+        const applied = {
+          ...c.meta, country: cc, consumption_tariff: mp.tariff.productCode, company: mp.company ?? c.meta.company ?? null, grid_tariff: mp.grid,
+          resolution: mp.resolutionS, taxes_in_price: mp.taxesInPrice, api: 'v2',
+        };
+        await db.prepare("UPDATE connection SET meta = ? WHERE site_id = ? AND provider = 'tounify'").run(JSON.stringify(applied), site.id);
+      });
+  const v = await vatCheck(site.country ?? cc, mp.vat);
   out.vat_check = v.checks;
   out.warnings.push(...mp.warnings, ...v.warnings);
   out.window = { from: iso(mp.window.from * 1000), to: iso(mp.window.to * 1000) };
@@ -894,8 +894,8 @@ export async function quoteTariff(site, tariffId, { client, company = null, dev 
   const cc = countryOf(site);
   const code = `TOUNIFY-${cc}-${tariffId}`;
   const now = Math.floor(client.clock.now() / 1000);
-  const held = db.prepare(`SELECT COUNT(*) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.tariff_code = ? AND r.site_id = ?
-    AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ?`).get(code, site.id, now, now).n;
+  const held = (await db.prepare(`SELECT COUNT(*) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.tariff_code = ? AND r.site_id = ?
+    AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ?`).get(code, site.id, now, now)).n;
   if (held) return { available: true, tariff: code, cached: true };
   const postal = String(site.postcode ?? '').trim();
   const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : 3600;
@@ -907,30 +907,30 @@ export async function quoteTariff(site, tariffId, { client, company = null, dev 
   }
   const request = { method: 'GET', path: v2path(cc, '/dayahead'), query: q, request_id: r.requestId ?? null };
   const kind = client.kind === 'prod' ? 'prod' : 'test';
-  const catalogue = Object.fromEntries(Object.values(readState().catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
+  const catalogue = Object.fromEntries(Object.values((await readState()).catalogue?.[cc]?.tariffs ?? {}).flat().map((t) => [t.id, t]));
   const mp = mapPrices(r.body, { country: cc, currency: site.currency ?? null, catalogue, company: company ?? catalogue[tariffId]?.companyid ?? null, kind, dev });
   if (!mp.ok) {
-    quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason: `unexpected shape: ${mp.problems.join('; ')}` });
+    await quarantine({ source: PROVIDER, siteId: site.id, request, body: r.body, reason: `unexpected shape: ${mp.problems.join('; ')}` });
     return { available: false, tariff: code, reason: 'tounify answered in an unexpected shape (quarantined)' };
   }
-  const rawId = landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body }).rawId;
+  const rawId = (await landRaw({ source: PROVIDER, siteId: site.id, request, body: r.body })).rawId;
   let written = 0;
-  tx(() => {
-    const u = upsertTariff(mp.tariff);
-    if (mp.company) {
-      const listed = readState().catalogue?.[cc]?.companies?.find((x) => x.id === mp.company);
-      linkSupplier(u.row.id, { provider: PROVIDER, country: cc, externalId: mp.company, name: listed?.name ?? mp.company });
-    }
-    written = putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: `${originNote({ kind, dev })}; price preview in the tariff picker (the home is not on this tariff)` })), { component: 'unit', rawId, recordedAt: recordedNow() });
-  });
+  await tx(async () => {
+        const u = await upsertTariff(mp.tariff);
+        if (mp.company) {
+          const listed = (await readState()).catalogue?.[cc]?.companies?.find((x) => x.id === mp.company);
+          await linkSupplier(u.row.id, { provider: PROVIDER, country: cc, externalId: mp.company, name: listed?.name ?? mp.company });
+        }
+        written = await putRates(u.row.id, site.id, mp.rows.map((x) => ({ ...x, originNote: `${originNote({ kind, dev })}; price preview in the tariff picker (the home is not on this tariff)` })), { component: 'unit', rawId, recordedAt: recordedNow() });
+      });
   return { available: true, tariff: code, kind: mp.tariff.kind, cached: false, rows: written, warnings: mp.warnings };
 }
 
 /** A home's tounify status for the Providers panel and the Connectors page (no secret). */
-export function homeStatus(site) {
-  const c = connectionOf(site.id);
+export async function homeStatus(site) {
+  const c = await connectionOf(site.id);
   if (!c?.external_ref) return { status: 'skipped', reason: 'no tounify tariff recorded for this home yet (choose it in onboarding, or POST /api/sites/:id/connections with provider tounify)' };
-  const cs = readState().connections?.[c.external_ref] ?? {};
+  const cs = (await readState()).connections?.[c.external_ref] ?? {};
   if (cs.last_error) return { status: 'error', reason: cs.last_error };
   if (cs.last_read_at) return { status: 'ok', reason: `read ${cs.last_read_at}; ${dueOf(cs, clockOf(null).now()).reason ?? 'due now'}` };
   return { status: 'skipped', reason: c.meta.tariffs?.consumption ? 'tariff recorded, prices not read yet' : 'no tariff chosen yet' };
@@ -939,10 +939,10 @@ export function homeStatus(site) {
 // ───────────── Catalogue (shared, per country, once a week) ─────────────
 
 /** Whether the country's weekly catalogue refresh may run now. */
-export function catalogueDue(country, nowMs = clockOf(null).now()) {
-  const cat = readState().catalogue?.[country];
+export async function catalogueDue(country, nowMs = clockOf(null).now()) {
+  const cat = (await readState()).catalogue?.[country];
   if (cat?.api === 'v2' && cat.refreshed_at && nowMs - cat.refreshed_at < policy.catalogueEveryMs) return false;
-  return dbStore().nextAllowedAt() - nowMs <= policy.maxWaitMs;
+  return await dbStore().nextAllowedAt() - nowMs <= policy.maxWaitMs;
 }
 
 const compactCompany = (x) => ({ id: x.id, name: typeof x.name === 'string' ? x.name : null });
@@ -951,10 +951,10 @@ const listOfIds = (what) => (b) => (Array.isArray(b) && b.every((x) => isObj(x) 
 
 // The suppliers our homes in a country are on (each one's tariffs are listed in the weekly refresh; a company is
 // spent once on a testing token, so only these are named).
-function companiesInUse(country) {
-  const st = readState().connections ?? {};
+async function companiesInUse(country) {
+  const st = (await readState()).connections ?? {};
   const out = new Set();
-  for (const r of db.prepare("SELECT c.external_ref, c.meta, s.country FROM connection c JOIN site s ON s.id = c.site_id WHERE c.provider = 'tounify' AND c.external_ref IS NOT NULL").all()) {
+  for (const r of await db.prepare("SELECT c.external_ref, c.meta, s.country FROM connection c JOIN site s ON s.id = c.site_id WHERE c.provider = 'tounify' AND c.external_ref IS NOT NULL").all()) {
     let meta = {};
     try { meta = JSON.parse(r.meta || '{}'); } catch { meta = {}; }
     if ((meta.country ?? r.country) !== country) continue;
@@ -973,7 +973,7 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
   const nowMs = client.clock.now();
   // A catalogue read from the v3 preview (no api mark) is read again from v2 at once: its supplier list was narrowed
   // by a connection, and its lists carry v3 fields.
-  const v3cat = readState().catalogue?.[country] ?? {};
+  const v3cat = (await readState()).catalogue?.[country] ?? {};
   const cat0 = v3cat.api === 'v2' ? v3cat : { tariffs: {}, listed_at: {}, api: 'v2' };
   if (!force && cat0.refreshed_at && nowMs - cat0.refreshed_at < policy.catalogueEveryMs) {
     return { skipped: `not due: one catalogue refresh a week per country, the next after ${iso(cat0.refreshed_at + policy.catalogueEveryMs)}` };
@@ -985,18 +985,18 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
   cat.listed_at ??= {};
   const out = { country, read: [], not_modified: [], warnings: [] };
   const step = async (key, pathname, opts, accept) => {
-    const stored = cat.raw[key] ? rawBody(cat.raw[key]) : null;
+    const stored = cat.raw[key] ? await rawBody(cat.raw[key]) : null;
     const r = await client.request('GET', pathname, { ...opts, etag: stored && cat.etags[key] ? cat.etags[key] : null });
     cat.listed_at[key] = nowMs;
     if (r.notModified) { out.not_modified.push(key); return stored; }
     const problem = accept(r.body);
     const request = { method: 'GET', path: pathname, request_id: r.requestId ?? null };
     if (problem) {
-      quarantine({ source: PROVIDER, siteId: null, request, body: r.body, reason: `unexpected shape: ${problem}` });
+      await quarantine({ source: PROVIDER, siteId: null, request, body: r.body, reason: `unexpected shape: ${problem}` });
       out.warnings.push(`${key}: unexpected shape (${problem}): quarantined`);
       return null;
     }
-    cat.raw[key] = landRaw({ source: PROVIDER, siteId: null, request, body: r.body }).rawId;
+    cat.raw[key] = (await landRaw({ source: PROVIDER, siteId: null, request, body: r.body })).rawId;
     cat.etags[key] = r.etag ?? null;
     out.read.push(key);
     return r.body;
@@ -1005,19 +1005,19 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
     const comps = await step('companies', v2path(country, '/consumption/companies'), { scope: { endpoint: 'GET companies', thing: country } }, listOfIds('companies'));
     if (comps) cat.companies = comps.map(compactCompany);
     cat.tariffs ??= {};
-    for (const company of companiesInUse(country)) {
+    for (const company of await companiesInUse(country)) {
       const list = await step(`tariffs:${company}`, v2path(country, `/consumption/${encodeURIComponent(company)}/tariffs`),
         { scope: { endpoint: 'GET tariffs', thing: company }, names: { companies: [company] } }, listOfIds('tariffs'));
       if (list) cat.tariffs[company] = list.map(compactTariff);
     }
   } catch (err) {
-    updateState((s) => { s.catalogue ??= {}; s.catalogue[country] = { ...cat, last_error: err.message, last_error_at: nowMs }; });
+    await updateState((s) => { s.catalogue ??= {}; s.catalogue[country] = { ...cat, last_error: err.message, last_error_at: nowMs }; });
     if (err.kind === 'allowance' || err.kind === 'cooldown') return { skipped: err.message, ...out };
     throw err;
   }
   cat.refreshed_at = nowMs;
   cat.last_error = null;
-  updateState((s) => { s.catalogue ??= {}; s.catalogue[country] = cat; });
+  await updateState((s) => { s.catalogue ??= {}; s.catalogue[country] = cat; });
   out.companies = cat.companies?.length ?? 0;
   out.tariffs = Object.fromEntries(Object.entries(cat.tariffs ?? {}).map(([k, v]) => [k, v.length]));
   out.next_refresh_after = iso(nowMs + policy.catalogueEveryMs);
@@ -1032,7 +1032,7 @@ export async function refreshCatalogue({ country, client, force = false } = {}) 
 // every catalogueEveryMs (7 days), so the second and later homes of a country cost no call. Naming a company spends
 // one of a testing token's distinct companies (the allowance guard refuses it first).
 async function listCached(country, client, key, pathname, scope, names, force, siteId = null) {
-  const cat0 = readState().catalogue?.[country] ?? {};
+  const cat0 = (await readState()).catalogue?.[country] ?? {};
   const cat = cat0.api === 'v2' ? cat0 : {};   // a list read from the v3 preview is never reused
   const nowMs = client.clock.now();
   const at = cat.listed_at?.[key];
@@ -1042,34 +1042,34 @@ async function listCached(country, client, key, pathname, scope, names, force, s
   const request = { method: 'GET', path: pathname, request_id: r.requestId ?? null };
   const problem = listOfIds(key === 'companies' ? 'companies' : 'tariffs')(r.body);
   if (problem) {
-    quarantine({ source: PROVIDER, siteId, request, body: r.body, reason: `unexpected shape: ${problem}` });
+    await quarantine({ source: PROVIDER, siteId, request, body: r.body, reason: `unexpected shape: ${problem}` });
     throw new TounifyError(`tounify ${key}: unexpected answer (quarantined)`, { kind: 'shape' });
   }
-  landRaw({ source: PROVIDER, siteId, request, body: r.body });
+  await landRaw({ source: PROVIDER, siteId, request, body: r.body });
   const list = key === 'companies' ? r.body.map(compactCompany) : r.body.map(compactTariff);
-  updateState((s) => {
-    s.catalogue ??= {};
-    if (s.catalogue[country]?.api !== 'v2') s.catalogue[country] = { api: 'v2' };
-    const k = s.catalogue[country];
-    if (key === 'companies') k.companies = list; else (k.tariffs ??= {})[key.slice('tariffs:'.length)] = list;
-    (k.listed_at ??= {})[key] = nowMs;
-  });
+  await updateState((s) => {
+        s.catalogue ??= {};
+        if (s.catalogue[country]?.api !== 'v2') s.catalogue[country] = { api: 'v2' };
+        const k = s.catalogue[country];
+        if (key === 'companies') k.companies = list; else (k.tariffs ??= {})[key.slice('tariffs:'.length)] = list;
+        (k.listed_at ??= {})[key] = nowMs;
+      });
   return { list, cached: false, country, listed_at: iso(nowMs) };
 }
 const countryOf = (site) => site.country ?? site.market_code;
 
 /** The electricity suppliers (consumption companies) of the home's country: { list: [{ id, name }], cached, country }. */
-export function listCompanies(site, { client, force = false } = {}) {
+export async function listCompanies(site, { client, force = false } = {}) {
   const cc = countryOf(site);
-  return listCached(cc, client, 'companies', v2path(cc, '/consumption/companies'), { endpoint: 'GET companies', thing: cc }, undefined, force, site.id);
+  return await listCached(cc, client, 'companies', v2path(cc, '/consumption/companies'), { endpoint: 'GET companies', thing: cc }, undefined, force, site.id);
 }
 
 /** One supplier's consumption tariffs: { list: [{ id, name, companyid, type, available, link }], cached, country }. */
-export function listCompanyTariffs(site, company, { client, force = false } = {}) {
+export async function listCompanyTariffs(site, company, { client, force = false } = {}) {
   if (!company || typeof company !== 'string') throw bad('a supplier (tounify company id) is required');
   const cc = countryOf(site);
-  return listCached(cc, client, `tariffs:${company}`, v2path(cc, `/consumption/${encodeURIComponent(company)}/tariffs`), { endpoint: 'GET tariffs', thing: company },
-    { companies: [company] }, force, site.id);
+  return await listCached(cc, client, `tariffs:${company}`, v2path(cc, `/consumption/${encodeURIComponent(company)}/tariffs`), { endpoint: 'GET tariffs', thing: company },
+      { companies: [company] }, force, site.id);
 }
 
 /** The network operator serving a postal code (GET /v2/{cc}/grid/companies?postal_code=): { id, name } or null (not mapped). */
@@ -1081,8 +1081,8 @@ export async function gridOperatorAt(cc, postalCode, { client } = {}) {
 }
 
 /** The catalogue's state for a market (status hook). */
-export function catalogueStatus(country) {
-  const cat = readState().catalogue?.[country];
+export async function catalogueStatus(country) {
+  const cat = (await readState()).catalogue?.[country];
   if (!cat) return { status: 'skipped', reason: `no tounify catalogue refresh for ${country} yet` };
   if (cat.last_error && (cat.last_error_at ?? 0) >= (cat.refreshed_at ?? 0)) return { status: 'error', reason: cat.last_error };
   // Only the tariff picker's supplier lists are held (catalogue[cc].companies/tariffs, listed_at): the weekly refresh
@@ -1097,8 +1097,8 @@ export function catalogueStatus(country) {
 const hhmm = (min) => `${String(Math.floor((min % 1440) / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 // The off-peak hours a home's own meter windows state (register hc / off-peak / night, every day, local clock), or null.
-function offPeakOf(siteId) {
-  const ws = db.prepare(`SELECT w.start_min, w.end_min FROM register_window w JOIN device d ON d.id = w.device_id
+async function offPeakOf(siteId) {
+  const ws = await db.prepare(`SELECT w.start_min, w.end_min FROM register_window w JOIN device d ON d.id = w.device_id
     WHERE d.site_id = ? AND d.retired_at IS NULL AND w.superseded_at IS NULL AND w.calendar IS NULL AND w.clock = 'local' AND w.weekdays = 127
       AND lower(w.register) IN ('hc', 'off_peak', 'offpeak', 'night') ORDER BY w.start_min`).all(siteId);
   if (!ws.length) return null;
@@ -1112,7 +1112,7 @@ function offPeakOf(siteId) {
  * no_tariff_yet. Off-peak hours: those given (metering.off_peak_hours.all_year, or off_peak_hours), else the meter's
  * own windows. Returns { meta, warnings, names }. Pure on the database; no personal data beyond the postal code.
  */
-export function connectionBody(site, input = {}, cc = countryOf(site)) {
+export async function connectionBody(site, input = {}, cc = countryOf(site)) {
   const warnings = [];
   const postal = String(input.postal_code ?? site.postcode ?? '').trim();
   if (!postal) throw bad('postal_code is required: the postal code selects the network operator, the local levies and the time-of-use clock (it is the only address detail sent)');
@@ -1121,7 +1121,7 @@ export function connectionBody(site, input = {}, cc = countryOf(site)) {
   const feedin = typeof input.feedin_tariff === 'string' && input.feedin_tariff.trim() ? input.feedin_tariff.trim() : null;
   const given = input.off_peak_hours ?? input.metering?.off_peak_hours?.all_year ?? null;
   const hours = Array.isArray(given) ? given.filter((w) => isObj(w) && typeof w.from === 'string' && typeof w.to === 'string').map((w) => ({ from: w.from, to: w.to }))
-    : isObj(given) && typeof given.from === 'string' ? [{ from: given.from, to: given.to }] : (offPeakOf(site.id)?.all_year ?? null);
+    : isObj(given) && typeof given.from === 'string' ? [{ from: given.from, to: given.to }] : ((await offPeakOf(site.id))?.all_year ?? null);
   for (const k of ['capacity', 'metering', 'grid_operator']) if (input[k] != null && !(k === 'metering' && given)) warnings.push(`${k}: tounify v2 takes no connection details; kept here only where it prices (off-peak hours)`);
   const meta = {
     country: cc, postal_code: postal, tariffs: { consumption: consumption || null, feedin },
@@ -1143,8 +1143,8 @@ export function connectionBody(site, input = {}, cc = countryOf(site)) {
 export async function registerConnection(site, input = {}, { client = null } = {}) {
   const cc = countryOf(site);
   const ref = referenceOf(site);
-  const { meta, warnings } = connectionBody(site, input, cc);
-  const prior = connectionOf(site.id);
+  const { meta, warnings } = await connectionBody(site, input, cc);
+  const prior = await connectionOf(site.id);
   let operator = prior?.meta?.postal_code === meta.postal_code ? prior.meta.grid_operator ?? null : null;
   if (!operator && client) {
     try { operator = await gridOperatorAt(cc, meta.postal_code, { client }); if (!operator) warnings.push(`the postal code ${meta.postal_code} maps to no network operator in tounify: prices may lack the grid charge`); } catch (err) {
@@ -1156,10 +1156,10 @@ export async function registerConnection(site, input = {}, { client = null } = {
   meta.updated_at = iso(client?.clock?.now() ?? Date.now());
   const keep = prior?.meta ?? {};
   const full = { ...keep, ...meta, company: meta.company ?? (keep.tariffs?.consumption === meta.tariffs.consumption ? keep.company ?? null : null) };
-  db.prepare(`INSERT INTO connection (site_id, provider, external_ref, meta) VALUES (?, 'tounify', ?, ?)
+  await db.prepare(`INSERT INTO connection (site_id, provider, external_ref, meta) VALUES (?, 'tounify', ?, ?)
     ON CONFLICT (site_id, provider) DO UPDATE SET external_ref = excluded.external_ref, meta = excluded.meta`).run(site.id, ref, JSON.stringify(full));
   // A new tariff is read in full at the next read (the daily gate is per tariff choice, not per day alone).
-  if (keep.tariffs?.consumption !== meta.tariffs.consumption) updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, last_price_day: null, next_at: null }; });
+  if (keep.tariffs?.consumption !== meta.tariffs.consumption) await updateState((s) => { s.connections ??= {}; s.connections[ref] = { ...(s.connections[ref] ?? {}), country: cc, last_price_day: null, next_at: null }; });
   return {
     created: !prior, reference: ref, country: cc,
     grid_resolution: operator ? { operator, location_mapped: true, source: 'postal_code' } : null,
@@ -1171,21 +1171,21 @@ export async function registerConnection(site, input = {}, { client = null } = {
 
 /** Forget the home's tounify tariff: end its agreements now (kept as history) and drop the row. No call. */
 export async function removeConnection(site, { client = null } = {}) {
-  const c = connectionOf(site.id);
+  const c = await connectionOf(site.id);
   if (!c?.external_ref) return { removed: false, reason: 'no tounify tariff recorded for this home' };
   const ref = c.external_ref;
   const cc = c.meta.country ?? countryOf(site);
   const now = Math.floor((client?.clock?.now() ?? Date.now()) / 1000);
-  tx(() => {
-    for (const d of db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'tounify' AND retired_at IS NULL").all(site.id)) {
-      const cur = db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(d.id);
-      if (cur.some((a) => a.valid_to == null && a.valid_from < now)) {
-        supersedeAgreements(site.id, d.id, cur.filter((a) => a.valid_from < now).map((a) => ({ tariffId: a.tariff_id, from: a.valid_from, to: a.valid_to == null || a.valid_to > now ? now : a.valid_to })));
-      }
-    }
-    db.prepare("DELETE FROM connection WHERE site_id = ? AND provider = 'tounify'").run(site.id);
-  });
-  updateState((s) => { if (s.connections) delete s.connections[ref]; });
+  await tx(async () => {
+        for (const d of await db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'tounify' AND retired_at IS NULL").all(site.id)) {
+          const cur = await db.prepare('SELECT * FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL ORDER BY valid_from').all(d.id);
+          if (cur.some((a) => a.valid_to == null && a.valid_from < now)) {
+            await supersedeAgreements(site.id, d.id, cur.filter((a) => a.valid_from < now).map((a) => ({ tariffId: a.tariff_id, from: a.valid_from, to: a.valid_to == null || a.valid_to > now ? now : a.valid_to })));
+          }
+        }
+        await db.prepare("DELETE FROM connection WHERE site_id = ? AND provider = 'tounify'").run(site.id);
+      });
+  await updateState((s) => { if (s.connections) delete s.connections[ref]; });
   return { removed: true, reference: ref, country: cc };
 }
 
@@ -1195,12 +1195,12 @@ export async function removeConnection(site, { client = null } = {}) {
  * owned by the core), then the core's token, then the home's tariff recorded.
  */
 export async function connectTounify(d, site, input = {}, { env = process.env, client = null } = {}) {
-  const { row, market } = connectable(d, site, { provider: PROVIDER, role: input.role ?? null });
+  const { row, market } = await connectable(d, site, { provider: PROVIDER, role: input.role ?? null });
   const c = credentialsFromEnv(env);
   if (c.missing) throw bad(c.missing);
   let r;
   try {
-    r = await registerConnection(site, input, { client: client ?? clientFor(c.creds) });
+    r = await registerConnection(site, input, { client: client ?? await clientFor(c.creds) });
   } catch (err) {
     if (!(err instanceof TounifyError)) throw err;
     // The API's answer as ours: refused here or rate-limited -> 429; refused by tounify -> 400 (its code in

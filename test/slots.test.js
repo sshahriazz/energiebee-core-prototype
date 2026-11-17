@@ -8,7 +8,7 @@ useDb();
 const { slotsOfDay, slotOfDay, todMinute, slotLabel, slotLength, slotPhase, SLOT_LENGTHS, localToUtc } = await import('../src/core/time.js');
 const { priceAt, priceOver, dispatchAllowance } = await import('../src/core/pricing.js');
 
-test('slots per local day at 15, 30 and 60 minutes: short, long and ordinary days in three zones', () => {
+await test('slots per local day at 15, 30 and 60 minutes: short, long and ordinary days in three zones', () => {
   const expect = { '2026-03-29': [92, 46, 23], '2026-10-25': [100, 50, 25], '2026-10-24': [96, 48, 24] };
   for (const tz of ['Europe/London', 'Europe/Paris', 'Europe/Amsterdam']) {
     for (const [date, counts] of Object.entries(expect)) {
@@ -24,7 +24,7 @@ test('slots per local day at 15, 30 and 60 minutes: short, long and ordinary day
   assert.equal(slotsOfDay('Europe/London', '2026-10-24').length, 48);
 });
 
-test('slot of the day comes from the local clock, so a time keeps its index across clock changes', () => {
+await test('slot of the day comes from the local clock, so a time keeps its index across clock changes', () => {
   const tz = 'Europe/London';
   for (const date of ['2026-03-29', '2026-10-24', '2026-10-25']) {
     const [y, m, d] = date.split('-').map(Number);
@@ -59,7 +59,7 @@ function pricing(units, { structure = 'flat', dispatches = [], iogWindow = null 
   };
 }
 
-test('priceOver: two prices in a slot give their time-weighted mean', () => {
+await test('priceOver: two prices in a slot give their time-weighted mean', () => {
   const p = pricing([[T, T + 1800, 10], [T + 1800, T + 3600, 20]]);
   const hour = priceOver(p, 'meter_import', T, 3600);
   assert.equal(hour.unitEx, 15);
@@ -70,14 +70,14 @@ test('priceOver: two prices in a slot give their time-weighted mean', () => {
   assert.equal(priceOver(q, 'meter_import', T, 3600).unitEx, 12.5);
 });
 
-test('priceOver: one unpriced moment leaves the slot unpriced', () => {
+await test('priceOver: one unpriced moment leaves the slot unpriced', () => {
   const p = pricing([[T, T + 1800, 10]]);
   const hour = priceOver(p, 'meter_import', T, 3600);
   assert.equal(hour.unitEx, null);
   assert.equal(hour.standingEx, 48, 'the standing charge is still known');
 });
 
-test('priceOver: equal prices across the slot return exactly what priceAt gives (half-hours unchanged)', () => {
+await test('priceOver: equal prices across the slot return exactly what priceAt gives (half-hours unchanged)', () => {
   const p = pricing([[T, T + 1800, 10.123456789], [T + 1800, T + 3600, 20]]);
   assert.deepEqual(priceOver(p, 'meter_import', T, 1800), priceAt(p, 'meter_import', T));
   assert.deepEqual(priceOver(p, 'meter_import', T + 1800, 1800), priceAt(p, 'meter_import', T + 1800));
@@ -85,7 +85,7 @@ test('priceOver: equal prices across the slot return exactly what priceAt gives 
   assert.deepEqual(priceOver(p, 'meter_import', T + 900, 900), priceAt(p, 'meter_import', T + 900));
 });
 
-test('Intelligent Octopus: a smart-charge half-hour discounts the 15-minute slots inside it, :15 and :45 included', () => {
+await test('Intelligent Octopus: a smart-charge half-hour discounts the 15-minute slots inside it, :15 and :45 included', () => {
   const units = [[0, null, 30, 'day'], [0, null, 7, 'night']];
   const p = pricing(units, { structure: 'iog', iogWindow: { start: 23 * 60 + 30, end: 5 * 60 + 30 }, dispatches: [{ start_ts: T, end_ts: T + 1800 }] });
   for (const s of [T, T + 900]) {
@@ -104,7 +104,7 @@ test('Intelligent Octopus: a smart-charge half-hour discounts the 15-minute slot
   assert.equal(priceOver(p3, 'meter_import', T, 3600).unitEx, 18.5);
 });
 
-test('a new slot length is recorded once as slot_s, not as a change in slot counts', async () => {
+await test('a new slot length is recorded once as slot_s, not as a change in slot counts', async () => {
   const { dayChanges } = await import('../src/core/build.js');
   const day = { slots_final: 48, slots_provisional: 0, slots_missing: 0, solar: 5, home: 10, grid_import: 6, grid_export: 1, gas: null, total_cost: 100, saving: 20, method_version: 'v' };
   assert.deepEqual(dayChanges({ ...day, slot_s: 1800 }, {}, { ...day, slots_final: 96, slot_s: 900 }, {}), [{ field: 'slot_s', from: 1800, to: 900 }]);

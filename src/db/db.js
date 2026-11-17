@@ -183,7 +183,7 @@ export const db = {
 
 export async function tx(fn) {
   if (txStore.getStore()) return fn();
-  return prisma.$transaction((t) => txStore.run(t, fn), { maxWait: 60_000, timeout: 30 * 60_000 });
+  return await prisma.$transaction((t) => txStore.run(t, fn), { maxWait: 60_000, timeout: 30 * 60_000 });
 }
 export const inTx = () => Boolean(txStore.getStore());
 
@@ -271,7 +271,7 @@ export const vatRulesChanged = await syncVatRules();
 if (await marketSeedPending(db) || await regionSeedPending(db) || await providerSeedPending(db)) {
   await tx(async () => { await seedMarkets(db); await seedBiddingZones(db); await seedRegionsGb(db); await seedProviders(db); });
 }
-if (await bindingSeedPending(db)) await tx(() => seedBindings(db));
+if (await bindingSeedPending(db)) await tx(async () => await seedBindings(db));
 if (await attributeSeedPending(db) || await settingSeedPending(db)) await tx(async () => { await seedAttributeDefs(db); await seedSettingDefs(db); });
 {
   // A row already there (an installer's correction) is never overwritten.
@@ -296,8 +296,8 @@ async function lookup(cache, table, code, what) {
   }
   return id;
 }
-export const sourceId = (code) => lookup(sourceIds, 'source', code, 'source');
-export const metricId = (code) => lookup(metricIds, 'metric', code, 'metric');
+export const sourceId = async (code) => await lookup(sourceIds, 'source', code, 'source');
+export const metricId = async (code) => await lookup(metricIds, 'metric', code, 'metric');
 
 // Planner statistics: ANALYZE after a rebuild (build.js processQueue, the rebuild endpoint) so the planner
 // keeps choosing the indexes as the tables grow. Best effort.

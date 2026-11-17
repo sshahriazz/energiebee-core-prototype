@@ -23,56 +23,56 @@ import { viewWindows } from './access.js';
 
 // ───────────── Column classes (data) ─────────────
 
-export function loadClasses() {
-  return new Map(db.prepare("SELECT column_name, class, weight_by FROM column_class WHERE table_name = 'site_hh'").all().map((r) => [r.column_name, { cls: r.class, weightBy: r.weight_by }]));
+export async function loadClasses() {
+  return new Map((await db.prepare("SELECT column_name, class, weight_by FROM column_class WHERE table_name = 'site_hh'").all()).map((r) => [r.column_name, { cls: r.class, weightBy: r.weight_by }]));
 }
 const colsOf = (classes, ...names) => [...classes].filter(([, v]) => names.includes(v.cls)).map(([k]) => k);
 
 // ───────────── Groups, membership, sharing ─────────────
 
-export function createGroup({ name, ownerId, timezone, now = Date.now() }) {
+export async function createGroup({ name, ownerId, timezone, now = Date.now() }) {
   if (!String(name ?? '').trim()) throw new Error('a group needs a name');
   if (!timezone) throw new Error('a group needs a time zone: its days are cut in it');
   new Intl.DateTimeFormat('en', { timeZone: timezone });   // throws on an unknown zone
-  return Number(db.prepare('INSERT INTO site_group (name, owner_id, timezone, created_at) VALUES (?, ?, ?, ?)').run(name, ownerId, timezone, now).lastInsertRowid);
+  return Number((await db.prepare('INSERT INTO site_group (name, owner_id, timezone, created_at) VALUES (?, ?, ?, ?)').run(name, ownerId, timezone, now)).lastInsertRowid);
 }
-export const getGroup = (groupId) => db.prepare('SELECT * FROM site_group WHERE id = ?').get(groupId);
+export const getGroup = async (groupId) => await db.prepare('SELECT * FROM site_group WHERE id = ?').get(groupId);
 
 // A home counts in the group from `from` to `to` (seconds; null = open).
-export function addMember(groupId, siteId, { from = null, to = null, now = Date.now() } = {}) {
-  return Number(db.prepare('INSERT INTO site_group_member (group_id, site_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, ?)').run(groupId, siteId, from, to, now).lastInsertRowid);
+export async function addMember(groupId, siteId, { from = null, to = null, now = Date.now() } = {}) {
+  return Number((await db.prepare('INSERT INTO site_group_member (group_id, site_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, ?)').run(groupId, siteId, from, to, now)).lastInsertRowid);
 }
 
 // The home stops counting at `at` (seconds). Earlier periods stay: the open row is superseded and written again
 // with its end, so the membership as recorded before this call can still be asked for.
-export function endMembership(groupId, siteId, at, { now = Date.now() } = {}) {
-  const open = db.prepare('SELECT * FROM site_group_member WHERE group_id = ? AND site_id = ? AND superseded_at IS NULL AND (valid_to IS NULL OR valid_to > ?)').all(groupId, siteId, at);
+export async function endMembership(groupId, siteId, at, { now = Date.now() } = {}) {
+  const open = await db.prepare('SELECT * FROM site_group_member WHERE group_id = ? AND site_id = ? AND superseded_at IS NULL AND (valid_to IS NULL OR valid_to > ?)').all(groupId, siteId, at);
   for (const o of open) {
-    db.prepare('UPDATE site_group_member SET superseded_at = ? WHERE id = ?').run(now, o.id);
+    await db.prepare('UPDATE site_group_member SET superseded_at = ? WHERE id = ?').run(now, o.id);
     if (o.valid_from == null || o.valid_from < at) {
-      db.prepare('INSERT INTO site_group_member (group_id, site_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, ?)').run(groupId, siteId, o.valid_from, at, now);
+      await db.prepare('INSERT INTO site_group_member (group_id, site_id, valid_from, valid_to, recorded_at) VALUES (?, ?, ?, ?, ?)').run(groupId, siteId, o.valid_from, at, now);
     }
   }
   return open.length;
 }
 
 // Membership rows as known at knownAt (ms; null = now).
-export function membersOf(groupId, { knownAt = null } = {}) {
+export async function membersOf(groupId, { knownAt = null } = {}) {
   const at = knownAt ?? Number.MAX_SAFE_INTEGER;
-  return db.prepare('SELECT * FROM site_group_member WHERE group_id = ? AND recorded_at <= ? AND (superseded_at IS NULL OR superseded_at > ?) ORDER BY site_id, valid_from IS NOT NULL, valid_from').all(groupId, at, at);
+  return await db.prepare('SELECT * FROM site_group_member WHERE group_id = ? AND recorded_at <= ? AND (superseded_at IS NULL OR superseded_at > ?) ORDER BY site_id, valid_from IS NOT NULL, valid_from').all(groupId, at, at);
 }
 
-export function shareGroup({ groupId, userId, role = 'viewer', now = Date.now() }) {
-  return Number(db.prepare('INSERT INTO group_grant (group_id, user_id, role, recorded_at) VALUES (?, ?, ?, ?)').run(groupId, userId, role, now).lastInsertRowid);
+export async function shareGroup({ groupId, userId, role = 'viewer', now = Date.now() }) {
+  return Number((await db.prepare('INSERT INTO group_grant (group_id, user_id, role, recorded_at) VALUES (?, ?, ?, ?)').run(groupId, userId, role, now)).lastInsertRowid);
 }
-export function revokeGroupShare({ groupId, userId, now = Date.now() }) {
-  return Number(db.prepare('UPDATE group_grant SET revoked_at = ? WHERE group_id = ? AND user_id = ? AND revoked_at IS NULL').run(now, groupId, userId).changes);
+export async function revokeGroupShare({ groupId, userId, now = Date.now() }) {
+  return Number((await db.prepare('UPDATE group_grant SET revoked_at = ? WHERE group_id = ? AND user_id = ? AND revoked_at IS NULL').run(now, groupId, userId)).changes);
 }
-export function canViewGroup(userId, groupId, now = Date.now()) {
-  const g = getGroup(groupId);
+export async function canViewGroup(userId, groupId, now = Date.now()) {
+  const g = await getGroup(groupId);
   if (!g) return false;
   if (g.owner_id === userId) return true;
-  return Boolean(db.prepare('SELECT 1 FROM group_grant WHERE group_id = ? AND user_id = ? AND recorded_at <= ? AND (revoked_at IS NULL OR revoked_at > ?)').get(groupId, userId, now, now));
+  return Boolean(await db.prepare('SELECT 1 FROM group_grant WHERE group_id = ? AND user_id = ? AND recorded_at <= ? AND (revoked_at IS NULL OR revoked_at > ?)').get(groupId, userId, now, now));
 }
 
 // ───────────── Windows ─────────────
@@ -98,13 +98,13 @@ const worst = (states) => (states.includes('incomplete') ? 'incomplete' : states
  *   member slot; a bucket shorter than a member's slot is refused), now (ms, for grants) }
  * @returns { group, bucketS, from, to, currencies, sites (the homes that counted), buckets: [...] }
  */
-export function groupSlots(groupId, fromTs, toTs, opts = {}) {
-  const group = getGroup(groupId);
+export async function groupSlots(groupId, fromTs, toTs, opts = {}) {
+  const group = await getGroup(groupId);
   if (!group) throw new RangeError(`no group ${groupId}`);
   const now = opts.now ?? Date.now();
   const viewer = opts.viewer ?? null;
-  if (viewer != null && !canViewGroup(viewer, groupId, now)) throw new Error('no access to this group');
-  const classes = loadClasses();
+  if (viewer != null && !await canViewGroup(viewer, groupId, now)) throw new Error('no access to this group');
+  const classes = await loadClasses();
   const energyCols = colsOf(classes, 'energy', 'flow', 'carbon', 'forecast');
   const moneyCols = colsOf(classes, 'money');
   const priceCols = colsOf(classes, 'price');
@@ -112,22 +112,22 @@ export function groupSlots(groupId, fromTs, toTs, opts = {}) {
 
   // Each member home's windows: its membership intersected with what the viewer may read.
   const byHome = new Map();
-  for (const m of membersOf(groupId, { knownAt: opts.knownAt ?? null })) {
+  for (const m of await membersOf(groupId, { knownAt: opts.knownAt ?? null })) {
     const mw = { from: Math.max(fromTs, m.valid_from ?? NEG), to: Math.min(toTs, m.valid_to ?? POS) };
-    const parts = viewer == null ? [mw] : viewWindows(viewer, m.site_id, now).map((w) => ({ from: Math.max(mw.from, w.from ?? NEG), to: Math.min(mw.to, w.to ?? POS) }));
+    const parts = viewer == null ? [mw] : (await viewWindows(viewer, m.site_id, now)).map((w) => ({ from: Math.max(mw.from, w.from ?? NEG), to: Math.min(mw.to, w.to ?? POS) }));
     byHome.set(m.site_id, [...(byHome.get(m.site_id) ?? []), ...parts]);
   }
   const homes = [];
   for (const [siteId, ws] of byHome) {
     const windows = mergeWindows(ws);
-    if (windows.length) homes.push({ siteId, windows, site: db.prepare('SELECT id, currency, slot_s, battery_kwh FROM site WHERE id = ?').get(siteId) });
+    if (windows.length) homes.push({ siteId, windows, site: await db.prepare('SELECT id, currency, slot_s, battery_kwh FROM site WHERE id = ?').get(siteId) });
   }
 
   // The rows, once.
   const rowsOf = new Map();
   for (const h of homes) {
     const lo = Math.min(...h.windows.map((w) => w.from)); const hi = Math.max(...h.windows.map((w) => w.to));
-    rowsOf.set(h.siteId, db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start').all(h.siteId, lo, hi).filter((r) => inWindows(h.windows, r.slot_start)));
+    rowsOf.set(h.siteId, (await db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start').all(h.siteId, lo, hi)).filter((r) => inWindows(h.windows, r.slot_start)));
   }
   const longest = Math.max(0, ...[...rowsOf.values()].flat().map((r) => r.dur_s), ...homes.map((h) => h.site?.slot_s ?? 0));
   const bucketS = opts.bucketS ?? (longest || 3600);
@@ -135,7 +135,7 @@ export function groupSlots(groupId, fromTs, toTs, opts = {}) {
   const tooLong = [...rowsOf.entries()].find(([, rs]) => rs.some((r) => r.dur_s > bucketS));
   if (tooLong) throw new RangeError(`bucket ${bucketS} s is shorter than the ${Math.max(...tooLong[1].map((r) => r.dur_s))} s slots of home ${tooLong[0]}: a slot is never split, ask for a longer bucket`);
 
-  const capAt = (h, slotStart) => attributeAt(h.siteId, 'battery_kwh', slotStart * 1000)?.value ?? h.site?.battery_kwh ?? null;
+  const capAt = async (h, slotStart) => (await attributeAt(h.siteId, 'battery_kwh', slotStart * 1000))?.value ?? h.site?.battery_kwh ?? null;
   const buckets = []; const currencies = new Set();
   for (let b = Math.floor(fromTs / bucketS) * bucketS; b < toTs; b += bucketS) {
     const bEnd = b + bucketS;
@@ -198,7 +198,7 @@ export function groupSlots(groupId, fromTs, toTs, opts = {}) {
       let kwh = 0; let cap = 0; let ok = true;
       for (const p of per) {
         const last = [...p.usable].reverse().find((r) => r.soc_end != null);
-        const size = last ? capAt(p.h, last.slot_start) : null;
+        const size = last ? await capAt(p.h, last.slot_start) : null;
         if (!last || !size || p.missingS > 0) { ok = false; break; }
         kwh += (last.soc_end / 100) * size; cap += size;
       }
@@ -260,22 +260,22 @@ function summarise(buckets, bucketS, classes) {
   };
 }
 
-export function groupDay(groupId, date, opts = {}) {
-  const g = getGroup(groupId);
+export async function groupDay(groupId, date, opts = {}) {
+  const g = await getGroup(groupId);
   if (!g) throw new RangeError(`no group ${groupId}`);
   const [from, to] = dayBounds(g.timezone, date);
-  const res = groupSlots(groupId, from, to, opts);
-  return { date, ...res, day: summarise(res.buckets, res.bucketS, loadClasses()) };
+  const res = await groupSlots(groupId, from, to, opts);
+  return { date, ...res, day: summarise(res.buckets, res.bucketS, await loadClasses()) };
 }
 
-export function groupRange(groupId, fromDate, toDate, opts = {}) {
-  const g = getGroup(groupId);
+export async function groupRange(groupId, fromDate, toDate, opts = {}) {
+  const g = await getGroup(groupId);
   if (!g) throw new RangeError(`no group ${groupId}`);
   const days = [];
-  for (let d = fromDate; d <= toDate; d = addDays(d, 1)) days.push(groupDay(groupId, d, opts));
-  const classes = loadClasses();
+  for (let d = fromDate; d <= toDate; d = addDays(d, 1)) days.push(await groupDay(groupId, d, opts));
+  const classes = await loadClasses();
   const bucketS = Math.max(...days.map((x) => x.bucketS), 0) || 3600;
-  const live = days.filter((x) => x.buckets.some((b) => b.members > 0));
+  const live = await days.filter((x) => x.buckets.some((b) => b.members > 0));
   const total = summarise(live.flatMap((x) => x.buckets), bucketS, classes);
   return { group: { id: g.id, name: g.name, timezone: g.timezone }, from: fromDate, to: toDate, days, total, currencies: [...new Set(days.flatMap((x) => x.currencies))].sort() };
 }

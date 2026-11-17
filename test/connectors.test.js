@@ -31,11 +31,11 @@ const KEYS = ['adapter', 'label', 'roles', 'markets', 'scope', 'owner', 'auth', 
   'homes_connected', 'homes_total_in_markets', 'homes_demo', 'last_success_at', 'last_error', 'last_run', 'steps', 'homes'];
 const orderOk = (list) => list.every((c, i) => !i || C.CONNECTOR_STATUSES.indexOf(list[i - 1].status) <= C.CONNECTOR_STATUSES.indexOf(c.status));
 
-const gbHome = createSite({ name: 'GB home', postcode: 'BB12 9BY' });
-createSite({ name: 'FR demo', country: 'FR', isDemo: true });
+const gbHome = await createSite({ name: 'GB home', postcode: 'BB12 9BY' });
+await createSite({ name: 'FR demo', country: 'FR', isDemo: true });
 
-test('seeds: Octopus, Sunsynk, National Gas, NESO, RTE, Open-Meteo, Quartz, Tariffscanner and tounify are built; Linky, P1 and ENTSO-E are not, with their notes', () => {
-  const r = C.connectors(db);
+await test('seeds: Octopus, Sunsynk, National Gas, NESO, RTE, Open-Meteo, Quartz, Tariffscanner and tounify are built; Linky, P1 and ENTSO-E are not, with their notes', async () => {
+  const r = await C.connectors(db);
   const by = byAdapter(r);
   for (const a of ['octopus', 'sunsynk', 'national_gas', 'neso', 'rte', 'open_meteo', 'quartz', 'tariffscanner', 'geo', 'compare', 'manual']) {
     assert.equal(by[a]?.built, true, `${a} built`);
@@ -62,7 +62,7 @@ test('seeds: Octopus, Sunsynk, National Gas, NESO, RTE, Open-Meteo, Quartz, Tari
   assert.deepEqual([by.entsoe.licence_confirmed, by.entsoe.auth], [true, 'credentials']);
   assert.match(by.entsoe.note, /token/);
   // Every adapter code once: the 14 the registry lists (GB 9 codes, '*' sunsynk, FR/NL linky, p1, tounify, entsoe, manual).
-  assert.equal(r.connectors.length, new Set(db.prepare('SELECT adapter FROM market_provider').all().map((x) => x.adapter)).size);
+  assert.equal(r.connectors.length, new Set((await db.prepare('SELECT adapter FROM market_provider').all()).map((x) => x.adapter)).size);
   assert.equal(new Set(r.connectors.map((c) => c.adapter)).size, r.connectors.length);
   // Merged across markets and roles.
   assert.deepEqual(by.open_meteo.markets.map((m) => m.market_code), ['BE', 'DE', 'ES', 'FR', 'GB', 'NL']);
@@ -96,21 +96,21 @@ after(() => { for (const r of restore.reverse()) r(); });
 const T1 = 1790000000;
 let deHome; let deDemo; let beDemo;
 // Run by the first test that needs them (top-level code runs before any test, so the GB seed test above sees none of this).
-function setupFakes() {
-  deHome = createSite({ name: 'DE real', country: 'DE' });
-  deDemo = createSite({ name: 'DE demo', country: 'DE', isDemo: true });
-  beDemo = createSite({ name: 'BE demo', country: 'BE', isDemo: true });
-  seedProviders(db, [
-    row('DE', 'meter', 'fake_ok', { scope: 'home' }),
-    row('DE', 'carbon', 'fake_err'),
-    row('DE', 'solar_forecast', 'fake_cred', { needs_credentials: 1 }),
-    row('DE', 'gas_cv', 'fake_avail', { scope: 'home' }),
-    row('DE', 'location', 'fake_unlic', { licence_confirmed: 0, note: 'the licence to serve its data to many homes is unconfirmed (test)' }),
-    row('DE', 'compare', 'fake_off', { enabled: 0, note: 'switched off by the operator (test)' }),
-    row('DE', 'tariff_prices', 'fake_planned', { enabled: 0, origin: 'placeholder', note: 'adapter not built: a planned price source (test)' }),
-    row('DE', 'tariff_catalogue', 'fake_ext', { owner: 'external', note: 'another process owns its rate budget (test)' }),
-    row('BE', 'meter', 'fake_demo', { scope: 'home' }),
-  ]);
+async function setupFakes() {
+  deHome = await createSite({ name: 'DE real', country: 'DE' });
+  deDemo = await createSite({ name: 'DE demo', country: 'DE', isDemo: true });
+  beDemo = await createSite({ name: 'BE demo', country: 'BE', isDemo: true });
+  await seedProviders(db, [
+        row('DE', 'meter', 'fake_ok', { scope: 'home' }),
+        row('DE', 'carbon', 'fake_err'),
+        row('DE', 'solar_forecast', 'fake_cred', { needs_credentials: 1 }),
+        row('DE', 'gas_cv', 'fake_avail', { scope: 'home' }),
+        row('DE', 'location', 'fake_unlic', { licence_confirmed: 0, note: 'the licence to serve its data to many homes is unconfirmed (test)' }),
+        row('DE', 'compare', 'fake_off', { enabled: 0, note: 'switched off by the operator (test)' }),
+        row('DE', 'tariff_prices', 'fake_planned', { enabled: 0, origin: 'placeholder', note: 'adapter not built: a planned price source (test)' }),
+        row('DE', 'tariff_catalogue', 'fake_ext', { owner: 'external', note: 'another process owns its rate budget (test)' }),
+        row('BE', 'meter', 'fake_demo', { scope: 'home' }),
+      ]);
   restore.push(
     P.registerAdapter('fake_ok', { connection: 'fake_ok_conn', roles: { meter: [step('fake_ok_step', 'fake_ok_conn')] } }),
     P.registerAdapter('fake_err', { roles: { carbon: [step('fake_err_step', 'fake_err_conn')] } }),
@@ -122,27 +122,27 @@ function setupFakes() {
     P.registerAdapter('fake_demo', { connection: 'fake_demo_conn', roles: { meter: [step('fake_demo_step', 'fake_demo_conn')] } }),
     P.registerAdapter('fake_unlisted', { roles: { weather: [step('fake_unlisted_step')] } }),
   );
-  const conn = (site, provider, status, last, err = null, ref = null) => db.prepare(`INSERT INTO connection (site_id, provider, external_ref, status, last_success_at, last_error)
+  const conn = async (site, provider, status, last, err = null, ref = null) => await db.prepare(`INSERT INTO connection (site_id, provider, external_ref, status, last_success_at, last_error)
     VALUES (?, ?, ?, ?, ?, ?)`).run(site.id, provider, ref, status, last, err);
-  conn(deHome, 'fake_ok_conn', 'ok', T1, null, REF);
-  conn(deHome, 'fake_err_conn', 'error', T1 - 3600, `HTTP 503 upstream down (key ${SECRETS.OCTOPUS_API_KEY})`);
+  await conn(deHome, 'fake_ok_conn', 'ok', T1, null, REF);
+  await conn(deHome, 'fake_err_conn', 'error', T1 - 3600, `HTTP 503 upstream down (key ${SECRETS.OCTOPUS_API_KEY})`);
   // Demo homes are never synced; rows written here by hand must still never count as connected.
-  conn(deDemo, 'fake_ok_conn', 'ok', T1 + 60);
-  conn(beDemo, 'fake_demo_conn', 'ok', T1 + 60);
-  const run = (site, at, detail) => db.prepare("INSERT INTO sync_run (site_id, started_at, finished_at, status, detail) VALUES (?, ?, ?, 'partial', ?)").run(site.id, at, at + 5, JSON.stringify(detail));
-  run(deHome, T1 + 100, [
-    { step: 'fake_ok_step', ok: true, ms: 4 },
-    { step: 'fake_err_step', ok: false, ms: 9, error: `HTTP 503 upstream down (key ${SECRETS.OCTOPUS_API_KEY})` },
-    { step: 'fake_cred_step', ok: true, ms: 0, skipped: 'no credentials: FAKE_TOKEN not set (test)' },
-    { step: 'build', ok: true, ms: 1 },
-  ]);
-  run(deDemo, T1 + 200, [{ step: 'fake_ok_step', ok: true, ms: 1 }]);
-  run(beDemo, T1 + 200, [{ step: 'fake_demo_step', ok: true, ms: 1 }]);
+  await conn(deDemo, 'fake_ok_conn', 'ok', T1 + 60);
+  await conn(beDemo, 'fake_demo_conn', 'ok', T1 + 60);
+  const run = async (site, at, detail) => await db.prepare("INSERT INTO sync_run (site_id, started_at, finished_at, status, detail) VALUES (?, ?, ?, 'partial', ?)").run(site.id, at, at + 5, JSON.stringify(detail));
+  await run(deHome, T1 + 100, [
+        { step: 'fake_ok_step', ok: true, ms: 4 },
+        { step: 'fake_err_step', ok: false, ms: 9, error: `HTTP 503 upstream down (key ${SECRETS.OCTOPUS_API_KEY})` },
+        { step: 'fake_cred_step', ok: true, ms: 0, skipped: 'no credentials: FAKE_TOKEN not set (test)' },
+        { step: 'build', ok: true, ms: 1 },
+      ]);
+  await run(deDemo, T1 + 200, [{ step: 'fake_ok_step', ok: true, ms: 1 }]);
+  await run(beDemo, T1 + 200, [{ step: 'fake_demo_step', ok: true, ms: 1 }]);
 }
 
-test('status: each of the six derived from rows, implementations and the latest syncs', () => {
-  setupFakes();
-  const r = C.connectors(db);
+await test('status: each of the six derived from rows, implementations and the latest syncs', async () => {
+  await setupFakes();
+  const r = await C.connectors(db);
   const by = byAdapter(r);
   // connected: built, switched on, the latest run worked for a real home.
   assert.deepEqual([by.fake_ok.status, by.fake_ok.homes_connected, by.fake_ok.homes_total_in_markets, by.fake_ok.homes_demo], ['connected', 1, 1, 1]);
@@ -180,8 +180,8 @@ test('status: each of the six derived from rows, implementations and the latest 
   for (const c of r.connectors) for (const k of KEYS) assert.ok(k in c, `${c.adapter}.${k}`);
 });
 
-test('demo homes are never counted as connected, even with an ok connection row and log', () => {
-  const by = byAdapter(C.connectors(db));
+await test('demo homes are never counted as connected, even with an ok connection row and log', async () => {
+  const by = byAdapter(await C.connectors(db));
   assert.deepEqual([by.fake_demo.status, by.fake_demo.homes_connected, by.fake_demo.homes_total_in_markets, by.fake_demo.homes_demo], ['available', 0, 0, 1]);
   assert.equal(by.fake_demo.last_success_at, null);
   assert.equal(by.fake_demo.last_run, null);
@@ -191,19 +191,19 @@ test('demo homes are never counted as connected, even with an ok connection row 
   assert.equal(by.fake_ok.last_success_at, T1 + 100, 'not the demo home\'s later success');
 });
 
-test('a connector served by the core\'s own status hook (Tariffscanner\'s sweep) is connected from its state, or failing from it', () => {
-  const put = (state) => db.prepare(`INSERT INTO provider_state (provider, state, updated_at) VALUES ('tariffscanner', ?, 1)
+await test('a connector served by the core\'s own status hook (Tariffscanner\'s sweep) is connected from its state, or failing from it', async () => {
+  const put = async (state) => await db.prepare(`INSERT INTO provider_state (provider, state, updated_at) VALUES ('tariffscanner', ?, 1)
     ON CONFLICT (provider) DO UPDATE SET state = excluded.state`).run(JSON.stringify(state));
-  put({ last_ok_at: (T1 + 50) * 1000, last_run_at: (T1 + 40) * 1000, last_summary: 'complete full sweep' });
-  let ts = byAdapter(C.connectors(db)).tariffscanner;
+  await put({ last_ok_at: (T1 + 50) * 1000, last_run_at: (T1 + 40) * 1000, last_summary: 'complete full sweep' });
+  let ts = byAdapter(await C.connectors(db)).tariffscanner;
   assert.deepEqual([ts.status, ts.homes_connected, ts.homes_total_in_markets], ['connected', 1, 1]);
   assert.match(ts.warning, /^the next sync skips it for 1 of 1 home: no credentials: TARIFFSCAN_USERNAME not set/);
   assert.match(ts.homes[0].next, /^no credentials/);
-  put({ last_ok_at: (T1 + 50) * 1000, last_error: 'HTTP 401 (auth failed)', last_error_at: (T1 + 90) * 1000 });
-  ts = byAdapter(C.connectors(db)).tariffscanner;
+  await put({ last_ok_at: (T1 + 50) * 1000, last_error: 'HTTP 401 (auth failed)', last_error_at: (T1 + 90) * 1000 });
+  ts = byAdapter(await C.connectors(db)).tariffscanner;
   assert.deepEqual([ts.status, ts.last_error], ['error', 'HTTP 401 (auth failed)']);
-  db.prepare("DELETE FROM provider_state WHERE provider = 'tariffscanner'").run();
-  assert.equal(byAdapter(C.connectors(db)).tariffscanner.status, 'needs_credentials');
+  await db.prepare("DELETE FROM provider_state WHERE provider = 'tariffscanner'").run();
+  assert.equal(byAdapter(await C.connectors(db)).tariffscanner.status, 'needs_credentials');
 });
 
 // ───────────── API ─────────────
@@ -220,7 +220,7 @@ const get = (p) => new Promise((resolve, reject) => {
   }).on('error', reject);
 });
 
-test('GET /api/connectors: no home needed, every connector with a status word, summary counts, and no credential anywhere', async () => {
+await test('GET /api/connectors: no home needed, every connector with a status word, summary counts, and no credential anywhere', async () => {
   const r = await get('/api/connectors');
   assert.equal(r.status, 200);
   for (const v of [...Object.values(SECRETS), REF]) assert.ok(!r.text.includes(v), 'no secret or connection reference in /api/connectors');
@@ -245,7 +245,7 @@ test('GET /api/connectors: no home needed, every connector with a status word, s
 
 // ───────────── Page ─────────────
 
-test('page: linked in the navigation as Connectors, served at /connectors, its script present', async () => {
+await test('page: linked in the navigation as Connectors, served at /connectors, its script present', async () => {
   const root = path.resolve(import.meta.dirname, '..', 'public');
   assert.match(fs.readFileSync(path.join(root, 'js', 'layout.js'), 'utf8'), /\['connectors', 'Connectors', '\/connectors'\]/);
   assert.match(fs.readFileSync(path.join(root, 'connectors.html'), 'utf8'), /<script type="module" src="\/js\/pages\/connectors\.js"><\/script>/);
@@ -257,7 +257,7 @@ test('page: linked in the navigation as Connectors, served at /connectors, its s
   assert.match(page.t, /<title>EnergieBee Connectors<\/title>/);
 });
 
-test('views: every API text is escaped, every status is a word, the planned line and legend are there', () => {
+await test('views: every API text is escaped, every status is a word, the planned line and legend are there', () => {
   const evil = '<img src=x onerror=alert(1)>';
   const c = {
     adapter: 'x<y', label: `Bad ${evil}`, roles: ['meter', `r${evil}`], scope: 'home', scopes: ['home'], auth: 'credentials', built: true, enabled: true,

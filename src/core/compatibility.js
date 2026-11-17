@@ -21,6 +21,7 @@ import * as plannerRead from './planner-read.js';
 import * as plans from './plans.js';
 import * as commands from './commands.js';
 import { targetChecker, documentedJsonKeys } from './coverage.js';
+import { mapAsync } from "./async.js";
 
 const root = path.resolve(import.meta.dirname, '..', '..');
 export const FILES = Object.freeze({
@@ -257,7 +258,7 @@ function readDocs() {
  * The /api/compatibility payload, its live check run now against `db`. Inputs default to the files on
  * disk; a test passes its own (a matrix with a target that does not exist, to see the red state).
  */
-export function buildCompatibility(db, { now = Date.now(), ...given } = {}) {
+export async function buildCompatibility(db, { now = Date.now(), ...given } = {}) {
   const docs = { ...(given.matrix && given.catalogueText && given.reportText && given.databaseMd ? {} : readDocs()), ...given };
   const { matrix, catalogueText, reportText, databaseMd } = docs;
   const jsonKeys = documentedJsonKeys(databaseMd);
@@ -271,31 +272,31 @@ export function buildCompatibility(db, { now = Date.now(), ...given } = {}) {
   // Every item, its targets checked now.
   let targetsChecked = 0;
   const missing = [];
-  const items = matrix.items.map((it) => {
-    const src = srcOf.get(it.id);
-    const links = sourceLinks(src?.source, codes);
-    const targets = (it.targets ?? []).map((t) => {
-      const ok = existsMatrix(t);
-      targetsChecked++;
-      if (!ok) missing.push({ item: it.id, kind: t.kind, ref: t.ref, ...(t.json_key ? { json_key: t.json_key } : {}) });
-      return { kind: t.kind, ref: t.ref, ...(t.json_key ? { json_key: t.json_key } : {}), exists: ok };
-    });
-    const found = targets.filter((t) => t.exists).length;
-    return {
-      id: it.id, name: it.name, group: it.group, product: productOf(it.id), direction: it.direction ?? [], status: it.status,
-      // covered and every target found now / covered but a target is missing now / not covered.
-      live: it.status !== 'covered' ? null : found === targets.length ? 'found' : 'target_missing',
-      verified: !!it.verified, catalogue_status: it.catalogue_status ?? null,
-      // source: the catalogue's Src text; source_url: the first public source it names; source_codes: all
-      // it names (their labels and URLs in the top-level source_codes).
-      source: src?.source || null, source_url: links[0]?.url ?? null, source_codes: links.map((l) => l.code),
-      targets, targets_found: found, targets_missing: targets.length - found,
-      ...(it.status === 'excluded_not_data' ? { reason: it.reason } : {}),
-      ...(it.status === 'gap' ? { gap: it.gap } : {}),
-      note: it.note ?? null,
-      conflict: conflictOf.get(it.id) ?? null,
-    };
-  });
+  const items = await mapAsync(matrix.items, async (it) => {
+        const src = srcOf.get(it.id);
+        const links = sourceLinks(src?.source, codes);
+        const targets = await mapAsync((it.targets ?? []), async (t) => {
+                    const ok = await existsMatrix(t);
+                    targetsChecked++;
+                    if (!ok) missing.push({ item: it.id, kind: t.kind, ref: t.ref, ...(t.json_key ? { json_key: t.json_key } : {}) });
+                    return { kind: t.kind, ref: t.ref, ...(t.json_key ? { json_key: t.json_key } : {}), exists: ok };
+                  });
+        const found = targets.filter((t) => t.exists).length;
+        return {
+          id: it.id, name: it.name, group: it.group, product: productOf(it.id), direction: it.direction ?? [], status: it.status,
+          // covered and every target found now / covered but a target is missing now / not covered.
+          live: it.status !== 'covered' ? null : found === targets.length ? 'found' : 'target_missing',
+          verified: !!it.verified, catalogue_status: it.catalogue_status ?? null,
+          // source: the catalogue's Src text; source_url: the first public source it names; source_codes: all
+          // it names (their labels and URLs in the top-level source_codes).
+          source: src?.source || null, source_url: links[0]?.url ?? null, source_codes: links.map((l) => l.code),
+          targets, targets_found: found, targets_missing: targets.length - found,
+          ...(it.status === 'excluded_not_data' ? { reason: it.reason } : {}),
+          ...(it.status === 'gap' ? { gap: it.gap } : {}),
+          note: it.note ?? null,
+          conflict: conflictOf.get(it.id) ?? null,
+        };
+      });
   // In the catalogue's own order (PB-INV first, Appendix A last), as a reader of the catalogue meets them.
   const pos = (i) => srcOf.get(i.id)?.order ?? 1e9;
   items.sort((a, b) => pos(a) - pos(b) || a.id.localeCompare(b.id));
@@ -338,25 +339,25 @@ export function buildCompatibility(db, { now = Date.now(), ...given } = {}) {
   // How they read: every place and read function checked now too.
   let howChecked = 0;
   const howMissing = [];
-  const how = HOW_IT_CONSUMES.map((h) => {
-    const where = h.where.map(([kind, ref]) => {
-      const ok = existsHow({ kind, ref });
-      howChecked++;
-      if (!ok) howMissing.push({ entry: h.id, title: h.title, kind, ref });
-      return { kind, ref, exists: ok };
-    });
-    const [mod] = h.read_function.split('.');
-    const fnOk = existsHow({ kind: 'read_function', ref: h.read_function });
-    howChecked++;
-    if (!fnOk) howMissing.push({ entry: h.id, title: h.title, kind: 'read_function', ref: h.read_function });
-    return {
-      id: h.id, title: h.title, products: h.products, what_they_read: h.what_they_read, their_names: h.their_names,
-      where_it_lives_in_our_db: where,
-      read_function: { ref: h.read_function, file: READ_MODULE_FILES[mod] ?? null, exists: fnOk },
-      why_compatible: h.why_compatible,
-      items: h.items.map((id) => ({ id, name: items.find((i) => i.id === id)?.name ?? null })),
-    };
-  });
+  const how = await mapAsync(HOW_IT_CONSUMES, async (h) => {
+        const where = await mapAsync(h.where, async ([kind, ref]) => {
+                        const ok = await existsHow({ kind, ref });
+                        howChecked++;
+                        if (!ok) howMissing.push({ entry: h.id, title: h.title, kind, ref });
+                        return { kind, ref, exists: ok };
+                      });
+        const [mod] = h.read_function.split('.');
+        const fnOk = await existsHow({ kind: 'read_function', ref: h.read_function });
+        howChecked++;
+        if (!fnOk) howMissing.push({ entry: h.id, title: h.title, kind: 'read_function', ref: h.read_function });
+        return {
+          id: h.id, title: h.title, products: h.products, what_they_read: h.what_they_read, their_names: h.their_names,
+          where_it_lives_in_our_db: where,
+          read_function: { ref: h.read_function, file: READ_MODULE_FILES[mod] ?? null, exists: fnOk },
+          why_compatible: h.why_compatible,
+          items: h.items.map((id) => ({ id, name: items.find((i) => i.id === id)?.name ?? null })),
+        };
+      });
 
   const catalogueSha = crypto.createHash('sha256').update(catalogueText).digest('hex');
   const at = new Date(now).toISOString();
@@ -395,8 +396,8 @@ export function buildCompatibility(db, { now = Date.now(), ...given } = {}) {
 
 // The payload is rebuilt (and every target re-checked) at most once per CACHE_MS.
 let cached = null;
-export function compatibility(db, { now = Date.now() } = {}) {
-  if (!cached || cached.db !== db || now - cached.at >= CACHE_MS || now < cached.at) cached = { db, at: now, value: buildCompatibility(db, { now }) };
+export async function compatibility(db, { now = Date.now() } = {}) {
+  if (!cached || cached.db !== db || now - cached.at >= CACHE_MS || now < cached.at) cached = { db, at: now, value: await buildCompatibility(db, { now }) };
   return cached.value;
 }
 export const clearCompatibilityCache = () => { cached = null; };

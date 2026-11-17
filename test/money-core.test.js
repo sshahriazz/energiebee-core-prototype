@@ -5,7 +5,7 @@ import { CURRENCIES, currency, toMinor, toMajor, roundMinor, format, assertSameC
 
 const nbsp = (s) => s.replace(/[  ]/g, ' ');
 
-test('the registry knows GBP and EUR with two minor digits, and nothing else', () => {
+await test('the registry knows GBP and EUR with two minor digits, and nothing else', () => {
   assert.deepEqual(Object.keys(CURRENCIES).sort(), ['EUR', 'GBP']);
   assert.equal(currency('GBP').minorExponent, 2);
   assert.equal(currency('EUR').minorExponent, 2);
@@ -13,7 +13,7 @@ test('the registry knows GBP and EUR with two minor digits, and nothing else', (
   assert.throws(() => currency(undefined), /unknown currency/);
 });
 
-test('major <-> minor without binary noise', () => {
+await test('major <-> minor without binary noise', () => {
   assert.equal(toMinor(0.1 + 0.2, 'GBP'), 30);
   assert.equal(toMinor(12.34, 'EUR'), 1234);
   assert.equal(toMinor(1.005, 'GBP'), 100.5);          // fractions of a penny are kept
@@ -25,7 +25,7 @@ test('major <-> minor without binary noise', () => {
   assert.throws(() => toMinor(1, 'XYZ'), /unknown currency/);
 });
 
-test('rounding is to whole minor units, half away from zero, and survives float noise', () => {
+await test('rounding is to whole minor units, half away from zero, and survives float noise', () => {
   assert.equal(roundMinor(100.5), 101);
   assert.equal(roundMinor(-100.5), -101);
   assert.equal(roundMinor(100.49), 100);
@@ -35,7 +35,7 @@ test('rounding is to whole minor units, half away from zero, and survives float 
   assert.equal(roundMinor(0.5), 1);
 });
 
-test('format rounds to the minor unit in the reader locale', () => {
+await test('format rounds to the minor unit in the reader locale', () => {
   assert.equal(format(12345.6, 'GBP', 'en-GB'), '£123.46');
   assert.equal(format(100.5, 'GBP'), '£1.01');
   assert.equal(format(-250, 'GBP'), '-£2.50');
@@ -43,7 +43,7 @@ test('format rounds to the minor unit in the reader locale', () => {
   assert.equal(nbsp(format(12345.6, 'EUR', 'fr-FR')), '123,46 €');
 });
 
-test('mixed currencies throw; the same currency passes', () => {
+await test('mixed currencies throw; the same currency passes', () => {
   assert.equal(assertSameCurrency('GBP', { currency: 'GBP' }), 'GBP');
   assert.throws(() => assertSameCurrency('GBP', 'EUR'), /mixed currencies: GBP and EUR/);
   assert.throws(() => assertSameCurrency({ currency: 'EUR' }, { currency: 'GBP' }), /mixed currencies/);
@@ -51,7 +51,7 @@ test('mixed currencies throw; the same currency passes', () => {
   assert.throws(() => assertSameCurrency('GBP', 'USD'), /unknown currency/);
 });
 
-test('sums are kept per currency and never across', () => {
+await test('sums are kept per currency and never across', () => {
   const rows = [
     { currency: 'GBP', amount: 0.1 }, { currency: 'GBP', amount: 0.2 },
     { currency: 'EUR', amount: 500 }, { currency: 'EUR', amount: -120.25 },

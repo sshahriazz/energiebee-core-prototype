@@ -95,14 +95,14 @@ function disabledReason(code, impl, own) {
 }
 
 // One home's latest record, read once per request: its last sync log, its connection rows, its plan.
-function homeRecord(db, site) {
-  const run = db.prepare('SELECT id, started_at, finished_at, status, detail FROM sync_run WHERE site_id = ? AND detail IS NOT NULL ORDER BY id DESC LIMIT 1').get(site.id);
+async function homeRecord(db, site) {
+  const run = await db.prepare('SELECT id, started_at, finished_at, status, detail FROM sync_run WHERE site_id = ? AND detail IS NOT NULL ORDER BY id DESC LIMIT 1').get(site.id);
   let log = [];
   try { log = JSON.parse(run?.detail || '[]'); } catch { log = []; }
   if (!Array.isArray(log)) log = [];
-  const conns = new Map(db.prepare('SELECT provider, status, last_success_at, last_error FROM connection WHERE site_id = ?').all(site.id).map((c) => [c.provider, { ...c }]));
+  const conns = new Map((await db.prepare('SELECT provider, status, last_success_at, last_error FROM connection WHERE site_id = ?').all(site.id)).map((c) => [c.provider, { ...c }]));
   let entries = [];
-  try { entries = plan(db, site, { conns: new Set(conns.keys()) }); } catch { entries = []; }
+  try { entries = await plan(db, site, { conns: new Set(conns.keys()) }); } catch { entries = []; }
   return { run: run ? { id: run.id, started_at: run.started_at } : null, log: log.filter((l) => l && typeof l === 'object' && l.step), conns, plan: entries };
 }
 
@@ -279,11 +279,11 @@ function connectorEntry(db, code, own, sites, recordOf) {
  * sync skips it for want of credentials in this process. Times are epoch seconds. Never contains a
  * credential.
  */
-export function connectors(db, { env = process.env } = {}) {
-  const rows = db.prepare('SELECT * FROM market_provider').all().map((r) => ({ ...r }));
-  const sites = db.prepare('SELECT * FROM site ORDER BY is_demo, id').all().map((s) => ({ ...s }));
+export async function connectors(db, { env = process.env } = {}) {
+  const rows = (await db.prepare('SELECT * FROM market_provider').all()).map((r) => ({ ...r }));
+  const sites = (await db.prepare('SELECT * FROM site ORDER BY is_demo, id').all()).map((s) => ({ ...s }));
   const records = new Map();
-  const recordOf = (s) => { if (!records.has(s.id)) records.set(s.id, homeRecord(db, s)); return records.get(s.id); };
+  const recordOf = async (s) => { if (!records.has(s.id)) records.set(s.id, await homeRecord(db, s)); return records.get(s.id); };
   const codes = [...new Set([...rows.map((r) => r.adapter), ...adapterCodes()])];
   const list = codes.map((code) => connectorEntry(db, code, rows.filter((r) => r.adapter === code), sites, recordOf))
     .sort((a, b) => CONNECTOR_STATUSES.indexOf(a.status) - CONNECTOR_STATUSES.indexOf(b.status) || a.label.localeCompare(b.label));

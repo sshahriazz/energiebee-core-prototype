@@ -35,7 +35,7 @@ const { addHome, connectHome, homeProviders, hooks } = await import('../src/core
 const { listSunsynkPlants } = await import('../src/adapters/sunsynk.js');
 const { secretsReady } = await import('../src/core/secrets.js');
 // Without it no plant could be connected: stop before making homes left without one.
-if (!secretsReady()) { console.error('SECRET_KEY (32+ characters) must be set: the Sunsynk login is stored encrypted with it'); closeDb(); process.exit(2); }
+if (!secretsReady()) { console.error('SECRET_KEY (32+ characters) must be set: the Sunsynk login is stored encrypted with it'); await closeDb(); process.exit(2); }
 
 const key = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 try {
@@ -49,21 +49,21 @@ try {
   };
   hooks.startSync = () => {};
 
-  let user = db.prepare('SELECT * FROM app_user WHERE username = ?').get(normUsername(USER.username));
+  let user = await db.prepare('SELECT * FROM app_user WHERE username = ?').get(normUsername(USER.username));
   if (user) console.log(`user ${user.username} (user ${user.id}): there already, kept`);
-  else { user = signUp(USER); console.log(`user ${user.username} (user ${user.id}): made, PIN ${USER.pin}`); }
+  else { user = await signUp(USER); console.log(`user ${user.username} (user ${user.id}): made, PIN ${USER.pin}`); }
 
   const homeOf = db.prepare('SELECT s.* FROM site s JOIN user_site us ON us.site_id = s.id WHERE us.user_id = ? AND s.name = ?');
   let missing = 0;
   for (const h of HOMES) {
-    let site = homeOf.get(user.id, h.name);
+    let site = await homeOf.get(user.id, h.name);
     let made = false;
     if (!site) {
       const r = await addHome(user, h);
       site = r.site; made = true;
       if (r.geoError) console.log(`  note: ${r.geoError}`);
     }
-    const sunsynk = homeProviders(site).connect.find((c) => c.adapter === 'sunsynk');
+    const sunsynk = (await homeProviders(site)).connect.find((c) => c.adapter === 'sunsynk');
     const plant = plants.find((p) => key(p.name) === key(h.name));
     let what;
     if (sunsynk?.connected) what = `plant ${sunsynk.account?.plantId ?? sunsynk.external_ref} connected already`;
@@ -78,4 +78,4 @@ try {
 } catch (err) {
   console.error(err.message);
   process.exitCode = 1;
-} finally { closeDb(); }
+} finally { await closeDb(); }

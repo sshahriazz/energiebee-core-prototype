@@ -1,0 +1,151 @@
+{
+ "hybrid": {
+  "hash": "e75b11e767bf350ba9b013eb968ebda5e205987f9d6e814fee26fa9c5641194c",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 6.166,
+    "home": 14.35475,
+    "grid_import": 5.511,
+    "grid_export": 0,
+    "total_cost": 204.770475
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 10.969583,
+    "home": 15.008333,
+    "grid_import": 5.363,
+    "grid_export": 0,
+    "total_cost": 200.963175
+   }
+  ]
+ },
+ "no_battery": {
+  "hash": "adf0297e797335b4a410e9ae3ab0535663af6acdf736853fbde1e904827f3ca8",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 8.236,
+    "home": 14.506417,
+    "grid_import": 12.505,
+    "grid_export": 5.274,
+    "total_cost": 305.581125
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 11.527667,
+    "home": 15.150083,
+    "grid_import": 12.725,
+    "grid_export": 8.142,
+    "total_cost": 270.265625
+   }
+  ]
+ },
+ "export_only": {
+  "hash": "6299d263a570691ab2dd020742b558325520d07b7341abaa4ce8b1a4b03d1d84",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 9.14275,
+    "home": 15.704833,
+    "grid_import": 13.54975,
+    "grid_export": 6.029,
+    "total_cost": 324.072319
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 6.5705,
+    "home": 15.730333,
+    "grid_import": 13.622583,
+    "grid_export": 3.505,
+    "total_cost": 367.754706
+   }
+  ]
+ },
+ "two_inverters": {
+  "hash": "21c7ce200309c7edbf833adcf9b7056b5c0e893451504c24ff8ab0a6030ddee8",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 12.40875,
+    "home": 29.545583,
+    "grid_import": 13.403,
+    "grid_export": 0,
+    "total_cost": 407.792175
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 16.771167,
+    "home": 30.165,
+    "grid_import": 15.86,
+    "grid_export": 0,
+    "total_cost": 470.9985
+   }
+  ]
+ },
+ "ac_coupled": {
+  "hash": "58a33cbe7b84b630ee72ab1dba52d3008ba95a962e96df913264585a7a992ee7",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 10.547333,
+    "home": 16.3095,
+    "grid_import": 2.329,
+    "grid_export": 0,
+    "total_cost": 122.913525
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 10.564583,
+    "home": 16.463,
+    "grid_import": 6.265,
+    "grid_export": 0,
+    "total_cost": 224.167125
+   }
+  ],
+  "note": "R1: units that each measure part of the system are not combined yet (the coverage of a slot is the least covered unit's, and a unit that does not measure solar covers none): built from the thing graph in Phase 2.7"
+ },
+ "ev": {
+  "hash": "3c2bf2def897168734541f016beaa836f20b2ef36c15f8fbe5e7d4b01319c2de",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 12.412667,
+    "home": 36.5125,
+    "grid_import": 22.322,
+    "grid_export": 0.634,
+    "total_cost": 627.72345
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 10.75225,
+    "home": 35.812583,
+    "grid_import": 26.407,
+    "grid_export": 0,
+    "total_cost": 742.320075
+   }
+  ]
+ },
+ "heat_pump": {
+  "hash": "1a567da840a6f0c7a5ff16208247fff66c2d8207554127fec6be0814f5e7f457",
+  "days": [
+   {
+    "local_date": "2025-11-03",
+    "solar": 8.40425,
+    "home": 34.229167,
+    "grid_import": 23.251,
+    "grid_export": 0,
+    "total_cost": 661.131975
+   },
+   {
+    "local_date": "2025-11-04",
+    "solar": 11.02825,
+    "home": 34.386,
+    "grid_import": 24.708,
+    "grid_export": 0,
+    "total_cost": 698.6133
+   }
+  ],
+  "heat": "8dd3c9c4f2c0c6c875993d6b674202ba54730a829393fb06ed4383bbf3230f40"
+ }
+}

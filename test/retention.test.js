@@ -17,7 +17,9 @@ const { runRetention, retentionSettings, runMaintenance, endpointOf, MIN_FORECAS
 const NOW = 1800000000;
 const DAY = 86400;
 const site = Number((await db.prepare("INSERT INTO site (name, created_at, country, market_code, currency) VALUES ('Home', 1, 'GB', 'GB', 'GBP')").run()).lastInsertRowid);
-const age = async (rawId, days) => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(NOW - days * DAY, rawId);
+// Raw rows are append-only: a receipt is aged inside a logged (synthetic) erasure.
+const { erase } = await import('../src/core/erasure.js');
+const age = async (rawId, days) => await erase({ kind: 'synthetic', reason: 'test: a receipt aged' }, async () => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(NOW - days * DAY, rawId));
 const row = async (id) => await db.prepare('SELECT id, file FROM raw_payload WHERE id = ?').get(id);
 const fileOf = async (id) => path.join(dataDir, (await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(id)).file);
 let n = 0;

@@ -3,7 +3,8 @@
 // lives in its contract here, not in the build engine.
 
 // channels (a source's default point -> metric rows, created for a home by ensureChannels in core/channels.js).
-// traits (machine-read by the planner read, stored in source.traits): holdS = seconds an instant sample holds;
+// traits (machine-read by the planner read, stored in source.traits): public = the source publishes public data (price lists,
+// grid data), so its raw files are not encrypted with a home's key (facts.js seal); holdS = seconds an instant sample holds;
 // live = a realtime feed; forecastOnly = only ever read as a forecast; namedOnly = read only when named (a daily total).
 export const SOURCES = [
   {
@@ -68,6 +69,7 @@ export const SOURCES = [
   },
   {
     code: 'octopus_rates', name: 'Octopus tariff rates',
+    traits: { public: true },
     contract: {
       timeZone: 'valid_from / valid_to in UTC (Z); valid_to null = open-ended', timeRole: 'validity',
       signs: 'Direction from the product (import or export)',
@@ -88,7 +90,7 @@ export const SOURCES = [
   },
   {
     code: 'carbon_regional', name: 'Carbon Intensity (regional)',
-    traits: { expectedEveryS: 3600 },
+    traits: { public: true, expectedEveryS: 3600 },
     channels: [{ point: 'intensity', metric: 'carbon_intensity' }],
     contract: {
       timeZone: 'UTC minute precision (Z)', timeRole: "interval: the API's 30-minute periods (a home's slot takes the time-weighted mean of the periods it overlaps); forward periods are forecasts",
@@ -98,7 +100,7 @@ export const SOURCES = [
   },
   {
     code: 'rte_eco2mix', name: 'RTE éCO2mix carbon intensity (France, national)',
-    traits: { expectedEveryS: 3600 },
+    traits: { public: true, expectedEveryS: 3600 },
     channels: [{ point: 'intensity', metric: 'carbon_intensity' }],
     contract: {
       timeZone: 'ISO with +00:00 (date_heure)', timeRole: 'interval: 15-minute periods (real-time set) or 30-minute periods (consolidated set); a home\'s slot takes the time-weighted mean of the periods it overlaps',
@@ -155,7 +157,7 @@ export const SOURCES = [
   },
   {
     code: 'national_gas_cv', name: 'National Gas calorific value',
-    traits: { expectedEveryS: 86400 },
+    traits: { public: true, expectedEveryS: 86400 },
     channels: [{ point: 'calorific_value', metric: 'gas_cv_mjm3' }],
     contract: {
       timeZone: 'Applicable-for date = gas day, 05:00 to 05:00 GB local time (UNC Modification 0461)',
@@ -166,6 +168,7 @@ export const SOURCES = [
   },
   {
     code: 'tariffscanner', name: 'Tariffscanner (FEA) UK domestic tariff catalogue',
+    traits: { public: true },
     contract: {
       timeZone: 'Dates (available_from, available_to) are GB local days; rate rows start and end at Europe/London midnight',
       timeRole: 'reference: the prices offered on the query date (today), one record per product x region x payment method x service type x rate type',
@@ -178,6 +181,7 @@ export const SOURCES = [
   },
   {
     code: 'tounify', name: 'tounify v2 per-kWh tariff prices at a postal code',
+    traits: { public: true },
     contract: {
       timeZone: 'from_utc and next are UNIX seconds (UTC); days and time-of-use hours are the country\'s own (FR Europe/Paris, NL Europe/Amsterdam: the API states no zone)',
       timeRole: 'interval: each price point holds from from_utc for `resolution` seconds (the home\'s slot length is asked)',

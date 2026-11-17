@@ -97,8 +97,10 @@ await test('deleting A removes every row that belongs to it and its raw files; B
   const r = await deleteHome(owner, A, { confirm: `  ${A.name} ` });
   assert.deepEqual(r.deleted, { id: A.id, name: A.name });
   assert.ok(r.rows.site === 1 && r.rows.site_day > 0 && r.rows.interval_fact > 0, JSON.stringify(r.rows));
-  // Nothing anywhere still names A.
+  // Nothing anywhere still names A, except the record that it was erased (ids and counts only).
   const left = await rowsOf(A.id);
+  assert.equal(left.erasure_log, 1, 'the erasure is logged');
+  delete left.erasure_log;
   assert.deepEqual(Object.entries(left).filter(([, n]) => n), [], `rows left: ${JSON.stringify(left)}`);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ?').get(A.id)).n, 0, 'the stored login is gone');
   // Raw: A's own answer and its file are gone; the shared one stays, no longer naming A, with the fact that reads it.

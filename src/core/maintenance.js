@@ -11,6 +11,7 @@ import { seedAttributes } from './attributes.js';
 import { replayableSources } from './replay.js';
 import { seedDeviceHistory } from './devices.js';
 import { filterAsync } from "./async.js";
+import { erase } from "./erasure.js";
 
 // Earlier code (before 16 Oct 2026) converted this home's gas readings from m³ to kWh with a
 // fixed calorific value as it stored them, and saved the result as Octopus 'gas_kwh' facts.
@@ -211,7 +212,11 @@ async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) 
   const del = db.prepare(`DELETE FROM raw_payload WHERE id = ? AND status = 'accepted' AND ${notReferenced(refs, 'raw_payload')}`);
   for (let i = 0; i < doomed.length; i += batch) {
     const chunk = doomed.slice(i, i + batch);
-    const gone = await tx(async () => await filterAsync(chunk, async (r) => !inState.has(r.id) && (await del.run(r.id)).changes === 1));
+    // Raw rows are append-only: they leave only inside a logged erasure (src/core/erasure.js).
+    const { gone } = await erase({ kind: 'retention', reason: 'raw receipts past the retention window, referenced by nothing' }, async () => {
+      const g = await filterAsync(chunk, async (r) => !inState.has(r.id) && (await del.run(r.id)).changes === 1);
+      return { gone: g, removed: { raw_payload: g.length } };
+    });
     out.deleted += gone.length;
     for (const r of gone) {
       try { fs.unlinkSync(path.join(dataDir, r.file)); out.filesDeleted++; } catch (err) { if (err.code !== 'ENOENT') throw err; }
@@ -264,7 +269,12 @@ async function forecastRetention(cutoff, dryRun) {
   const out = { periodsOlderThanWindow: 0, candidates: 0, deleted: 0 };
   out.periodsOlderThanWindow = (await db.prepare('SELECT COUNT(*) AS n FROM (SELECT DISTINCT series_id, start_ts, end_ts FROM forecast_fact WHERE end_ts <= ?)').get(cutoff)).n;
   out.candidates = (await db.prepare(`SELECT COUNT(*) AS n FROM forecast_fact f WHERE f.end_ts <= ? AND f.issued_at NOT IN (${keptIssues('f')})`).get(cutoff)).n;
-  if (!dryRun && out.candidates) out.deleted = Number(await tx(async () => (await db.prepare(`DELETE FROM forecast_fact WHERE end_ts <= ? AND issued_at NOT IN (${keptIssues('forecast_fact')})`).run(cutoff)).changes));
+  if (!dryRun && out.candidates) {
+    out.deleted = (await erase({ kind: 'retention', reason: 'forecast issues past the retention window that no read can pick' }, async () => {
+      const n = Number((await db.prepare(`DELETE FROM forecast_fact WHERE end_ts <= ? AND issued_at NOT IN (${keptIssues('forecast_fact')})`).run(cutoff)).changes);
+      return { n, removed: { forecast_fact: n } };
+    })).n;
+  }
   return out;
 }
 

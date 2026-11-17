@@ -8,6 +8,7 @@
 //   log       append-only history of what happened (syncs, commands, revisions, refusals)
 //   registry  vocabulary seeded from code (metrics, sources, markets, kinds): changed by a migration or a code release
 //   runtime   working state (queues, sessions, provider state): not history
+//   secret    keys: a home's raw-file key (home_key) is destroyed with the home, so it is never versioned
 //
 // LEGACY_CONFIG: configuration tables from before the rule, with the record time they have and the thing platform phase
 // that replaces them (docs/thing-platform-plan.md). The list can only shrink: a table leaves it when its replacement lands.
@@ -27,12 +28,13 @@ export const TABLE_KINDS = {
   site_hh: 'serving', site_day: 'serving', site_heat_slot: 'serving', check_result: 'serving',
   plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
   // logs
-  sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log',
+  sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log', erasure_log: 'log',
   // registries
   attribute_def: 'registry', setting_def: 'registry', binding_default: 'registry', column_class: 'registry', currency: 'registry',
   device_kind: 'registry', device_action: 'registry', market: 'registry', market_provider: 'registry', market_question: 'registry',
   metric: 'registry', region: 'registry', source: 'registry', series: 'registry',
   // runtime
+  home_key: 'secret',
   rebuild_queue: 'runtime', provider_state: 'runtime', user_session: 'runtime', command_block: 'runtime',
 };
 

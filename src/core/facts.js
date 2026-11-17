@@ -15,10 +15,51 @@ const insertRaw = db.prepare(
   `INSERT INTO raw_payload (source_id, site_id, request, fetched_at, hash, file, status, reason)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 
+// A home's raw files are encrypted with the home's own key (AES-256-GCM; home_key, fix list R14): deleting the home
+// deletes the key, so its files cannot be read again, in backups too. Public data (a source with traits.public: price
+// lists, grid data) and receipts with no home are stored as sent. A sealed file starts with MAGIC, then the 12-byte IV and
+// the 16-byte tag.
+const MAGIC = Buffer.from('EBRAW1');
+const publicSource = new Map();
+async function isPublic(source) {
+  if (!publicSource.has(source)) {
+    let t = {}; try { t = JSON.parse((await db.prepare('SELECT traits FROM source WHERE code = ?').get(source))?.traits || '{}'); } catch { /* none */ }
+    publicSource.set(source, Boolean(t.public));
+  }
+  return publicSource.get(source);
+}
+async function homeKey(siteId, { create = false } = {}) {
+  if (create) await db.prepare('INSERT INTO home_key (site_id, key, created_at) VALUES (?, ?, ?) ON CONFLICT (site_id) DO NOTHING').run(siteId, crypto.randomBytes(32), Date.now());
+  return (await db.prepare('SELECT key FROM home_key WHERE site_id = ?').get(siteId))?.key ?? null;
+}
+export const isSealed = (buf) => buf.length >= MAGIC.length && buf.subarray(0, MAGIC.length).equals(MAGIC);
+export async function seal(siteId, text) {
+  const key = await homeKey(siteId, { create: true });
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const body = Buffer.concat([c.update(text, 'utf8'), c.final()]);
+  return Buffer.concat([MAGIC, iv, c.getAuthTag(), body]);
+}
+// The text of a raw receipt ({ file, site_id }), or null when the file is gone, or its home's key is (an erased home).
+export async function readRaw(row) {
+  let buf;
+  try { buf = fs.readFileSync(path.join(dataDir, row.file)); } catch { return null; }
+  if (!isSealed(buf)) return buf.toString('utf8');
+  const key = row.site_id == null ? null : await homeKey(row.site_id);
+  if (!key) return null;
+  const iv = buf.subarray(MAGIC.length, MAGIC.length + 12);
+  const tag = buf.subarray(MAGIC.length + 12, MAGIC.length + 28);
+  const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(buf.subarray(MAGIC.length + 28)), d.final()]).toString('utf8');
+}
+// Does this receipt's file have to be sealed? (a home's, and not public data)
+export async function sealsRaw(source, siteId) { return siteId != null && !await isPublic(source); }
+
 // Identity is the source and the body, not the request: requests carry the current
 // time (period_to=now, nonces), so the same data fetched again would otherwise be
-// stored again. The row is written first and removed if the file cannot be, so a
-// file never exists without its row.
+// stored again. The file is written first and the row after (raw rows are append-only);
+// a file left without its row by a failure is an orphan that retention removes.
 export async function landRaw({ source, siteId, request, body, status = 'accepted', reason = null }) {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
   const reqText = JSON.stringify(request ?? {});
@@ -28,16 +69,17 @@ export async function landRaw({ source, siteId, request, body, status = 'accepte
   const fetchedAt = nowSec();
   const day = new Date(fetchedAt * 1000).toISOString().slice(0, 10);
   const rel = path.join('raw', source, day, `${hash.slice(0, 16)}.json`);
-  const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
-  const rawId = Number(r.lastInsertRowid);
+  fs.mkdirSync(path.join(dataDir, path.dirname(rel)), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, rel), await sealsRaw(source, siteId) ? await seal(siteId, text) : text);
   try {
-    fs.mkdirSync(path.join(dataDir, path.dirname(rel)), { recursive: true });
-    fs.writeFileSync(path.join(dataDir, rel), text);
+    const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
+    return { rawId: Number(r.lastInsertRowid), duplicate: false };
   } catch (err) {
-    await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(rawId);
+    const raced = await findRaw.get(hash).catch(() => null);   // the same body landed at the same moment: its file is this one
+    if (raced) return { rawId: raced.id, duplicate: true };
+    try { fs.unlinkSync(path.join(dataDir, rel)); } catch { /* already gone */ }
     throw err;
   }
-  return { rawId, duplicate: false };
 }
 
 export async function quarantine({ source, siteId, request, body, reason }) {

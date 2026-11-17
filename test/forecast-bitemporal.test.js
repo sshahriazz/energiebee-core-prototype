@@ -22,7 +22,7 @@ await test('the table has recorded_at and end_ts in its key; its indexes and spa
   const idx = (await db.prepare("SELECT indexname AS name FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'forecast_fact'").all()).map((r) => r.name);
   for (const i of ['forecast_recorded', 'forecast_issued', 'forecast_fact_raw']) assert.ok(idx.includes(i), i);
   const trg = (await db.prepare("SELECT tgname AS name FROM pg_trigger WHERE tgrelid = 'forecast_fact'::regclass AND NOT tgisinternal").all()).map((r) => r.name);
-  assert.deepEqual(trg.sort(), ['forecast_fact_home', 'forecast_fact_span_insert', 'forecast_fact_span_update']);
+  assert.deepEqual(trg.sort(), ['forecast_fact_append_only', 'forecast_fact_home', 'forecast_fact_span_insert', 'forecast_fact_span_update']);
 });
 
 await test('readForecastAsOf uses the time the core recorded an issue, not the provider\'s issue time', async () => {

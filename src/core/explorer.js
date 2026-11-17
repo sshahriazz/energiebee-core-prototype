@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, dataDir } from '../db/db.js';
 import { carbonSeriesOf, carbonSubjectOf } from './carbon-series.js';
-import { QUALITY } from './facts.js';
+import { QUALITY, readRaw } from './facts.js';
 import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTime, findSeries, minorOf, dayWords, slotWords, pctWords } from './explain.js';
 import { series as plannerSeries } from './planner-read.js';
 import { loadPricing, priceAt, fixedPerDay } from './pricing.js';
@@ -174,7 +174,8 @@ function rawSize(r) {
   if (s != null) sizeCache.set(r.file, s);
   return s;
 }
-function rawText(r) { try { const p = rawPath(r); return p ? fs.readFileSync(p, 'utf8') : null; } catch { return null; } }
+// The receipt's text (decrypted when it is a home's sealed file); null when the file or its home's key is gone.
+async function rawText(r) { try { return rawPath(r) ? await readRaw(r) : null; } catch { return null; } }
 
 // Keys and URL parameters that could hold a credential are replaced, wherever they appear.
 const SECRET_KEY = /^(password|passwd|pwd|pass|secret|client_secret|token|access_token|refresh_token|id_token|jwt|api_?key|apikey|key|authorization|auth|bearer|cookie|set-cookie|session_?id|sign|signature|nonce|private_?key|credentials?)$/i;
@@ -410,7 +411,7 @@ function payloadCache({ budget = Infinity } = {}) {
         left -= size;
       }
       if (r && !hit) {
-        const text = rawText(r);
+        const text = await rawText(r);
         const j = text != null ? parseJson(text) : { ok: false, value: null };
         hit = { text, body: j.value, json: j.ok, ix: null };
         if (text != null && text.length < 4e6) { bodies.set(`${dataDir}|${r.hash}`, hit); if (bodies.size > PAYLOAD_CACHE) bodies.delete(bodies.keys().next().value); }
@@ -518,7 +519,7 @@ export async function rawOne(id, q) {
   const asked = await siteParam(q, { required: false });
   if (asked && r.site_id != null && r.site_id !== asked.id) throw notFound(`raw payload ${id} is not one of home ${asked.id}`);
   const site = asked ?? (r.site_id != null ? await db.prepare('SELECT * FROM site WHERE id = ?').get(r.site_id) : null);
-  const text = rawText(r);
+  const text = await rawText(r);
   const j = text != null ? parseJson(text) : { ok: false, value: null };
   const n = { count: 0 };
   let body = text;

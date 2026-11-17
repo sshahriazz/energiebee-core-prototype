@@ -13,7 +13,9 @@ const M = await import('../src/core/maintenance.js');
 const NOW = 1800000000;
 const DAY = 86400;
 const site = Number((await db.prepare("INSERT INTO site (name, created_at, country, market_code, currency) VALUES ('Home', 1, 'GB', 'GB', 'GBP')").run()).lastInsertRowid);
-const age = async (rawId, days) => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(NOW - days * DAY, rawId);
+// Raw rows are append-only: a receipt is aged inside a logged (synthetic) erasure.
+const { erase } = await import('../src/core/erasure.js');
+const age = async (rawId, days) => await erase({ kind: 'synthetic', reason: 'test: a receipt aged' }, async () => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(NOW - days * DAY, rawId));
 const has = async (id) => Boolean(await db.prepare('SELECT 1 FROM raw_payload WHERE id = ?').get(id));
 let n = 0;
 // Receipts of one source share an endpoint path (the query differs), as real ones do: only the newest of an endpoint is kept by that rule.

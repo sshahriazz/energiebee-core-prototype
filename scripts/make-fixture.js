@@ -17,6 +17,9 @@ const out = path.resolve(process.argv[2] || path.join(root, 'test', 'fixtures', 
 const tmp = await scriptDatabase({ prefix: 'energiebee_fixture' });   // throwaway, dropped at the end
 await loadTables(tmp.url, postgresTables(live));
 const { db, closeDb } = await import('../src/db/db.js');
+const { erase } = await import('../src/core/erasure.js');
+// Raw rows are append-only: the copy is anonymised inside one logged erasure.
+await erase({ kind: 'anonymise', reason: 'the GB test fixture: identifiers and raw request text removed' }, async () => {
 
 await db.exec(`UPDATE site SET name = 'GB fixture home', postcode = NULL, outcode = NULL,
   lat = ROUND(lat::numeric, 1)::double precision, lon = ROUND(lon::numeric, 1)::double precision, env_key = NULL`);
@@ -39,6 +42,8 @@ for (const t of ['rate_interval', 'register_window', 'tariff_version']) await db
 await db.exec(`DELETE FROM tariff WHERE id NOT IN ${used}`);
 await db.exec('UPDATE sync_run SET detail = NULL');
 await db.exec('TRUNCATE command_log');   // append-only (its triggers refuse row deletes); a fixture keeps no command history
+await db.exec('DELETE FROM home_key');   // the fixture keeps no sealed raw file, so no key
+});
 await closeDb();
 
 const rows = await writeDump(tmp.url, out);

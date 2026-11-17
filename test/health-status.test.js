@@ -49,7 +49,9 @@ await test('a source with no data at all is "never", and says so in words', { sk
 await test('cadence by kind when the source declares none: a forecast 3600 s, a period its own length, a counter 300 s', { skip }, async () => {
   const now = 1_900_000_000;
   const mk = async (code) => await db.prepare("INSERT INTO source (code, name, contract, traits) VALUES (?, ?, '{}', '{}')").run(code, code);
-  const stamp = async (table, series, whenS) => await db.prepare(`UPDATE ${table} SET recorded_at = ? WHERE series_id = ?`).run(whenS * 1000, series);
+  // Facts are append-only: a stand-in's record time is set inside a logged (synthetic) erasure.
+  const { erase } = await import('../src/core/erasure.js');
+  const stamp = async (table, series, whenS) => await erase({ kind: 'synthetic', reason: 'test: record time of a stand-in fact' }, async () => await db.prepare(`UPDATE ${table} SET recorded_at = ? WHERE series_id = ?`).run(whenS * 1000, series));
   // a period source with 900 s periods
   await mk('period_vendor'); await bind(SITE, 'weather_temp', 'period_vendor', { from: null, reason: 'test' });
   const ps = await seriesId('site', SITE, 'ghi_wm2', 'period_vendor');
@@ -60,7 +62,7 @@ await test('cadence by kind when the source declares none: a forecast 3600 s, a 
   // a forecast-only source
   await mk('forecast_vendor'); await bind(SITE, 'solar_forecast', 'forecast_vendor', { from: null, reason: 'test', keep: true, priority: 9 });
   const fs = await seriesId('site', SITE, 'solar_kwh', 'forecast_vendor');
-  await putForecasts(fs, now - 7000, [{ start: now, end: now + 900, value: 1 }]); await db.prepare('UPDATE forecast_fact SET recorded_at = ? WHERE series_id = ?').run((now - 7000) * 1000, fs);
+  await putForecasts(fs, now - 7000, [{ start: now, end: now + 900, value: 1 }], undefined, { recordedAt: (now - 7000) * 1000 });
   const f = roleHealth(await H.health(SITE, { now }), 'solar_forecast').bindings.find((b) => b.source === 'forecast_vendor');
   assert.deepEqual([f.kind, f.expectedEveryS, f.status], ['forecast', 3600, 'ok'], '7000 s old, expected every 3600');
   assert.equal(roleHealth(await H.health(SITE, { now: now + 1000 }), 'solar_forecast').bindings.find((b) => b.source === 'forecast_vendor').status, 'late');

@@ -65,7 +65,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { db, tx, dataDir } from '../db/db.js';
-import { landRaw, quarantine } from '../core/facts.js';
+import { landRaw, quarantine, readRaw } from '../core/facts.js';
 import { createTariff, addDevice } from '../core/tariffs.js';
 import { supersedeAgreements } from '../core/devices.js';
 import { linkSupplier } from '../core/suppliers.js';
@@ -766,9 +766,9 @@ export async function priceReadDue(siteId, nowMs = clockOf(null).now()) {
 }
 
 async function rawBody(rawId) {
-  const r = rawId ? await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(rawId) : null;
+  const r = rawId ? await db.prepare('SELECT file, site_id FROM raw_payload WHERE id = ?').get(rawId) : null;
   if (!r) return null;
-  try { return JSON.parse(fs.readFileSync(path.join(dataDir, r.file), 'utf8')); } catch { return null; }
+  try { return JSON.parse(await readRaw(r)); } catch { return null; }
 }
 
 // The home's own off-peak hours on a French heures creuses tariff: what the choice stored on the connection, else

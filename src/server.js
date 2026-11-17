@@ -12,7 +12,7 @@ import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
-import { seriesId, readReadings, markDirty } from './core/facts.js';
+import { seriesId, readReadings, markDirty, readRaw } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { fixedChargeMicro } from './core/tariff-expand.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
@@ -731,7 +731,8 @@ app.get('/api/raw/:rawId', async (req, res) => {
   const r = await db.prepare('SELECT p.*, src.code AS source FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.id = ?').get(Number(req.params.rawId));
   // A payload of a home the user may not see is not found; shared ones (no home) are for everyone.
   if (!r || (r.site_id != null && !await canSee(req.user, r.site_id))) return res.status(404).json({ error: 'not found' });
-  let body = fs.readFileSync(path.join(dataDir, r.file), 'utf8');
+  let body = await readRaw(r);
+  if (body == null) return res.status(410).json({ error: 'the raw file is gone (retention, or the home was erased)' });
   const size = body.length;
   if (body.length > 200000) body = `${body.slice(0, 200000)}…`;
   res.json({ ...r, size, body });
@@ -769,9 +770,9 @@ app.get('/api/sites/:id/system', async (req, res) => {
   const s = await site(req);
   const plant = (await db.prepare("SELECT external_ref FROM connection WHERE site_id = ? AND provider = 'sunsynk'").get(s.id))?.external_ref;
   // Installer as recorded on the Sunsynk plant (latest stored plant payload).
-  const plantRaw = plant ? await db.prepare("SELECT file FROM raw_payload WHERE site_id = ? AND request LIKE ? ORDER BY id DESC LIMIT 1").get(s.id, `%/v1/plant/${plant}?%`) : null;
+  const plantRaw = plant ? await db.prepare("SELECT file, site_id FROM raw_payload WHERE site_id = ? AND request LIKE ? ORDER BY id DESC LIMIT 1").get(s.id, `%/v1/plant/${plant}?%`) : null;
   let installer = null;
-  try { installer = plantRaw ? JSON.parse(fs.readFileSync(path.join(dataDir, plantRaw.file), 'utf8'))?.data?.installer || null : null; } catch { /* payload unreadable: leave unknown */ }
+  try { installer = plantRaw ? JSON.parse(await readRaw(plantRaw))?.data?.installer || null : null; } catch { /* payload unreadable: leave unknown */ }
   // Each detail as resolved from its versions (installer > measured > provider > estimated).
   const item = async (key, attr, label, unit, mcs) => {
     const a = await attributeAt(s.id, attr);

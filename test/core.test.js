@@ -13,6 +13,9 @@ const { db } = await import('../src/db/db.js');
 const { seriesId, putIntervals, putForecasts, markDirty } = await import('../src/core/facts.js');
 const { buildSite, processQueue } = await import('../src/core/build.js');
 const { forecastSite } = await import('../src/core/forecast.js');
+const { erase } = await import('../src/core/erasure.js');
+// Facts are append-only: stand-in forecasts are cleared inside a logged (synthetic) erasure.
+const clearForecasts = async (s) => await erase({ kind: 'synthetic', reason: 'test: stand-in forecasts cleared' }, async () => await db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(s));
 const { dayBounds, localDate, nowSec, SLOT } = await import('../src/core/time.js');
 
 const SITE = 1;
@@ -114,7 +117,7 @@ async function quartzAt(ratio) {
   const s = await site();
   if (s.pv_tilt == null || s.pv_orientation == null) await db.prepare('UPDATE site SET pv_tilt = 20, pv_orientation = 180 WHERE id = ?').run(SITE);
   const qS = await seriesId('site', SITE, 'solar_kwh', 'quartz');
-  await db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(qS);
+  await clearForecasts(qS);
   let made = 0;
   const at = await asAt(); const atDate = localDate(s.timezone, at);
   // The last two whole days before the forecast is made that made solar.
@@ -147,7 +150,7 @@ await test('Quartz is not used when it is far from what the panels make', { skip
 
 await test('forecast accuracy is scored from forecasts made at least 12 hours ahead', { skip }, async (t) => {
   const homeS = await seriesId('site', SITE, 'load_kwh', 'core_forecast');
-  await db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(homeS);
+  await clearForecasts(homeS);
   const at = await asAt(); const atDate = localDate((await site()).timezone, at);
   const scored = (await days()).filter((x) => x < atDate).slice(-3);
   if (scored.length < 1) return t.skip('no whole day yet');

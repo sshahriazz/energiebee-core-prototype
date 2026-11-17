@@ -16,7 +16,8 @@
 // row fails the delete instead of half-doing it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, dataDir, tableNames, columnsOf } from '../db/db.js';
+import { db, dataDir, tableNames, columnsOf } from '../db/db.js';
+import { erase } from './erasure.js';
 import { isSyncing } from '../jobs/sync.js';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -77,6 +78,7 @@ export async function homeFootprint(siteId) {
   await take('device', 'id', devices);
   for (const t of tables) {
     if (t === 'raw_payload' || t === 'site' || t === 'device') continue;
+    if (t === 'erasure_log') continue;   // the record that the home was erased outlives it (ids and counts only)
     const hasCol = (await columnsOf(t)).includes('site_id');
     const fk = fks.some((f) => f.child === t && f.from === 'site_id');
     if (hasCol && !fk) await take(t, 'site_id', [id]);
@@ -135,7 +137,9 @@ export async function deleteHome(user, site, { confirm } = {}) {
   const f = await homeFootprint(site.id);
   const { conds, where, params } = f.plan;
   const removed = {};
-  await tx(async () => {
+  // One logged erasure (src/core/erasure.js): facts and raw rows are append-only and can only go inside it. The home's
+  // raw-file key (home_key) goes with the home, so its sealed raw files cannot be read again, in backups too.
+  await erase({ kind: 'home', siteId: site.id, siteUid: site.uid ?? null, reason: 'the home was deleted on its owner\'s request' }, async () => {
         await db.exec('SET CONSTRAINTS ALL DEFERRED');
         // Children first is not needed with deferred checks; the site row last keeps ON DELETE CASCADE from doing it twice.
         for (const t of [...conds.keys()].filter((x) => x !== 'site')) {
@@ -158,6 +162,7 @@ export async function deleteHome(user, site, { confirm } = {}) {
             }
           } catch { /* an unreadable state is left as it is */ }
         }
+        return { removed };
       });
   // The raw files, after the commit: a file whose row is gone is only a leftover.
   let files = 0;

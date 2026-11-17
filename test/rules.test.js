@@ -10,6 +10,7 @@ import { useDb } from './helpers.js';
 await useDb();
 const { db, EXCLUSION_MESSAGES } = await import('../src/db/db.js');
 const { seriesId } = await import('../src/core/facts.js');
+const { erase } = await import('../src/core/erasure.js');
 
 const proved = new Map();        // trigger name -> messages it was seen refusing with ('' for a maintenance trigger)
 const seenExclusions = new Set();
@@ -27,7 +28,8 @@ async function refused(trigger, sql, ...params) {
   let err = null;
   try { await run(sql, ...params); } catch (e) { err = e; }
   assert.ok(err, `${trigger}: the statement was accepted`);
-  const msg = own.find((m) => err.message.includes(m));
+  // A message with a % placeholder (RAISE ... '%', value) matches with any text in its place.
+  const msg = own.find((m) => m.split('%').every((part) => err.message.includes(part)));
   assert.ok(msg, `${trigger}: refused with another message: ${err.message}`);
   (proved.get(trigger) ?? proved.set(trigger, new Set()).get(trigger)).add(msg);
 }
@@ -184,7 +186,8 @@ await test('facts: a series remembers its longest fact, so a read can bound its 
     await put(0, 1800); assert.equal(await span(), 1800);
     await put(3600, 3900); assert.equal(await span(), 1800, 'a shorter fact does not shrink it');
     maintained(`${table}_span_insert`);
-    await run(`UPDATE ${table} SET end_ts = 7200 WHERE series_id = ? AND start_ts = 3600`, s);
+    // Facts are append-only: a fact's period changes only inside a logged erasure.
+    await erase({ kind: 'synthetic', reason: 'rules test: a fact span widened' }, async () => await run(`UPDATE ${table} SET end_ts = 7200 WHERE series_id = ? AND start_ts = 3600`, s));
     assert.equal(await span(), 3600); maintained(`${table}_span_update`);
   }
 });
@@ -209,6 +212,34 @@ await test('homes on rows: a series takes its subject\'s home, a fact its series
   await refused('forecast_fact_home', 'INSERT INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, recorded_at, site_id) VALUES (?, 0, 1800, 0, 1, 0, ?)', sA, B);
   await run('INSERT INTO reading (series_id, ts, value, recorded_at) VALUES (?, 0, 1, 0)', sA);
   assert.equal((await get('SELECT site_id FROM reading WHERE series_id = ?', sA)).site_id, A, 'set on insert');
+});
+
+await test('facts and raw receipts are append-only: superseded once, never changed or deleted, except in a logged erasure', async () => {
+  const sR = await seriesId('site', A, 'solar_w', 'sunsynk_5min');
+  await run('INSERT INTO reading (series_id, ts, value, recorded_at) VALUES (?, 100, 1, 0)', sR);
+  await refused('reading_append_only', 'UPDATE reading SET value = 2 WHERE series_id = ? AND ts = 100', sR);
+  await refused('reading_append_only', 'DELETE FROM reading WHERE series_id = ? AND ts = 100', sR);
+  await run('UPDATE reading SET superseded_at = 5 WHERE series_id = ? AND ts = 100', sR);                    // superseding once is how a fact changes
+  await refused('reading_append_only', 'UPDATE reading SET superseded_at = 6 WHERE series_id = ? AND ts = 100', sR);
+  const sI = await seriesId('site', A, 'grid_import_kwh', 'octopus_meter');
+  await run('INSERT INTO interval_fact (series_id, start_ts, end_ts, value, recorded_at) VALUES (?, 9000, 10800, 1, 0)', sI);
+  await refused('interval_fact_append_only', 'UPDATE interval_fact SET value = 2 WHERE series_id = ? AND start_ts = 9000', sI);
+  await refused('interval_fact_append_only', 'DELETE FROM interval_fact WHERE series_id = ? AND start_ts = 9000', sI);
+  const sF = await seriesId('site', A, 'solar_kwh', 'quartz');
+  await run('INSERT INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, recorded_at) VALUES (?, 9000, 10800, 1, 1, 0)', sF);
+  await refused('forecast_fact_append_only', 'UPDATE forecast_fact SET value = 2 WHERE series_id = ? AND start_ts = 9000', sF);
+  const raw = await ins("INSERT INTO raw_payload (source_id, site_id, fetched_at, hash, file) VALUES ((SELECT id FROM source WHERE code = 'sunsynk_5min'), ?, 0, 'h-rules', 'raw/x.json')", A);
+  await refused('raw_payload_append_only', 'UPDATE raw_payload SET file = ? WHERE id = ?', 'raw/y.json', raw);
+  await refused('raw_payload_append_only', 'DELETE FROM raw_payload WHERE id = ?', raw);
+  // Inside an erasure they go, and the erasure is logged with what it removed.
+  const out = await erase({ kind: 'synthetic', siteId: A, reason: 'rules test' }, async () => ({ removed: {
+    raw_payload: (await run('DELETE FROM raw_payload WHERE id = ?', raw)).changes,
+    reading: (await run('DELETE FROM reading WHERE series_id = ? AND ts = 100', sR)).changes } }));
+  assert.deepEqual(out.removed, { raw_payload: 1, reading: 1 });
+  const log = await get("SELECT kind, site_id, removed, finished_at FROM erasure_log WHERE reason = 'rules test'");
+  assert.deepEqual([log.kind, log.site_id, JSON.parse(log.removed).reading, log.finished_at > 0], ['synthetic', A, 1, true]);
+  await run('INSERT INTO reading (series_id, ts, value, recorded_at) VALUES (?, 200, 1, 0)', sR);
+  await refused('reading_append_only', 'DELETE FROM reading WHERE series_id = ?', sR);                   // the erasure is closed again
 });
 
 await test('every trigger has a case, every message of each was produced, and every exclusion constraint was hit', async () => {

@@ -36,12 +36,13 @@ Object.assign(m.NL, { to: NLd, change: addDays(NLd, -1), from: addDays(NLd, -3) 
 const fr = await m.frHome();
 const nl = await m.nlHome();
 // Synthetic readings are generated for whole days; drop what lies in the future so nothing is "live" ahead of now.
+// Facts are append-only: synthetic data is replaced inside a logged erasure.
+const { erase } = await import('../src/core/erasure.js');
 for (const id of [fr.site.id, nl.site.id]) {
-  const series = (await db.prepare(`SELECT id FROM series WHERE (subject_kind = 'site' AND subject_id = ?) OR (subject_kind = 'device' AND subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).all(String(id), id)).map((r) => r.id);
-  for (const sid of series) {
-    await db.prepare('DELETE FROM reading WHERE series_id = ? AND ts > ?').run(sid, now);
-    await db.prepare('DELETE FROM interval_fact WHERE series_id = ? AND end_ts > ?').run(sid, now);
-  }
+  await erase({ kind: 'synthetic', siteId: id, reason: 'synthetic readings ahead of now dropped (UI demo)' }, async () => ({ removed: {
+    reading: (await db.prepare('DELETE FROM reading WHERE site_id = ? AND ts > ?').run(id, now)).changes,
+    interval_fact: (await db.prepare('DELETE FROM interval_fact WHERE site_id = ? AND end_ts > ?').run(id, now)).changes,
+  } }));
 }
 await buildSite(fr.site.id, m.FR.from, FRd, { reason: 'synthetic ui demo' });
 await buildSite(nl.site.id, m.NL.from, NLd, { reason: 'synthetic ui demo' });

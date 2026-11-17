@@ -999,6 +999,7 @@ model site {
   device                           device[]
   fact_correction                  fact_correction[]
   forecast_fact                    forecast_fact[]
+  home_key                         home_key?
   interval_fact                    interval_fact[]
   plan_run                         plan_run[]
   push_log                         push_log[]
@@ -1549,4 +1550,25 @@ model vat_rate {
   valid_to   BigInt?
 
   @@id([fuel, direction, valid_from])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model erasure_log {
+  id          BigInt  @id @default(autoincrement())
+  kind        String
+  site_id     BigInt?
+  site_uid    String? @db.Uuid
+  reason      String
+  started_at  BigInt
+  finished_at BigInt?
+  removed     String?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model home_key {
+  site_id    BigInt @id
+  key        Bytes
+  created_at BigInt
+  site       site   @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 }

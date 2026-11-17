@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, tx, dataDir, rolledBack } from '../db/db.js';
 import { ingestObservations } from './channels.js';
-import { forgetSeriesCache, markDirty } from './facts.js';
+import { forgetSeriesCache, markDirty, readRaw } from './facts.js';
 import { nowSec, recordedNow } from './time.js';
 import { parseDay, parseMonth, parseFlow } from '../adapters/sunsynk.js';
 import { mapAsync } from "./async.js";
@@ -88,8 +88,8 @@ export const canReplay = (source) => source in REPLAYABLE || source in PUSH_SOUR
 export const whyNot = (source) => NOT_REPLAYABLE[source] ?? 'No parser for this source has been separated from its fetch yet.';
 
 const parseJson = (t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } };
-function readReceipt(file) {
-  try { return fs.readFileSync(path.join(dataDir, file), 'utf8'); } catch { return null; }
+async function readReceipt(r) {
+  try { return await readRaw(r); } catch { return null; }
 }
 
 
@@ -98,7 +98,7 @@ async function receiptsOf(siteId, { source = null, days = 30, ids = null, limit 
   const codes = source ? [source] : replayableSources();
   const q = codes.map(() => '?').join(',');
   const idFilter = ids ? ` AND rp.id IN (${ids.map(() => '?').join(',')})` : '';
-  const rows = await db.prepare(`SELECT rp.id, rp.request, rp.file, rp.fetched_at, so.code AS source FROM raw_payload rp JOIN source so ON so.id = rp.source_id
+  const rows = await db.prepare(`SELECT rp.id, rp.site_id, rp.request, rp.file, rp.fetched_at, so.code AS source FROM raw_payload rp JOIN source so ON so.id = rp.source_id
     WHERE rp.site_id = ? AND rp.status = 'accepted' AND so.code IN (${q}) AND rp.fetched_at >= ?${idFilter} ORDER BY rp.id LIMIT ?`)
       .all(siteId, ...codes, Math.floor(now - days * 86400), ...(ids ?? []), limit + 1);
   const capped = rows.length > limit;
@@ -139,7 +139,7 @@ export async function lastRuns(siteId, limit = 5) {
 }
 
 async function parseReceipt(site, r) {
-  const text = readReceipt(r.file);
+  const text = await readReceipt(r);
   if (text == null) return { missing: true };
   const request = parseJson(r.request) ?? {};
   let body;

@@ -2,7 +2,7 @@
 // desired state to the points a device reports about itself, and the check that a command's effect showed up in
 // telemetry. Nothing here names a vendor: the points are channels (channel.access, enum_values), the effect check is a
 // column of device_action, the limits are rows of control_limit.
-import { db } from '../db/db.js';
+import { db, tx } from '../db/db.js';
 import { freshness, series } from './planner-read.js';
 import { defineChannel } from './channels.js';
 import { localDate, dayBounds, todMinute } from './time.js';
@@ -21,11 +21,33 @@ export async function limitsFor(deviceId, action, nowMs) {
     AND (action IS NULL OR action = ?)`).all(deviceId, nowMs, nowMs, action);
 }
 
-// Installer limit on a command parameter for one device (superseding any current one of the same parameter and action).
-export async function setControlLimit(deviceId, { action = null, param, min = null, max = null, source = 'installer', now = Date.now() }) {
-  await db.prepare('UPDATE control_limit SET superseded_at = ? WHERE device_id = ? AND param = ? AND action IS NOT DISTINCT FROM ? AND superseded_at IS NULL').run(now, deviceId, param, action);
-  return Number((await db.prepare('INSERT INTO control_limit (device_id, action, param, min_value, max_value, source, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(deviceId, action, param, min, max, source, now, now)).lastInsertRowid);
+// Who may set a limit, strongest first (fix list R17). A lower source can only tighten a higher one: the database refuses a
+// bound looser than a current one of a higher source (trigger control_limit_ranked), and every current limit applies at once.
+export const LIMIT_SOURCES = ['physical', 'legal', 'installer', 'owner', 'optimiser'];
+
+// A limit on a command parameter for one device, from one source. It replaces only that source's current limit of the same
+// parameter and action: an owner cannot replace (and so loosen) an installer's. basis: the evidence (adapter, vendor_doc,
+// dno_approval, ...).
+export async function setControlLimit(deviceId, { action = null, param, min = null, max = null, source = 'installer', basis = null, now = Date.now() }) {
+  if (!LIMIT_SOURCES.includes(source)) throw new RangeError(`limit source ${source}: one of ${LIMIT_SOURCES.join(', ')}`);
+  return await tx(async () => {
+    await db.prepare('UPDATE control_limit SET superseded_at = ? WHERE device_id = ? AND param = ? AND action IS NOT DISTINCT FROM ? AND source = ? AND superseded_at IS NULL').run(now, deviceId, param, action, source);
+    return Number((await db.prepare('INSERT INTO control_limit (device_id, action, param, min_value, max_value, source, basis, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run(deviceId, action, param, min, max, source, basis, now, now)).lastInsertRowid);
+  });
+}
+
+// The bounds in force for one parameter of one action: the tightest of every current limit, each bound with the source that
+// sets it. conflict: the bounds leave no value (a minimum above a maximum), so nothing may be sent.
+export async function effectiveLimit(deviceId, action, param, nowMs = Date.now()) {
+  const rows = (await limitsFor(deviceId, action, nowMs)).filter((l) => l.param === param);
+  const out = { param, min: null, max: null, minSource: null, maxSource: null, conflict: false, limits: rows.length };
+  for (const l of rows) {
+    if (l.min_value != null && (out.min == null || l.min_value > out.min)) { out.min = l.min_value; out.minSource = l.source; }
+    if (l.max_value != null && (out.max == null || l.max_value < out.max)) { out.max = l.max_value; out.maxSource = l.source; }
+  }
+  out.conflict = out.min != null && out.max != null && out.min > out.max;
+  return out;
 }
 
 /**
@@ -33,7 +55,8 @@ export async function setControlLimit(deviceId, { action = null, param, min = nu
  *  placeholder_capability  the device's capability for the action is only a placeholder (never confirmed)
  *  stale_inputs            the plan it comes from ran on stale inputs, or (freshnessLimits given) the home's live inputs are
  *                          stale now, and the action is not a plain demand action
- *  limit                   a value outside the device's installer limit (control_limit)
+ *  limit                   a value outside the tightest current limit of all sources (control_limit, effectiveLimit),
+ *                          or limits that leave no value at all (conflict)
  *  params                  a value outside the range the action itself allows (device_action.params_schema)
  */
 export async function checkGates({ deviceId, desired, planRunId = null, now = Date.now(), freshnessLimits = null }) {
@@ -50,11 +73,12 @@ export async function checkGates({ deviceId, desired, planRunId = null, now = Da
       if (!f.ok) blocks.push({ gate: 'stale_inputs', detail: { reason: f.reason, stale: f.stale, missing: f.missing } });
     }
   }
-  for (const l of await limitsFor(deviceId, desired.action, now)) {
-    const v = desired[l.param];
+  for (const param of new Set((await limitsFor(deviceId, desired.action, now)).map((l) => l.param))) {
+    const v = desired[param];
     if (!num(v)) continue;
-    if ((l.min_value != null && v < l.min_value) || (l.max_value != null && v > l.max_value)) {
-      blocks.push({ gate: 'limit', detail: { param: l.param, value: v, min: l.min_value, max: l.max_value, source: l.source } });
+    const e = await effectiveLimit(deviceId, desired.action, param, now);
+    if (e.conflict || (e.min != null && v < e.min) || (e.max != null && v > e.max)) {
+      blocks.push({ gate: 'limit', detail: { param, value: v, min: e.min, max: e.max, source: e.max != null && v > e.max ? e.maxSource : e.minSource, ...(e.conflict ? { conflict: true } : {}) } });
     }
   }
   if (act) {

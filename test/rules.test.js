@@ -189,6 +189,15 @@ await test('facts: a series remembers its longest fact, so a read can bound its 
   }
 });
 
+await test('limits: a lower source can only tighten a higher one', async () => {
+  const lim = 'INSERT INTO control_limit (device_id, action, param, min_value, max_value, source, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?, ?, 0, 0)';
+  await run(lim, batA, null, 'rate_w', null, 3600, 'legal');
+  await run(lim, batA, 'charge', 'rate_w', null, 3000, 'owner');                             // tighter: fine
+  await refused('control_limit_ranked', lim, batA, 'charge', 'rate_w', null, 5000, 'owner');  // looser than the legal one
+  const opt = await ins(lim, batA, null, 'rate_w', 100, 2000, 'optimiser');
+  await refused('control_limit_ranked', 'UPDATE control_limit SET max_value = 4000 WHERE id = ?', opt);
+});
+
 await test('homes on rows: a series takes its subject\'s home, a fact its series\' home; another home is refused', async () => {
   const sA = await seriesId('device', batA, 'battery_soc_pct', 'sunsynk_5min');
   const { metric_id: m, source_id: so } = await get('SELECT metric_id, source_id FROM series WHERE id = ?', sA);

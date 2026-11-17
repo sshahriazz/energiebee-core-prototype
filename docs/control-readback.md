@@ -68,7 +68,7 @@ sequenceDiagram
 | `ack` observation | `src/core/channels.js` | A receipt that a write was applied. Returned to the executor, **never stored as a fact**. |
 | `channel.access` | delta 067 | `read`, `write` or `readwrite`. A state on a write-only point is rejected. |
 | `channel.enum_values` | delta 067 | The device's mode codes as words; a state outside it is rejected (`not_in_enum`). |
-| `control_limit` | delta 067, `control.js` | An installer's limit on one parameter of one device, with its source and dates. Superseded, never deleted. |
+| `control_limit` | delta 067, migration `20261117000005_limit_ranks`, `control.js` | A limit on one parameter of one device, with its source, its evidence (`basis`) and dates. Sources are ranked physical > legal > installer > owner > optimiser: a lower source can only tighten a higher one (the database refuses a looser bound), and a new limit replaces only its own source's. Superseded, never deleted. |
 | `command_block` | delta 067 | Every command refused at enqueue, with the gate and the reason. |
 | `device_action.effect_check` | delta 067 | Data, not code: `{ metric, min, afterS, windowS }`. Seeded for charge (battery charge power) and export (grid export power). |
 | `command.verify_status`, `verified_at` | delta 067 | `verified` or `not_verified` after the effect check. |
@@ -89,7 +89,7 @@ All are checked before anything is changed, so a refused command never cancels t
 |---|---|---|
 | `placeholder_capability` | the device's capability row for the action has source `placeholder` (stated, never confirmed) | confirmed sources: adapter, vendor_doc, probe, installer, user |
 | `stale_inputs` | the plan run it comes from has status `stale_inputs`, or (when asked with `freshnessLimits`) the home's live inputs are stale now | actions whose side effect class is `none`, i.e. plain demand, which is the safe fallback of a stale plan |
-| `limit` | a value is outside the device's `control_limit` for that parameter | parameters with no limit |
+| `limit` | a value is outside the tightest current limit of all sources for that parameter (`effectiveLimit`, which names the source that binds), or the limits leave no value at all | parameters with no limit |
 | `params` | a value is outside the range the action itself allows (`device_action.params_schema`) | parameters the schema does not bound |
 
 The older check, that a device must be known to deliver the action (`device_capability.supported = 1`), still throws as before.

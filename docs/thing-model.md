@@ -283,6 +283,8 @@ flowchart LR
 
 ### 3.4 An example home: devices, rooms and flows
 
+An interactive version, with both homes (home 1 today, and an example home with a hub), layer toggles, and each device's points and four-lane timeline, is [docs/visual/home-graph.html](visual/home-graph.html): open it in a browser.
+
 The same things seen through both structures: each device is labelled with its room (spatial tree), and the arrows are the energy graph (thick: energy, thin: heat, dotted: `controls`).
 
 ![Devices of an example home connected by energy, heat and control](diagrams/tm-home-flows.svg)

@@ -3,9 +3,8 @@
 // superseding it: a home the user asked to delete must not be kept.
 //
 // What belongs to a home is found from the schema itself, so a table added later is covered without a change here:
-//   seeds    the site row; its devices (device.site_id); its series (series.subject_kind 'site' or 'device', whose
-//            subject_id names the home or one of its devices: no foreign key there); rows of tables with a site_id
-//            column and no foreign key (channel_reject)
+//   seeds    the site row; its devices (device.site_id); rows of tables with a site_id column and no foreign key
+//            (channel_reject). Series and facts carry their home (site_id, set on insert) and are followed by it
 //   follow   every foreign key, whatever its ON DELETE: a row that references a row being deleted is deleted too
 //            (facts of its series, readings, days, agreements, plans, commands, its own tariff rows, logins ...)
 //   shared   never followed upward: a tariff, a supplier, a region's series or a group the home was in stays
@@ -76,9 +75,6 @@ export async function homeFootprint(siteId) {
   await take('site', 'id', [id]);
   const devices = (await db.prepare('SELECT id FROM device WHERE site_id = ?').all(id)).map((r) => r.id);
   await take('device', 'id', devices);
-  const series = (await db.prepare(`SELECT id FROM series WHERE (subject_kind = 'site' AND subject_id = ?)
-    OR (subject_kind = 'device' AND subject_id IN (SELECT jsonb_array_elements_text(?::jsonb)))`).all(String(id), JSON.stringify(devices.map(String)))).map((r) => r.id);
-  await take('series', 'id', series);
   for (const t of tables) {
     if (t === 'raw_payload' || t === 'site' || t === 'device') continue;
     const hasCol = (await columnsOf(t)).includes('site_id');

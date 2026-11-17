@@ -189,6 +189,19 @@ await test('facts: a series remembers its longest fact, so a read can bound its 
   }
 });
 
+await test('homes on rows: a series takes its subject\'s home, a fact its series\' home; another home is refused', async () => {
+  const sA = await seriesId('device', batA, 'battery_soc_pct', 'sunsynk_5min');
+  const { metric_id: m, source_id: so } = await get('SELECT metric_id, source_id FROM series WHERE id = ?', sA);
+  assert.equal((await get('SELECT site_id FROM series WHERE id = ?', sA)).site_id, A);
+  await refused('series_home', "INSERT INTO series (subject_kind, subject_id, metric_id, source_id, site_id) VALUES ('device', ?, ?, ?, ?)", String(meterA), m, so, B);
+  await refused('series_home', 'UPDATE series SET site_id = ? WHERE id = ?', B, sA);
+  await refused('reading_home', 'INSERT INTO reading (series_id, ts, value, recorded_at, site_id) VALUES (?, 0, 1, 0, ?)', sA, B);
+  await refused('interval_fact_home', 'INSERT INTO interval_fact (series_id, start_ts, end_ts, value, recorded_at, site_id) VALUES (?, 0, 1800, 1, 0, ?)', sA, B);
+  await refused('forecast_fact_home', 'INSERT INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, recorded_at, site_id) VALUES (?, 0, 1800, 0, 1, 0, ?)', sA, B);
+  await run('INSERT INTO reading (series_id, ts, value, recorded_at) VALUES (?, 0, 1, 0)', sA);
+  assert.equal((await get('SELECT site_id FROM reading WHERE series_id = ?', sA)).site_id, A, 'set on insert');
+});
+
 await test('every trigger has a case, every message of each was produced, and every exclusion constraint was hit', async () => {
   const missing = [];
   for (const [name, msgs] of triggerMessages) {

@@ -455,13 +455,16 @@ model forecast_fact {
   value       Float?
   raw_id      BigInt?
   recorded_at BigInt       @default(dbgenerated("((EXTRACT(epoch FROM now()))::bigint * 1000)"))
+  site_id     BigInt?
   raw_payload raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   series      series       @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site        site?        @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([series_id, start_ts, end_ts, issued_at])
   @@index([raw_id], map: "forecast_fact_raw")
   @@index([series_id, issued_at], map: "forecast_issued")
   @@index([series_id, recorded_at], map: "forecast_recorded")
+  @@index([site_id], map: "forecast_fact_site", where: raw("(site_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -489,12 +492,15 @@ model interval_fact {
   recorded_at   BigInt
   superseded_at BigInt?
   raw_id        BigInt?
+  site_id       BigInt?
   raw_payload   raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   series        series       @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site          site?        @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([series_id, start_ts, end_ts, recorded_at])
   @@index([series_id, start_ts], map: "interval_current", where: raw("(superseded_at IS NULL)"))
   @@index([raw_id], map: "interval_fact_raw")
+  @@index([site_id], map: "interval_fact_site", where: raw("(site_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -817,11 +823,14 @@ model reading {
   recorded_at   BigInt
   superseded_at BigInt?
   raw_id        BigInt?
+  site_id       BigInt?
   raw_payload   raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   series        series       @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site          site?        @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@id([series_id, ts, recorded_at])
   @@index([raw_id], map: "reading_raw")
+  @@index([site_id], map: "reading_site", where: raw("(site_id IS NOT NULL)"))
 }
 
 model rebuild_queue {
@@ -919,14 +928,17 @@ model series {
   metric_id       BigInt
   source_id       BigInt
   max_span_s      BigInt?
+  site_id         BigInt?
   fact_correction fact_correction[]
   forecast_fact   forecast_fact[]
   interval_fact   interval_fact[]
   reading         reading[]
   metric          metric            @relation(fields: [metric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site            site?             @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   source          source            @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([subject_kind, subject_id, metric_id, source_id])
+  @@index([site_id], map: "series_site", where: raw("(site_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -985,11 +997,15 @@ model site {
   connection_secret                connection_secret[]
   device                           device[]
   fact_correction                  fact_correction[]
+  forecast_fact                    forecast_fact[]
+  interval_fact                    interval_fact[]
   plan_run                         plan_run[]
   push_log                         push_log[]
   rate_interval                    rate_interval[]
+  reading                          reading[]
   rebuild_queue                    rebuild_queue[]
   replay_log                       replay_log[]
+  series                           series[]
   currency_site_currencyTocurrency currency?           @relation("site_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
   market                           market?             @relation(fields: [market_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
   site_attribute                   site_attribute[]

@@ -48,7 +48,8 @@ await test('no user header: only the homes no user owns (all of them before any 
   assert.deepEqual(await siteIds(null), [loose]);
   assert.equal((await call(`/api/sites/${loose}/now`)).status, 200);
   assert.equal((await call(`/api/sites/${loose}/now`, alice.id)).status, 404, 'a user sees only their own homes');
-  await db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
+  await db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings and series go with it
+  await db.prepare('DELETE FROM series WHERE site_id = ?').run(loose);
   await db.prepare('DELETE FROM site WHERE id = ?').run(loose);
   assert.equal(await visibleSiteIds(admin), null);
 });

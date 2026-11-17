@@ -15,7 +15,7 @@
 //   view:name               a view
 
 export const DEFINITION = 'An item is COVERED when every piece of data it names has a home in the database as built (a fresh database: '
-  + 'schema.sql, every delta, every seed): a table column (or a documented key of a JSON column), a registry row (attribute_def, '
+  + 'the migrations in prisma/migrations, every seed): a table column (or a documented key of a JSON column), a registry row (attribute_def, '
   + 'setting_def, device_kind), a metric for its facts (and a source where the item is a feed), a device_action, a view, or a function '
   + 'of the planner read layer (src/core/planner-read.js) that derives it from stored facts. test/coverage-matrix.test.js checks that '
   + 'every target exists. Home Assistant wiring, presentation, fixed code rules and archived keys are EXCLUDED_NOT_DATA with a reason '

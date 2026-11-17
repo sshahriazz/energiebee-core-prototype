@@ -83,7 +83,7 @@ Everything is a deterministic function of the time, so the same history comes ou
 ## How to create it
 
 - **On the page.** Open Devices on a home that has no demo home. A card offers "Create the synthetic demo home". It asks first, in words, that it adds a separate demo home to this database and does not change the real home or its data. Confirming creates it and opens it.
-- **From the command line.** `npm run demo:iot` does the same for the database the app uses (`DB_FILE`, else `data/core.db`), prints the path first, and does nothing if the demo home is already there.
+- **From the command line.** `npm run demo:iot` does the same for the database the app uses (`DATABASE_URL`), prints its name first, and does nothing if the demo home is already there.
 
 ## Routes
 

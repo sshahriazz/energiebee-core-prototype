@@ -1,6 +1,23 @@
 # EnergieBee core: the database
 
-Prototype `energiebee-core-prototype` · SQLite through Node's built-in `node:sqlite` · Build method `v3-stock-follows-charge` · Prepared by Technext · 16 October 2026
+Prototype `energiebee-core-prototype` · PostgreSQL through Prisma 7 (SQLite through `node:sqlite` until 16 November 2026) · Build method `v3-stock-follows-charge` · Prepared by Technext · 16 October 2026, storage section 17 November 2026
+
+## Storage engine: PostgreSQL (from 17 November 2026)
+
+The tables, columns, keys and rules described below are unchanged; what stores them moved from SQLite to PostgreSQL. This section is what changed. The measurements of sections 6 to 9 and the `sqlite3` commands of the appendix were made on SQLite and are kept as they were.
+
+| Part | Now |
+|---|---|
+| Schema | `prisma/migrations`: `20261117000000_init` is the final SQLite schema (`schema.sql` and its 43 deltas) translated to Postgres; `20261117000001_reference_data` holds the reference rows the deltas inserted. A schema change is a new migration, applied by `npm run db:migrate` (`prisma migrate deploy`), and by the Docker entrypoint before the app starts. `prisma/schema.prisma` holds the models, pulled from the migrated database (`npm run db:pull`); the SQL is the source of truth for constraints, triggers and views. |
+| Types | Every integer is `bigint` (ids, seconds, milliseconds); every real number `double precision` (the same arithmetic as SQLite's REAL); JSON columns stay `text` with `IS JSON` checks; blobs are `bytea`. Databases use the builtin `C.UTF-8` locale: text sorts byte by byte, as in SQLite. |
+| Rules | Every CHECK, unique key and partial index is kept. The overlap triggers of `rate_interval`, `tariff_agreement` and `site_group_member` became exclusion constraints (`btree_gist`), safe under concurrent writers; the other 49 triggers are plpgsql functions with the same messages. Foreign keys are checked at once, as before, and are deferrable so the whole-home erasure (`src/core/delete-home.js`) can check them at commit. |
+| Access | `src/db/db.js`: `db.prepare(sql).get / all / run` return Promises; `?` placeholders; an INSERT into a table with `id` returns it (`lastInsertRowid`). `tx(fn)` is one transaction, re-entrant, carried through the async call chain (AsyncLocalStorage); `rolledBack(fn)` keeps none of fn's writes. Rows come back as plain numbers and strings; Postgres errors are reported as "CHECK / UNIQUE / FOREIGN KEY / NOT NULL constraint failed: <name>", an exclusion constraint by its rule's message, a trigger by its own. `DEBUG_SQL=1` adds the statement to the message. |
+| Files | Raw payloads and logs stay files, under `DATA_DIR` (default `data/`). |
+| Tests | One database per test file, cloned from a migrated template; the frozen GB home is `test/fixtures/gb-home.json.gz` (a dump, `scripts/make-fixture.js`). Tests never read `.env`. |
+| Moving data | `scripts/sqlite-to-postgres.js` copies a SQLite file at the final schema; `scripts/verify-sqlite-copy.js` compares a hash of every row of 14 fact, tariff and serving tables; `scripts/verify-rebuild.js` rebuilds every stored slot, as known when it was built, and compares it. |
+
+**Proof of the move, 17 November 2026.** The live database (118,453 rows in 73 tables) was copied in 3 seconds; all 14 table hashes are equal. Home 1's 781 stored half-hours (12–28 October) rebuilt on Postgres as known when SQLite built them: 0 values differ (183 ms, against 125 ms on SQLite for the same range). The golden GB test, the "as known at" site-version test and the full suite pass on Postgres as they did on SQLite (655 pass; the same 6 date-dependent failures as before the move, fix list B2); the 15- and 60-minute slot runs pass 111 of 111.
+
 
 This document explains how the prototype stores its data:
 

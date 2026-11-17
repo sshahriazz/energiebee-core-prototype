@@ -515,7 +515,7 @@ Providers -> Adapters -> Facts -> Build engine -> Timeline -> (Planner -> Comman
 
 ## 13. Stack
 
-Node.js 22, Express and SQLite via `node:sqlite`. No build step and no other dependencies. A PostgreSQL port is planned for multi-home. Run it with `npm start`. Data lives in `data/`. See `docs/architecture-v3.md` for the wider design.
+Node.js 22, Express and PostgreSQL through Prisma 7 (SQLite until November 2026). No build step. Create the database with `npm run db:migrate`, then run `npm start`. Raw payloads and logs live in `data/`. See `docs/architecture-v3.md` for the wider design.
 
 ## 14. How to see it work
 

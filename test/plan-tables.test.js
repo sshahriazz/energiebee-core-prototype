@@ -1,4 +1,4 @@
-// Plans as data (src/db/deltas/030-plan.sql, src/core/plans.js): tables only, no planner. A new,
+// Plans as data (prisma/migrations/20261117000000_init/migration.sql, src/core/plans.js): tables only, no planner. A new,
 // empty database with the three SYNTHETIC homes of scripts/lib/multi-market.js built by the real
 // engine, so plans can be compared with a real ledger. No live data, no network.
 import { test } from 'node:test';

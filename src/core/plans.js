@@ -1,5 +1,5 @@
 // Plans as data: the helpers around plan_run, plan_slot, device_action, device_capability,
-// plan_input_ref and plan_score (src/db/deltas/030-plan.sql). TABLES ONLY, NO PLANNER YET: nothing
+// plan_input_ref and plan_score (prisma/migrations/20261117000000_init/migration.sql). TABLES ONLY, NO PLANNER YET: nothing
 // in the core calls savePlan on its own, and the build engine never reads these tables.
 //
 // What a planner would hand savePlan (Predbat's slot record, made device-generic):

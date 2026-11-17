@@ -5,11 +5,12 @@ each provider, turns it into one trusted half-hour timeline of energy flows and
 costs (past, now and forecast), and shows it on ten plain HTML pages. You can
 trace every number back to the provider payload it came from.
 
-The stack is Node 22, Express and SQLite (Node's built-in `node:sqlite`). Express is the only dependency, and there is no build step.
+The stack is Node 22, Express and PostgreSQL through Prisma 7. The schema is SQL in `prisma/migrations`; there is no build step beyond `prisma generate` (run by `npm install`).
 
 ## What you need
 
-- **Node.js 22.13 or newer** (it uses Node's built-in SQLite, `node:sqlite`). Check with `node -v`.
+- **Node.js 22.13 or newer** (22.18 or newer runs the generated Prisma client's TypeScript directly). Check with `node -v`.
+- **PostgreSQL 17 or newer** (18 in development): Postgres.app on a Mac, or the `db` service of `docker-compose.yml`.
 - **npm** (comes with Node).
 - **Internet access** to the providers: Sunsynk, Octopus, National Gas, NESO, Open-Meteo, Quartz and postcodes.io.
 - **The home's credentials** in `.env` (see the next section):
@@ -17,23 +18,26 @@ The stack is Node 22, Express and SQLite (Node's built-in `node:sqlite`). Expres
   - **Octopus:** an API key from the Octopus dashboard (Personal details → API access) and the account number.
 - Optional: the installer's panel size, tilt and direction and battery size, if you have them.
 
-No other database or service is needed; everything is stored in `data/`.
+The database is PostgreSQL (`DATABASE_URL`); raw provider answers and logs are stored in `data/` (`DATA_DIR`).
 
 ## Run
 
 ```bash
 cd energiebee-core-prototype
 nvm use 22                 # or any Node 22.13+
-npm install                # installs Express, the only dependency
-cp .env.example .env       # then fill in the values (next section)
+npm install                # installs Express, Prisma and pg, and generates the Prisma client
+cp .env.example .env       # then fill in the values (next section), DATABASE_URL first
+createdb energiebee        # an empty database (binary text order: --locale-provider=builtin --locale=C.UTF-8)
+npm run db:migrate         # applies prisma/migrations
 npm start                  # open http://localhost:4100
 ```
 
 - **First start:** the server creates the home from `.env`, loads 14 days of history and builds the timeline. This takes up to about a minute; until it finishes the pages show a "Loading data from the providers…" banner.
 - **After that:** it syncs every 10 minutes (`SYNC_EVERY_MINUTES`). The **Sync** button on any page syncs immediately.
 - **`npm run dev`:** restarts the server when a file changes.
-- **`npm run reset`:** deletes the database and the stored raw payloads, so the next start begins from scratch.
-- **Port and file location:** `PORT` (default 4100) and `DB_FILE` (default `data/core.db`) in `.env`.
+- **Starting from scratch:** drop and recreate the database named in `DATABASE_URL`, run `npm run db:migrate`, and empty `data/raw`.
+- **Moving an old SQLite `data/core.db` across:** open it once with the last SQLite version (commit `f014fce`) so every delta is applied, then `npm run db:copy-sqlite -- data/core.db` copies every row; `node scripts/verify-sqlite-copy.js data/core.db` checks the copy row by row, and `node scripts/verify-rebuild.js` rebuilds the stored slots and compares them.
+- **Port, database and files:** `PORT` (default 4100), `DATABASE_URL` and `DATA_DIR` (default `data`) in `.env`.
 - **To stop:** Ctrl+C in the terminal running it.
 
 ### Running it unattended
@@ -57,9 +61,9 @@ What happens when something fails:
 npm test
 ```
 
-44 tests, about 2 seconds, using Node's built-in test runner. Each test file uses its own throwaway database, so `data/core.db` is never changed.
+About 660 tests, about 3.5 minutes on a laptop, using Node's built-in test runner (`npm run test:slots` repeats 111 of them at 15- and 60-minute slots). Each test file uses its own throwaway Postgres database (cloned from a migrated template on the server in `TEST_DATABASE_URL`, default the local one), so the app's database is never changed. Tests never read `.env`.
 - **Unit tests:** HTTP retry rules (against a local server), clock changes, Sunsynk's repeated and missing hour, and resuming after an outage.
-- **Integration tests** (on a copy of `data/core.db`; skipped if there is none):
+- **Integration tests** (on a copy of the frozen, identifier-free GB home in `test/fixtures/gb-home.json.gz`):
   - a partial rebuild matches a full rebuild exactly;
   - every half-hour balances, and its bill adds up;
   - the battery stock follows the measured charge level;
@@ -182,12 +186,13 @@ for any new metrics. The schema and the build engine do not change.
 ```
 src/
   server.js            Express API and static pages
-  db/                  schema.sql, registry (sources + contracts, metrics, VAT), db.js
+  db/                  db.js (Prisma, statements, transactions), registry (sources + contracts, metrics, VAT), seed/
+prisma/                schema.prisma (models pulled from the database), migrations/ (the schema as SQL)
   core/                time, facts, pricing, build, forecast, insights
   adapters/            geo, octopus, sunsynk, carbon, openmeteo, quartz
   jobs/sync.js         per-home sync order and scheduler
 public/                six pages, app.css, js/ (api, layout, charts, timeline, pages/)
-data/                  core.db and raw/ (git-ignored)
+data/                  raw/ and logs/ (git-ignored; DATA_DIR)
 ```
 
 ## API
@@ -214,10 +219,10 @@ cp .env.example .env        # fill in your credentials
 docker compose up -d --build   # then open http://localhost:8080
 # or without compose:
 docker build -t energiebee-core .
-docker run -d --name energiebee -p 8080:80 --env-file .env -v energiebee-data:/app/data energiebee-core
+docker run -d --name energiebee -p 8080:80 --env-file .env -e DATABASE_URL=postgresql://... -v energiebee-data:/app/data energiebee-core
 ```
 
 - **nginx** serves the website (`public/`) and proxies `/api/` to the Node app, which listens only inside the container (port 4100 is not published).
-- **The environment is not baked into the image.** `.env` is excluded by `.dockerignore`; pass it with `--env-file` (or `env_file:` in `docker-compose.yml`). Sync, credentials and `DB_FILE` all come from it.
-- **Data persists in the `/app/data` volume** (database, raw payloads, logs). Remove the volume (`docker volume rm energiebee-data`) to start fresh.
+- **The environment is not baked into the image.** `.env` is excluded by `.dockerignore`; pass it with `--env-file` (or `env_file:` in `docker-compose.yml`). Sync and credentials come from it; `docker-compose.yml` sets `DATABASE_URL` to its own Postgres service.
+- **Data persists in two volumes:** `energiebee-pg` (the Postgres database) and `energiebee-data` (raw payloads, logs). The entrypoint applies the migrations before the app starts. Remove both volumes to start fresh.
 - Health: `docker ps` shows `healthy` once `/api/status` answers; the first sync after a fresh start can take a minute.

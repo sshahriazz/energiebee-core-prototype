@@ -2,17 +2,19 @@
 # EnergieBee core: nginx (static site + reverse proxy) in front of the Node app, one container.
 #
 #   docker build -t energiebee-core .
-#   docker run -d --name energiebee -p 8080:80 --env-file .env -v energiebee-data:/app/data energiebee-core
+#   docker run -d --name energiebee -p 8080:80 --env-file .env -e DATABASE_URL=postgresql://... -v energiebee-data:/app/data energiebee-core
+#   (or docker compose up -d --build, which also runs Postgres)
 #
-# The environment (credentials, DB_FILE, sync settings) is NOT baked into the image: pass your
-# .env at run time (--env-file, or env_file in docker-compose.yml). Data (database, raw payloads,
-# logs) lives in /app/data: mount a volume there or it is lost with the container.
+# The environment (credentials, DATABASE_URL, sync settings) is NOT baked into the image: pass your
+# .env at run time (--env-file, or env_file in docker-compose.yml). The database is PostgreSQL
+# (DATABASE_URL); the entrypoint applies its migrations before the app starts. Raw payloads and logs
+# live in /app/data (DATA_DIR): mount a volume there or they are lost with the container.
 
 # ───────────── Stage 1: production dependencies ─────────────
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # ───────────── Stage 2: runtime (nginx + node) ─────────────
 FROM node:22-alpine AS runtime
@@ -25,11 +27,15 @@ RUN apk add --no-cache nginx tini su-exec tzdata \
 WORKDIR /app
 ENV NODE_ENV=production \
   PORT=4100 \
-  DB_FILE=data/core.db
+  DATA_DIR=data
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
+COPY prisma ./prisma
+COPY prisma.config.js ./
+# The Prisma client is generated from prisma/schema.prisma into src/generated (not in the repository).
+RUN npx prisma generate
 COPY public ./public
 COPY scripts ./scripts
 # Read at run time by the Compatibility page and the coverage check.

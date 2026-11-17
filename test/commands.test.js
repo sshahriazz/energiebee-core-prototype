@@ -1,4 +1,4 @@
-// The control path as data (src/db/deltas/031-command.sql, 032, src/core/commands.js): tables only,
+// The control path as data (prisma/migrations/20261117000000_init/migration.sql, src/core/commands.js): tables only,
 // no executor. A new, empty database; nothing is sent anywhere.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

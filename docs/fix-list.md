@@ -14,15 +14,15 @@ Rule: **same model, same numbers.** The golden test and the fingerprint must mat
 
 | ID | Item | Status | Docs | Code | Verified by | Commit |
 |---|---|---|---|---|---|---|
-| P1 | Local Postgres for development (Postgres.app 18 on `localhost:5432`, databases `energiebee_dev` and `energiebee_test_*` only); a `postgres` service in `docker-compose.yml`; `DATABASE_URL` in `.env.example` | ⬜ | README, `.env.example` | `docker-compose.yml` | `pg_isready`; app connects | |
-| P2 | Prisma 7 set up (`prisma/schema.prisma`, `prisma.config`, `@prisma/adapter-pg`) | ⬜ | `docs/database.md` | `package.json`, `prisma/` | `prisma validate`, `prisma generate` | |
-| P3 | Postgres schema: `schema.sql` and its 43 deltas translated into one initial migration. Postgres-native where it is better: exclusion constraints for "no overlapping periods" instead of triggers, `jsonb`, `double precision` for every real number (identical arithmetic), `bigint` for milliseconds, `COLLATE "C"` (same text order as SQLite). Prisma models introspected from it | ⬜ | `docs/database.md` | `prisma/migrations/`, `prisma/schema.prisma` | `prisma migrate deploy` on an empty database; every constraint test passes | |
-| P4 | Async data layer replacing `src/db/db.js` (`node:sqlite`): the Prisma client, a parameterised SQL helper, transactions, bigint → number, seeding of the registries | ⬜ | `docs/database.md` | `src/db/` | unit tests | |
-| P5 | Every module made async and moved to the Postgres dialect: `src/core`, `src/adapters`, `src/jobs`, `src/routes`, `src/server.js`, `scripts/` | ⬜ | — | 159 files | module tests | |
-| P6 | Test harness on Postgres (one database per test file, cloned from a migrated template), and all 106 test files ported | ⬜ | `test/helpers.js` notes | `test/` | full suite and `test:slots` green | |
-| P7 | Data copy SQLite → Postgres: the live `data/core.db` and the GB fixture | ⬜ | `docs/database.md` | `scripts/sqlite-to-postgres.js` | row counts per table equal; fact checksums equal | |
-| P8 | Proof of same numbers: `golden-gb`, the home 1 fingerprint and every slot of `site_hh`, `site_day` and `site_heat_slot` equal to the SQLite build; rebuild time measured | ⬜ | result recorded here | — | comparison script output | |
-| P9 | SQLite removed: `node:sqlite`, `DB_FILE`, `npm run reset`, the Dockerfile and docs updated | ⬜ | README, `docs/database.md`, Dockerfile | — | `grep` finds no `node:sqlite` | |
+| P1 | Local Postgres for development (Postgres.app 18 on `localhost:5432`, databases `energiebee_dev` and `energiebee_test_*` only); a `postgres` service in `docker-compose.yml`; `DATABASE_URL` in `.env.example` | ✅ | README, `.env.example` | `docker-compose.yml` | `pg_isready`; app connects | this commit (Docker image not built: no daemon here) |
+| P2 | Prisma 7 set up (`prisma/schema.prisma`, `prisma.config`, `@prisma/adapter-pg`) | ✅ | `docs/database.md` | `package.json`, `prisma/` | `prisma validate`, `prisma generate` | `ab16eee` |
+| P3 | Postgres schema: `schema.sql` and its 43 deltas translated into one initial migration. Postgres-native where it is better: exclusion constraints for "no overlapping periods" instead of triggers, `jsonb`, `double precision` for every real number (identical arithmetic), `bigint` for milliseconds, `COLLATE "C"` (same text order as SQLite). Prisma models introspected from it | ✅ | `docs/database.md` | `prisma/migrations/`, `prisma/schema.prisma` | `prisma migrate deploy` on an empty database; every constraint test passes | `ab16eee` |
+| P4 | Async data layer replacing `src/db/db.js` (`node:sqlite`): the Prisma client, a parameterised SQL helper, transactions, bigint → number, seeding of the registries | ✅ | `docs/database.md` | `src/db/` | unit tests | `ab16eee`, `20aaa5d` |
+| P5 | Every module made async and moved to the Postgres dialect: `src/core`, `src/adapters`, `src/jobs`, `src/routes`, `src/server.js`, `scripts/` | ✅ | — | 159 files | module tests | `f8f0489`…`20aaa5d` |
+| P6 | Test harness on Postgres (one database per test file, cloned from a migrated template), and all 106 test files ported | ✅ | `test/helpers.js` notes | `test/` | full suite and `test:slots` green | `81e75ac` |
+| P7 | Data copy SQLite → Postgres: the live `data/core.db` and the GB fixture | ✅ | `docs/database.md` | `scripts/sqlite-to-postgres.js` | row counts per table equal; fact checksums equal | `feef533` |
+| P8 | Proof of same numbers: `golden-gb`, the home 1 fingerprint and every slot of `site_hh`, `site_day` and `site_heat_slot` equal to the SQLite build; rebuild time measured | ✅ | result recorded here | — | comparison script output | `feef533` |
+| P9 | SQLite removed: `node:sqlite`, `DB_FILE`, `npm run reset`, the Dockerfile and docs updated | ✅ | README, `docs/database.md`, Dockerfile | — | `grep` finds no `node:sqlite` | this commit |
 
 ## B: baseline problems found on 16 November
 
@@ -69,3 +69,12 @@ Newest first. One line per closed item: date, ID, what changed, how it was verif
 
 | Date | ID | Result |
 |---|---|---|
+| 2026-11-17 | P9 | `schema.sql`, `schema-prototype.sql` and the 43 deltas deleted (they live on as `prisma/migrations/20261117000000_init`); `DB_FILE` and `npm run reset` gone; Dockerfile runs `prisma generate`, the entrypoint `prisma migrate deploy`; compose has a `postgres:18-alpine` service; README and `docs/database.md` (new storage section) updated. `git grep node:sqlite` finds only the two scripts that read old SQLite files, and dated reviews |
+| 2026-11-17 | P1 | Postgres.app 18 on localhost:5432; `energiebee_dev` holds the live data; compose `db` service with the builtin C.UTF-8 locale. The Docker image was not built (no Docker daemon on this machine): to check on first use |
+| 2026-11-17 | P8 | `scripts/verify-rebuild.js`: home 1's 781 stored half-hours (12–28 Oct) rebuilt on Postgres as known at each build: 0 values differ, 183 ms (125 ms on SQLite). `golden-gb` and `site-version-gb` pass |
+| 2026-11-17 | P7 | `scripts/sqlite-to-postgres.js`: the live `core.db` (first upgraded by the SQLite core at `f014fce`) copied, 118,453 rows in 73 tables, 3 s; `scripts/verify-sqlite-copy.js`: row hashes of 14 fact, tariff and serving tables equal. The GB fixture is now a dump (`test/fixtures/gb-home.json.gz`, `scripts/make-fixture.js`) |
+| 2026-11-17 | P6 | One database per test file, cloned from a template named by the migrations' hash; tests never read `.env`. Full suite 655 of 665 pass: the 6 failures are the B2 ones that failed on SQLite too (4 skipped). `test:slots` 111 of 111 at 15 and 60 minutes |
+| 2026-11-17 | P5 | Every module async; SQLite dialect rewritten (COALESCE, ON CONFLICT, IS NOT DISTINCT FROM, jsonb, GREATEST/LEAST, strict GROUP BY). Array callbacks through `src/core/async.js`; promise queues and single-flight tokens kept deliberately unawaited |
+| 2026-11-17 | P4 | `src/db/db.js`: Prisma client with `@prisma/adapter-pg`; `prepare().get/all/run` as Promises; `tx()` and `rolledBack()` through AsyncLocalStorage; errors in SQLite-like wording; registries seeded at start |
+| 2026-11-17 | P3 | One initial migration plus a reference-data migration: 73 tables, 99 foreign keys (deferrable), 49 triggers, 3 exclusion constraints replacing the overlap triggers. Every constraint test passes |
+| 2026-11-17 | P2 | Prisma 7.10 (`prisma-client` generator to `src/generated/prisma`, `prisma.config.js`); `prisma validate` and `generate` run in `postinstall` |

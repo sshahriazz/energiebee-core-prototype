@@ -1,4 +1,4 @@
-// rate_interval as schema.sql defines it, on a new database: the index and the overlap trigger
+// rate_interval as the schema (prisma/migrations) defines it, on a new database: the index and the overlap constraint
 // (keyed on charge_period too), any non-empty register, and the unit, standing, fixed and capacity
 // components with their charge periods. Also GB VAT in tax_rule following registry VAT_RATES.
 import { test } from 'node:test';

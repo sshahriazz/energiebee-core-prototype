@@ -4,7 +4,7 @@
 set -eu
 
 cd /app
-mkdir -p /app/data /app/data/logs /app/data/raw
+mkdir -p /app/data /app/data/logs /app/data/raw   # DATA_DIR: raw payloads and logs
 chown -R node:node /app/data
 
 # The app reads its settings from the container environment (docker --env-file / compose env_file).
@@ -12,6 +12,13 @@ chown -R node:node /app/data
 if [ -z "${SUNSYNK_USERNAME:-}" ] && [ -z "${OCTOPUS_API_KEY:-}" ]; then
   echo "entrypoint: note: no SUNSYNK_USERNAME / OCTOPUS_API_KEY in the environment; the app starts without a home to sync (pass --env-file .env)" >&2
 fi
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "entrypoint: DATABASE_URL is not set: the app needs its PostgreSQL database" >&2
+  exit 1
+fi
+# The schema is the SQL in prisma/migrations: apply what is missing before the app starts (nothing when up to date).
+su-exec node npx prisma migrate deploy
 
 su-exec node node --disable-warning=ExperimentalWarning src/server.js &
 APP=$!

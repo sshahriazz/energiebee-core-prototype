@@ -1,4 +1,4 @@
-// The control path as data: helpers around command and command_log (src/db/deltas/031-command.sql).
+// The control path as data: helpers around command and command_log (prisma/migrations/20261117000000_init/migration.sql).
 // The executor (src/core/executor.js) drives these helpers; nothing else sends anything to a device:
 //   1. enqueueIfChanged(the desired state of the window it is in)   writes nothing when unchanged, or when a gate refuses it
 //   2. expireStale()                                                 a late command is dropped

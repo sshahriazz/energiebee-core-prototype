@@ -147,7 +147,7 @@ await test('consistency: a NULL currency, country or a foreign meter can no long
   await assert.doesNotReject(async () => await agree.run(bare, m3, eur));
 });
 
-// The schema's own guards (schema.sql), on a new database.
+// The schema's own guards (prisma/migrations), on a new database.
 await test('tariff_agreement INSERT: a superseded version may share its start with the current one; two current ones may not overlap', async () => {
   const m = id(await run("INSERT INTO device (site_id, kind, provider, external_ref, recorded_at) VALUES (?, 'meter_import', 'octopus', 'M-INSERT', 1)", site));
   const [A, B, C] = await mapAsync(['T-INS-A', 'T-INS-B', 'T-INS-C'], async (code) => await tariffOf(code));

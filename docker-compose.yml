@@ -1,7 +1,25 @@
 # docker compose up -d --build     then open http://localhost:8080
-# Settings and credentials come from .env (copy .env.example and fill it in). The database, raw
-# payloads and logs persist in the named volume.
+# Settings and credentials come from .env (copy .env.example and fill it in). PostgreSQL runs beside the app;
+# its data, and the app's raw payloads and logs, persist in the named volumes. Set POSTGRES_PASSWORD in .env.
 services:
+  db:
+    image: postgres:18-alpine
+    container_name: energiebee-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: energiebee
+      POSTGRES_USER: energiebee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-energiebee}
+      # Binary text order (as in development and the tests): the builtin C.UTF-8 locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8"
+    volumes:
+      - energiebee-pg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U energiebee -d energiebee"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   energiebee:
     build: .
     image: energiebee-core
@@ -11,10 +29,15 @@ services:
     environment:
       NODE_ENV: production
       PORT: "4100"
-      DB_FILE: data/core.db        # relative to /app: lives in the volume below
+      DATABASE_URL: postgresql://energiebee:${POSTGRES_PASSWORD:-energiebee}@db:5432/energiebee
+      DATA_DIR: data                # relative to /app: lives in the volume below
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8080:80"
     volumes:
       - energiebee-data:/app/data
 volumes:
   energiebee-data:
+  energiebee-pg:

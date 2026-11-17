@@ -19,13 +19,13 @@ FROM node:22-alpine AS runtime
 # nginx serves public/ and proxies /api/; tini reaps processes and forwards signals;
 # su-exec drops the app to the unprivileged node user; tzdata for local-time work.
 RUN apk add --no-cache nginx tini su-exec tzdata \
- && mkdir -p /run/nginx /app/data \
- && chown -R node:node /app
+  && mkdir -p /run/nginx /app/data \
+  && chown -R node:node /app
 
 WORKDIR /app
 ENV NODE_ENV=production \
-    PORT=4100 \
-    DB_FILE=data/core.db
+  PORT=4100 \
+  DB_FILE=data/core.db
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./

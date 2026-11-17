@@ -1,6 +1,7 @@
 // Stages 2 and 4 of the pipeline: raw landing and bitemporal facts.
 // Facts are append-only. A changed value becomes a new version and the old
 // row is stamped superseded_at; nothing is ever updated in place.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,14 +78,14 @@ const insReading = db.prepare(
 
 // A processor declares its source for the duration of its writes (asWriter); a series of any other
 // source is then refused, so a new vendor cannot overwrite another source's readings by filing
-// under its name. Outside asWriter nothing is checked.
-let writerSource = null;
-export function asWriter(source, fn) {
-  const prev = writerSource;
-  writerSource = sourceId(source);
-  try { return fn(); } finally { writerSource = prev; }
+// under its name. Outside asWriter nothing is checked. The writer follows the async call chain
+// (AsyncLocalStorage), so two processors writing at once never see each other's source.
+const writerStore = new AsyncLocalStorage();
+export async function asWriter(source, fn) {
+  return writerStore.run(await sourceId(source), fn);
 }
 function checkWriter(series) {
+  const writerSource = writerStore.getStore();
   if (writerSource == null) return;
   const sid = db.prepare('SELECT source_id FROM series WHERE id = ?').get(series)?.source_id;
   if (sid !== writerSource) throw new Error(`series ${series} belongs to another source than the one writing`);
@@ -180,18 +181,19 @@ export function markDirty(siteId, fromTs, toTs, reason) {
 // "As known at": while set (ms), every fact read returns the version that was in force at
 // that moment instead of the current one. Facts are never overwritten (a new version supersedes
 // the old one), so this reproduces exactly what the core could see then. Used to rebuild a day
-// as it stood at an earlier time; null (normal running) reads current versions.
-let knownAt = null;
+// as it stood at an earlier time; null (normal running) reads current versions. The moment follows
+// the async call chain (AsyncLocalStorage), so a request rebuilding "as known at" never changes what
+// another request running at the same time reads.
+const knownAtStore = new AsyncLocalStorage();
 export function withKnownAt(ms, fn) {
-  const prev = knownAt;
-  knownAt = ms == null ? null : Math.floor(Number(ms));
-  try { return fn(); } finally { knownAt = prev; }
+  return knownAtStore.run({ ms: ms == null ? null : Math.floor(Number(ms)) }, fn);
 }
-export const knownAtMs = () => knownAt;
+export const knownAtMs = () => knownAtStore.getStore()?.ms ?? null;
 // SQL condition for "the version in force" on a fact table with recorded_at / superseded_at (ms).
 // The moment is inlined as an integer, never user text.
 export function inForce(alias = '') {
   const a = alias ? `${alias}.` : '';
+  const knownAt = knownAtMs();
   if (knownAt == null || !Number.isFinite(knownAt)) return `${a}superseded_at IS NULL`;
   return `${a}recorded_at <= ${knownAt} AND (${a}superseded_at IS NULL OR ${a}superseded_at > ${knownAt})`;
 }

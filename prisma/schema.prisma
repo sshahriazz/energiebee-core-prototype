@@ -1,0 +1,1532 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  previewFeatures     = ["partialIndexes"]
+  importFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model app_user {
+  id                                         BigInt         @id @default(autoincrement())
+  name                                       String
+  created_at                                 BigInt
+  email                                      String?        @unique(map: "app_user_email")
+  role                                       String         @default("owner")
+  note                                       String?
+  password_hash                              String?
+  username                                   String?        @unique(map: "app_user_username")
+  pin_hash                                   String?
+  failed_logins                              BigInt         @default(0)
+  locked_until                               BigInt?
+  group_grant                                group_grant[]
+  site_grant_site_grant_granted_byToapp_user site_grant[]   @relation("site_grant_granted_byToapp_user")
+  site_grant_site_grant_user_idToapp_user    site_grant[]   @relation("site_grant_user_idToapp_user")
+  site_group                                 site_group[]
+  user_session                               user_session[]
+  user_site                                  user_site[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model attribute_def {
+  key                 String            @id
+  label               String
+  unit                String?
+  value_type          String
+  min_value           Float?
+  max_value           Float?
+  step                Float?
+  allowed_values      String?
+  json_shape          String?
+  applies_to          String            @default("[\"site\"]")
+  origins             String            @default("[\"sourced\",\"provider\",\"user\",\"derived\",\"placeholder\",\"synthetic\"]")
+  storage             String            @default("attribute_value")
+  site_column         String?
+  alias_of            String?
+  unverified          BigInt            @default(0)
+  description         String?
+  refs                String?
+  attribute_def       attribute_def?    @relation("attribute_defToattribute_def", fields: [alias_of], references: [key], onDelete: NoAction, onUpdate: NoAction)
+  other_attribute_def attribute_def[]   @relation("attribute_defToattribute_def")
+  attribute_value     attribute_value[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model attribute_value {
+  id            BigInt        @id @default(autoincrement())
+  site_id       BigInt?
+  device_id     BigInt?
+  key           String
+  source        String
+  value         String
+  origin        String
+  note          String?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  device        device?       @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  attribute_def attribute_def @relation(fields: [key], references: [key], onDelete: NoAction, onUpdate: NoAction)
+  site          site?         @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([device_id, key, recorded_at], map: "attribute_value_device", where: raw("(device_id IS NOT NULL)"))
+  @@index([site_id, key, recorded_at], map: "attribute_value_site", where: raw("(site_id IS NOT NULL)"))
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model binding {
+  id            BigInt  @id @default(autoincrement())
+  site_id       BigInt
+  role          String
+  source_id     BigInt
+  valid_from    BigInt?
+  valid_to      BigInt?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  reason        String?
+  priority      BigInt  @default(0)
+  device_id     BigInt?
+  device        device? @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site          site    @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  source        source  @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([site_id, role], map: "ix_binding_site_role")
+}
+
+model binding_default {
+  role      String
+  source_id BigInt
+  priority  BigInt @default(0)
+  source    source @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([role, source_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model calendar {
+  code                                               String            @id
+  day_start_min                                      BigInt            @default(0)
+  name                                               String?
+  origin                                             String?
+  origin_note                                        String?
+  calendar_day_calendar_day_calendarTocalendar       calendar_day[]    @relation("calendar_day_calendarTocalendar")
+  register_window_register_window_calendarTocalendar register_window[] @relation("register_window_calendarTocalendar")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model calendar_day {
+  calendar                                 String
+  local_date                               String
+  day_type                                 String
+  origin                                   String?
+  origin_note                              String?
+  recorded_at                              BigInt
+  superseded_at                            BigInt?
+  calendar_calendar_day_calendarTocalendar calendar @relation("calendar_day_calendarTocalendar", fields: [calendar], references: [code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([calendar, local_date, recorded_at])
+  @@unique([calendar, local_date], map: "calendar_day_current", where: raw("(superseded_at IS NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model channel {
+  id                                       BigInt  @id @default(autoincrement())
+  site_id                                  BigInt
+  source_id                                BigInt
+  point                                    String
+  metric_id                                BigInt
+  scale                                    Float   @default(1)
+  shift                                    Float   @default(0)
+  part                                     String  @default("all")
+  min_value                                Float?
+  max_value                                Float?
+  recorded_at                              BigInt
+  superseded_at                            BigInt?
+  device_id                                BigInt?
+  access                                   String  @default("read")
+  enum_values                              String?
+  kind                                     String  @default("value")
+  derived_metric_id                        BigInt?
+  counter_wrap                             Float?
+  counter_reset_below                      Float?
+  max_gap_s                                BigInt?
+  max_stuck_samples                        BigInt?
+  clock_offset_s                           BigInt  @default(0)
+  future_tolerance_s                       BigInt?
+  metric_channel_derived_metric_idTometric metric? @relation("channel_derived_metric_idTometric", fields: [derived_metric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device                                   device? @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  metric_channel_metric_idTometric         metric  @relation("channel_metric_idTometric", fields: [metric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site                                     site    @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  source                                   source  @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([site_id, source_id, point], map: "ix_channel_site_source")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model channel_reject {
+  id          BigInt @id @default(autoincrement())
+  site_id     BigInt
+  source_id   BigInt
+  point       String
+  ts          BigInt
+  value       Float?
+  reason      String
+  recorded_at BigInt
+
+  @@index([site_id, recorded_at], map: "ix_channel_reject_site")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model check_result {
+  site_id    BigInt
+  local_date String
+  check_code String
+  status     String
+  measured   Float?
+  tolerance  Float?
+  detail     String?
+  site       site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, local_date, check_code])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model column_class {
+  table_name  String
+  column_name String
+  class       String
+  weight_by   String?
+  note        String?
+
+  @@id([table_name, column_name])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model command {
+  id                    BigInt        @id @default(autoincrement())
+  plan_run_id           BigInt?
+  device_id             BigInt        @unique(map: "command_open", where: raw("(status = ANY (ARRAY['pending'::text, 'sent'::text]))"))
+  requested_at          BigInt
+  valid_from            BigInt
+  valid_until           BigInt
+  action                String
+  window_start          BigInt?
+  window_end            BigInt?
+  target_soc_pct        Float?
+  limit_pct             Float?
+  rate_w                Float?
+  setpoint_c            Float?
+  mode                  String?
+  desired               String
+  desired_hash          String
+  status                String        @default("pending")
+  attempts              BigInt        @default(0)
+  last_error            String?
+  sent_at               BigInt?
+  acked_at              BigInt?
+  readback_raw_id       BigInt?
+  reported              String?
+  diff                  String?
+  idempotency_key       String        @unique
+  supersedes_command_id BigInt?
+  reserve_pct           Float?
+  charge_rate_w         Float?
+  discharge_rate_w      Float?
+  current_a             Float?
+  export_start          BigInt?
+  export_end            BigInt?
+  verify_status         String?
+  verified_at           BigInt?
+  applied_late_at       BigInt?
+  ack_ref               String?
+  device                device        @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  plan_run              plan_run?     @relation(fields: [plan_run_id], references: [id], onUpdate: NoAction)
+  raw_payload           raw_payload?  @relation(fields: [readback_raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  command               command?      @relation("commandTocommand", fields: [supersedes_command_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_command         command[]     @relation("commandTocommand")
+  command_log           command_log[]
+
+  @@index([device_id, acked_at], map: "command_device_acked", where: raw("(status = ANY (ARRAY['acked'::text, 'skipped_unchanged'::text]))"))
+  @@index([valid_until], map: "command_expiry", where: raw("(status = ANY (ARRAY['pending'::text, 'sent'::text]))"))
+  @@index([plan_run_id], map: "command_plan_run", where: raw("(plan_run_id IS NOT NULL)"))
+  @@index([supersedes_command_id], map: "command_supersedes", where: raw("(supersedes_command_id IS NOT NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model command_block {
+  id          BigInt    @id @default(autoincrement())
+  device_id   BigInt
+  plan_run_id BigInt?
+  action      String
+  gate        String
+  detail      String
+  at          BigInt
+  device      device    @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  plan_run    plan_run? @relation(fields: [plan_run_id], references: [id], onUpdate: NoAction)
+
+  @@index([device_id, at], map: "command_block_device")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model command_log {
+  id         BigInt  @id @default(autoincrement())
+  command_id BigInt
+  at         BigInt
+  event      String
+  detail     String?
+  command    command @relation(fields: [command_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([command_id, at], map: "command_log_command")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model connection {
+  id              BigInt  @id @default(autoincrement())
+  site_id         BigInt
+  provider        String
+  external_ref    String?
+  status          String  @default("new")
+  last_success_at BigInt?
+  last_error      String?
+  meta            String?
+  site            site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([site_id, provider])
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model connection_secret {
+  site_id     BigInt
+  provider    String
+  iv          Bytes
+  tag         Bytes
+  ciphertext  Bytes
+  recorded_at BigInt
+  site        site   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, provider])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model control_limit {
+  id            BigInt  @id @default(autoincrement())
+  device_id     BigInt
+  action        String?
+  param         String
+  min_value     Float?
+  max_value     Float?
+  source        String
+  valid_from    BigInt
+  valid_to      BigInt?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  device        device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([device_id, param], map: "control_limit_device", where: raw("(superseded_at IS NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model currency {
+  code                                 String     @id
+  minor_exponent                       BigInt
+  symbol                               String?
+  market_market_currencyTocurrency     market[]   @relation("market_currencyTocurrency")
+  plan_run_plan_run_currencyTocurrency plan_run[] @relation("plan_run_currencyTocurrency")
+  site_site_currencyTocurrency         site[]     @relation("site_currencyTocurrency")
+  site_day_site_day_currencyTocurrency site_day[] @relation("site_day_currencyTocurrency")
+  site_hh_site_hh_currencyTocurrency   site_hh[]  @relation("site_hh_currencyTocurrency")
+  tariff_tariff_currencyTocurrency     tariff[]   @relation("tariff_currencyTocurrency")
+  tax_rule_tax_rule_currencyTocurrency tax_rule[] @relation("tax_rule_currencyTocurrency")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model device {
+  id                  BigInt                @id @default(autoincrement())
+  site_id             BigInt
+  kind                String
+  provider            String
+  external_ref        String
+  label               String?
+  attrs               String?
+  recorded_at         BigInt?
+  retired_at          BigInt?
+  attribute_value     attribute_value[]
+  binding             binding[]
+  channel             channel[]
+  command             command?
+  command_block       command_block[]
+  control_limit       control_limit[]
+  site                site                  @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device_attr_version device_attr_version[]
+  device_capability   device_capability[]
+  plan_run_device     plan_run_device[]
+  plan_score          plan_score[]
+  plan_slot           plan_slot[]
+  push_log            push_log[]
+  register_window     register_window[]
+  tariff_agreement    tariff_agreement[]
+
+  @@unique([site_id, provider, external_ref])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model device_action {
+  device_kind       String  @unique(map: "device_action_default", where: raw("(is_default = 1)"))
+  action            String
+  label             String
+  params_schema     String  @default("{}")
+  description       String?
+  side_effect_class String
+  is_default        BigInt  @default(0)
+  effect_check      String?
+
+  @@id([device_kind, action])
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model device_attr_version {
+  device_id     BigInt
+  attrs         String
+  recorded_at   BigInt
+  superseded_at BigInt?
+  device        device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([device_id, recorded_at])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model device_capability {
+  device_id   BigInt
+  action      String
+  supported   BigInt
+  source      String
+  note        String?
+  recorded_at BigInt
+  device      device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([device_id, action])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model device_kind {
+  kind           String  @id
+  label          String
+  class          String
+  attribute_keys String  @default("[]")
+  action_codes   String  @default("[]")
+  description    String?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model fact_correction {
+  id           BigInt  @id @default(autoincrement())
+  site_id      BigInt?
+  corrected_at BigInt
+  series_id    BigInt?
+  rows         BigInt
+  reason       String
+  series       series? @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site         site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model forecast_fact {
+  series_id   BigInt
+  start_ts    BigInt
+  end_ts      BigInt
+  issued_at   BigInt
+  value       Float?
+  raw_id      BigInt?
+  recorded_at BigInt       @default(dbgenerated("((EXTRACT(epoch FROM now()))::bigint * 1000)"))
+  raw_payload raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  series      series       @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([series_id, start_ts, end_ts, issued_at])
+  @@index([raw_id], map: "forecast_fact_raw")
+  @@index([series_id, issued_at], map: "forecast_issued")
+  @@index([series_id, recorded_at], map: "forecast_recorded")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model group_grant {
+  id          BigInt     @id @default(autoincrement())
+  group_id    BigInt
+  user_id     BigInt
+  role        String
+  recorded_at BigInt
+  revoked_at  BigInt?
+  site_group  site_group @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  app_user    app_user   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, group_id], map: "group_grant_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model interval_fact {
+  series_id     BigInt
+  start_ts      BigInt
+  end_ts        BigInt
+  value         Float?
+  quality       BigInt       @default(1)
+  recorded_at   BigInt
+  superseded_at BigInt?
+  raw_id        BigInt?
+  raw_payload   raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  series        series       @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([series_id, start_ts, end_ts, recorded_at])
+  @@index([series_id, start_ts], map: "interval_current", where: raw("(superseded_at IS NULL)"))
+  @@index([raw_id], map: "interval_fact_raw")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model market {
+  code                               String   @id
+  country                            String
+  timezone                           String
+  currency                           String
+  price_interval_s                   BigInt
+  meter_interval_s                   BigInt
+  default_slot_s                     BigInt
+  bidding_zone                       String?
+  origin                             String?
+  origin_note                        String?
+  currency_market_currencyTocurrency currency @relation("market_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  site                               site[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model market_provider {
+  market_code       String
+  role              String
+  adapter           String
+  priority          BigInt  @default(100)
+  enabled           BigInt  @default(1)
+  owner             String  @default("core")
+  scope             String
+  needs_credentials BigInt  @default(0)
+  licence_confirmed BigInt  @default(1)
+  origin            String
+  note              String?
+
+  @@id([market_code, role, adapter])
+  @@index([role, market_code, priority], map: "market_provider_role")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model market_question {
+  market_code String
+  when_kind   String  @default("*")
+  field       String
+  label       String
+  help        String?
+  input       String
+  allowed     String?
+  required    BigInt  @default(0)
+  seq         BigInt  @default(0)
+
+  @@id([market_code, when_kind, field])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model metric {
+  id                                        BigInt    @id @default(autoincrement())
+  code                                      String    @unique
+  label                                     String
+  unit                                      String
+  time_role                                 String
+  aggregation                               String
+  domain                                    String
+  channel_channel_derived_metric_idTometric channel[] @relation("channel_derived_metric_idTometric")
+  channel_channel_metric_idTometric         channel[] @relation("channel_metric_idTometric")
+  series                                    series[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model plan_input_ref {
+  plan_run_id BigInt
+  kind        String
+  ref_table   String
+  ref_key     String   @default("")
+  ref_hash    String?
+  as_of       BigInt
+  from_ts     BigInt?
+  to_ts       BigInt?
+  row_count   BigInt?
+  plan_run    plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([plan_run_id, kind, ref_table, ref_key])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model plan_run {
+  id                                   BigInt            @id @default(autoincrement())
+  site_id                              BigInt
+  scenario                             String            @default("live")
+  variant                              String            @default("")
+  created_at                           BigInt
+  plan_start                           BigInt
+  slot_s                               BigInt
+  horizon_h                            BigInt            @default(48)
+  step_s                               BigInt            @default(300)
+  facts_as_of                          BigInt
+  method_version                       String
+  plan_hash                            String
+  settings_snapshot                    String?
+  inputs_hash                          String?
+  soc_start_kwh                        Float?
+  currency                             String?
+  metric_base                          Float?
+  metric_best                          Float?
+  metric_best10                        Float?
+  cost_pv50                            Float?
+  cost_pv10                            Float?
+  duration_ms                          BigInt?
+  status                               String
+  error                                String?
+  superseded_at                        BigInt?
+  parent_run_id                        BigInt?
+  record_end                           BigInt?
+  soc_max_kwh                          Float?
+  reserve_kwh                          Float?
+  control_mode                         String?
+  metric_base10                        Float?
+  summary                              String?
+  carry_state                          String?
+  debug_raw_id                         BigInt?
+  command                              command[]
+  command_block                        command_block[]
+  plan_input_ref                       plan_input_ref[]
+  currency_plan_run_currencyTocurrency currency?         @relation("plan_run_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  raw_payload                          raw_payload?      @relation(fields: [debug_raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  plan_run                             plan_run?         @relation("plan_runToplan_run", fields: [parent_run_id], references: [id], onUpdate: NoAction)
+  other_plan_run                       plan_run[]        @relation("plan_runToplan_run")
+  site                                 site              @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  plan_run_device                      plan_run_device[]
+  plan_score                           plan_score[]
+  plan_slot                            plan_slot[]
+
+  @@unique([site_id, scenario, variant], map: "plan_run_current", where: raw("(status = ANY (ARRAY['ok'::text, 'stale_inputs'::text]))"))
+  @@index([parent_run_id], map: "plan_run_parent", where: raw("(parent_run_id IS NOT NULL)"))
+  @@index([site_id, scenario, variant, created_at], map: "plan_run_site")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model plan_run_device {
+  plan_run_id BigInt
+  device_id   BigInt
+  role        String   @default("controlled")
+  device      device   @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  plan_run    plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([plan_run_id, device_id])
+  @@index([device_id], map: "plan_run_device_device")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model plan_score {
+  id            BigInt   @id @default(autoincrement())
+  plan_run_id   BigInt
+  slot_start    BigInt
+  device_id     BigInt?
+  metric        String
+  predicted     Float?
+  actual        Float?
+  error         Float?
+  actual_source String   @default("site_hh")
+  scored_at     BigInt
+  device        device?  @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  plan_run      plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model plan_slot {
+  plan_run_id                BigInt
+  device_id                  BigInt
+  slot_start                 BigInt
+  action                     String
+  params                     String?
+  start_offset_min           BigInt   @default(0)
+  charge_limit_pct           Float?
+  export_limit_pct           Float?
+  target_soc_kwh             Float?
+  power_w                    Float?
+  setpoint_c                 Float?
+  soc_end_kwh                Float?
+  import_kwh                 Float?
+  export_kwh                 Float?
+  pv_kwh                     Float?
+  load_kwh                   Float?
+  cost_minor                 Float?
+  heat_kwh                   Float?
+  indoor_temp_c_end          Float?
+  outdoor_temp_c             Float?
+  predicted                  String?
+  reason                     String?
+  power_fraction             Float?
+  state                      String?
+  decision_source            String?
+  reason_code                String?
+  reason_params              String?
+  pv10_kwh                   Float?
+  load10_kwh                 Float?
+  extra_load_kwh             Float?
+  car_kwh                    Float?
+  iboost_kwh                 Float?
+  carbon_g                   Float?
+  cost_running_minor         Float?
+  heat_input_kwh             Float?
+  heat_cost_minor            Float?
+  setpoint_used_c            Float?
+  heating_frac               Float?
+  water_temp_c_end           Float?
+  import_rate_minor          Float?
+  export_rate_minor          Float?
+  import_rate_adjusted_minor Float?
+  export_rate_adjusted_minor Float?
+  import_rate_adjust         String?
+  export_rate_adjust         String?
+  clipped_kwh                Float?
+  device                     device   @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  plan_run                   plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([plan_run_id, device_id, slot_start])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model provider_state {
+  provider        String  @id
+  next_allowed_at BigInt?
+  cooldown_reason String?
+  state           String?
+  updated_at      BigInt
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model push_log {
+  id           BigInt       @id @default(autoincrement())
+  site_id      BigInt?
+  device_id    BigInt?
+  source       String?
+  format       String?
+  received_at  BigInt
+  observations BigInt       @default(0)
+  written      BigInt       @default(0)
+  forecasts    BigInt       @default(0)
+  derived      BigInt       @default(0)
+  rejected     BigInt       @default(0)
+  unmapped     BigInt       @default(0)
+  warnings     String?
+  raw_id       BigInt?
+  status       String
+  error        String?
+  error_code   String?
+  device       device?      @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  raw_payload  raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site         site?        @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([device_id, received_at(sort: Desc)], map: "ix_push_log_device", where: raw("(device_id IS NOT NULL)"))
+  @@index([site_id, received_at(sort: Desc)], map: "ix_push_log_site")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This table contains exclusion constraints and requires additional setup for migrations. Visit https://pris.ly/d/exclusion-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model rate_interval {
+  id             BigInt       @id @default(autoincrement())
+  tariff_id      BigInt
+  site_id        BigInt?
+  component      String
+  register       String       @default("single")
+  charge_period  String?
+  payment_method String       @default("ANY")
+  valid_from     BigInt
+  valid_to       BigInt?
+  price_ex_vat   Float
+  recorded_at    BigInt
+  superseded_at  BigInt?
+  raw_id         BigInt?
+  origin         String?
+  origin_note    String?
+  estimated      BigInt       @default(0)
+  raw_payload    raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site           site?        @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tariff         tariff       @relation(fields: [tariff_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([tariff_id, valid_from, recorded_at], map: "rate_asof")
+  @@index([tariff_id, component, register, valid_from], map: "rate_current", where: raw("(superseded_at IS NULL)"))
+  @@index([raw_id], map: "rate_interval_raw")
+  @@index([site_id], map: "rate_interval_site", where: raw("(site_id IS NOT NULL)"))
+  @@index([tariff_id, component, register, valid_from], map: "rate_register_asof")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model raw_payload {
+  id            BigInt          @id @default(autoincrement())
+  source_id     BigInt
+  site_id       BigInt?
+  request       String?
+  fetched_at    BigInt
+  hash          String          @unique
+  file          String
+  status        String          @default("accepted")
+  reason        String?
+  command       command[]
+  forecast_fact forecast_fact[]
+  interval_fact interval_fact[]
+  plan_run      plan_run[]
+  push_log      push_log[]
+  rate_interval rate_interval[]
+  source        source          @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reading       reading[]
+
+  @@index([site_id, status, fetched_at], map: "raw_payload_site_status")
+}
+
+model reading {
+  series_id     BigInt
+  ts            BigInt
+  value         Float?
+  quality       BigInt       @default(1)
+  recorded_at   BigInt
+  superseded_at BigInt?
+  raw_id        BigInt?
+  raw_payload   raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  series        series       @relation(fields: [series_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([series_id, ts, recorded_at])
+  @@index([raw_id], map: "reading_raw")
+}
+
+model rebuild_queue {
+  id          BigInt  @id @default(autoincrement())
+  site_id     BigInt
+  from_ts     BigInt
+  to_ts       BigInt
+  reason      String?
+  enqueued_at BigInt
+  done_at     BigInt?
+  site        site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([site_id], map: "rebuild_queue_site")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model region {
+  id           BigInt         @id @default(autoincrement())
+  scheme       String
+  code         String
+  country      String?
+  name         String?
+  origin       String?
+  origin_note  String?
+  region_alias region_alias[]
+  site_region  site_region[]
+
+  @@unique([scheme, code])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model region_alias {
+  scheme       String
+  code         String
+  alias_scheme String
+  alias_code   String
+  region       region @relation(fields: [scheme, code], references: [scheme, code], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([alias_scheme, alias_code])
+  @@index([scheme, code], map: "region_alias_region")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model register_window {
+  id                                          BigInt    @id @default(autoincrement())
+  tariff_id                                   BigInt
+  device_id                                   BigInt?
+  register                                    String
+  start_min                                   BigInt
+  end_min                                     BigInt
+  weekdays                                    BigInt    @default(127)
+  calendar                                    String?
+  day_type                                    String?
+  clock                                       String    @default("local")
+  valid_from                                  BigInt?
+  valid_to                                    BigInt?
+  source_text                                 String?
+  origin                                      String?
+  origin_note                                 String?
+  recorded_at                                 BigInt
+  superseded_at                               BigInt?
+  calendar_register_window_calendarTocalendar calendar? @relation("register_window_calendarTocalendar", fields: [calendar], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  device                                      device?   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tariff                                      tariff    @relation(fields: [tariff_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([tariff_id, device_id], map: "register_window_tariff", where: raw("(superseded_at IS NULL)"))
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model replay_log {
+  id           BigInt  @id @default(autoincrement())
+  site_id      BigInt
+  source       String?
+  started_at   BigInt
+  days         BigInt?
+  receipts     BigInt  @default(0)
+  observations BigInt  @default(0)
+  written      BigInt  @default(0)
+  forecasts    BigInt  @default(0)
+  rejected     BigInt  @default(0)
+  unmapped     BigInt  @default(0)
+  parse_errors BigInt  @default(0)
+  note         String?
+  site         site    @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([site_id, started_at(sort: Desc)], map: "ix_replay_log_site")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model series {
+  id              BigInt            @id @default(autoincrement())
+  subject_kind    String
+  subject_id      String
+  metric_id       BigInt
+  source_id       BigInt
+  max_span_s      BigInt?
+  fact_correction fact_correction[]
+  forecast_fact   forecast_fact[]
+  interval_fact   interval_fact[]
+  reading         reading[]
+  metric          metric            @relation(fields: [metric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  source          source            @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([subject_kind, subject_id, metric_id, source_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model setting_def {
+  key            String         @id
+  label          String
+  unit           String?
+  value_type     String
+  default_value  String         @default("null")
+  min_value      Float?
+  max_value      Float?
+  step           Float?
+  allowed_values String?
+  json_shape     String?
+  planner        String
+  applies_to     String
+  unverified     BigInt         @default(0)
+  description    String?
+  refs           String?
+  site_setting   site_setting[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site {
+  id                               BigInt              @id @default(autoincrement())
+  name                             String
+  postcode                         String?
+  outcode                          String?
+  lat                              Float?
+  lon                              Float?
+  timezone                         String              @default("Europe/London")
+  gsp_region                       String?
+  carbon_region                    BigInt?
+  pv_kwp                           Float?
+  pv_tilt                          Float?
+  pv_orientation                   Float?
+  battery_kwh                      Float?
+  slot_s                           BigInt              @default(1800)
+  is_demo                          BigInt              @default(0)
+  env_key                          String?             @unique
+  created_at                       BigInt
+  currency                         String?
+  country                          String?
+  market_code                      String?
+  contracted_kva                   Float?
+  contracted_kva_origin            String?
+  contracted_kva_note              String?
+  attribute_value                  attribute_value[]
+  binding                          binding[]
+  channel                          channel[]
+  check_result                     check_result[]
+  connection                       connection[]
+  connection_secret                connection_secret[]
+  device                           device[]
+  fact_correction                  fact_correction[]
+  plan_run                         plan_run[]
+  push_log                         push_log[]
+  rate_interval                    rate_interval[]
+  rebuild_queue                    rebuild_queue[]
+  replay_log                       replay_log[]
+  currency_site_currencyTocurrency currency?           @relation("site_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  market                           market?             @relation(fields: [market_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  site_attribute                   site_attribute[]
+  site_day                         site_day[]
+  site_day_revision                site_day_revision[]
+  site_grant                       site_grant[]
+  site_group_member                site_group_member[]
+  site_heat_slot                   site_heat_slot[]
+  site_hh                          site_hh[]
+  site_region                      site_region[]
+  site_setting                     site_setting[]
+  site_version                     site_version?
+  sync_run                         sync_run[]
+  tariff_agreement                 tariff_agreement[]
+  tenant_site                      tenant_site?
+  user_site                        user_site[]
+
+  @@index([market_code], map: "site_market")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_attribute {
+  site_id       BigInt
+  attr          String
+  source        String
+  value         Float?
+  detail        String?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  origin        String?
+  site          site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, attr, source, recorded_at])
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_day {
+  site_id                              BigInt
+  local_date                           String
+  slots                                BigInt?
+  slots_final                          BigInt?
+  slots_provisional                    BigInt?
+  slots_missing                        BigInt?
+  slot_s                               BigInt?
+  solar                                Float?
+  grid_import                          Float?
+  grid_export                          Float?
+  battery_charge                       Float?
+  battery_discharge                    Float?
+  home                                 Float?
+  loss                                 Float?
+  gas                                  Float?
+  ev                                   Float?
+  solar_to_home                        Float?
+  solar_to_battery                     Float?
+  solar_to_grid                        Float?
+  battery_to_home                      Float?
+  battery_to_grid                      Float?
+  grid_to_home                         Float?
+  grid_to_battery                      Float?
+  solar_to_loss                        Float?
+  battery_to_loss                      Float?
+  grid_to_loss                         Float?
+  loss_cost                            Float?
+  grid_to_home_cost                    Float?
+  grid_to_battery_cost                 Float?
+  battery_to_home_cost                 Float?
+  export_credit                        Float?
+  standing_cost                        Float?
+  gas_cost                             Float?
+  total_cost                           Float?
+  grid_only_cost                       Float?
+  saving                               Float?
+  carbon_g                             Float?
+  carbon_saved_g                       Float?
+  solar_forecast                       Float?
+  self_consumption                     Float?
+  self_sufficiency                     Float?
+  blended_cost                         Float?
+  peak_import_kw                       Float?
+  base_load_kw                         Float?
+  soc_min                              Float?
+  soc_max                              Float?
+  battery_cycles                       Float?
+  integrity                            Float?
+  battery_eff                          Float?
+  battery_stock                        String?
+  method_version                       String
+  built_at                             BigInt
+  currency                             String?
+  currency_site_day_currencyTocurrency currency? @relation("site_day_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  site                                 site      @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, local_date])
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_day_revision {
+  id                BigInt  @id @default(autoincrement())
+  site_id           BigInt
+  local_date        String
+  revised_at        BigInt
+  method_version    String
+  reason            String?
+  slots_final       BigInt?
+  slots_provisional BigInt?
+  slots_missing     BigInt?
+  solar             Float?
+  home              Float?
+  grid_import       Float?
+  grid_export       Float?
+  gas               Float?
+  total_cost        Float?
+  saving            Float?
+  checks            String?
+  inputs            String?
+  changed           String?
+  kind              String  @default("recorded")
+  site              site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([site_id, local_date, revised_at], map: "site_day_revision_day")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_grant {
+  id                                       BigInt    @id @default(autoincrement())
+  site_id                                  BigInt
+  user_id                                  BigInt
+  role                                     String
+  scope                                    String    @default("all")
+  valid_from                               BigInt?
+  valid_to                                 BigInt?
+  granted_by                               BigInt?
+  recorded_at                              BigInt
+  revoked_at                               BigInt?
+  app_user_site_grant_granted_byToapp_user app_user? @relation("site_grant_granted_byToapp_user", fields: [granted_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site                                     site      @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  app_user_site_grant_user_idToapp_user    app_user  @relation("site_grant_user_idToapp_user", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([site_id], map: "site_grant_site")
+  @@index([user_id, site_id], map: "site_grant_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_group {
+  id                BigInt              @id @default(autoincrement())
+  name              String
+  owner_id          BigInt
+  timezone          String
+  created_at        BigInt
+  group_grant       group_grant[]
+  app_user          app_user            @relation(fields: [owner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  site_group_member site_group_member[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This table contains exclusion constraints and requires additional setup for migrations. Visit https://pris.ly/d/exclusion-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_group_member {
+  id            BigInt     @id @default(autoincrement())
+  group_id      BigInt
+  site_id       BigInt
+  valid_from    BigInt?
+  valid_to      BigInt?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  site_group    site_group @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  site          site       @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([group_id, site_id], map: "site_group_member_group")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_heat_slot {
+  site_id             BigInt
+  slot_start          BigInt
+  dur_s               BigInt
+  local_date          String
+  tod_min             BigInt
+  state               String
+  quality             BigInt
+  indoor_temp_c       Float?
+  setpoint_c          Float?
+  outdoor_temp_c      Float?
+  flow_temp_c         Float?
+  return_temp_c       Float?
+  radiator_temp_c     Float?
+  heating_demand_kwh  Float?
+  heat_output_kwh     Float?
+  heating_energy_kwh  Float?
+  heating_fuel        String?
+  cop                 Float?
+  degree_hours        Float?
+  heating_on_fraction Float?
+  cost_minor          Float?
+  currency            String?
+  lineage             String?
+  method_version      String
+  built_at            BigInt
+  site                site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, slot_start])
+  @@index([site_id, local_date], map: "site_heat_slot_day")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_hh {
+  site_id                             BigInt
+  slot_start                          BigInt
+  local_date                          String
+  dur_s                               BigInt
+  tod_min                             BigInt
+  state                               String
+  quality                             BigInt
+  solar                               Float?
+  grid_import                         Float?
+  grid_export                         Float?
+  battery_charge                      Float?
+  battery_discharge                   Float?
+  home                                Float?
+  loss                                Float?
+  gas                                 Float?
+  ev                                  Float?
+  soc_end                             Float?
+  solar_to_home                       Float?
+  solar_to_battery                    Float?
+  solar_to_grid                       Float?
+  battery_to_home                     Float?
+  battery_to_grid                     Float?
+  grid_to_home                        Float?
+  grid_to_battery                     Float?
+  solar_to_loss                       Float?
+  battery_to_loss                     Float?
+  grid_to_loss                        Float?
+  loss_cost                           Float?
+  import_rate_ex                      Float?
+  import_vat                          Float?
+  export_rate                         Float?
+  gas_rate_ex                         Float?
+  gas_vat                             Float?
+  grid_to_home_cost                   Float?
+  grid_to_battery_cost                Float?
+  battery_to_home_cost                Float?
+  export_credit                       Float?
+  standing_cost                       Float?
+  gas_cost                            Float?
+  total_cost                          Float?
+  grid_only_cost                      Float?
+  saving                              Float?
+  carbon_intensity                    Float?
+  carbon_g                            Float?
+  carbon_saved_g                      Float?
+  outdoor_temp                        Float?
+  solar_forecast                      Float?
+  meter_vs_ct                         Float?
+  rate_found                          BigInt?
+  lineage                             String?
+  method_version                      String
+  built_at                            BigInt
+  currency                            String?
+  currency_site_hh_currencyTocurrency currency? @relation("site_hh_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  site                                site      @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, slot_start])
+  @@index([site_id, local_date], map: "site_hh_day")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_region {
+  site_id       BigInt
+  scheme        String
+  code          String
+  source        String
+  recorded_at   BigInt
+  superseded_at BigInt?
+  region        region  @relation(fields: [scheme, code], references: [scheme, code], onDelete: NoAction, onUpdate: NoAction)
+  site          site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, scheme, recorded_at])
+  @@unique([site_id, scheme], map: "site_region_current", where: raw("(superseded_at IS NULL)"))
+  @@index([scheme, code], map: "site_region_region")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_setting {
+  site_id       BigInt
+  key           String
+  value         String
+  origin        String
+  note          String?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  setting_def   setting_def @relation(fields: [key], references: [key], onDelete: NoAction, onUpdate: NoAction)
+  site          site        @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, key, recorded_at])
+  @@unique([site_id, key], map: "site_setting_current", where: raw("(superseded_at IS NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model site_version {
+  site_id               BigInt  @unique(map: "site_version_current", where: raw("(superseded_at IS NULL)"))
+  recorded_at           BigInt
+  superseded_at         BigInt?
+  timezone              String?
+  slot_s                BigInt?
+  currency              String?
+  market_code           String?
+  country               String?
+  gsp_region            String?
+  carbon_region         BigInt?
+  lat                   Float?
+  lon                   Float?
+  pv_kwp                Float?
+  pv_tilt               Float?
+  pv_orientation        Float?
+  battery_kwh           Float?
+  contracted_kva        Float?
+  contracted_kva_origin String?
+  contracted_kva_note   String?
+  is_demo               BigInt?
+  site                  site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([site_id, recorded_at])
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model source {
+  id              BigInt            @id @default(autoincrement())
+  code            String            @unique
+  name            String
+  contract        String
+  traits          String?
+  binding         binding[]
+  binding_default binding_default[]
+  channel         channel[]
+  raw_payload     raw_payload[]
+  series          series[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model supplier {
+  id             BigInt           @id @default(autoincrement())
+  country        String
+  code           String
+  name           String
+  recorded_at    BigInt
+  supplier_alias supplier_alias[]
+  tariff         tariff[]
+
+  @@unique([country, code])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model supplier_alias {
+  supplier_id BigInt
+  provider    String
+  country     String
+  external_id String
+  supplier    supplier @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([provider, country, external_id])
+}
+
+model sync_run {
+  id          BigInt  @id @default(autoincrement())
+  site_id     BigInt
+  started_at  BigInt
+  finished_at BigInt?
+  status      String
+  detail      String?
+  site        site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([site_id, started_at], map: "sync_run_site_started")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model tariff {
+  id                                 BigInt             @id @default(autoincrement())
+  provider                           String
+  product_code                       String?
+  tariff_code                        String             @unique
+  fuel                               String
+  direction                          String
+  structure                          String
+  region                             String?
+  name                               String?
+  currency                           String?
+  country                            String?
+  native_period_s                    BigInt?
+  kind                               String?
+  origin                             String?
+  origin_note                        String?
+  default_register                   String?
+  taxes_in_price                     BigInt             @default(0)
+  supplier_id                        BigInt?
+  rate_interval                      rate_interval[]
+  register_window                    register_window[]
+  currency_tariff_currencyTocurrency currency?          @relation("tariff_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  supplier                           supplier?          @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tariff_agreement                   tariff_agreement[]
+  tariff_version                     tariff_version?
+
+  @@index([structure, region], map: "tariff_structure_region")
+  @@index([supplier_id, region], map: "tariff_supplier")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This table contains exclusion constraints and requires additional setup for migrations. Visit https://pris.ly/d/exclusion-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model tariff_agreement {
+  id             BigInt  @id @default(autoincrement())
+  site_id        BigInt
+  device_id      BigInt
+  tariff_id      BigInt
+  valid_from     BigInt
+  valid_to       BigInt?
+  recorded_at    BigInt?
+  superseded_at  BigInt?
+  payment_method String?
+  device         device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  site           site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tariff         tariff  @relation(fields: [tariff_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([device_id, valid_from], map: "agreement_current", where: raw("(superseded_at IS NULL)"))
+  @@index([device_id, valid_from, recorded_at], map: "agreement_device_asof")
+  @@index([site_id, valid_from, recorded_at], map: "agreement_site_asof")
+  @@index([tariff_id], map: "agreement_tariff")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model tariff_version {
+  tariff_id        BigInt  @unique(map: "tariff_version_current", where: raw("(superseded_at IS NULL)"))
+  recorded_at      BigInt
+  superseded_at    BigInt?
+  structure        String?
+  region           String?
+  kind             String?
+  currency         String?
+  country          String?
+  native_period_s  BigInt?
+  taxes_in_price   BigInt?
+  default_register String?
+  fuel             String?
+  direction        String?
+  origin           String?
+  tariff           tariff  @relation(fields: [tariff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tariff_id, recorded_at])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model tax_rule {
+  id                                   BigInt    @id @default(autoincrement())
+  country                              String
+  code                                 String
+  fuel                                 String
+  direction                            String
+  customer_class                       String    @default("domestic")
+  applies_to                           String
+  kind                                 String
+  value                                Float
+  currency                             String?
+  charge_period                        String?
+  seq                                  BigInt    @default(0)
+  valid_from                           BigInt
+  valid_to                             BigInt?
+  source                               String
+  unverified                           BigInt    @default(0)
+  recorded_at                          BigInt
+  superseded_at                        BigInt?
+  origin                               String?
+  origin_note                          String?
+  currency_tax_rule_currencyTocurrency currency? @relation("tax_rule_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([country, fuel, direction, valid_from], map: "tax_rule_lookup", where: raw("(superseded_at IS NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model tenant {
+  id          BigInt        @id @default(autoincrement())
+  code        String        @unique
+  name        String
+  plan_tier   String?
+  created_at  BigInt
+  tenant_site tenant_site[]
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model tenant_site {
+  site_id     BigInt @id
+  tenant_id   BigInt
+  recorded_at BigInt
+  site        site   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant      tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([tenant_id], map: "tenant_site_tenant")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model user_session {
+  token_hash String   @id
+  user_id    BigInt
+  created_at BigInt
+  expires_at BigInt
+  app_user   app_user @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "user_session_user")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model user_site {
+  user_id     BigInt
+  site_id     BigInt
+  recorded_at BigInt
+  site        site     @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  app_user    app_user @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([user_id, site_id])
+  @@index([site_id], map: "user_site_site")
+}
+
+model vat_rate {
+  fuel       String
+  direction  String
+  rate       Float
+  valid_from BigInt
+  valid_to   BigInt?
+
+  @@id([fuel, direction, valid_from])
+}

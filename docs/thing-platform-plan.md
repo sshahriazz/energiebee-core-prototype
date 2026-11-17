@@ -21,7 +21,7 @@ The prototype has strong foundations, but it models **a home with energy columns
 
 **The live database** (`data/core.db`) is sound (integrity check `ok`, no foreign-key errors) but stale: last data 28 October, one sync stuck in `running`, 7 unprocessed rebuild requests, and deltas 076–082 not applied.
 
-**Tests on 16 November:** 694 tests, 684 pass, 6 fail, 4 skipped. All 6 failures run on a copy of the live database (`core.test.js` ×4, `trust-view.test.js`, `slot-build.test.js`): a partial rebuild no longer matches a full one, Quartz scoring finds no forecasts, a fact without a raw link, and the 15-minute house-use forecast. Every fixture-based test passes, including `golden-gb`. The stale database is the likely cause, but this is not yet proven (Phase 0.1).
+**Tests on 16 November:** 694 tests, 684 pass, 6 fail, 4 skipped. All 6 failures run on a copy of the frozen GB fixture `test/fixtures/gb-home.db`, not on the live database (`core.test.js` ×4, `trust-view.test.js`, `slot-build.test.js`): a partial rebuild no longer matches a full one, Quartz scoring finds no forecasts, a fact without a raw link, and the 15-minute house-use forecast. Every fixture-based test passes, including `golden-gb`. The fixture is frozen in October while these tests read the real clock, so the likely cause is the date; not yet proven (fix list B2). An earlier note blamed the stale live database: that was wrong.
 
 ## 2. Where we want to be
 
@@ -69,7 +69,7 @@ Get a clean, current starting point and a fixed reference to compare against.
 
 | # | Work | Size |
 |---|---|---|
-| 0.1 | Back up `data/core.db` and `data/raw/`. Start the app so deltas 076–082 apply. Close the stuck sync and process the rebuild queue. Sync to today. Re-run the 6 tests that fail on the live copy; any still failing is a real bug, and "a partial rebuild gives exactly the rows of a full rebuild" must pass before 0.3, because the fingerprint depends on it. | S to M |
+| 0.1 | Back up `data/core.db` and `data/raw/`. Start the app so deltas 076–082 apply. Close the stuck sync and process the rebuild queue. Sync to today. Find why the 6 tests fail on the GB fixture (fix list B2); any that is not the date is a real bug, and "a partial rebuild gives exactly the rows of a full rebuild" must pass before 0.3, because the fingerprint depends on it. | S to M |
 | 0.2 | Look into the warnings on 25 October (the day the clocks went back): daily counters 40–45 % above the 5-minute samples and meter vs inverter CT 38 % apart. Fix it **before** fingerprinting, or the fingerprint keeps the bug. | S to M |
 | 0.3 | Fingerprint `site_hh`, `site_day` and `site_heat_slot` for home 1 and the GB fixture. Add a test that compares a rebuild to the fingerprint. Add **fixture homes per topology** (no battery, AC-coupled battery, two inverters, export only, EV, heat pump), each with its own fingerprint, because home 1 covers only one topology (R12). | M |
 | 0.4 | Write `docs/thing-model.md`: the target design (things, relationships, points, capabilities, timelines, controls, integrations) with full table definitions. This plan refers to it. | M |

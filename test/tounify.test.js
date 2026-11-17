@@ -123,7 +123,7 @@ const nl = await createSite({ name: 'Amsterdam dynamic', country: 'NL', postcode
 const nlSite = async () => await db.prepare('SELECT * FROM site WHERE id = ?').get(nl.id);
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 function call(method, p, body) {
   return new Promise((resolve, reject) => {
     const req = http.request(`http://127.0.0.1:${server.address().port}${p}`, { method, headers: { 'content-type': 'application/json' } }, (res) => {

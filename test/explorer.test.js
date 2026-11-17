@@ -25,7 +25,7 @@ const { dayBounds } = await import('../src/core/time.js');
 const homes = await m.buildScenario();
 const { gb, fr, nl } = homes;
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const seen = [];
 async function call(p) {
   const res = await globalThis.fetch0(`http://127.0.0.1:${server.address().port}${p}`);

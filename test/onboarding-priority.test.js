@@ -11,8 +11,7 @@ const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');
 
 let server; let base;
-before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
-after(() => server?.close());
+before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); }); base = `http://127.0.0.1:${server?.address().port}`; });
 
 const SITE = 1;
 const post = async (p, body) => { const r = await fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };

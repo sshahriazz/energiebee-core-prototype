@@ -14,8 +14,7 @@ const { seriesId, putReadings, putIntervals, putForecasts } = await import('../s
 const { app } = await import('../src/server.js');
 
 let server; let base;
-before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
-after(() => server?.close());
+before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); }); base = `http://127.0.0.1:${server?.address().port}`; });
 
 const SITE = 1;
 const bindingOf = async (role, source) => await db.prepare('SELECT b.id FROM binding b JOIN source so ON so.id = b.source_id WHERE b.site_id = ? AND b.role = ? AND so.code = ? AND b.superseded_at IS NULL').get(SITE, role, source);

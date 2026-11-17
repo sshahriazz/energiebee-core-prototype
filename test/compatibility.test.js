@@ -200,7 +200,7 @@ await test('the live check is cached for 60 s, then run again', async () => {
 // ───────────── API and page ─────────────
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const http = (await import('node:http')).default;
 const get = (p) => new Promise((resolve, reject) => {
   http.get(`http://127.0.0.1:${server.address().port}${p}`, (res) => {

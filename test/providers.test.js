@@ -177,7 +177,7 @@ await test('missing credentials skip the step in the plan, with the variables na
 
 // ───────────── API ─────────────
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const base = () => `http://127.0.0.1:${server.address().port}`;
 const realFetch = (await import('node:http')).default;
 // The test's fetch refuses the network, so the API is called with node:http.

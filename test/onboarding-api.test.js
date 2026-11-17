@@ -16,10 +16,9 @@ const { ingestObservations } = await import('../src/core/channels.js');
 let server; let base;
 before(async () => {
   if (!hasLive) return;
-  await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); });
+  await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); });
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => server?.close());
 
 const SITE = 1;
 const get = async (p) => { const r = await fetch(`${base}${p}`); return { status: r.status, body: await r.json() }; };

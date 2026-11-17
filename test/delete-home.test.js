@@ -114,7 +114,7 @@ await test('deleting A removes every row that belongs to it and its raw files; B
 
 await test('over HTTP: the preview, then DELETE /api/sites/:id with the typed name; the home is gone for its owner', { skip }, async () => {
   const srv = app.listen(0);
-  after(() => srv.close());
+  srv.unref();
   const tok = await startSession(owner.id);
   const call = async (method, p, body) => {
     const res = await fetch(`http://127.0.0.1:${srv.address().port}${p}`, { method, headers: { cookie: `eb_session=${tok}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });

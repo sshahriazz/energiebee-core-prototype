@@ -11,8 +11,7 @@ const V = await import('../public/js/devices-view.js');
 const { runEmulator } = await import('../scripts/push-emulator.mjs');
 
 let server; let base;
-before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
-after(() => { delete process.env.INGEST_TOKEN; server?.close(); });
+before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); }); base = `http://127.0.0.1:${server?.address().port}`; });
 
 const SITE = 1;
 const T0 = Math.floor(Date.now() / 1000 / 300) * 300 - 3600;

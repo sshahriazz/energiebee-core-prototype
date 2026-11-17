@@ -29,7 +29,7 @@ hooks.geo = async (site) => { await db.prepare("UPDATE site SET gsp_region = 'G'
 hooks.startSync = async (id) => { synced.push(id); };
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const base = () => `http://127.0.0.1:${server.address().port}`;
 // A browser: keeps the session cookie between calls.
 function browser() {

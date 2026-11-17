@@ -15,11 +15,10 @@ const { app } = await import('../src/server.js');
 let server; let base; let demo;
 before(async () => {
   if (!hasLive) return;
-  await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); });
+  await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); });
   base = `http://127.0.0.1:${server.address().port}`;
   demo = (await G.createSyntheticIotHome()).site;
 });
-after(() => server?.close());
 const bad = (html) => html.match(/.{30}(undefined|NaN|\[object|null\b).{30}/)?.[0];
 
 await test('every device card and every chart of the synthetic home renders, with no undefined or NaN', { skip }, async () => {

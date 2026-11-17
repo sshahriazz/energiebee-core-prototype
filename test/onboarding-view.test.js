@@ -12,8 +12,7 @@ const V = await import('../public/js/onboarding-view.js');
 const { app } = await import('../src/server.js');
 
 let server; let base;
-before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
-after(() => server?.close());
+before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); }); base = `http://127.0.0.1:${server?.address().port}`; });
 
 await test('every role card renders from the real model, with no undefined or NaN', { skip }, async () => {
   const model = await onboarding(1);

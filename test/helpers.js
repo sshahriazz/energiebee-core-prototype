@@ -7,6 +7,10 @@
 // test/fixtures/gb-home.db copied in after them, scripts/sqlite-to-postgres.js). The first test process
 // that needs a template builds it under an advisory lock; the others wait for it. Test databases are
 // dropped when their process ends; `npm test` also drops any left by an interrupted run (pretest).
+//
+// No top-level after() in a test file: node:test runs it as soon as the tests registered so far have finished, so with an
+// await between two top-level tests (every database call) it runs after the first test. A test server is unref()'d instead
+// (it never keeps the process alive), and in-process state needs no undoing (each file is its own process).
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';

@@ -12,8 +12,7 @@ const { app } = await import('../src/server.js');
 const { runEmulator, heaterWatts, buildPush } = await import('../scripts/push-emulator.mjs');
 
 let server; let url;
-before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); url = `http://127.0.0.1:${server?.address().port}`; });
-after(() => server?.close());
+before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); }); url = `http://127.0.0.1:${server?.address().port}`; });
 
 const SITE = 1;
 const quiet = () => {};

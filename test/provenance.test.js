@@ -166,7 +166,7 @@ await test('slots built before origins were recorded are labelled from the input
 
 // ───────────── API: additive ─────────────
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const get = async (p) => { const res = await fetch(`http://127.0.0.1:${server.address().port}${p}`); assert.equal(res.status, 200, p); return await res.json(); };
 
 await test('API: /api/sites gives every home an origin, keeping every existing key', async () => {

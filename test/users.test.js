@@ -26,7 +26,7 @@ const admin = await createUser({ name: 'Admin', role: 'admin' });
 const ALL = [gb.site.id, fr.site.id, nl.site.id].sort((a, b) => a - b);
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 async function call(p, user, opts = {}) {
   const headers = { 'content-type': 'application/json', ...(user != null ? { 'x-user-id': String(user) } : {}) };
   const res = await fetch(`http://127.0.0.1:${server.address().port}${p}`, { headers, ...opts });

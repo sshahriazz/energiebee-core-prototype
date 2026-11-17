@@ -16,9 +16,10 @@ before(async () => {
     res.end(JSON.stringify({ status }));
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  server.unref();
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 
 await test('retries 503 and 429, then succeeds', async () => {
   reset([[503], [429], [200]]);

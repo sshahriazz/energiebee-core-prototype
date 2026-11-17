@@ -422,7 +422,7 @@ await test('sync: the catalogue step runs once per cycle and once a day; a failu
 // ───────────── API ─────────────
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const get = (p) => new Promise((resolve, reject) => {
   http.get(`http://127.0.0.1:${server.address().port}${p}`, (res) => {
     let text = '';

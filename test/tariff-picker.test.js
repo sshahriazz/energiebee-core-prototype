@@ -55,7 +55,7 @@ const at = (iso) => Date.parse(iso) / 1000;
 const price = async (ts, siteId = home.id) => priceAt(await loadPricing(siteId, ts - 86400, ts + 86400), 'meter_import', ts);
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 function call(method, p, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;

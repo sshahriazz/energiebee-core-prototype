@@ -91,7 +91,7 @@ const row = (market_code, role, adapter, extra = {}) => ({ market_code, role, ad
   priority: 50, enabled: 1, owner: 'core', needs_credentials: 0, licence_confirmed: 1, ...extra });
 const step = (name, connection = null) => ({ step: name, connection, run: () => { throw new Error('tests never run a step'); } });
 const restore = [];
-after(() => { for (const r of restore.reverse()) r(); });
+// The patches are not undone: this file runs in its own process (and a top-level after() would run after the first test).
 
 const T1 = 1790000000;
 let deHome; let deDemo; let beDemo;
@@ -209,7 +209,7 @@ await test('a connector served by the core\'s own status hook (Tariffscanner\'s 
 // ───────────── API ─────────────
 
 const server = app.listen(0);
-after(() => server.close());
+server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)
 const http = (await import('node:http')).default;
 // The test's fetch refuses the network, so the API is called with node:http.
 const get = (p) => new Promise((resolve, reject) => {

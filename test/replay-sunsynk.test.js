@@ -18,8 +18,7 @@ const { defineChannel } = await import('../src/core/channels.js');
 const { app } = await import('../src/server.js');
 
 let server; let base;
-before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); }); base = `http://127.0.0.1:${server?.address().port}`; });
-after(() => server?.close());
+before(async () => { if (hasLive) await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); server.unref(); }); base = `http://127.0.0.1:${server?.address().port}`; });
 
 const SITE = 1;
 const DATE = '2026-06-10';   // a day the fixture has no data for

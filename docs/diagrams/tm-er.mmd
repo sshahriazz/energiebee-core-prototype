@@ -1,0 +1,78 @@
+erDiagram
+  thing_type ||--o{ thing : "types"
+  thing ||--o{ thing : "home_id"
+  thing ||--o{ thing_relation : "from"
+  thing ||--o{ thing_relation : "to"
+  thing ||--o{ thing_attr_version : "versions"
+  thing ||--o{ point : "exposes"
+  capability ||--o{ point : "groups"
+  metric ||--o{ point : "measures"
+  thing ||--o{ thing_link : "reached through"
+  thing_link ||--o{ point_binding : "supplies"
+  point ||--o{ point_binding : "filled by"
+  point ||--o{ series : "feeds (one per link)"
+  series ||--o{ reading : ""
+  series ||--o{ interval_fact : ""
+  series ||--o{ forecast_fact : ""
+  raw_payload ||--o{ reading : "raw_id"
+  raw_payload ||--o{ interval_fact : "raw_id"
+  point ||--o{ point_slot : "timeline"
+  point ||--|| point_state : "shadow"
+  thing ||--o{ node_slot : "group timeline"
+  thing ||--o{ control_request : "wished"
+  control_request ||--o{ command : "winner"
+  command ||--o{ command : "parent (group)"
+  thing ||--o{ control_limit : "limits"
+  thing ||--o{ tariff_price_run : "tariff (context)"
+  thing ||--o{ supply_price_slot : "supply point"
+
+  thing {
+    bigint id PK
+    uuid uid UK
+    bigint home_id FK
+    text kind
+    text type FK
+    text name
+    jsonb attrs
+  }
+  thing_relation {
+    bigint from_id FK
+    text from_port
+    text rel
+    bigint to_id FK
+    text to_port
+    boolean required
+    bigint valid_from
+    bigint valid_to
+  }
+  point {
+    bigint id PK
+    uuid uid UK
+    bigint thing_id FK
+    text capability FK
+    text key
+    text class
+    text access
+  }
+  point_binding {
+    bigint point_id FK
+    bigint link_id FK
+    text external_point
+    jsonb mapping
+    text role
+    int priority
+  }
+  thing_link {
+    bigint id PK
+    bigint thing_id FK
+    text kind
+    bigint hub_id FK
+    text external_ref
+  }
+  control_request {
+    bigint id PK
+    bigint thing_id FK
+    jsonb desired
+    text priority
+    bigint valid_until
+  }

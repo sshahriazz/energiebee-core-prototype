@@ -1,0 +1,35 @@
+flowchart LR
+  GRID(("National grid")):::ext
+  CONN["Grid connection<br/>export limit (legal, G98/G99)"]:::dev
+  MTR["Import / export meter<br/>MPAN"]:::meter
+  TAR[["Tariff<br/>(context thing)"]]:::ctx
+  PV1["PV array (south)<br/>own tilt + forecast"]:::dev
+  PV2["PV array (west)<br/>optional"]:::dev
+  INV["Inverter<br/>ports: pv · battery · ac · grid"]:::dev
+  BAT["Battery<br/>ports: charge · discharge"]:::dev
+  SUP["Home supply<br/>(consumer unit)"]:::dev
+  EVC["EV charger"]:::dev
+  EV["EV"]:::dev
+  HP["Heat pump"]:::dev
+  PLUGS["Metered plugs"]:::meter
+  UNT["Untracked<br/>= supply − Σ sub-meters"]:::derived
+
+  GRID <==> CONN
+  CONN <==>|import / export| MTR
+  MTR -.-|supplied_on| TAR
+  MTR <==>|grid port| INV
+  PV1 ==>|dc| INV
+  PV2 -.->|dc| INV
+  INV ==>|charge port| BAT
+  BAT ==>|discharge port| INV
+  INV ==>|ac port| SUP
+  SUP ==> EVC ==> EV
+  SUP ==> HP
+  SUP ==> PLUGS
+  SUP -.-> UNT
+
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef meter fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef ctx fill:#f3eefa,stroke:#7a52b3,color:#2a1747
+  classDef ext fill:#f2f2f2,stroke:#777,color:#222
+  classDef derived fill:#fdf0f0,stroke:#c0504d,color:#4a1110,stroke-dasharray: 4 3

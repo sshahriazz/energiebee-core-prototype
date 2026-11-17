@@ -1,0 +1,31 @@
+sequenceDiagram
+  autonumber
+  participant D as Device
+  participant H as Hub agent
+  participant K as Core: HLP ingest
+  participant M as Core: model + facts
+  participant C as Core: control
+
+  Note over H,K: Connect and announce
+  H->>K: up/announce (hub + device descriptors, uids)
+  K->>M: raw payload · create or match thing + points (type pack) · served_by, thing_link
+  M-->>H: down/config (things, points, mappings, limits, safe defaults)
+
+  Note over D,M: Telemetry
+  D->>H: measurement
+  H->>K: up/telemetry (batched samples, device time, seq)
+  K->>M: raw payload (dedupe hub+seq) · facts via point bindings · mark points dirty
+
+  Note over D,C: A command
+  C->>H: down/command (intent, idempotency key, TTL, expectation)
+  H->>H: local arbiter: limits, priority
+  H->>D: write
+  D->>H: new state
+  H->>K: up/ack applied
+  H->>K: up/state (reported)
+  K->>C: verifier compares reported with expected → command done
+
+  Note over H,K: Offline
+  H->>H: run edge program until TTL, then safe defaults · buffer up/*
+  H->>K: reconnect · replay buffer in order
+  K->>M: late facts: device time as ts, receive time as recorded_at · rebuild from earliest

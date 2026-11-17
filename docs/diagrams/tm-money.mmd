@@ -1,0 +1,18 @@
+flowchart LR
+  subgraph RULES["Tariff rules (as stored today)"]
+    RI[("rate_interval<br/>prices by validity")]
+    RW[("register_window<br/>time-of-use windows")]
+    CAL[("calendar days<br/>Tempo colours")]
+  end
+  RULES --> EXP["Pure expansion<br/>(tariff-expand.js)"] --> PRUN[("tariff_price_run<br/>one row per price change,<br/>per tariff and register")]
+  AG["supplied_on<br/>(which tariff, when)"] --> SPS
+  TAX[("tax_rule<br/>the home's country")] --> SPS
+  OWN["Meter's own windows<br/>home-specific rows"] --> SPS
+  DIS["Dispatch overlays<br/>(Intelligent Octopus)"] --> SPS
+  PRUN --> SPS[("supply_price_slot<br/>per supply point and slot:<br/>unit ex/inc tax · export · fixed share")]
+  SPS --> COST["cost = slot energy × slot price"]
+  COST --> T1["Home timeline"]
+  COST --> T2["Each device and room"]
+  COST --> T3["Tariff comparison"]
+  COST --> T4["Planner"]
+  SPS -->|"down/data (future slots)"| HUB["Local hub<br/>runs on price offline"]

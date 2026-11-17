@@ -23,18 +23,78 @@ Scope for now: **one home, its rooms, its devices, their controls, and the home'
 
 ## 2. Architecture
 
+![Architecture: devices, the local hub, the core and cloud sources](diagrams/tm-architecture.svg)
+
+*Devices speak their own protocols to the local hub; the hub speaks only the Hub Link Protocol to the core; cloud sources reach the core through adapters. Orange: hub. Blue: core. Green: devices. Purple: cloud.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-architecture.mmd)</summary>
+
+```mermaid
+flowchart LR
+  subgraph DEV["Devices in the home"]
+    direction TB
+    INV["Inverter<br/>Modbus / SunSpec"]
+    BAT["Battery<br/>(via inverter)"]
+    HP["Heat pump<br/>Modbus"]
+    TRV["TRVs, thermostat<br/>Zigbee"]
+    PLUG["Smart plugs<br/>Wi-Fi / local HTTP"]
+    MTR["Smart meter<br/>P1 / CAD"]
+    EVC["EV charger<br/>OCPP / local"]
+  end
+
+  subgraph HUB["Local hub agent (one per home)"]
+    direction TB
+    DRV["Driver processes<br/>Zigbee · Z-Wave · Modbus · Matter · HTTP/MQTT"]
+    REG["Local registry<br/>things · points · limits"]
+    ARB["Local arbiter<br/>limit enforcement · safe defaults"]
+    PRG["Edge program<br/>schedules · rules · price slots"]
+    BUF["Store and forward<br/>buffer · replay"]
+    DRV --> REG
+    PRG --> ARB --> DRV
+    REG --> BUF
+  end
+
+  subgraph CORE["EnergieBee core (cloud)"]
+    direction TB
+    ING["HLP ingest<br/>dedupe by hub + seq"]
+    RAW[("raw_payload<br/>immutable, encrypted")]
+    MOD["Thing model<br/>things · relations · points · bindings"]
+    FCT[("Facts<br/>reading · interval · forecast")]
+    TL["Timelines<br/>point_slot → node_slot → home"]
+    MON["Money<br/>price runs → price slots"]
+    CTL["Control<br/>requests · limits · commands · verifier"]
+    API["API and pages"]
+    ING --> RAW --> FCT --> TL --> API
+    ING --> MOD
+    MON --> TL
+    CTL --> API
+    TL --> CTL
+  end
+
+  subgraph CLOUD["Cloud sources"]
+    direction TB
+    OCT["Octopus<br/>meters · tariffs · Kraken"]
+    TAR["Tariffscanner · tounify"]
+    CTX["Open-Meteo · NESO / RTE<br/>National Gas · Quartz"]
+  end
+
+  DEV <-->|local protocols| DRV
+  BUF <==>|"Hub Link Protocol<br/>MQTT 5 · mTLS · up/* down/*"| ING
+  CTL ==>|"down/command · down/program<br/>down/data · down/config"| BUF
+  CLOUD -->|cloud adapters| RAW
+  OCT -.->|"stand-in connector<br/>until a hub exists"| ING
+
+  classDef hub fill:#fff4e0,stroke:#d08a00,color:#3a2a00
+  classDef core fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef cloud fill:#f3eefa,stroke:#7a52b3,color:#2a1747
+  class DRV,REG,ARB,PRG,BUF hub
+  class ING,RAW,MOD,FCT,TL,MON,CTL,API core
+  class INV,BAT,HP,TRV,PLUG,MTR,EVC dev
+  class OCT,TAR,CTX cloud
 ```
-  Devices                     LOCAL HUB (per home)                      CORE (cloud)                         Cloud sources
-  ───────                     ────────────────────                      ────────────                         ─────────────
-  inverter  ── Modbus ──┐     drivers (isolated processes)              HLP ingest ── raw_payload            Octopus (meters, rates, Kraken)
-  battery   ── Modbus ──┤     local registry (things, points, limits)      │                                 Tariffscanner, tounify
-  heat pump ── Modbus ──┼──►  local arbiter + limit enforcement   MQTT 5   ├─► facts ─► timelines ─► API     Open-Meteo, NESO / RTE carbon
-  TRVs      ── Zigbee ──┤     edge programs (rules, schedules)  ◄──mTLS──► │   (point_slot, node_slot,          National Gas CV, Quartz
-  plug      ── Wi-Fi  ──┤     store and forward (offline)                  │    site_hh, prices)                    │
-  meter     ── P1 / CAD─┘     watchdog, signed updates                     ├─► control requests ─► commands    cloud adapters ◄─┘
-                                                                           └─► model: things, relations,
-                                                                               points, bindings, tariffs
-```
+
+</details>
 
 | Concern | Hub | Core |
 |---|---|---|
@@ -104,18 +164,180 @@ thing_relation (
 
 ### 3.3 The two structures for home 1
 
+![Spatial tree of an example home](diagrams/tm-home-spatial.svg)
+
+*The spatial tree: home → floors → rooms → devices. Home-wide devices sit in the energy graph and need no room; systems group things across rooms.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-home-spatial.mmd)</summary>
+
+```mermaid
+flowchart TB
+  subgraph HOME["🏠 Home (thing kind home: time zone, slot length, currency, location)"]
+    direction TB
+    subgraph GF["Ground floor (space)"]
+      direction LR
+      subgraph LIV["Living room"]
+        direction TB
+        THERM["Thermostat"]:::dev
+        TS1["Temperature sensor"]:::dev
+        TRV1["TRV + radiator"]:::dev
+      end
+      subgraph KIT["Kitchen"]
+        direction TB
+        PLUG1["Smart plug · dishwasher"]:::dev
+        TRV2["TRV + radiator"]:::dev
+      end
+      subgraph GAR["Garage"]
+        direction TB
+        PLUG2["Smart plug · freezer"]:::dev
+      end
+    end
+    subgraph FF["First floor (space)"]
+      direction LR
+      subgraph BED["Bedroom"]
+        direction TB
+        TS2["Temperature sensor"]:::dev
+        TRV3["TRV + radiator"]:::dev
+      end
+    end
+    subgraph OUT["Outside (space)"]
+      direction LR
+      subgraph WALL["Outside wall"]
+        direction TB
+        MI["Import / export meter"]:::dev
+        MG["Gas meter"]:::dev
+      end
+      subgraph DRIVE["Driveway"]
+        direction TB
+        EVC["EV charger"]:::dev
+        EV["EV"]:::dev
+      end
+    end
+    subgraph WIDE["Home-wide: in the energy graph, no room needed"]
+      direction LR
+      HUBD["Local hub"]:::hub
+      INV["Inverter"]:::dev
+      PV["PV array"]:::dev
+      BAT["Battery"]:::dev
+      HP["Heat pump"]:::dev
+    end
+    subgraph SYS["Systems (part_of: may cross rooms)"]
+      direction LR
+      S1["Solar + battery<br/>PV · inverter · battery"]:::sys
+      S2["Heating<br/>heat pump · thermostat · TRVs"]:::sys
+      S3["EV charging<br/>charger · EV"]:::sys
+    end
+  end
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef hub fill:#fff4e0,stroke:#d08a00,color:#3a2a00
+  classDef sys fill:#f3eefa,stroke:#7a52b3,color:#2a1747
 ```
-SPATIAL TREE (where)                         ENERGY SYSTEM GRAPH (how energy flows)
-Home 1                                       grid connection ──► import/export meter ── supplied_on ─► tariff
-├── Outside wall: meters (optional)                                    │
-├── Driveway: EV, charger (optional)                                   ▼
-├── Living room: thermostat, sensor          PV array(s) ──dc──► inverter ◄──► battery (charge / discharge ports)
-└── rooms as room-level devices arrive                                 │ac
-                                                                       ▼
-Context: region G, weather point, gas zone                         home supply ──► EV charger ─► EV
-Systems: solar + battery, heating, EV charging                                 ├─► heat pump ─► emitters ─► rooms
-Hub: the home's hub (served_by)                                                └─► untracked loads
+
+</details>
+
+![Energy system graph of home 1](diagrams/tm-energy-graph.svg)
+
+*The energy system graph of home 1: a flow network through ports, not a tree. The battery and the grid connection both take and give energy; untracked consumption is derived; the tariff is a context thing the meter is supplied_on.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-energy-graph.mmd)</summary>
+
+```mermaid
+flowchart LR
+  GRID(("National grid")):::ext
+  CONN["Grid connection<br/>export limit (legal, G98/G99)"]:::dev
+  MTR["Import / export meter<br/>MPAN"]:::meter
+  TAR[["Tariff<br/>(context thing)"]]:::ctx
+  PV1["PV array (south)<br/>own tilt + forecast"]:::dev
+  PV2["PV array (west)<br/>optional"]:::dev
+  INV["Inverter<br/>ports: pv · battery · ac · grid"]:::dev
+  BAT["Battery<br/>ports: charge · discharge"]:::dev
+  SUP["Home supply<br/>(consumer unit)"]:::dev
+  EVC["EV charger"]:::dev
+  EV["EV"]:::dev
+  HP["Heat pump"]:::dev
+  PLUGS["Metered plugs"]:::meter
+  UNT["Untracked<br/>= supply − Σ sub-meters"]:::derived
+
+  GRID <==> CONN
+  CONN <==>|import / export| MTR
+  MTR -.-|supplied_on| TAR
+  MTR <==>|grid port| INV
+  PV1 ==>|dc| INV
+  PV2 -.->|dc| INV
+  INV ==>|charge port| BAT
+  BAT ==>|discharge port| INV
+  INV ==>|ac port| SUP
+  SUP ==> EVC ==> EV
+  SUP ==> HP
+  SUP ==> PLUGS
+  SUP -.-> UNT
+
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef meter fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef ctx fill:#f3eefa,stroke:#7a52b3,color:#2a1747
+  classDef ext fill:#f2f2f2,stroke:#777,color:#222
+  classDef derived fill:#fdf0f0,stroke:#c0504d,color:#4a1110,stroke-dasharray: 4 3
 ```
+
+</details>
+
+### 3.4 An example home: devices, rooms and flows
+
+The same things seen through both structures: each device is labelled with its room (spatial tree), and the arrows are the energy graph (thick: energy, thin: heat, dotted: `controls`).
+
+![Devices of an example home connected by energy, heat and control](diagrams/tm-home-flows.svg)
+
+*Energy flows from the meter, PV and battery through the inverter to the home supply and its loads; heat flows from the heat pump to the radiators in each room; thermostats and TRVs control the heat pump and radiators.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-home-flows.mmd)</summary>
+
+```mermaid
+flowchart LR
+  MI["Import / export meter<br/><i>outside wall</i>"]:::meter
+  PV["PV array<br/><i>home-wide</i>"]:::dev
+  INV["Inverter<br/><i>home-wide</i>"]:::dev
+  BAT["Battery<br/><i>home-wide</i>"]:::dev
+  SUP["Home supply<br/><i>consumer unit</i>"]:::dev
+  EVC["EV charger<br/><i>driveway</i>"]:::dev
+  EV["EV<br/><i>driveway</i>"]:::dev
+  HP["Heat pump<br/><i>home-wide</i>"]:::dev
+  P1["Plug · dishwasher<br/><i>kitchen</i>"]:::meter
+  P2["Plug · freezer<br/><i>garage</i>"]:::meter
+  UNT["Untracked<br/><i>derived</i>"]:::derived
+  R1["Radiator<br/><i>living room</i>"]:::heat
+  R2["Radiator<br/><i>kitchen</i>"]:::heat
+  R3["Radiator<br/><i>bedroom</i>"]:::heat
+  TH["Thermostat<br/><i>living room</i>"]:::ctl
+  T1["TRV<br/><i>living room</i>"]:::ctl
+  T2["TRV<br/><i>kitchen</i>"]:::ctl
+  T3["TRV<br/><i>bedroom</i>"]:::ctl
+
+  MI <==>|grid| INV
+  PV ==>|dc| INV
+  INV ==>|charge| BAT
+  BAT ==>|discharge| INV
+  INV ==>|ac| SUP
+  SUP ==> EVC ==> EV
+  SUP ==> HP
+  SUP ==> P1
+  SUP ==> P2
+  SUP -.-> UNT
+  HP -->|heat| R1
+  HP -->|heat| R2
+  HP -->|heat| R3
+  TH -.->|controls| HP
+  T1 -.->|controls| R1
+  T2 -.->|controls| R2
+  T3 -.->|controls| R3
+
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef meter fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef heat fill:#fdf0e6,stroke:#d0652a,color:#4a1f05
+  classDef ctl fill:#f3eefa,stroke:#7a52b3,color:#2a1747
+  classDef derived fill:#fdf0f0,stroke:#c0504d,color:#4a1110,stroke-dasharray: 4 3
+```
+
+</details>
 
 ---
 
@@ -181,6 +403,48 @@ The hub agent and the Hub Link Protocol are specified in architecture v3, sectio
 | `down/data` | the home's price slots and the planner schedule, with an expiry, so the hub can run on price while offline |
 | `down/config` | the registry slice the hub needs: things, points, mappings, limits, safe defaults |
 
+![Hub Link Protocol: announce, telemetry, command, offline](diagrams/tm-hlp-sequence.svg)
+
+*What the core does with each hub message: announce creates or matches things and points, telemetry becomes raw payloads and facts, a command is confirmed only by the reported state, and an offline hub replays its buffer as late, bitemporal facts.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-hlp-sequence.mmd)</summary>
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant D as Device
+  participant H as Hub agent
+  participant K as Core: HLP ingest
+  participant M as Core: model + facts
+  participant C as Core: control
+
+  Note over H,K: Connect and announce
+  H->>K: up/announce (hub + device descriptors, uids)
+  K->>M: raw payload · create or match thing + points (type pack) · served_by, thing_link
+  M-->>H: down/config (things, points, mappings, limits, safe defaults)
+
+  Note over D,M: Telemetry
+  D->>H: measurement
+  H->>K: up/telemetry (batched samples, device time, seq)
+  K->>M: raw payload (dedupe hub+seq) · facts via point bindings · mark points dirty
+
+  Note over D,C: A command
+  C->>H: down/command (intent, idempotency key, TTL, expectation)
+  H->>H: local arbiter: limits, priority
+  H->>D: write
+  D->>H: new state
+  H->>K: up/ack applied
+  H->>K: up/state (reported)
+  K->>C: verifier compares reported with expected → command done
+
+  Note over H,K: Offline
+  H->>H: run edge program until TTL, then safe defaults · buffer up/*
+  H->>K: reconnect · replay buffer in order
+  K->>M: late facts: device time as ts, receive time as recorded_at · rebuild from earliest
+```
+
+</details>
+
 **Ownership:** the hub creates device identities; the core owns everything above them (rooms, the energy graph, systems, tariffs, limits ranking). The hub caches what it needs (`down/config`) and never decides the model.
 
 ### 5.2 Cloud sources (no device behind them)
@@ -198,6 +462,27 @@ These stay core-side adapters: fetch → check the shape (quarantine if wrong) �
 ### 5.3 Before a home has a hub
 
 A cloud device API (Sunsynk Connect today) runs as a **cloud connector**: a `thing_link` of kind `cloud` that feeds the same ingest path as a hub (it emits announce-like descriptors and telemetry-like samples). When the home gets a hub and the inverter is reached over Modbus, the hub's link is added at a higher binding priority and the cloud link ends; the inverter thing, its points and its timeline do not change.
+
+![Moving a device from its cloud connector to the hub](diagrams/tm-handover.svg)
+
+*Before a hub, the inverter is read through the Sunsynk cloud; with a hub, a hub link takes over at a higher priority and the cloud link ends. The thing, its points and its timeline do not change.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-handover.mmd)</summary>
+
+```mermaid
+flowchart LR
+  subgraph BEFORE["Today: no hub in home 1"]
+    SC["Sunsynk Connect<br/>(cloud API)"] --> CL["thing_link kind cloud<br/>priority 1"]
+  end
+  subgraph AFTER["With a hub"]
+    MB["Inverter over Modbus"] --> HB["Local hub"] --> HL["thing_link kind hub<br/>priority 0 (wins)"]
+  end
+  CL --> INV["Inverter thing<br/>same uid · same points · same timeline"]
+  HL --> INV
+  CL -. "valid_to = hub link's valid_from" .-> HL
+```
+
+</details>
 
 ```sql
 thing_link (
@@ -230,16 +515,35 @@ One entry per integration (today's `source`, `market_provider` and `registerAdap
 
 ### 7.1 Layers on one grid
 
+![Timeline layers L1, L2, L3 and the four lanes](diagrams/tm-timeline-layers.svg)
+
+*L1 is each thing's own timeline, L2 rolls up rooms, floors and systems, L3 is the home's energy, money and checks; the source mix and cost per kWh are mixed back down to every device and room. Every timeline has four lanes on one grid.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-timeline-layers.mmd)</summary>
+
+```mermaid
+flowchart LR
+  RAW[("Raw payloads<br/>hub messages · provider answers")] --> F[("Facts<br/>versioned · each with its raw_id")]
+  F --> L1["<b>L1 · point_slot</b><br/>each thing's own timeline"]
+  L1 --> L2["<b>L2 · node_slot</b><br/>rooms · floors · systems<br/>energy via meters + untracked<br/>temperature via located_in"]
+  L1 --> L3["<b>L3 · home energy</b><br/>reconcile → allocate → price → check<br/>site_hh · site_heat_slot"]
+  L2 --> L3
+  PR[("Price slots<br/>supply_price_slot")] --> L3
+  L3 -->|"source mix + cost per kWh"| MIX["Mixed back down<br/>to every device and room"]
+
+  subgraph LANES["Every timeline, at every layer: four lanes on one grid"]
+    direction LR
+    A["Actual<br/>past slots"]:::lane
+    FC["Forecast<br/>by issue time"]:::lane
+    PL["Plan<br/>desired states"]:::lane
+    P["Price<br/>past + future"]:::lane
+  end
+  L1 -.- LANES
+
+  classDef lane fill:#fff4e0,stroke:#d08a00,color:#3a2a00
 ```
-facts ──► L1 point_slot   one row per point per slot: the thing's own timeline (device, PV array, meter, sensor)
-                │
-                ├──► L2 node_slot   rooms, floors, systems: roll-up over the members valid in each slot
-                │                   energy through `meters` (each kWh once) + untracked; temperatures through `located_in`
-                ▼
-           L3 home energy       reconcile → allocate (rules over the energy graph) → price (§8) → check: site_hh, site_heat_slot
-                │
-                └──► mixed back down: each slot's source mix (grid / solar / battery) and cost per kWh on every load and room
-```
+
+</details>
 
 - **One grid:** every layer cuts time with the home's slot length (15, 30 or 60 minutes, from local midnight), so any timelines can be overlaid.
 - **Four lanes on every timeline (R7):** actual (past slots), forecast (future, by issue time), plan (desired states from the planner), price (§8).
@@ -250,16 +554,60 @@ facts ──► L1 point_slot   one row per point per slot: the thing's own time
 
 A dependency graph: a new fact marks its point dirty from its time; its point slots are rebuilt; the groups it belonged to at those times are marked; then the home. Shared changes (a tariff, a region's carbon) are queued once and expanded to the homes in batches. A rebuild **stops when it converges**: once a day ends with the same carried-over state (battery stock and the like) as the stored build, later days cannot change (R9). Each layer has its own method version.
 
+![Rebuild dependency graph with convergence](diagrams/tm-rebuild.svg)
+
+*A change marks what depends on it, layer by layer; shared changes are queued once and batched; a home's rebuild stops on the first day that ends in the same carried-over state as the stored build.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-rebuild.mmd)</summary>
+
+```mermaid
+flowchart LR
+  NEW["New or corrected fact<br/>(hub replay, supplier revision)"] --> DP["Mark the point dirty<br/>from the fact's time"]
+  TCH["Tariff, tax or agreement change"] --> TQ["Queue once for the tariff"] --> BATCH["Expand to the homes on it<br/>in batches"] --> DH
+  CTXC["Region carbon / weather change"] --> TQ2["Queue once for the region"] --> BATCH
+  DP --> R1["Rebuild point slots"]
+  R1 --> G["Mark the groups it was in<br/>at those times"]
+  G --> R2["Rebuild node slots"]
+  R2 --> DH["Rebuild the home, day by day"]
+  DH --> CV{"Day ends with the same<br/>carried-over state?<br/>(battery stock …)"}
+  CV -- yes --> STOP(["Stop: later days cannot change"])
+  CV -- no --> NEXT["Next day"] --> DH
+```
+
+</details>
+
 ---
 
 ## 8. Money: the slotted tariff
 
+![From tariff rules to price slots to costs](diagrams/tm-money.svg)
+
+*Tariff rules expand into price runs; the home's agreement, taxes, own windows and dispatches turn them into price slots per supply point; every cost is slot energy × slot price, and future slots go to the hub.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-money.mmd)</summary>
+
+```mermaid
+flowchart LR
+  subgraph RULES["Tariff rules (as stored today)"]
+    RI[("rate_interval<br/>prices by validity")]
+    RW[("register_window<br/>time-of-use windows")]
+    CAL[("calendar days<br/>Tempo colours")]
+  end
+  RULES --> EXP["Pure expansion<br/>(tariff-expand.js)"] --> PRUN[("tariff_price_run<br/>one row per price change,<br/>per tariff and register")]
+  AG["supplied_on<br/>(which tariff, when)"] --> SPS
+  TAX[("tax_rule<br/>the home's country")] --> SPS
+  OWN["Meter's own windows<br/>home-specific rows"] --> SPS
+  DIS["Dispatch overlays<br/>(Intelligent Octopus)"] --> SPS
+  PRUN --> SPS[("supply_price_slot<br/>per supply point and slot:<br/>unit ex/inc tax · export · fixed share")]
+  SPS --> COST["cost = slot energy × slot price"]
+  COST --> T1["Home timeline"]
+  COST --> T2["Each device and room"]
+  COST --> T3["Tariff comparison"]
+  COST --> T4["Planner"]
+  SPS -->|"down/data (future slots)"| HUB["Local hub<br/>runs on price offline"]
 ```
-rate rows + windows + calendars ──► tariff_price_run     one row per price change per tariff and register (R10)
-agreement (supplied_on) + taxes ──► supply_price_slot    per supply point and slot at the home's slot length:
- + meter's own windows + dispatches                       unit price ex / inc tax, export price, fixed-charge share
-                                   ──► cost = slot energy × slot price   (timeline, comparison, planner, devices, rooms)
-```
+
+</details>
 
 - Every tariff type converts: flat, day/night and time-of-use windows, Intelligent Octopus Go (windows plus the home's dispatches), Agile and Tracker (published intervals), day-type calendars (Tempo), tounify day-ahead, export, gas; standing, subscription and capacity charges become a fixed share of each slot.
 - **Never guess:** an unpublished price is missing; estimated only by a stated rule.
@@ -290,11 +638,42 @@ The highest current request per point wins and becomes a `command` (desired stat
 
 ### 9.3 The command path
 
+![Control: requests, arbitration, limits, commands, read-back](diagrams/tm-control.svg)
+
+*Requests by priority, then ranked limits, then a command (split per member for a room or system), sent to the hub, which checks limits again before writing. Done only when the reported state matches; a change no command explains becomes a manual request.*
+
+<details><summary>Mermaid source (docs/diagrams/tm-control.mmd)</summary>
+
+```mermaid
+flowchart TB
+  subgraph REQ["Control requests (priority + expiry)"]
+    S["1 · safety"]:::p1
+    M["2 · manual<br/>owner · installer · external override"]:::p2
+    SC["3 · schedule"]:::p3
+    O["4 · optimiser<br/>planner"]:::p4
+  end
+  REQ --> ARB["Arbitration<br/>highest current request per point wins"]
+  ARB --> LIM{{"Limits: physical > legal > installer > owner > optimiser<br/>on the device · room · circuit · home"}}
+  LIM -- refused --> BLK["command_block<br/>(why it was not sent)"]
+  LIM -- ok --> CMD["command<br/>desired · TTL · idempotency · expectation"]
+  CMD --> GRP{"On a room or system?"}
+  GRP -- yes --> SPLIT["One command per member<br/>parent_command_id"] --> DOWN
+  GRP -- no --> DOWN["down/command"]
+  DOWN --> HUB["Hub arbiter<br/>limits again · writes"] --> DEV["Device"]
+  DEV --> ST["up/state (reported)"]
+  ST --> VER{"Reported = expected?"}
+  VER -- yes --> DONE(["acked + verified"])
+  VER -- not yet --> RETRY["retry until TTL, then failed"]
+  ST --> EXT{"Change no command explains?"}
+  EXT -- yes --> M
+
+  classDef p1 fill:#fdecea,stroke:#c0392b,color:#4a1110
+  classDef p2 fill:#fff4e0,stroke:#d08a00,color:#3a2a00
+  classDef p3 fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef p4 fill:#eef8ee,stroke:#3f9142,color:#123d14
 ```
-control_request ─► arbitration ─► limits ─► command ─► down/command (intent, TTL, expectation) ─► hub arbiter ─► device
-                                                                                                        │
-command status ◄── verifier ◄── up/state (reported) ◄── up/ack applied ◄────────────────────────────────┘
-```
+
+</details>
 
 A command is done only when the device's reported state matches the expectation (read-back), as the executor already requires. Schedules, scenes and rules are compiled into a signed **edge program** (`down/program`) that the hub runs until its TTL, then reverts each controlled point to its safe default.
 
@@ -320,6 +699,97 @@ A reported change that no EnergieBee command explains (the owner used the invert
 - **Stable ids:** `uid` UUIDv7 on things, points, links, requests and commands; the hub creates device uids (R3).
 - **Versioned configuration:** every configuration table has valid time and record time, checked by a test (R19).
 - **Rules in two places:** every invariant a constraint or trigger enforces is also checked by a code test (D1).
+- **Data model:**
+
+![Data model of the thing platform](diagrams/tm-er.svg)
+  
+  *The core tables: things and their types, relations, attribute versions, points, links and bindings, the facts and raw payloads, the slot tables, control and money.*
+  
+  <details><summary>Mermaid source (docs/diagrams/tm-er.mmd)</summary>
+  
+  ```mermaid
+  erDiagram
+    thing_type ||--o{ thing : "types"
+    thing ||--o{ thing : "home_id"
+    thing ||--o{ thing_relation : "from"
+    thing ||--o{ thing_relation : "to"
+    thing ||--o{ thing_attr_version : "versions"
+    thing ||--o{ point : "exposes"
+    capability ||--o{ point : "groups"
+    metric ||--o{ point : "measures"
+    thing ||--o{ thing_link : "reached through"
+    thing_link ||--o{ point_binding : "supplies"
+    point ||--o{ point_binding : "filled by"
+    point ||--o{ series : "feeds (one per link)"
+    series ||--o{ reading : ""
+    series ||--o{ interval_fact : ""
+    series ||--o{ forecast_fact : ""
+    raw_payload ||--o{ reading : "raw_id"
+    raw_payload ||--o{ interval_fact : "raw_id"
+    point ||--o{ point_slot : "timeline"
+    point ||--|| point_state : "shadow"
+    thing ||--o{ node_slot : "group timeline"
+    thing ||--o{ control_request : "wished"
+    control_request ||--o{ command : "winner"
+    command ||--o{ command : "parent (group)"
+    thing ||--o{ control_limit : "limits"
+    thing ||--o{ tariff_price_run : "tariff (context)"
+    thing ||--o{ supply_price_slot : "supply point"
+  
+    thing {
+      bigint id PK
+      uuid uid UK
+      bigint home_id FK
+      text kind
+      text type FK
+      text name
+      jsonb attrs
+    }
+    thing_relation {
+      bigint from_id FK
+      text from_port
+      text rel
+      bigint to_id FK
+      text to_port
+      boolean required
+      bigint valid_from
+      bigint valid_to
+    }
+    point {
+      bigint id PK
+      uuid uid UK
+      bigint thing_id FK
+      text capability FK
+      text key
+      text class
+      text access
+    }
+    point_binding {
+      bigint point_id FK
+      bigint link_id FK
+      text external_point
+      jsonb mapping
+      text role
+      int priority
+    }
+    thing_link {
+      bigint id PK
+      bigint thing_id FK
+      text kind
+      bigint hub_id FK
+      text external_ref
+    }
+    control_request {
+      bigint id PK
+      bigint thing_id FK
+      jsonb desired
+      text priority
+      bigint valid_until
+    }
+  ```
+  
+  </details>
+
 - **Retention tiers:** raw and fine samples for a set period, slots and days for ever (D5).
 
 ---

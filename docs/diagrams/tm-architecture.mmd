@@ -1,0 +1,62 @@
+flowchart LR
+  subgraph DEV["Devices in the home"]
+    direction TB
+    INV["Inverter<br/>Modbus / SunSpec"]
+    BAT["Battery<br/>(via inverter)"]
+    HP["Heat pump<br/>Modbus"]
+    TRV["TRVs, thermostat<br/>Zigbee"]
+    PLUG["Smart plugs<br/>Wi-Fi / local HTTP"]
+    MTR["Smart meter<br/>P1 / CAD"]
+    EVC["EV charger<br/>OCPP / local"]
+  end
+
+  subgraph HUB["Local hub agent (one per home)"]
+    direction TB
+    DRV["Driver processes<br/>Zigbee · Z-Wave · Modbus · Matter · HTTP/MQTT"]
+    REG["Local registry<br/>things · points · limits"]
+    ARB["Local arbiter<br/>limit enforcement · safe defaults"]
+    PRG["Edge program<br/>schedules · rules · price slots"]
+    BUF["Store and forward<br/>buffer · replay"]
+    DRV --> REG
+    PRG --> ARB --> DRV
+    REG --> BUF
+  end
+
+  subgraph CORE["EnergieBee core (cloud)"]
+    direction TB
+    ING["HLP ingest<br/>dedupe by hub + seq"]
+    RAW[("raw_payload<br/>immutable, encrypted")]
+    MOD["Thing model<br/>things · relations · points · bindings"]
+    FCT[("Facts<br/>reading · interval · forecast")]
+    TL["Timelines<br/>point_slot → node_slot → home"]
+    MON["Money<br/>price runs → price slots"]
+    CTL["Control<br/>requests · limits · commands · verifier"]
+    API["API and pages"]
+    ING --> RAW --> FCT --> TL --> API
+    ING --> MOD
+    MON --> TL
+    CTL --> API
+    TL --> CTL
+  end
+
+  subgraph CLOUD["Cloud sources"]
+    direction TB
+    OCT["Octopus<br/>meters · tariffs · Kraken"]
+    TAR["Tariffscanner · tounify"]
+    CTX["Open-Meteo · NESO / RTE<br/>National Gas · Quartz"]
+  end
+
+  DEV <-->|local protocols| DRV
+  BUF <==>|"Hub Link Protocol<br/>MQTT 5 · mTLS · up/* down/*"| ING
+  CTL ==>|"down/command · down/program<br/>down/data · down/config"| BUF
+  CLOUD -->|cloud adapters| RAW
+  OCT -.->|"stand-in connector<br/>until a hub exists"| ING
+
+  classDef hub fill:#fff4e0,stroke:#d08a00,color:#3a2a00
+  classDef core fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef cloud fill:#f3eefa,stroke:#7a52b3,color:#2a1747
+  class DRV,REG,ARB,PRG,BUF hub
+  class ING,RAW,MOD,FCT,TL,MON,CTL,API core
+  class INV,BAT,HP,TRV,PLUG,MTR,EVC dev
+  class OCT,TAR,CTX cloud

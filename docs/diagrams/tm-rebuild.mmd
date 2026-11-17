@@ -1,0 +1,11 @@
+flowchart LR
+  NEW["New or corrected fact<br/>(hub replay, supplier revision)"] --> DP["Mark the point dirty<br/>from the fact's time"]
+  TCH["Tariff, tax or agreement change"] --> TQ["Queue once for the tariff"] --> BATCH["Expand to the homes on it<br/>in batches"] --> DH
+  CTXC["Region carbon / weather change"] --> TQ2["Queue once for the region"] --> BATCH
+  DP --> R1["Rebuild point slots"]
+  R1 --> G["Mark the groups it was in<br/>at those times"]
+  G --> R2["Rebuild node slots"]
+  R2 --> DH["Rebuild the home, day by day"]
+  DH --> CV{"Day ends with the same<br/>carried-over state?<br/>(battery stock …)"}
+  CV -- yes --> STOP(["Stop: later days cannot change"])
+  CV -- no --> NEXT["Next day"] --> DH

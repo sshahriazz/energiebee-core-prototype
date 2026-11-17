@@ -1,0 +1,43 @@
+flowchart LR
+  MI["Import / export meter<br/><i>outside wall</i>"]:::meter
+  PV["PV array<br/><i>home-wide</i>"]:::dev
+  INV["Inverter<br/><i>home-wide</i>"]:::dev
+  BAT["Battery<br/><i>home-wide</i>"]:::dev
+  SUP["Home supply<br/><i>consumer unit</i>"]:::dev
+  EVC["EV charger<br/><i>driveway</i>"]:::dev
+  EV["EV<br/><i>driveway</i>"]:::dev
+  HP["Heat pump<br/><i>home-wide</i>"]:::dev
+  P1["Plug · dishwasher<br/><i>kitchen</i>"]:::meter
+  P2["Plug · freezer<br/><i>garage</i>"]:::meter
+  UNT["Untracked<br/><i>derived</i>"]:::derived
+  R1["Radiator<br/><i>living room</i>"]:::heat
+  R2["Radiator<br/><i>kitchen</i>"]:::heat
+  R3["Radiator<br/><i>bedroom</i>"]:::heat
+  TH["Thermostat<br/><i>living room</i>"]:::ctl
+  T1["TRV<br/><i>living room</i>"]:::ctl
+  T2["TRV<br/><i>kitchen</i>"]:::ctl
+  T3["TRV<br/><i>bedroom</i>"]:::ctl
+
+  MI <==>|grid| INV
+  PV ==>|dc| INV
+  INV ==>|charge| BAT
+  BAT ==>|discharge| INV
+  INV ==>|ac| SUP
+  SUP ==> EVC ==> EV
+  SUP ==> HP
+  SUP ==> P1
+  SUP ==> P2
+  SUP -.-> UNT
+  HP -->|heat| R1
+  HP -->|heat| R2
+  HP -->|heat| R3
+  TH -.->|controls| HP
+  T1 -.->|controls| R1
+  T2 -.->|controls| R2
+  T3 -.->|controls| R3
+
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef meter fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef heat fill:#fdf0e6,stroke:#d0652a,color:#4a1f05
+  classDef ctl fill:#f3eefa,stroke:#7a52b3,color:#2a1747
+  classDef derived fill:#fdf0f0,stroke:#c0504d,color:#4a1110,stroke-dasharray: 4 3

@@ -1,0 +1,60 @@
+flowchart TB
+  subgraph HOME["🏠 Home (thing kind home: time zone, slot length, currency, location)"]
+    direction TB
+    subgraph GF["Ground floor (space)"]
+      direction LR
+      subgraph LIV["Living room"]
+        direction TB
+        THERM["Thermostat"]:::dev
+        TS1["Temperature sensor"]:::dev
+        TRV1["TRV + radiator"]:::dev
+      end
+      subgraph KIT["Kitchen"]
+        direction TB
+        PLUG1["Smart plug · dishwasher"]:::dev
+        TRV2["TRV + radiator"]:::dev
+      end
+      subgraph GAR["Garage"]
+        direction TB
+        PLUG2["Smart plug · freezer"]:::dev
+      end
+    end
+    subgraph FF["First floor (space)"]
+      direction LR
+      subgraph BED["Bedroom"]
+        direction TB
+        TS2["Temperature sensor"]:::dev
+        TRV3["TRV + radiator"]:::dev
+      end
+    end
+    subgraph OUT["Outside (space)"]
+      direction LR
+      subgraph WALL["Outside wall"]
+        direction TB
+        MI["Import / export meter"]:::dev
+        MG["Gas meter"]:::dev
+      end
+      subgraph DRIVE["Driveway"]
+        direction TB
+        EVC["EV charger"]:::dev
+        EV["EV"]:::dev
+      end
+    end
+    subgraph WIDE["Home-wide: in the energy graph, no room needed"]
+      direction LR
+      HUBD["Local hub"]:::hub
+      INV["Inverter"]:::dev
+      PV["PV array"]:::dev
+      BAT["Battery"]:::dev
+      HP["Heat pump"]:::dev
+    end
+    subgraph SYS["Systems (part_of: may cross rooms)"]
+      direction LR
+      S1["Solar + battery<br/>PV · inverter · battery"]:::sys
+      S2["Heating<br/>heat pump · thermostat · TRVs"]:::sys
+      S3["EV charging<br/>charger · EV"]:::sys
+    end
+  end
+  classDef dev fill:#eef8ee,stroke:#3f9142,color:#123d14
+  classDef hub fill:#fff4e0,stroke:#d08a00,color:#3a2a00
+  classDef sys fill:#f3eefa,stroke:#7a52b3,color:#2a1747

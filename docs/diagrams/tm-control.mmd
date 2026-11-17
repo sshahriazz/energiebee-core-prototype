@@ -1,0 +1,26 @@
+flowchart TB
+  subgraph REQ["Control requests (priority + expiry)"]
+    S["1 · safety"]:::p1
+    M["2 · manual<br/>owner · installer · external override"]:::p2
+    SC["3 · schedule"]:::p3
+    O["4 · optimiser<br/>planner"]:::p4
+  end
+  REQ --> ARB["Arbitration<br/>highest current request per point wins"]
+  ARB --> LIM{{"Limits: physical > legal > installer > owner > optimiser<br/>on the device · room · circuit · home"}}
+  LIM -- refused --> BLK["command_block<br/>(why it was not sent)"]
+  LIM -- ok --> CMD["command<br/>desired · TTL · idempotency · expectation"]
+  CMD --> GRP{"On a room or system?"}
+  GRP -- yes --> SPLIT["One command per member<br/>parent_command_id"] --> DOWN
+  GRP -- no --> DOWN["down/command"]
+  DOWN --> HUB["Hub arbiter<br/>limits again · writes"] --> DEV["Device"]
+  DEV --> ST["up/state (reported)"]
+  ST --> VER{"Reported = expected?"}
+  VER -- yes --> DONE(["acked + verified"])
+  VER -- not yet --> RETRY["retry until TTL, then failed"]
+  ST --> EXT{"Change no command explains?"}
+  EXT -- yes --> M
+
+  classDef p1 fill:#fdecea,stroke:#c0392b,color:#4a1110
+  classDef p2 fill:#fff4e0,stroke:#d08a00,color:#3a2a00
+  classDef p3 fill:#e8f1ff,stroke:#2f6fd6,color:#0b2350
+  classDef p4 fill:#eef8ee,stroke:#3f9142,color:#123d14

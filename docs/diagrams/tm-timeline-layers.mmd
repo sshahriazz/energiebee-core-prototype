@@ -1,0 +1,19 @@
+flowchart LR
+  RAW[("Raw payloads<br/>hub messages · provider answers")] --> F[("Facts<br/>versioned · each with its raw_id")]
+  F --> L1["<b>L1 · point_slot</b><br/>each thing's own timeline"]
+  L1 --> L2["<b>L2 · node_slot</b><br/>rooms · floors · systems<br/>energy via meters + untracked<br/>temperature via located_in"]
+  L1 --> L3["<b>L3 · home energy</b><br/>reconcile → allocate → price → check<br/>site_hh · site_heat_slot"]
+  L2 --> L3
+  PR[("Price slots<br/>supply_price_slot")] --> L3
+  L3 -->|"source mix + cost per kWh"| MIX["Mixed back down<br/>to every device and room"]
+
+  subgraph LANES["Every timeline, at every layer: four lanes on one grid"]
+    direction LR
+    A["Actual<br/>past slots"]:::lane
+    FC["Forecast<br/>by issue time"]:::lane
+    PL["Plan<br/>desired states"]:::lane
+    P["Price<br/>past + future"]:::lane
+  end
+  L1 -.- LANES
+
+  classDef lane fill:#fff4e0,stroke:#d08a00,color:#3a2a00

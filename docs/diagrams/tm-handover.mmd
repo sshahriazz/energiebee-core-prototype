@@ -1,0 +1,10 @@
+flowchart LR
+  subgraph BEFORE["Today: no hub in home 1"]
+    SC["Sunsynk Connect<br/>(cloud API)"] --> CL["thing_link kind cloud<br/>priority 1"]
+  end
+  subgraph AFTER["With a hub"]
+    MB["Inverter over Modbus"] --> HB["Local hub"] --> HL["thing_link kind hub<br/>priority 0 (wins)"]
+  end
+  CL --> INV["Inverter thing<br/>same uid · same points · same timeline"]
+  HL --> INV
+  CL -. "valid_to = hub link's valid_from" .-> HL

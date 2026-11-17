@@ -10,7 +10,7 @@ The stack is Node 22, Express and PostgreSQL through Prisma 7. The schema is SQL
 ## What you need
 
 - **Node.js 22.13 or newer** (22.18 or newer runs the generated Prisma client's TypeScript directly). Check with `node -v`.
-- **PostgreSQL 17 or newer** (18 in development): Postgres.app on a Mac, or the `db` service of `docker-compose.yml`.
+- **PostgreSQL 18 or newer** (it makes the UUIDv7 identities, `uuidv7()`): Postgres.app on a Mac, or the `db` service of `docker-compose.yml`.
 - **npm** (comes with Node).
 - **Internet access** to the providers: Sunsynk, Octopus, National Gas, NESO, Open-Meteo, Quartz and postcodes.io.
 - **The home's credentials** in `.env` (see the next section):

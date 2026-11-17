@@ -65,6 +65,14 @@ await test('homes: a new home gets its versions and default bindings; country an
   await refused('site_currency_implied_matches_agreements', "UPDATE site SET currency = 'EUR', country = 'NL', market_code = 'NL' WHERE id = ?", A);
 });
 
+await test('identity: a home\'s, a device\'s and a connection\'s uid never changes', async () => {
+  const conn = await ins("INSERT INTO connection (site_id, provider, external_ref) VALUES (?, 'test', 'c')", A);
+  await refused('site_uid_fixed', 'UPDATE site SET uid = uuidv7() WHERE id = ?', A);
+  await refused('device_uid_fixed', 'UPDATE device SET uid = uuidv7() WHERE id = ?', batA);
+  await refused('connection_uid_fixed', 'UPDATE connection SET uid = uuidv7() WHERE id = ?', conn);
+  await run('UPDATE site SET uid = uid, name = ? WHERE id = ?', 'A2', A);   // an update that keeps it is fine
+});
+
 await test('devices: a kind and an action must be in the registry', async () => {
   await refused('device_kind_known_insert', "INSERT INTO device (site_id, kind, provider, external_ref) VALUES (?, 'flux_capacitor', 'test', 'x')", A);
   await refused('device_kind_known_update', "UPDATE device SET kind = 'flux_capacitor' WHERE id = ?", batA);

@@ -208,8 +208,9 @@ export async function agreeTariff({ siteId, deviceId, tariffId, validFrom, valid
 }
 
 // A meter or other device of a home, known from recordedAt (ms).
-export async function addDevice({ siteId, kind, provider, externalRef, label = null, attrs = {}, recordedAt = Date.now() }) {
-  await db.prepare('INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(siteId, kind, provider, externalRef, label, JSON.stringify(attrs), recordedAt);
+// uid: the device's identity outside this database, when a hub that discovered it made one (else the database makes it).
+export async function addDevice({ siteId, kind, provider, externalRef, label = null, attrs = {}, recordedAt = Date.now(), uid = null }) {
+  await db.prepare('INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at, uid) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?::uuid, uuidv7()))')
+        .run(siteId, kind, provider, externalRef, label, JSON.stringify(attrs), recordedAt, uid);
   return await db.prepare('SELECT * FROM device WHERE site_id = ? AND provider = ? AND external_ref = ?').get(siteId, provider, externalRef);
 }

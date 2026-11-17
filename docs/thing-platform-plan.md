@@ -33,7 +33,7 @@ The prototype has strong foundations, but it models **a home with energy columns
 3. **Every thing exposes points**: measurements, totals (counters), states, setpoints and events, grouped into capabilities (power meter, battery storage, thermostat, heat source, on/off, EV charging).
 4. **Every thing has a timeline on the same grid**: device → room → floor → system → home, all with the same slot boundaries, so any of them can be overlaid. Power flow, cost and heating become views built from those timelines.
 5. **Every thing has controls**: desired vs reported state, priority (safety > manual > schedule > optimiser), limits on any thing (device, room, circuit, home), and commands on a group that split into commands for its members.
-6. **Integrations only supply identities, points and commands.** They discover external devices, the core links them to things, and the same pipeline handles pull, push, hub and manual data.
+6. **All devices talk through a local hub** (decided 17 Nov; architecture v3 section 5). The hub discovers devices and creates their identities; the core links them to things. Cloud adapters remain for cloud sources (tariffs, weather, carbon, gas CV, solar forecast, supplier meter data) and stand in for a device until its home has a hub. The full design is [docs/thing-model.md](thing-model.md).
 7. **Raw data is kept safe**: append-only in the database itself, stored apart from the database, and checked for integrity.
 8. **The slotted tariff is the baseline for all money (decided 17 Nov).** Whatever its type, every tariff is converted into a price per slot, past and future, and every cost, saving, comparison and plan is energy per slot × price per slot. A tariff is a context thing whose timeline is its slotted price; a meter is `supplied_on` a tariff for a dated period.
 
@@ -56,7 +56,7 @@ Systems: solar + battery, heating, EV charging              └── untracked 
 3. **Every new piece is data, not code**: a new device type, capability, relationship or integration is a registry row and an adapter, never a schema change.
 4. **Each phase ends green**: the full test suite, the slot-length run (`npm run test:slots`, at 15 and 60 minutes), and the phase's own exit checks.
 5. **Every configuration table is versioned like the facts** (valid time and record time), so any past moment can be rebuilt "as known then". A test fails if a new configuration table lacks them (review R19).
-6. **Stable ids and a home on every row.** Things, points and connections have a `uid` (ULID) beside the internal integer id, for APIs, hubs and exports (R3). Every point, series, slot and raw row stores its `home_id`, set on insert (R4).
+6. **Stable ids and a home on every row.** Things, points and connections have a `uid` (UUIDv7, created by the hub for devices) beside the internal integer id, for APIs, hubs and exports (R3). Every point, series, slot and raw row stores its `home_id`, set on insert (R4).
 7. **Rules live in tests as well as triggers.** Every invariant a SQLite trigger enforces is also checked in code tests, so a move to Postgres keeps them (D1).
 
 The problems these rules and the phase changes below prevent are in [the design review](thing-platform-design-review.md) (R1–R19, D1–D10).
@@ -72,7 +72,7 @@ Get a clean, current starting point and a fixed reference to compare against.
 | 0.1 | Back up `data/core.db` and `data/raw/`. Start the app so deltas 076–082 apply. Close the stuck sync and process the rebuild queue. Sync to today. Find why the 6 tests fail on the GB fixture (fix list B2); any that is not the date is a real bug, and "a partial rebuild gives exactly the rows of a full rebuild" must pass before 0.3, because the fingerprint depends on it. | S to M |
 | 0.2 | Look into the warnings on 25 October (the day the clocks went back): daily counters 40–45 % above the 5-minute samples and meter vs inverter CT 38 % apart. Fix it **before** fingerprinting, or the fingerprint keeps the bug. | S to M |
 | 0.3 | Fingerprint `site_hh`, `site_day` and `site_heat_slot` for home 1 and the GB fixture. Add a test that compares a rebuild to the fingerprint. Add **fixture homes per topology** (no battery, AC-coupled battery, two inverters, export only, EV, heat pump), each with its own fingerprint, because home 1 covers only one topology (R12). | M |
-| 0.4 | Write `docs/thing-model.md`: the target design (things, relationships, points, capabilities, timelines, controls, integrations) with full table definitions. This plan refers to it. | M |
+| 0.4 | ✅ `docs/thing-model.md`: the target design (things, relationships, points, capabilities, the local hub, cloud sources, timelines, money, controls, storage). Written 17 Nov. | M |
 
 **Exit:** database current; full suite green; the fingerprint test in place.
 
@@ -133,7 +133,7 @@ Make the home, rooms, devices and systems real things.
 
 | # | Work | Size |
 |---|---|---|
-| 1.1 | Delta `thing`: `thing(id, uid, home_id, kind home/space/device/system/context, type, name, attrs, external_std_ref, recorded_at, retired_at)`; `uid` is a ULID, `home_id` is null only for shared context things (R3, R4). `thing_type` registry replaces `device_kind` (type → kind, default capabilities, ports, a Brick / Matter reference). | M |
+| 1.1 | Delta `thing`: `thing(id, uid, home_id, kind home/space/device/system/context, type, name, attrs, external_std_ref, recorded_at, retired_at)`; `uid` is a UUIDv7, `home_id` is null only for shared context things (R3, R4). `thing_type` registry replaces `device_kind` (type → kind, default capabilities, ports, a Brick / Matter reference). | M |
 | 1.2 | Delta `thing_relation(from_id, from_port, rel, to_id, to_port, required, valid_from, valid_to, recorded_at, superseded_at)` with the same overlap triggers as `site_group_member`. Rules in triggers and code tests: at most one current `located_in` per thing, no `located_in` cycles, `meters` and `feeds` only between allowed types and ports. **Ports** make energy edges directed (a battery has charge and discharge ports, R1). **`required`** says whether a member decides its group's data state (R8). **`replaces`** links a replacement device to the one it replaced (R2). A change takes effect at the **next slot boundary**; the exact time is kept for history (R13). | M |
 | 1.3 | Move `device` into `thing` (kind `device`) and repoint every reference: `channel`, `binding`, `command`, `device_capability`, `control_limit`, `device_attr_version`, `plan_run_device`. Drop `device`. | M to L |
 | 1.3b | **Fold `site` into the `home` thing (decided 16 Nov).** The home's settings (time zone, slot length, currency, location, postcode, region, market) become versioned attributes of the home thing, replacing `site` and `site_version`. Every `site_id` becomes `home_id` → `thing(id)` with a check that the thing's kind is `home`: `site_hh`, `site_day`, `site_heat_slot`, `connection`, `check_result`, `rebuild_queue`, `sync_run`, `raw_payload`, grants, groups, settings, tariffs, plans. Settings the build reads are fetched through one function, so the build doesn't read attribute rows directly. | L |
@@ -247,6 +247,7 @@ Made by the owner on 16 November 2026:
 | Inverter, PV, battery, main meters | Home-wide, not in a room: they sit in the energy system graph at home level | Section 2, Phase 1.4 |
 | Where the meters and the EV are | Meters on an outside wall; EV on the driveway | Phase 1.5 |
 | First real device to control | The Sunsynk inverter (the only controllable device the owner has) | Phase 4.5 |
+| Devices (17 Nov) | All devices talk through a local hub; cloud adapters for cloud sources and as stand-ins | Section 2, thing-model.md §5 |
 | Money baseline (17 Nov) | Every tariff is converted to a slotted tariff; all costs are energy per slot × price per slot | Section 2, Phase T |
 | `site` vs the home thing | Fold `site` into the home thing | Phase 1.3b |
 

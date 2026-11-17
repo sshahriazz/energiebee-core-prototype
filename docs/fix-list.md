@@ -38,7 +38,7 @@ Rule: **same model, same numbers.** The golden test and the fingerprint must mat
 |---|---|---|---|---|---|---|
 | R19 | Every configuration table has valid time and record time | ⬜ | review, plan rule 5 | test that lists configuration tables and fails on one without them | the test | |
 | D1 | Every rule a trigger or constraint enforces is also checked by a code test | ⬜ | plan rule 7 | tests for every constraint (done as part of P3/P6) | the tests | |
-| R3 | Stable `uid` (ULID) beside integer ids: homes, devices, connections now; things and points when they arrive | ⬜ | plan rule 6 | migration + insert paths | uids unique and never change on rebuild or copy | |
+| R3 | Stable `uid` (UUIDv7, created by the hub for devices) beside integer ids: homes, devices, connections now; things and points when they arrive | ⬜ | plan rule 6 | migration + insert paths | uids unique and never change on rebuild or copy | |
 | R4 | `home_id` on every series, fact, slot and raw row, set on insert | ⬜ | plan rule 6 | migration + insert paths | no row without a home (shared context excepted) | |
 | R9 | Rebuilds stop when they converge (same carried-over battery stock); shared changes (tariff, region) queued once and expanded in batches; method version per layer | ⬜ | plan 3.2, T.5 | `src/core/build.js` `processQueue`, `rebuild_queue` | partial = full rebuild; a converged rebuild touches fewer days | |
 | R12 | Fixture homes per topology (no battery, AC-coupled battery, two inverters, export only, EV, heat pump), each with a fingerprint | ⬜ | plan 0.3 | `test/fixtures/`, tests | each fixture's fingerprint test | |

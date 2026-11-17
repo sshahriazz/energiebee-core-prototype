@@ -24,7 +24,7 @@ Findings are in two groups:
 
 **R3. Ids must be stable outside this database.**
 - *Problem:* things get integer ids from SQLite. The local hub in `architecture-v3.md` will need to create things while offline, and a move to Postgres or a merge of databases renumbers them.
-- *Fix:* every thing, point and connection gets a **`uid`** (a ULID: unique, time-sortable) beside its integer id. The integer is internal. The uid is the identity used by APIs, hubs and exports. → Section 3, Phase 1.1.
+- *Fix:* every thing, point and connection gets a **`uid`** (a UUIDv7: unique, time-sortable; the hub creates it for the devices it discovers) beside its integer id. The integer is internal. The uid is the identity used by APIs, hubs and exports. → Section 3, Phase 1.1.
 
 **R4. Every row must know its home, even after `site` is folded into the home thing.**
 - *Problem:* facts have no home column today (`docs/database.md` lists this as open), and in the thing model a fact's home sits four joins away (fact → series → point → thing → home). That breaks deleting a home, access checks, per-home queries and, later, Postgres partitioning and row-level security.

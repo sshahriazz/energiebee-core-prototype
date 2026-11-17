@@ -179,6 +179,7 @@ export async function createClient({ username, password, baseUrl = null, fetch: 
 
   // One request at a time, in order, each at least minIntervalMs after the previous one ended and
   // not before the persisted next_allowed_at.
+  // One request at a time: a promise chain, not awaited here on purpose.
   const serial = (fn) => { const r = tail.then(fn); tail = r.then(() => {}, () => {}); return r; };
   async function send(pathAndQuery, init) {
     const path = pathAndQuery.split('?')[0];
@@ -231,9 +232,10 @@ export async function createClient({ username, password, baseUrl = null, fetch: 
     note('Tariffscanner token obtained', { valid_s: Math.round(ttl / 1000) });
     return token.value;
   }
-  async function getToken() {
-    if (token && clk().now() < token.refreshAt) return await Promise.resolve(token.value);
-    pendingAuth ??= await authenticate().finally(() => { pendingAuth = null; });
+  // One token request at a time: callers that arrive while it runs share its promise (not awaited here, on purpose).
+  function getToken() {
+    if (token && clk().now() < token.refreshAt) return Promise.resolve(token.value);
+    pendingAuth ??= authenticate().finally(() => { pendingAuth = null; });
     return pendingAuth;
   }
 

@@ -265,6 +265,7 @@ export async function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn =
   const note = (msg, fields = {}) => { try { log(scrub(msg), JSON.parse(scrub(JSON.stringify(fields)))); } catch { /* a logger never breaks a sync */ } };
   let lastAt = -Infinity;
   let tail = Promise.resolve();
+  // One request at a time: a promise chain, not awaited here on purpose.
   const serial = (fn) => { const r = tail.then(fn); tail = r.then(() => {}, () => {}); return r; };
 
   // Refused before any call: the reason, or null when the call may be sent. Pure on the state.

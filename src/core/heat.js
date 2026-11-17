@@ -48,6 +48,7 @@ import { bindingsFor } from './inputs.js';
 import { loadPricing, priceOver } from './pricing.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, slotLength, slotFloor, todMinute, eachSlotOverlap } from './time.js';
+import { filterAsync } from './async.js';
 
 export const HEAT_METHOD_VERSION = 'heat-v1';
 export const HEAT_DEFAULTS = Object.freeze({ baseTempC: 15.5, holdMaxS: 3 * 3600 });
@@ -134,11 +135,10 @@ async function build(siteId, fromDate, toDate, opts) {
   if (toDate > today) toDate = today;
 
   // The home's heating series (and the metrics' time roles), one chosen per metric and subject below.
-  const series = (await db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.time_role, so.code AS source
+  const series = await filterAsync((await db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.time_role, so.code AS source
       FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
       WHERE m.domain = 'heating' AND ${subjectSql} ORDER BY se.id`).all(String(siteId), siteId))
-    .filter((s) => USED[s.metric])
-    .filter(boundTo(siteId, asOf, dayBounds(tz, fromDate)[0], dayBounds(tz, toDate)[1]));
+    .filter((s) => USED[s.metric]), boundTo(siteId, asOf, dayBounds(tz, fromDate)[0], dayBounds(tz, toDate)[1]));
   const empty = { days: 0, slots: 0, ...(opts.dryRun ? { rows: [] } : {}) };
   if (!series.length) return { ...empty, skipped: 'no heating series' };
   // Never before the home's first heating fact (as known at asOf).

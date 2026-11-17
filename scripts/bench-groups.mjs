@@ -32,6 +32,6 @@ console.log(`built ${homes} homes, ${rows} slot rows in ${(performance.now() - t
 const time = async (label, fn) => { const a = performance.now(); const r = await fn(); console.log(`${label}: ${(performance.now() - a).toFixed(0)} ms`); return r; };
 await time('groupDay (one day)', async () => await groupDay(g, '2025-06-10'));
 await time('groupRange (30 days)', async () => await groupRange(g, '2025-06-01', '2025-06-30'));
-const year = time(`groupRange (${days} days)`, async () => await groupRange(g, '2025-01-01', '2025-12-31'));
+const year = await time(`groupRange (${days} days)`, async () => await groupRange(g, '2025-01-01', '2025-12-31'));
 console.log(`year total currencies: ${year.currencies.join(', ')}; days: ${year.days.length}`);
 fs.rmSync(dir, { recursive: true, force: true });

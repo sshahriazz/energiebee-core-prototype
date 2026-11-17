@@ -422,8 +422,8 @@ function payloadCache({ budget = Infinity } = {}) {
   return { get };
 }
 const RANGE_PAYLOAD_BUDGET = 2.5e6;
-function publishedValue(pc, fact, meta, tz) {
-  const p = pc.get(fact.raw_id, { optional: true });
+async function publishedValue(pc, fact, meta, tz) {
+  const p = await pc.get(fact.raw_id, { optional: true });
   if (!p?.r) return { missing: fact.raw_id == null ? 'the fact cites no payload' : `payload ${fact.raw_id} not found` };
   if (p.deferred) return { deferred: true, missing: `payload ${p.r.id} not opened in this request (a range opens at most ${RANGE_PAYLOAD_BUDGET / 1e6} MB of payloads not read before; they are kept, so asking again goes on)` };
   const L = LOOKUPS[p.r.source];
@@ -1062,7 +1062,7 @@ async function slotChecks(cx, row) {
   }
 
   out.push(...forecastChecks(cx, row));
-  out.push(...lookupChecks(cx, row));
+  out.push(...await lookupChecks(cx, row));
   out.push(unitSanity(cx, row));
   return out;
 }
@@ -1087,7 +1087,7 @@ async function priceChecks(cx, row) {
       const rate = p.rate;
       if (!rate) { missing.push(`no price row covers ${hhmmOf(tz, p.from)}`); continue; }
       if (rate.raw_id == null) { missing.push(`this price was not downloaded from a supplier (it was typed in or generated for the demo), so there is no saved copy to compare with`); continue; }
-      const pl = cx.pc.get(rate.raw_id);
+      const pl = await cx.pc.get(rate.raw_id);
       let pub = null;
       if (!pl?.r) pub = { missing: `the saved copy (${rate.raw_id}) was not found` };
       else if (pl.text == null) pub = { missing: `the saved copy (${rate.raw_id}) is not on this computer` };
@@ -1230,7 +1230,7 @@ function forecastChecks(cx, row) {
 }
 
 // Published values: every fact behind the slot looked up in its own payload.
-function lookupChecks(cx, row) {
+async function lookupChecks(cx, row) {
   const { tz } = cx;
   const slot = row.slot_start;
   const F = cx.at(slot);
@@ -1250,7 +1250,7 @@ function lookupChecks(cx, row) {
   for (const [source, list] of bySource) {
     const L = LOOKUPS[source];
     const who = providerWords(source);
-    const res = list.map(({ f, meta }) => ({ f, meta, pub: L ? publishedValue(cx.pc, f, meta, tz) : { unsupported: true } }));
+    const res = await mapAsync(list, async ({ f, meta }) => ({ f, meta, pub: L ? await publishedValue(cx.pc, f, meta, tz) : { unsupported: true } }));
     const found = res.filter((x) => x.pub.value !== undefined);
     const mism = found.filter((x) => x.pub.value == null ? x.f.value != null : Math.abs(Number(x.pub.value) - x.f.value) > 1e-9);
     const missing = res.filter((x) => x.pub.value === undefined);
@@ -1285,7 +1285,7 @@ async function rederiveChecks(cx, rawIds) {
     const source = sourceOf.get(id);
     if (!source) continue;
     if (!['tariffscanner', 'tounify'].includes(source)) { (skipped.get(source) || skipped.set(source, []).get(source)).push(id); continue; }
-    const p = cx.pc.get(id);
+    const p = await cx.pc.get(id);
     const res = await rederive(p.r, p.json ? p.body : null, cx.site);
     const d = res.diffs[0];
     out.push(ck('rederive', 'source', `A saved reply from ${providerWords(source)} reads the same again`, how,
@@ -1324,7 +1324,7 @@ function unitSanity(cx, row) {
 // ── Day checks ──
 const NODE_CHECK = { solar: ['solar_kwh', 'solar'], load: ['load_kwh', 'load'], import: ['grid_import_kwh', 'imp'], export: ['grid_export_kwh', 'exp'], charge: ['battery_charge_kwh', 'chg'], discharge: ['battery_discharge_kwh', 'dis'] };
 const NODE_DAY_WORDS = { solar: 'solar', load: 'house use', import: 'grid import', export: 'grid export', charge: 'battery charging', discharge: 'battery discharging' };
-function dayChecks(cx, date) {
+async function dayChecks(cx, date) {
   const { tz, slotS } = cx;
   const noun = slotNoun(slotS);
   const out = [];
@@ -1350,7 +1350,7 @@ function dayChecks(cx, date) {
         explanation: `The inverter's own total for ${NODE_DAY_WORDS[k]} on ${day} was ${fx(counter?.value, 1)} kWh; its five-minute readings add up to ${fx(integrated, 2)} kWh, so the readings are scaled by ${fx(c.measured, 3)}. ${c.status === 'pass' ? 'That is a normal difference.' : 'That is a bigger difference than usual.'}`, fit: c.measured }));
     if (counter) {
       const meta = cx.meta.get(counter.series_id);
-      const pub = meta ? publishedValue(cx.pc, counter, meta, tz) : { missing: 'unknown series' };
+      const pub = meta ? await publishedValue(cx.pc, counter, meta, tz) : { missing: 'unknown series' };
       const ok = pub.value != null && Math.abs(counter.value - pub.value) <= 1e-9;
       out.push(ck(`source_lookup:sunsynk_daily:${k}`, 'source', `The daily total matches what the inverter sent (${NODE_DAY_WORDS[k]})`, `We opened the saved copy of the inverter's daily report and checked the total for ${day}.`,
         { source_value: pub.value ?? null, our_value: counter.value, unit: 'kWh', diff: pub.value != null ? counter.value - pub.value : null, tolerance: 1e-9,
@@ -1444,7 +1444,7 @@ export async function validate(q) {
     const cx = await loadCx(site, date, date, { slot: slotQ });
     const row = cx.rows.find((r) => r.slot_start === slotQ);
     if (!row) throw notFound(`no stored ${noun} at ${slotQ}`);
-    checks = [...await slotChecks(cx, row), ...await rederiveChecks(cx, rawIdsOf(cx, [row])), ...dayChecks(cx, date)];
+    checks = [...await slotChecks(cx, row), ...await rederiveChecks(cx, rawIdsOf(cx, [row])), ...await dayChecks(cx, date)];
     scope = { slot: slotQ, local_time: localTime(site.timezone, slotQ), date };
   } else {
     if (q.from == null && q.to == null) throw bad('give slot=<epoch> or from=&to= (dates)');
@@ -1454,7 +1454,7 @@ export async function validate(q) {
     for (const date of daysBetween(from, to)) {
       const rows = cx.rows.filter((r) => r.local_date === date);
       if (!rows.length) continue;
-      checks.push(...aggregate(await flatMapAsync(rows, async (r) => await slotChecks(cx, r)), date, noun, site.timezone, cx.slotS), ...dayChecks(cx, date).map((c) => ({ ...c, date })));
+      checks.push(...aggregate(await flatMapAsync(rows, async (r) => await slotChecks(cx, r)), date, noun, site.timezone, cx.slotS), ...(await dayChecks(cx, date)).map((c) => ({ ...c, date })));
     }
     checks.push(...await rederiveChecks(cx, rawIdsOf(cx, cx.rows)));
     scope = { from, to };

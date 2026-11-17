@@ -202,15 +202,15 @@ await test('an inverter connected after the home was first built fetches the ful
   await conn(id, 'sunsynk');
   const prep = P.adapterFor('sunsynk').roles.inverter.steps[0].prepare;
   const ctx = { siteId: id, tz: 'Europe/London', today: '2026-10-28', firstRun: false };
-  assert.equal(prep(ctx).dates.length, INITIAL_DAYS + 1, 'never synced: the full window');
+  assert.equal((await prep(ctx)).dates.length, INITIAL_DAYS + 1, 'never synced: the full window');
   await db.prepare("UPDATE connection SET last_success_at = ? WHERE site_id = ? AND provider = 'sunsynk'").run(Date.UTC(2026, 9, 28, 9) / 1000, id);
-  assert.deepEqual(prep(ctx).dates, ['2026-10-27', '2026-10-28'], 'synced before: yesterday and today');
+  assert.deepEqual((await prep(ctx)).dates, ['2026-10-27', '2026-10-28'], 'synced before: yesterday and today');
 });
 
 await test('a sync asked for while one runs (a provider connected meanwhile) runs again as soon as it ends, once', async () => {
   const id = await gbHome('Asked twice');
   const runs = async () => await db.prepare('SELECT id, finished_at FROM sync_run WHERE site_id = ? ORDER BY id').all(id);
-  const first = await syncSite(id);
+  const first = syncSite(id);   // not awaited: the next two calls arrive while it runs
   assert.deepEqual(await syncSite(id), { skipped: 'already running', queued: true });
   assert.deepEqual(await syncSite(id), { skipped: 'already running', queued: true }, 'asked again: still one more run, not two');
   await first;

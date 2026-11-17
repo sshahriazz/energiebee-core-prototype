@@ -20,7 +20,10 @@ import pg from 'pg';
 import { copySqliteToPostgres } from '../scripts/sqlite-to-postgres.js';
 
 const root = path.resolve(import.meta.dirname, '..');
-try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides the URLs */ }
+// Tests never read .env (its credentials and tariff codes would leak into them): only TEST_DATABASE_URL is taken from it.
+if (!process.env.TEST_DATABASE_URL) {
+  try { process.env.TEST_DATABASE_URL = /^TEST_DATABASE_URL=(.+)$/m.exec(fs.readFileSync(path.join(root, '.env'), 'utf8'))?.[1]?.trim() || ''; } catch { /* no .env */ }
+}
 
 // The server to create test databases on: TEST_DATABASE_URL (any database on it; default the local
 // server's postgres database). Test databases take its user, password, host and port.

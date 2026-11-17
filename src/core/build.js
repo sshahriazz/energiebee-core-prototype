@@ -29,16 +29,16 @@ import { carbonSubjectOf } from './carbon-series.js';
 import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
 import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
-import { bindingsFor, sourceAt, holdSOf } from './inputs.js';
+import { bindingsFor, sourceAt, holdSOf, FILL_MAX_S } from './inputs.js';
 import { siteAt } from './versions.js';
 import { loadPricing, priceOver, fixedOver } from './pricing.js';
 import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { buildHeat, hasHeatingSeries } from './heat.js';
-import { reduceAsync, flatMapAsync, mapAsync } from "./async.js";
+import { reduceAsync, flatMapAsync, mapAsync, someAsync } from "./async.js";
 
-export const METHOD_VERSION = 'v3-stock-follows-charge';
+export const METHOD_VERSION = 'v4-gaps-filled';
 
 const NODES = {
   solar: ['solar_w', 'solar_kwh'], load: ['load_w', 'load_kwh'], imp: ['grid_import_w', 'grid_import_kwh'],
@@ -47,24 +47,36 @@ const NODES = {
 
 // Forward-hold integration: each sample holds for up to its source's hold time (r.hold, default 5 minutes). Energy is split at slot boundaries.
 // `fl` maps an instant to the start of its slot (the home's grid), slotS is the slot length.
-function integrate(readings, slotS, fl) {
+// A gap of up to FILL_MAX_S between two samples is filled on the straight line between them: `filled` (s per slot), not
+// `cover`, so coverage stays what was measured and the slot is flagged INTERPOLATED. Without the fill, the daily counter's
+// fit would spread a missing hour's energy over every measured slot of the day (25 October 2026: a missing hour of night
+// charging became +45 % on every other charging slot and none in the hour itself). Longer gaps stay empty.
+export function integrate(readings, slotS, fl) {
   const energy = new Map();
   const cover = new Map();
+  const filled = new Map();
+  const spread = (from, to, powerAt, into) => {
+    for (let s = from; s < to;) {
+      const slot = fl(s);
+      const e = Math.min(to, slot + slotS);
+      energy.set(slot, (energy.get(slot) || 0) + ((powerAt(s) + powerAt(e)) / 2) * (e - s) / 3.6e6);
+      into.set(slot, (into.get(slot) || 0) + (e - s));
+      s = e;
+    }
+  };
   for (let i = 0; i < readings.length; i++) {
     const r = readings[i];
     if (r.value == null) continue;
     const hold = r.hold ?? 300;
-    const next = readings[i + 1]?.ts ?? r.ts + hold;
+    const nx = readings[i + 1];
+    const next = nx?.ts ?? r.ts + hold;
     const end = r.ts + Math.min(next - r.ts, hold);
-    for (let s = r.ts; s < end;) {
-      const slot = fl(s);
-      const e = Math.min(end, slot + slotS);
-      energy.set(slot, (energy.get(slot) || 0) + (r.value * (e - s)) / 3.6e6);
-      cover.set(slot, (cover.get(slot) || 0) + (e - s));
-      s = e;
+    spread(r.ts, end, () => r.value, cover);
+    if (nx && nx.value != null && nx.ts > end && nx.ts - end <= FILL_MAX_S) {
+      spread(end, nx.ts, (t) => r.value + ((nx.value - r.value) * (t - r.ts)) / (nx.ts - r.ts), filled);
     }
   }
-  return { energy, cover };
+  return { energy, cover, filled };
 }
 
 const groupBy = (rows, key) => rows.reduce((m, r) => (m.get(r[key]) ? m.get(r[key]).push(r) : m.set(r[key], [r]), m), new Map());
@@ -188,13 +200,14 @@ async function build(siteId, fromDate, toDate, opts) {
   // Sum the units' slot energies; a slot is covered as far as its least covered active unit is.
   const sumUnits = (parts) => {
     if (parts.length === 1) return parts[0].it;
-    const energy = new Map(); const cover = new Map();
+    const energy = new Map(); const cover = new Map(); const filled = new Map();
     for (const { it } of parts) for (const [slot, v] of it.energy) energy.set(slot, (energy.get(slot) || 0) + v);
+    for (const { it } of parts) for (const [slot, v] of it.filled) filled.set(slot, Math.max(filled.get(slot) || 0, v));
     for (const slot of new Set(parts.flatMap(({ it }) => [...it.cover.keys()]))) {
       const active = parts.filter(({ bd }) => slot + slotS > bd.from && slot < bd.to);
       cover.set(slot, active.length ? Math.min(...active.map(({ it }) => it.cover.get(slot) || 0)) : 0);
     }
-    return { energy, cover };
+    return { energy, cover, filled };
   };
   const nodeRows = Object.fromEntries(await mapAsync(Object.entries(NODES), async ([k, [w]]) => [k, await mapAsync(bound5, async (bd) => ({ bd, rows: await unitRows(bd, w) }))]));
   const aligned = Object.fromEntries(Object.keys(NODES).map((k) => [k, sumUnits(nodeRows[k].map(({ bd, rows }) => ({ bd, it: integrate(rows, slotS, fl) })))]));
@@ -228,7 +241,14 @@ async function build(siteId, fromDate, toDate, opts) {
     if (!act.length || hit.some((f) => !f)) return undefined;
     return hit.length === 1 ? hit[0] : { ...hit[0], value: hit.reduce((t, f) => t + f.value, 0) };
   };
-  const hasInverter = (readings.get(powerIds.solar) || []).length > 0 || (readings.get(powerIds.imp) || []).length > 0;
+  // A home with an inverter is one whose inverter has ever reported power (as known at asOf), not one with readings in
+  // this window: an empty day is built the same way (partial coverage, the inverter's source in its lineage) whatever
+  // range the build covers, so a partial rebuild gives the rows of a full one. A binding alone proves nothing: every home
+  // gets the default inverter binding.
+  const reported = async (metric) => someAsync(bound5, async (bd) => Boolean(await db.prepare(`SELECT 1 FROM reading WHERE series_id = ? AND ts >= ? AND ts < ? AND ${inForce()} LIMIT 1`)
+    .get(await unitSeries(bd, metric), Math.max(bd.from, Number.MIN_SAFE_INTEGER), Math.min(bd.to, Number.MAX_SAFE_INTEGER))));
+  const hasInverter = (readings.get(powerIds.solar) || []).length > 0 || (readings.get(powerIds.imp) || []).length > 0
+    || await reported(NODES.solar[0]) || await reported(NODES.imp[0]);
 
   // Meters in use, with their details (gas unit and zone), as known at the moment being built.
   // Tariff-only meters carry a tariff but no readings: the .env tariff codes ('env'), a tariff the user picked from a
@@ -436,6 +456,7 @@ async function build(siteId, fromDate, toDate, opts) {
       else if (hasInverter && coverage > 0) { exp = e('exp', slot); expSrc = 'clamp'; if (meterFacts.meter_export) q |= QUALITY.FALLBACK; }
       const missing = imp == null;
       if (hasInverter && coverage < 0.8) q |= QUALITY.PARTIAL;
+      if (hasInverter && Object.keys(NODES).some((k) => aligned[k].filled.get(slot) > 0)) q |= QUALITY.INTERPOLATED;
 
       // What the sources supplied beyond exports and charging. The house used the
       // inverter's measured load; the rest is the inverter's own conversion and

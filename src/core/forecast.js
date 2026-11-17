@@ -325,8 +325,8 @@ async function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
       AND state != 'missing' AND home IS NOT NULL ORDER BY slot_start`).all(siteId, now - 7 * 86400, now, slotS);
   // Lower bound from the series' longest period (spanOf): the same rows, without reading the whole history.
   const span = await spanOf([fcS]);
-  const facts = hh.length ? await db.prepare(`SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND issued_at <= end_ts - ? ORDER BY start_ts`)
-      .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ...(span == null ? [] : [hh[0].slot_start - span]), ACCURACY_LEAD) : [];
+  const facts = hh.length ? await db.prepare(`SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND end_ts > ? AND start_ts < ?${span == null ? '' : ' AND start_ts >= ?'} AND issued_at <= end_ts - ? AND issued_at <= ? ORDER BY start_ts`)
+      .all(fcS, hh[0].slot_start, hh[hh.length - 1].slot_start + slotS, ...(span == null ? [] : [hh[0].slot_start - span]), ACCURACY_LEAD, now) : [];
   const rows = [];
   let lo = 0;
   for (const h of hh) {
@@ -365,10 +365,11 @@ async function scoreAccuracy(siteId, tz, now, slotS = SLOT) {
   };
 }
 
-export async function forecastSite(siteId, hours = 48) {
+// `at`: the moment the forecast is made (default now). The history before it (as recorded now), forecasts issued by then, and the accuracy of forecasts scored up to it (a backtest, or a test on a frozen fixture).
+export async function forecastSite(siteId, hours = 48, { at = nowSec() } = {}) {
   const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   const tz = site.timezone;
-  const now = nowSec();
+  const now = at;
   // The home's slot grid; slots per nominal day (48 at 30 minutes) for "next 24 hours".
   const slotS = slotLength(site);
   const phase = slotPhase(tz, slotS, now);

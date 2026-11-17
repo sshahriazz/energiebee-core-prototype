@@ -8,6 +8,8 @@
 //    with the reason; a replay of one of them is refused, never guessed.
 //  - Quarantined receipts (a body of a shape nobody knows) are never replayed: they produced no facts on purpose.
 //  - Facts are change-only, so replay is idempotent: a second run writes nothing.
+//  - A receipt's readings are what the current parser reads from it: a reading it gave before and no longer gives (a parser
+//    fix that moved a sample to another instant) is withdrawn, and the time it covered is rebuilt.
 //  - Replay does not add refusal records: the receipts were refused (or not) when first read, and a replay that would refuse
 //    again reports it in its own answer instead of piling up duplicate rows in channel_reject.
 //  - A receipt whose file is gone (retention) is counted, not an error.
@@ -15,8 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, tx, dataDir, rolledBack } from '../db/db.js';
 import { ingestObservations } from './channels.js';
-import { forgetSeriesCache } from './facts.js';
-import { nowSec } from './time.js';
+import { forgetSeriesCache, markDirty } from './facts.js';
+import { nowSec, recordedNow } from './time.js';
 import { parseDay, parseMonth, parseFlow } from '../adapters/sunsynk.js';
 import { mapAsync } from "./async.js";
 
@@ -177,7 +179,7 @@ export async function replay(siteId, { source = null, days = 30, ids = null, lim
   const d = Number(days);
   if (!Number.isFinite(d) || d <= 0 || d > 3650) throw new ReplayError(400, 'bad_number', 'days must be between 1 and 3650', 'days');
   const { receipts, capped } = await receiptsOf(site.id, { source, days: d, ids, limit, now });
-  const out = { dryRun, source, days: d, receipts: receipts.length, observations: 0, written: 0, forecasts: 0, derived: 0, rejected: 0, unmapped: [], stillRejected: [], parseErrors: 0, missingFiles: 0, deviceMissing: 0, capped, bySource: {} };
+  const out = { dryRun, source, days: d, receipts: receipts.length, observations: 0, written: 0, forecasts: 0, derived: 0, rejected: 0, withdrawn: 0, unmapped: [], stillRejected: [], parseErrors: 0, missingFiles: 0, deviceMissing: 0, capped, bySource: {} };
 
   // Parse first (outside any transaction: file reads and dynamic imports), then ingest all in one transaction.
   const parsed = [];
@@ -196,8 +198,19 @@ export async function replay(siteId, { source = null, days = 30, ids = null, lim
   const run = async () => {
     const maxReject = (await db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM channel_reject').get()).m;
     const unmapped = new Set();
+    const before = recordedNow();
     for (const { r, obs, deviceId } of parsed) {
       const res = await ingestObservations(site.id, r.source, obs, r.id, { deviceId, now: r.fetched_at });
+      const instants = [...new Set(obs.filter((o) => o.ts != null).map((o) => o.ts))];
+      if (instants.length) {
+        const gone = await db.prepare(`UPDATE reading SET superseded_at = ? WHERE raw_id = ? AND superseded_at IS NULL AND recorded_at < ? AND NOT (ts = ANY(?::bigint[]))
+          RETURNING ts`).all(recordedNow(), r.id, before, instants);
+        if (gone.length) {
+          out.withdrawn += gone.length;
+          const ts = gone.map((g) => g.ts);
+          await markDirty(site.id, Math.min(...ts) - 3600, Math.max(...ts) + 3600, `replay: ${r.source} receipt ${r.id} no longer gives ${gone.length} reading(s)`);
+        }
+      }
       out.written += res.written; out.forecasts += res.forecasts; out.derived += res.derived; out.rejected += res.rejected;
       out.bySource[r.source].written += res.written; out.bySource[r.source].rejected += res.rejected;
       for (const p of res.unmapped) unmapped.add(`${r.source}:${p}`);

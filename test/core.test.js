@@ -25,6 +25,9 @@ const dev = async (kind) => await db.prepare('SELECT * FROM device WHERE site_id
 const check = async (date, code) => await db.prepare('SELECT status, detail FROM check_result WHERE site_id = ? AND local_date = ? AND check_code = ?').get(SITE, date, code);
 const rebuildFrom = async (date, why) => { await markDirty(SITE, dayBounds((await site()).timezone, date)[0], nowSec(), why); return await processQueue(); };
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
+// The forecast tests run as at the end of the fixture's data: the fixture is frozen while the clock moves on, and
+// the forecast learns from the days before the moment it is made.
+const asAt = async () => (await db.prepare("SELECT MAX(slot_start + dur_s) AS t FROM site_hh WHERE site_id = ? AND state != 'missing'").get(SITE)).t;
 
 await test('a partial rebuild gives exactly the rows of a full rebuild', { skip }, async () => {
   const hash = async () => {
@@ -113,21 +116,21 @@ async function quartzAt(ratio) {
   const qS = await seriesId('site', SITE, 'solar_kwh', 'quartz');
   await db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(qS);
   let made = 0;
-  // Whole days that made solar: the fixture ends on a fixed day while the real clock moves on, and a rebuild up to
-  // today adds empty days after the data that would otherwise count as "the last two days".
-  for (const d of (await filterAsync(await days(), async (x) => x < await today() && (await hh(x)).length >= 46 && (await hh(x)).reduce((t, r) => t + (r.solar || 0), 0) > 1)).slice(-2)) {
+  const at = await asAt(); const atDate = localDate(s.timezone, at);
+  // The last two whole days before the forecast is made that made solar.
+  for (const d of (await filterAsync(await days(), async (x) => x < atDate && (await hh(x)).length >= 46 && (await hh(x)).reduce((t, r) => t + (r.solar || 0), 0) > 1)).slice(-2)) {
     const rows = await hh(d);
     made += rows.reduce((a, r) => a + (r.solar || 0), 0);
     await putForecasts(qS, rows[0].slot_start - 6 * 3600, rows.map((r) => ({ start: r.slot_start, end: r.slot_start + SLOT, value: (r.solar || 0) / ratio })));
   }
-  const now = nowSec(); const s0 = now - (now % SLOT);
-  await putForecasts(qS, now, Array.from({ length: 96 }, (_, i) => ({ start: s0 + i * SLOT, end: s0 + (i + 1) * SLOT, value: 0.2 })));
+  const s0 = at - (at % SLOT);
+  await putForecasts(qS, at, Array.from({ length: 96 }, (_, i) => ({ start: s0 + i * SLOT, end: s0 + (i + 1) * SLOT, value: 0.2 })));
   return made;
 }
 
 await test('Quartz is calibrated when it is close to what the panels make', { skip }, async (t) => {
   if (await quartzAt(0.8) < 2) return t.skip('not enough solar in the last two days');
-  const q = (await forecastSite(SITE, 48)).model.solar;
+  const q = (await forecastSite(SITE, 48, { at: await asAt() })).model.solar;
   assert.equal(q.path, 'quartz');
   assert.equal(q.quartz.calibration.applied, true);
   assert.ok(near(q.quartz.calibration.factor, 0.8, 0.01));
@@ -136,7 +139,7 @@ await test('Quartz is calibrated when it is close to what the panels make', { sk
 await test('Quartz is not used when it is far from what the panels make', { skip }, async (t) => {
   // 3× off is outside 0.5–2×; the stand-in forecast (made ÷ 3) must itself reach the 2 kWh needed to compare.
   if (await quartzAt(3) < 6) return t.skip('not enough solar in the last two days');
-  const q = (await forecastSite(SITE, 48)).model.solar;
+  const q = (await forecastSite(SITE, 48, { at: await asAt() })).model.solar;
   assert.equal(q.quartz.calibration.applied, false);
   assert.match(q.quartz.calibration.reason, /outside 0\.5–2/);
   assert.notEqual(q.path, 'quartz');
@@ -145,13 +148,14 @@ await test('Quartz is not used when it is far from what the panels make', { skip
 await test('forecast accuracy is scored from forecasts made at least 12 hours ahead', { skip }, async (t) => {
   const homeS = await seriesId('site', SITE, 'load_kwh', 'core_forecast');
   await db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(homeS);
-  const scored = (await filterAsync(await days(), async (x) => x < await today())).slice(-3);
+  const at = await asAt(); const atDate = localDate((await site()).timezone, at);
+  const scored = (await days()).filter((x) => x < atDate).slice(-3);
   if (scored.length < 1) return t.skip('no whole day yet');
   for (const d of scored) {
     const rows = await hh(d);
     await putForecasts(homeS, rows[0].slot_start - 13 * 3600, rows.map((r) => ({ start: r.slot_start, end: r.slot_start + SLOT, value: (r.home || 0) * 1.1 })));
   }
-  const a = (await forecastSite(SITE, 48)).accuracy;
+  const a = (await forecastSite(SITE, 48, { at })).accuracy;
   assert.ok(a && a.samples > 0, 'scored');
   assert.ok(near(a.dailyErrorPct, 10, 1), `daily error ${a.dailyErrorPct}% for a forecast 10% high`);
 });

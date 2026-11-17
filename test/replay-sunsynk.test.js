@@ -160,3 +160,20 @@ await test('sources that cannot replay are refused with their reason; the routes
   assert.equal(await nLog(), logs + 1);
   assert.ok(R.NOT_REPLAYABLE.octopus_meter && R.canReplay('sunsynk_live') && !R.canReplay('open_meteo') && R.whyNot('open_meteo').length > 10);
 });
+
+await test('a reading the receipt no longer gives (a parser fix moved it) is withdrawn by a replay, and its time is rebuilt', { skip }, async () => {
+  // Stand-in for a reading the old parser put at the wrong instant: one load sample 5 minutes after the receipt's last record.
+  const loads = await facts('load_w');
+  const wrongTs = loads[loads.length - 1].ts + 300;
+  await db.prepare('INSERT INTO reading (series_id, ts, value, quality, recorded_at, raw_id) VALUES (?, ?, ?, 0, ?, ?)')
+    .run(await seriesId('site', SITE, 'load_w', 'sunsynk_5min'), wrongTs, 999, Date.now() - 60_000, rawId);
+  assert.equal((await facts('load_w')).length, 5);
+  const dry = await R.replay(SITE, { source: 'sunsynk_5min', days: 30 });
+  assert.equal(dry.withdrawn, 1, 'a dry run says what would be withdrawn');
+  assert.equal((await facts('load_w')).length, 5, 'and keeps it');
+  const real = await R.replay(SITE, { source: 'sunsynk_5min', days: 30, dryRun: false });
+  assert.equal(real.withdrawn, 1);
+  assert.deepEqual((await facts('load_w')).map((r) => r.ts), loads.map((r) => r.ts), 'the receipt\'s own readings stay');
+  assert.ok(await db.prepare("SELECT 1 FROM rebuild_queue WHERE site_id = ? AND reason LIKE 'replay: sunsynk_5min receipt%' AND from_ts <= ? AND to_ts > ?").get(SITE, wrongTs, wrongTs));
+  assert.equal((await R.replay(SITE, { source: 'sunsynk_5min', days: 30, dryRun: false })).withdrawn, 0, 'a second run withdraws nothing');
+});

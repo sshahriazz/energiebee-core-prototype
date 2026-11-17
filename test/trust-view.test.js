@@ -1,9 +1,9 @@
-// The trust view (src/core/trust.js) on an untouched copy of data/core.db.
+// The trust view (src/core/trust.js) on a copy of the frozen GB fixture.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
-const skip = hasLive ? false : 'no data/core.db (run the server once first)';
+const skip = hasLive ? false : 'no GB fixture (test/fixtures/gb-home.json.gz)';
 if (hasLive) await useDb({ snapshot: true });
 const m = { ...(await import('../src/db/db.js')), ...(await import('../src/core/build.js')), ...(await import('../src/core/time.js')) };
 const SITE = 1;
@@ -14,7 +14,9 @@ const fullBuild = async (reason) => await m.buildSite(SITE, await firstDay(), aw
 await test('trust view: one cell per half-hour per feed, states add up, and every day balances', { skip }, async () => {
   const { trustFor } = await import('../src/core/trust.js');
   await fullBuild('test');
-  const to = await today(); const from = m.addDays(to, -6);
+  // The last week of the fixture's data: the fixture is frozen while the clock moves on.
+  const end = (await m.db.prepare("SELECT MAX(local_date) AS d FROM site_hh WHERE site_id = ? AND state != 'missing'").get(SITE)).d;
+  const to = end; const from = m.addDays(to, -6);
   const t = await trustFor(SITE, from, to);
   for (const f of t.feeds) assert.equal(f.cells.length, t.slots, f.key);
   const h = t.headline;

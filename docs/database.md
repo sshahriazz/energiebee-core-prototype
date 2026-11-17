@@ -1,6 +1,6 @@
 # EnergieBee core: the database
 
-Prototype `energiebee-core-prototype` · PostgreSQL through Prisma 7 (SQLite through `node:sqlite` until 16 November 2026) · Build method `v3-stock-follows-charge` · Prepared by Technext · 16 October 2026, storage section 17 November 2026
+Prototype `energiebee-core-prototype` · PostgreSQL through Prisma 7 (SQLite through `node:sqlite` until 16 November 2026) · Build method `v4-gaps-filled` (`v3-stock-follows-charge` until 17 November 2026; sections 6–9 were measured with v3) · Prepared by Technext · 16 October 2026, storage section 17 November 2026
 
 ## Storage engine: PostgreSQL (from 17 November 2026)
 

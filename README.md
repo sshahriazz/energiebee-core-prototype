@@ -154,9 +154,9 @@ provider API ─► adapter ─► raw payload ─► facts ─► build engine 
   VAT, and VAT is added from a dated table. This is because Octopus restates
   VAT-inclusive history at today's rate; domestic electricity has been 0% since
   1 Oct 2026.
-- **Build engine** (`src/core/build.js`, method `v3-stock-follows-charge`) runs five steps
+- **Build engine** (`src/core/build.js`, method `v4-gaps-filled`) runs five steps
   for each UTC half-hour:
-  1. **Align**: integrate the 5-minute samples and fit them to the inverter's daily counters.
+  1. **Align**: integrate the 5-minute samples, fill gaps of up to 2 hours on the line between the samples either side (flagged interpolated), and fit them to the inverter's daily counters.
   2. **Reconcile**: the smart meter is used over the clamp when both exist. Home use is calculated from the energy balance.
   3. **Allocate**: split energy into the seven flows (solar to home, battery or grid; battery to home or grid; grid to home or battery).
   4. **Price**: take the rate for each slot, add VAT and the standing charge share, and value battery stock first in, first out.

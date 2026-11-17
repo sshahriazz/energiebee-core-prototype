@@ -33,6 +33,10 @@ export async function holdSOf(source, fallback = 300) {
   try { return JSON.parse((await db.prepare('SELECT traits FROM source WHERE code = ?').get(source))?.traits || '{}').holdS ?? fallback; } catch { return fallback; }
 }
 
+// The longest gap between two instant power samples that is filled on the straight line between them (build.js integrate,
+// planner-read.js holdAccumulate). Longer gaps stay empty.
+export const FILL_MAX_S = 2 * 3600;
+
 // The source in force at an instant, or null.
 export const sourceAt = (bindings, ts) => bindings.find((b) => ts >= b.from && ts < b.to)?.source ?? null;
 

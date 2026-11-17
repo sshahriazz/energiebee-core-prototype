@@ -57,7 +57,7 @@ import { inputsProvenance } from './provenance.js';
 import { siteAt } from './versions.js';
 import { attributeAt, attributesAt } from './attributes.js';
 import { devicesAt } from './devices.js';
-import { bindingsFor, holdSOf } from './inputs.js';
+import { bindingsFor, holdSOf, FILL_MAX_S } from './inputs.js';
 import { settingsAt } from './settings.js';
 import { localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, offsetSeconds } from './time.js';
 import { mapAsync, flatMapAsync, filterAsync } from "./async.js";
@@ -213,10 +213,22 @@ const groupBySeries = (rows) => rows.reduce((m, r) => (m.get(r.series_id) ? m.ge
 
 // Instants: each sample holds until the next one, at most holdS (the build's forward hold). Per
 // step: ws (value x seconds), cover (s), the last value whose hold reaches into the step, quality,
-// and the energy pieces (value x seconds / 3.6e6, accumulated as build.js integrate does).
+// and the energy pieces (value x seconds / 3.6e6, accumulated as build.js integrate does). A gap of up to FILL_MAX_S between
+// two samples adds energy on the straight line between them (filled, s per step; flagged interpolated), as the build does;
+// it is not coverage, so held means and last values never come from a fill.
 function holdAccumulate(rows, g, holdS) {
   const { n, stepS: S } = g;
-  const out = { ws: new Float64Array(n), cover: new Float64Array(n), energy: new Float64Array(n), last: new Array(n).fill(null), q: new Int32Array(n) };
+  const out = { ws: new Float64Array(n), cover: new Float64Array(n), energy: new Float64Array(n), filled: new Float64Array(n), last: new Array(n).fill(null), q: new Int32Array(n) };
+  const fill = (from, to, powerAt) => {
+    let s = Math.max(from, g.start);
+    const e = Math.min(to, g.end);
+    let k = Math.floor((s - g.start) / S);
+    while (s < e) {
+      const be = Math.min(e, g.start + (k + 1) * S);
+      out.energy[k] += ((powerAt(s) + powerAt(be)) / 2) * (be - s) / 3.6e6; out.filled[k] += be - s; out.q[k] |= QUALITY.INTERPOLATED;
+      s = be; k++;
+    }
+  };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     if (r.value == null) continue;
@@ -232,6 +244,8 @@ function holdAccumulate(rows, g, holdS) {
       out.last[k] = r.value; out.q[k] |= r.quality ?? 0;
       s = be; k++;
     }
+    const nx = rows[i + 1];
+    if (nx && nx.value != null && nx.ts > end && nx.ts - end <= FILL_MAX_S) fill(end, nx.ts, (t) => r.value + ((nx.value - r.value) * (t - r.ts)) / (nx.ts - r.ts));
   }
   return out;
 }
@@ -419,11 +433,11 @@ async function fittedDays(siteId, tz, counter, dates, stepS, today, bounds, know
   let h;
   if (parts.length === 1) h = parts[0].h;
   else {
-    h = { energy: new Float64Array(g.n), cover: new Float64Array(g.n), q: new Int32Array(g.n) };
+    h = { energy: new Float64Array(g.n), cover: new Float64Array(g.n), filled: new Float64Array(g.n), q: new Int32Array(g.n) };
     for (let k = 0; k < g.n; k++) {
       const t = g.start + k * stepS;
       const act = parts.filter(({ bd }) => t + stepS > bd.from && t < bd.to);
-      for (const { h: u } of act) { h.energy[k] += u.energy[k]; h.q[k] |= u.q[k]; }
+      for (const { h: u } of act) { h.energy[k] += u.energy[k]; h.q[k] |= u.q[k]; h.filled[k] = Math.max(h.filled[k], u.filled[k]); }
       h.cover[k] = act.length ? Math.min(...act.map(({ h: u }) => u.cover[k])) : 0;
     }
   }
@@ -448,7 +462,7 @@ async function fittedDays(siteId, tz, counter, dates, stepS, today, bounds, know
       const f = totalRow.value / sum;
       if (f > 0.6 && f < 1.6 && date < today) fit = f;
     }
-    for (let k = k0; k < k1; k++) if (h.cover[k] > 0) values[k] = h.energy[k] * fit;
+    for (let k = k0; k < k1; k++) if (h.cover[k] > 0 || h.filled[k] > 0) values[k] = h.energy[k] * fit;
     days.push({ date, start: ds, end: de, hours: (de - ds) / 3600, totalKwh: totalRow?.value ?? null, integratedKwh: sum, fit, fitted: fit !== 1, today: date >= today, k0, k1 });
   }
   return { g, values, cover: h.cover, q: h.q, days, powerId, dailyId, powerSources: powers.map((x) => x.bd.source), dailySources: dailies.map((x) => x.bd.source) };

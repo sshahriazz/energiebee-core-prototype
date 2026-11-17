@@ -189,21 +189,24 @@ await test('counterDifferenceSeries: 5-minute power fitted to the daily total, r
   close((await pr.counterDifferenceSeries(site, 'load_kwh', a24, a25, { asOf })).days[0].fit, 1.1, 'the first version, as known then');
   close((await pr.counterDifferenceSeries(site, 'load_kwh', a24, a25, { asOf: T('2026-10-27T10:00:00Z') * 1000 })).days[0].fit, 1.2, 'the revision');
 
-  // Clocks go forward: 23 hours, 276 steps; a gap stays null and the counter stays flat over it;
-  // a total outside 0.6-1.6 times the samples is not used to fit (the build rule).
+  // Clocks go forward: 23 hours, 276 steps; a total outside 0.6-1.6 times the samples is not used to fit (the build rule).
+  // A gap of up to 2 hours is filled on the line between its samples (flagged interpolated, as the build); a longer one
+  // stays null and the counter stays flat over it.
   const [a27, b27] = dayBounds(TZ, '2027-03-27'); const [a28, b28] = dayBounds(TZ, '2027-03-28'); const [, b29] = dayBounds(TZ, '2027-03-29');
-  const gapFrom = T('2027-03-29T10:00:00Z');
-  await putR(load, every5(a27, b29, (t) => (t >= gapFrom && t < gapFrom + 1800 ? undefined : 1200)));
-  await putI(daily, [{ start: a27, end: b27, value: 57.6 }, { start: a28, end: b28, value: 30.36 }, { start: b28, end: b29, value: (288 - 6) * 0.1 * 1.1 }]);
+  const gapFrom = T('2027-03-29T10:00:00Z'); const longFrom = T('2027-03-29T14:00:00Z');
+  const inGap = (t) => (t >= gapFrom && t < gapFrom + 1800) || (t >= longFrom && t < longFrom + 3 * 3600);
+  await putR(load, every5(a27, b29, (t) => (inGap(t) ? undefined : 1200)));
+  await putI(daily, [{ start: a27, end: b27, value: 57.6 }, { start: a28, end: b28, value: 30.36 }, { start: b28, end: b29, value: (288 - 36) * 0.1 * 1.1 }]);
   const asOf2 = T('2027-03-30T12:00:00Z') * 1000;
   const short = await pr.counterDifferenceSeries(site, 'load_kwh', a28, b28, { asOf: asOf2 });
   assert.deepEqual([short.n, short.resets, short.days[0].hours], [276, [0], 23]);
   close(short.cumulative[275], 30.36);
   assert.deepEqual([(await pr.counterDifferenceSeries(site, 'load_kwh', a27, b27, { asOf: asOf2 })).days[0].fitted], [false]);
   const gap = await pr.counterDifferenceSeries(site, 'load_kwh', b28, b29, { asOf: asOf2 });
-  const g0 = (gapFrom - b28) / 300;
-  assert.deepEqual(gap.values.slice(g0, g0 + 6), new Array(6).fill(null));
-  close(gap.cumulative[g0 + 5], gap.cumulative[g0 - 1], 'flat over the gap');
+  const g0 = (gapFrom - b28) / 300; const l0 = (longFrom - b28) / 300;
+  for (let k = g0; k < g0 + 6; k++) { close(gap.values[k], 0.11, `filled step ${k}`); assert.ok(gap.quality[k] & 4, 'flagged interpolated'); }
+  assert.deepEqual(gap.values.slice(l0, l0 + 36), new Array(36).fill(null));
+  close(gap.cumulative[l0 + 35], gap.cumulative[l0 - 1], 'flat over the 3-hour gap');
   close(gap.values[0], 0.11);
   await assert.rejects(async () => await pr.counterDifferenceSeries(site, 'gas_kwh', a28, b28), /no daily counter/);
 });

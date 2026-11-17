@@ -6,7 +6,7 @@ import { useDb } from './helpers.js';
 await useDb();
 const { db } = await import('../src/db/db.js');
 const { normaliseDay } = await import('../src/adapters/sunsynk.js');
-for (const id of [1, 2]) await db.prepare("INSERT INTO site (id, name, created_at) VALUES (?, 'dst', 0)").run(id);   // channels belong to a home
+for (const id of [1, 2, 3]) await db.prepare("INSERT INTO site (id, name, created_at) VALUES (?, 'dst', 0)").run(id);   // channels belong to a home
 const { seriesId, readReadings } = await import('../src/core/facts.js');
 const { isoUtc } = await import('../src/core/time.js');
 
@@ -29,6 +29,19 @@ await test('clocks go back: the repeated hour is kept as BST then GMT', async ()
   assert.equal(at(12), '2026-10-25T00:00:00Z');                // first 01:00 = BST
   assert.equal(at(24), '2026-10-25T01:00:00Z');                // second 01:00 = GMT
   assert.equal(at(299), '2026-10-25T23:55:00Z');
+});
+
+await test('clocks go back, the hour sent once (as Sunsynk does): it is the later, GMT run', async () => {
+  // Sunsynk keys the day by clock time, so the repeat overwrites the first run: 25 October 2026 came as 279 records.
+  const t = [];
+  for (let h = 0; h < 24; h++) for (let m = 0; m < 60; m += 5) t.push([h, m]);
+  const rows = await day(3, '2026-10-25', t);
+  assert.equal(rows.length, 288);
+  const at = (i) => isoUtc(rows.find((r) => r.value === i).ts);
+  assert.equal(at(11), '2026-10-24T23:55:00Z');                // 00:55 BST
+  assert.equal(at(12), '2026-10-25T01:00:00Z');                // the only 01:00 = GMT; the BST run (00:00-00:55 UTC) has no samples
+  assert.equal(at(23), '2026-10-25T01:55:00Z');
+  assert.equal(at(24), '2026-10-25T02:00:00Z');
 });
 
 await test('clocks go forward: times in the missing hour are dropped, not stacked', async () => {

@@ -138,7 +138,9 @@ await test('a home switched to 15-minute slots: forecast, trust, comparison and 
       assert.ok(c.some((x) => x.field === 'slot_s' && x.from === 1800 && x.to === 900));
       assert.ok(!c.some((x) => x.field.startsWith('slots_')), JSON.stringify(c));
     }
-    const f = await forecastSite(SITE, 24);
+    // Made as at the end of the fixture's data, so there is 15-minute history to learn from.
+    const at = (await db.prepare("SELECT MAX(slot_start + dur_s) AS t FROM site_hh WHERE site_id = ? AND state != 'missing'").get(SITE)).t;
+    const f = await forecastSite(SITE, 24, { at });
     assert.equal(f.slots.length, 96);
     assert.ok(f.slots.every((x, i) => x.slot_start % 900 === 0 && (i === 0 || x.slot_start - f.slots[i - 1].slot_start === 900)));
     assert.ok(f.next24h.home > 0, 'house use is forecast from the 15-minute history');

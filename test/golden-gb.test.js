@@ -1,6 +1,7 @@
 // Safety net for the slot/currency/region work: the GB home's numbers must not move.
 // The golden file holds a hash and totals of a dry-run build "as known at" a fixed moment, so later
-// data never changes the answer. Regenerate only on purpose: UPDATE_GOLDEN=1 npm test -- test/golden-gb.test.js
+// data never changes the answer. Regenerate only on purpose, at the same moment: UPDATE_GOLDEN=1 node --test test/golden-gb.test.js
+// (UPDATE_GOLDEN=now moves the moment to now).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,7 +9,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { useDb, hasLive } from './helpers.js';
 
-const skip = hasLive ? false : 'no data/core.db (run the server once first)';
+const skip = hasLive ? false : 'no GB fixture (test/fixtures/gb-home.json.gz)';
 if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { buildSite } = await import('../src/core/build.js');
@@ -38,8 +39,8 @@ async function snapshot(asOf) {
 }
 
 await test('GB home: a dry-run build as known at a fixed moment is unchanged', { skip }, async () => {
-  if (process.env.UPDATE_GOLDEN === '1') {
-    const asOf = nowSec();
+  if (process.env.UPDATE_GOLDEN === '1' || process.env.UPDATE_GOLDEN === 'now') {
+    const asOf = process.env.UPDATE_GOLDEN === 'now' || !fs.existsSync(file) ? nowSec() : JSON.parse(fs.readFileSync(file, 'utf8')).asOf;
     fs.writeFileSync(file, JSON.stringify({ asOf, ...await snapshot(asOf) }, null, 1));
     return;
   }

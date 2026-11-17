@@ -90,13 +90,18 @@ export function parseDay(tz, date, json) {
   const obs = [];
   for (const info of infos) {
     if (!DAY_LABELS[info.label]) continue;     // e.g. "Micro Inverter" is not modelled yet
-    // Records come in time order on the plant's clock. When clocks go back, 01:00-01:59
-    // appears twice: the first run is the earlier instant (BST), the repeat the later (GMT).
-    // Each record takes the first instant after the previous record's.
+    // Records come in time order on the plant's clock. When clocks go back, 01:00-01:59 happens
+    // twice. Sent twice, the first run is the earlier instant (BST), the repeat the later (GMT): each
+    // record takes the first instant after the previous record's. Sent once, it is the later run:
+    // Sunsynk keys the day by clock time, so the repeat overwrote the first (25 October 2026: 279
+    // records for the 25-hour day, one 01:xx run whose end matches the meter's 01:30-02:00 GMT).
+    const seen = new Map();
+    for (const rec of info.records || []) seen.set(String(rec.time), (seen.get(String(rec.time)) || 0) + 1);
     let prev = -Infinity;
     for (const rec of info.records || []) {
       const [hh, mm] = String(rec.time).split(':').map(Number);
-      const ts = localToUtcAll(tz, y, m, d, hh, mm).find((t) => t > prev);
+      const at = localToUtcAll(tz, y, m, d, hh, mm).filter((t) => t > prev);
+      const ts = at.length > 1 && seen.get(String(rec.time)) === 1 ? at[at.length - 1] : at[0];
       if (ts == null) continue;                // a time that does not exist (clocks went forward) or out of order
       prev = ts;
       const v = rec.value === null || rec.value === '' ? null : Number(rec.value);

@@ -6,11 +6,11 @@
 // first knew a tariff) the first version is used and flagged `approximate` (its recorded_at): the
 // values before it were not kept. Without any version (a database where delta 022 has not run) the
 // current row is used, flagged the same way.
-import { db } from '../db/db.js';
+import { db, columnsOf as tableColumns } from '../db/db.js';
 
 const atClause = (ms) => `recorded_at <= ${Math.floor(ms)} AND (superseded_at IS NULL OR superseded_at > ${Math.floor(ms)})`;
 const META = new Set(['site_id', 'tariff_id', 'recorded_at', 'superseded_at']);
-const columnsOf = async (table) => (await db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all()).map((c) => c.name).filter((c) => !META.has(c));
+const columnsOf = async (table) => (await tableColumns(table)).filter((c) => !META.has(c));
 
 // The version of one row in force at atMs, else its first one (flagged), else null.
 async function versionAt(table, idCol, id, atMs) {

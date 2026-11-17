@@ -37,7 +37,7 @@ export async function createUser({ name, username = null, email = null, role = '
 }
 
 export async function giveHome(userId, siteId) {
-  await db.prepare('INSERT OR IGNORE INTO user_site (user_id, site_id, recorded_at) VALUES (?, ?, ?)').run(userId, siteId, Date.now());
+  await db.prepare('INSERT INTO user_site (user_id, site_id, recorded_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(userId, siteId, Date.now());
 }
 
 // ───────────── PINs and sessions ─────────────

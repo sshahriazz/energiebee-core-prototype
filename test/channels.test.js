@@ -7,7 +7,7 @@ import { useDb, hasLive } from './helpers.js';
 import { mapAsync } from "../src/core/async.js";
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { buildSite } = await import('../src/core/build.js');
 const { bind } = await import('../src/core/inputs.js');
@@ -51,14 +51,14 @@ await test('a vendor in kW with signed points plugs in as channel rows and build
     if (series.battery_soc_pct.has(ts)) obs.push({ point: 'soc', ts, value: series.battery_soc_pct.get(ts) });
   }
   obs.push({ point: 'firmware_temp', ts: at[0], value: 41 });   // a point nobody mapped
-  const out = ingestObservations(SITE, 'acme_kw', obs);
+  const out = await ingestObservations(SITE, 'acme_kw', obs);
   assert.deepEqual(out.unmapped, ['firmware_temp'], 'an unmapped point is reported, not dropped silently');
   assert.equal(out.rejected, 0);
   assert.ok(out.written > 1000);
 
   const totals = await db.prepare(`SELECT f.start_ts, f.end_ts, f.value, m.code AS metric FROM interval_fact f JOIN series s ON s.id = f.series_id JOIN source so ON so.id = s.source_id JOIN metric m ON m.id = s.metric_id
     WHERE so.code = 'sunsynk_daily' AND s.subject_id = ? AND f.superseded_at IS NULL`).all(String(SITE));
-  ingestObservations(SITE, 'acme_totals', totals.map((t) => ({ point: dailyPoints[t.metric], start: t.start_ts, end: t.end_ts, value: t.value })));
+  await ingestObservations(SITE, 'acme_totals', totals.map((t) => ({ point: dailyPoints[t.metric], start: t.start_ts, end: t.end_ts, value: t.value })));
 
   const site = await db.prepare('SELECT timezone FROM site WHERE id = ?').get(SITE);
   const [dStart] = dayBounds(site.timezone, days[Math.floor(days.length / 2)]);
@@ -83,7 +83,7 @@ await test('a vendor in kW with signed points plugs in as channel rows and build
 await test('a value outside the channel range is rejected and kept in channel_reject, never written', { skip }, async () => {
   const before = (await db.prepare("SELECT COUNT(*) n FROM reading r JOIN series s ON s.id = r.series_id JOIN source so ON so.id = s.source_id WHERE so.code = 'acme_kw'").get()).n;
   const ts = 1900000000;
-  const out = ingestObservations(SITE, 'acme_kw', [{ point: 'pv_kw', ts, value: 500000 }, { point: 'pv_kw', ts: ts + 300, value: 'abc' }, { point: 'pv_kw', ts: ts + 600, value: 4 }]);
+  const out = await ingestObservations(SITE, 'acme_kw', [{ point: 'pv_kw', ts, value: 500000 }, { point: 'pv_kw', ts: ts + 300, value: 'abc' }, { point: 'pv_kw', ts: ts + 600, value: 4 }]);
   assert.equal(out.rejected, 2);
   assert.equal(out.written, 1);
   const rows = (await db.prepare('SELECT reason FROM channel_reject WHERE ts >= ? ORDER BY ts').all(ts)).map((r) => r.reason);
@@ -103,7 +103,7 @@ await test('a vendor that reports every 15 minutes declares its hold in source t
   assert.equal(await holdSOf('acme_slow'), 900);
   await defineChannel(SITE, 'acme_slow', 'pv_w', 'solar_w', { min: 0, max: 60000 });
   const real = (await realSeries('sunsynk_5min', 'solar_w')).filter((r) => r.ts >= a && r.ts < b && r.ts % 900 === 0);
-  ingestObservations(SITE, 'acme_slow', real.map((r) => ({ point: 'pv_w', ts: r.ts, value: r.value })));
+  await ingestObservations(SITE, 'acme_slow', real.map((r) => ({ point: 'pv_w', ts: r.ts, value: r.value })));
   await bind(SITE, 'inverter_5min', 'acme_slow', { from: a, reason: 'test: 15-minute vendor' });
   const slow = solar(await run());
   assert.ok(baseKwh > 1, 'there is solar that day');

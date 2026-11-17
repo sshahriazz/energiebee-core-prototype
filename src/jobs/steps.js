@@ -193,7 +193,7 @@ async function syncOctopusMeters(ctx, a, creds) {
   const consumption = await syncOctopusConsumption(site, creds, meterFrom, nowSec(), { gasFrom });
   // Only tariffs in force somewhere in the window; the account history goes back years.
   const tariffs = await db.prepare(`SELECT DISTINCT t.* FROM tariff t JOIN tariff_agreement a ON a.tariff_id = t.id
-                              WHERE a.site_id = ? AND a.superseded_at IS NULL AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
+                              WHERE a.site_id = ? AND a.superseded_at IS NULL AND a.valid_from < ? AND COALESCE(a.valid_to, 9000000000) > ?`).all(siteId, nowSec() + 2 * 86400, octoFrom - 86400);
   let rates = 0;
   for (const t of tariffs) rates += await tariffRates(ctx, t, octoFrom - 86400, nowSec() + 2 * 86400);
   // Intelligent Octopus Go tariffs that publish day/night prices give no times. The window
@@ -382,8 +382,8 @@ registerAdapter('manual', {
     tariff_prices: {
       steps: [],
       idle: 'typed in by the user or installer: nothing to fetch',
-      status: (d, site) => (d.prepare(`SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id
-          WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.origin = 'user' LIMIT 1`).get(site.id)
+      status: async (d, site) => ((await d.prepare(`SELECT 1 FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id
+          WHERE a.site_id = ? AND a.superseded_at IS NULL AND t.origin = 'user' LIMIT 1`).get(site.id))
         ? { status: 'ok', reason: 'tariff typed in' } : { status: 'skipped', reason: 'no tariff typed in yet' }),
     },
   },

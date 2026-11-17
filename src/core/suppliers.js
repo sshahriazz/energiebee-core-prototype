@@ -32,16 +32,16 @@ export async function ensureSupplier({ provider, country, externalId, name = nul
   }
   const display = String(name ?? ext).trim() || ext;
   const code = supplierCode(display) ?? supplierCode(ext);
-  await db.prepare('INSERT OR IGNORE INTO supplier (country, code, name, recorded_at) VALUES (?, ?, ?, ?)').run(country, code, display, Date.now());
+  await db.prepare('INSERT INTO supplier (country, code, name, recorded_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING').run(country, code, display, Date.now());
   const s = await db.prepare('SELECT * FROM supplier WHERE country = ? AND code = ?').get(country, code);
-  await db.prepare('INSERT OR IGNORE INTO supplier_alias (supplier_id, provider, country, external_id) VALUES (?, ?, ?, ?)').run(s.id, provider, country, ext);
+  await db.prepare('INSERT INTO supplier_alias (supplier_id, provider, country, external_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING').run(s.id, provider, country, ext);
   return s;
 }
 
 /** Link a tariff to the supplier a source names; returns the supplier. Changing a tariff's supplier is allowed (a corrected name). */
 export async function linkSupplier(tariffId, { provider, country, externalId, name = null }) {
   const s = await ensureSupplier({ provider, country, externalId, name });
-  await db.prepare('UPDATE tariff SET supplier_id = ? WHERE id = ? AND IFNULL(supplier_id, -1) <> ?').run(s.id, tariffId, s.id);
+  await db.prepare('UPDATE tariff SET supplier_id = ? WHERE id = ? AND COALESCE(supplier_id, -1) <> ?').run(s.id, tariffId, s.id);
   return s;
 }
 

@@ -57,9 +57,10 @@ export function localTime(tz, ts) {
   return `${p.y}-${pad(p.m)}-${pad(p.d)}T${pad(p.hh)}:${pad(p.mm)}${sign}${pad(Math.floor(a / 3600))}:${pad(Math.floor((a % 3600) / 60))}`;
 }
 
-// The series metadata (metric, source, subject) of a list of ids, read-only.
+// The series metadata (metric, source, subject) of a list of ids, read-only. Only real series ids are looked up: the
+// build's trace also names its own groupings ('power:solar', 'daily:load', 'soc'), which are not series.
 export async function seriesMeta(ids) {
-  const list = [...new Set(ids.filter((x) => x != null))];
+  const list = [...new Set(ids.filter((x) => Number.isInteger(x)))];
   if (!list.length) return new Map();
   return new Map((await db.prepare(`SELECT se.id, se.subject_kind, se.subject_id, m.code AS metric, m.unit, so.code AS source FROM series se
       JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id WHERE se.id IN (${list.map(() => '?').join(',')})`).all(...list)).map((r) => [r.id, r]));

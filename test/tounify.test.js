@@ -13,7 +13,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const stray = [];
 // Any request not sent to the fake tounify is refused and recorded; Open-Meteo and RTE answer empty (the
 // sync of a French home runs its weather and carbon steps too).
@@ -28,7 +28,7 @@ globalThis.fetch = async (url) => {
 for (const k of ['TOUNIFY_API_KEY', 'TOUNIFY_DEV', 'TOUNIFY_MAX_REQUESTS_DAY', 'TOUNIFY_MAX_COMPANIES', 'TOUNIFY_MAX_TARIFFS', 'TOUNIFY_MAX_NEW_PER_ENDPOINT_DAY',
   'OCTOPUS_API_KEY', 'OCTOPUS_ACCOUNT_NUMBER', 'SUNSYNK_USERNAME', 'SUNSYNK_PASSWORD', 'TARIFFSCAN_USERNAME', 'TARIFFSCAN_PASSWORD', 'IMPORT_TARIFF_CODE']) delete process.env[k];
 
-const { db, applyDelta } = await import('../src/db/db.js');
+const { db } = await import('../src/db/db.js');
 const TU = await import('../src/adapters/tounify.js');
 const { dayBounds, localDate } = await import('../src/core/time.js');
 const P = await import('../src/core/providers.js');
@@ -574,19 +574,14 @@ await test('registry: tounify is listed for FR and NL only (an EU tariff source,
     ['NL', 'tariff_catalogue', 'shared', 1, 0, 1, 'provider'], ['NL', 'tariff_prices', 'home', 1, 0, 1, 'provider'],
   ]);
   assert.equal(await count("SELECT COUNT(*) n FROM market_provider WHERE adapter = 'tounify' AND market_code NOT IN ('FR', 'NL')"), 0, 'no GB (nor DE, BE, ES) row');
-  // Delta 011 on a database an older seed wrote: the placeholder rows are switched on, once; an operator's later switch-off is kept.
-  const delta = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'db', 'deltas', '011-tounify.sql'), 'utf8');
+  // An operator's switch-off is kept by the seed that runs at every start; the note follows the adapter code.
   await db.prepare("UPDATE market_provider SET enabled = 0, note = 'adapter not built: tounify retail tariffs' WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").run();
-  await db.prepare("DELETE FROM schema_delta WHERE name = '011-tounify'").run();
-  applyDelta(delta);
-  assert.equal((await db.prepare("SELECT enabled FROM market_provider WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").get()).enabled, 1);
-  await db.prepare("UPDATE market_provider SET enabled = 0 WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").run();
-  applyDelta(delta);
-  assert.equal((await db.prepare("SELECT enabled FROM market_provider WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").get()).enabled, 0, 'never again');
+  await seedProviders(db);
+  assert.equal((await db.prepare("SELECT enabled FROM market_provider WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").get()).enabled, 0, 'the switch-off is kept');
   await db.prepare("UPDATE market_provider SET enabled = 1 WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").run();
   await seedProviders(db);   // what every open does next: the note refreshed, the switches kept
   assert.equal((await db.prepare("SELECT note FROM market_provider WHERE adapter = 'tounify' AND market_code = 'FR' AND role = 'tariff_prices'").get()).note, TOUNIFY_NOTE);
-  assert.equal(await count("SELECT COUNT(*) n FROM pragma_table_info('tariff') WHERE name = 'taxes_in_price' AND dflt_value = '0'"), 1);
+  assert.equal(await count("SELECT COUNT(*) n FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tariff' AND column_name = 'taxes_in_price' AND column_default = '0'"), 1);
 });
 
 await test('gate: without TOUNIFY_DEV the plan skips tounify as unlicensed and POST connections refuses it; TOUNIFY_DEV with a production token changes nothing', async () => {
@@ -834,7 +829,6 @@ await test('the Dutch picker asks no connection size: delta 082 removed the ques
   const PK = await import('../src/core/tariff-picker.js');
   assert.deepEqual((await PK.questionsFor('NL', 'dynamic')).map((q) => q.field), []);
   assert.deepEqual((await PK.questionsFor('FR', 'two_rate')).map((q) => q.field), ['contracted_kva', 'off_peak_hours'], 'France unchanged');
-  assert.ok(await db.prepare("SELECT 1 FROM schema_delta WHERE name = '082-nl-fuse-question'").get());
 });
 
 await test('the picker\'s price preview: a tariff selected is priced once for the home\'s postal code (with VAT), kept, never agreed; a dynamic one shows today\'s range', async () => {

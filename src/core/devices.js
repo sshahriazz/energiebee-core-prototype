@@ -20,11 +20,10 @@ const atClause = (alias, ms, from = 'recorded_at', to = 'superseded_at') => {
 // row (triggers device_kind_known_*); checkDeviceKind says so first, in words.
 // The action codes are those the kind row lists plus any device_action (delta 030, the authority
 // on actions) defines for the kind, so the two registries cannot drift apart.
-const hasActions = async () => !!await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_action'").get();
 const parseKind = async (r) => {
   if (!r) return r;
   const listed = JSON.parse(r.action_codes);
-  const defined = await hasActions() ? (await db.prepare('SELECT action FROM device_action WHERE device_kind = ? ORDER BY action').all(r.kind)).map((a) => a.action) : [];
+  const defined = (await db.prepare('SELECT action FROM device_action WHERE device_kind = ? ORDER BY action').all(r.kind)).map((a) => a.action);
   return { ...r, attribute_keys: JSON.parse(r.attribute_keys), action_codes: [...listed, ...defined.filter((a) => !listed.includes(a))] };
 };
 export const deviceKind = async (kind) => await parseKind(await db.prepare('SELECT * FROM device_kind WHERE kind = ?').get(kind));
@@ -63,7 +62,7 @@ export async function deviceAttrsAt(deviceId, atMs = null) {
 }
 
 // Devices in use at `atMs` (null = now), each with its details as known then.
-export async function devicesAt(siteId, where = '1', atMs = null) {
+export async function devicesAt(siteId, where = 'TRUE', atMs = null) {
   const inUse = atMs == null ? 'retired_at IS NULL'
     : `(recorded_at IS NULL OR recorded_at <= ${Math.floor(atMs)}) AND (retired_at IS NULL OR retired_at > ${Math.floor(atMs)})`;
   return await mapAsync((await db.prepare(`SELECT * FROM device WHERE site_id = ? AND ${inUse} AND ${where}`).all(siteId)), async (d) => {

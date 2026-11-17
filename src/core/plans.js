@@ -297,8 +297,10 @@ const SCORED = ['import_kwh', 'export_kwh', 'pv_kwh', 'load_kwh', 'cost_minor', 
 // is rebuilt: a score is replaced, never duplicated. Returns the number of scores written.
 export async function scorePlan(runId, { finalOnly = true, now = Date.now() } = {}) {
   const rows = await db.prepare(`SELECT * FROM v_plan_vs_actual WHERE plan_run_id = ? ${finalOnly ? "AND state = 'final'" : ''}`).all(runId);
-  const ins = db.prepare(`INSERT OR REPLACE INTO plan_score (plan_run_id, slot_start, device_id, metric, predicted, actual, error, actual_source, scored_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'site_hh', ?)`);
+  const ins = db.prepare(`INSERT INTO plan_score (plan_run_id, slot_start, device_id, metric, predicted, actual, error, actual_source, scored_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'site_hh', ?)
+    ON CONFLICT (plan_run_id, slot_start, (COALESCE(device_id, 0)), metric) DO UPDATE SET predicted = excluded.predicted, actual = excluded.actual,
+      error = excluded.error, actual_source = excluded.actual_source, scored_at = excluded.scored_at`);
   let n = 0;
   await tx(async () => {
         for (const r of rows) {
@@ -319,7 +321,7 @@ export async function scorePlan(runId, { finalOnly = true, now = Date.now() } = 
 // what-if run, what would have run): the slot ends after the run was made and starts before it
 // was superseded. Kept forever. Every other slot of a run older than keepDays is deleted.
 const IN_FORCE = `r.status <> 'error' AND (ps.slot_start + r.slot_s) * 1000 > r.created_at
-  AND ps.slot_start * 1000 < IFNULL(r.superseded_at, 9000000000000000)`;
+  AND ps.slot_start * 1000 < COALESCE(r.superseded_at, 9000000000000000)`;
 
 /**
  * Thin old plan slots: keep the in-force slots of every run forever, delete the other slots of

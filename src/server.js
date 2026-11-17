@@ -12,7 +12,7 @@ import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
-import { seriesId, readReadings, spanColumn, markDirty } from './core/facts.js';
+import { seriesId, readReadings, markDirty } from './core/facts.js';
 import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
 import { fixedChargeMicro } from './core/tariff-expand.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
@@ -235,7 +235,7 @@ app.post('/api/sites/:id/slot', async (req, res) => {
   const s = await site(req);
   const slotS = Number(req.body?.slot_s);
   let r;
-  try { r = setSlotLength(s.id, slotS); } catch (err) { throw badRequest(err.message); }
+  try { r = await setSlotLength(s.id, slotS); } catch (err) { throw badRequest(err.message); }
   const rebuilt = r.queued && req.body?.rebuild !== false ? (await processQueue()).filter((x) => x.siteId === s.id) : [];
   res.json({ ...r, rebuilt });
 });
@@ -276,11 +276,11 @@ app.post('/api/sites/:id/rebuild', async (req, res) => {
   const s = await site(req);
   const first = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(s.id)).d;
   if (!first) return res.json({ days: 0 });
-  const before = await db.prepare('SELECT ROUND(SUM(total_cost), 6) AS c, ROUND(SUM(home), 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
+  const before = await db.prepare('SELECT ROUND(SUM(total_cost)::numeric, 6) AS c, ROUND(SUM(home)::numeric, 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
   const t0 = Date.now();
   const r = await buildSite(s.id, first, localDate(s.timezone, nowSec()), { reason: 'full rebuild requested' });
   await optimizeDb();
-  const after = await db.prepare('SELECT ROUND(SUM(total_cost), 6) AS c, ROUND(SUM(home), 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
+  const after = await db.prepare('SELECT ROUND(SUM(total_cost)::numeric, 6) AS c, ROUND(SUM(home)::numeric, 6) AS h, COUNT(*) AS n FROM site_hh WHERE site_id = ?').get(s.id);
   res.json({ ...r, ms: Date.now() - t0, method: METHOD_VERSION, before, after });
 });
 
@@ -316,8 +316,8 @@ app.get('/api/sites/:id/now', async (req, res) => {
   let carbon = carbonSubject != null ? await db.prepare(
       `SELECT f.value, f.issued_at FROM forecast_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
      WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.start_ts <= ? AND f.end_ts > ?
-       ${await spanColumn() ? 'AND f.start_ts >= ? - IFNULL(se.max_span_s, 9000000000)' : ''}
-     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(carbonSubject, slot, slot, ...(await spanColumn() ? [slot] : [])) : null;
+       AND f.start_ts >= ? - COALESCE(se.max_span_s, 9000000000)
+     ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get(carbonSubject, slot, slot, slot) : null;
   // No forecast (RTE publishes none): the latest published value, if it is at most an hour old.
   if (!carbon && carbonSubject != null) carbon = await db.prepare(
       `SELECT f.value FROM interval_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
@@ -348,25 +348,25 @@ app.get('/api/sites/:id/timeline', async (req, res) => {
 
 async function summarise(s, from, to, before = 9000000000) {
   const t = await db.prepare(`SELECT COUNT(*) AS slots,
-      SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
+      SUM((state = 'final')::int) AS final, SUM((state = 'provisional')::int) AS provisional, SUM((state = 'missing')::int) AS missing,
       SUM(solar) AS solar, SUM(grid_import) AS grid_import, SUM(grid_export) AS grid_export, SUM(battery_charge) AS battery_charge,
       SUM(battery_discharge) AS battery_discharge, SUM(home) AS home, SUM(ev) AS ev, SUM(gas) AS gas,
       SUM(solar_to_home) AS solar_to_home, SUM(solar_to_battery) AS solar_to_battery, SUM(solar_to_grid) AS solar_to_grid,
       SUM(battery_to_home) AS battery_to_home, SUM(battery_to_grid) AS battery_to_grid, SUM(grid_to_home) AS grid_to_home, SUM(grid_to_battery) AS grid_to_battery,
       SUM(grid_to_home_cost) AS grid_to_home_cost, SUM(grid_to_battery_cost) AS grid_to_battery_cost, SUM(battery_to_home_cost) AS battery_to_home_cost,
       SUM(solar_to_loss) AS solar_to_loss, SUM(battery_to_loss) AS battery_to_loss, SUM(grid_to_loss) AS grid_to_loss, SUM(loss_cost) AS loss_cost,
-      SUM(CASE WHEN loss > 0 THEN loss END) AS inverter_loss,
+      SUM((CASE WHEN loss > 0 THEN loss END)::int) AS inverter_loss,
       SUM(export_credit) AS export_credit, SUM(standing_cost) AS standing_cost, SUM(gas_cost) AS gas_cost,
-      SUM(total_cost) AS total_cost, SUM(grid_only_cost) AS grid_only_cost, SUM(saving) AS saving, SUM(rate_found = 0) AS unpriced,
+      SUM(total_cost) AS total_cost, SUM(grid_only_cost) AS grid_only_cost, SUM(saving) AS saving, SUM((rate_found = 0)::int) AS unpriced,
       SUM(carbon_g) AS carbon_g, SUM(carbon_saved_g) AS carbon_saved_g,
-      SUM(CASE WHEN battery_to_home_cost IS NOT NULL THEN battery_to_home END) AS battery_to_home_costed,
+      SUM((CASE WHEN battery_to_home_cost IS NOT NULL THEN battery_to_home END)::int) AS battery_to_home_costed,
       SUM(solar_to_home * ${IMP}) AS solar_home_value, SUM(solar_to_grid * export_rate) AS solar_export_value,
       SUM(battery_to_home * ${IMP}) AS battery_avoided, SUM(battery_to_grid * export_rate) AS battery_export_value,
       SUM(grid_import * ${IMP}) AS import_paid, AVG(${IMP}) AS avg_import_rate, AVG(export_rate) AS avg_export_rate,
       SUM(CASE WHEN home > 0 THEN ev * (grid_to_home_cost + battery_to_home_cost) / home ELSE 0 END) AS ev_cost,
-      SUM(CASE WHEN home > 0 THEN ev * solar_to_home / home ELSE 0 END) AS ev_from_solar,
+      SUM((CASE WHEN home > 0 THEN ev * solar_to_home / home ELSE 0 END)::int) AS ev_from_solar,
       MAX(grid_import * (3600.0 / dur_s)) AS peak_import_kw, MIN(soc_end) AS soc_min, MAX(soc_end) AS soc_max,
-      SUM(solar_forecast) AS solar_forecast, SUM(CASE WHEN solar_forecast IS NOT NULL THEN solar END) AS solar_with_forecast
+      SUM(solar_forecast) AS solar_forecast, SUM((CASE WHEN solar_forecast IS NOT NULL THEN solar END)::int) AS solar_with_forecast
     FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ? AND slot_start < ?`).get(s.id, from, to, before);
   const d = (a, b) => (a != null && b ? a / b : null);
   return {
@@ -444,8 +444,8 @@ app.get('/api/sites/:id/summary', async (req, res) => {
     // What the figures rest on: half-hour states and check results for the same days.
     basis: {
       // provisional_today: provisional because the day is not over; the rest wait for a meter's readings (build.js).
-      ...await db.prepare(`SELECT COUNT(*) AS halfHours, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
-          SUM(state = 'provisional' AND local_date >= ?) AS provisional_today
+      ...await db.prepare(`SELECT COUNT(*) AS "halfHours", SUM((state = 'final')::int) AS final, SUM((state = 'provisional')::int) AS provisional, SUM((state = 'missing')::int) AS missing,
+          SUM((state = 'provisional' AND local_date >= ?)::int) AS provisional_today
         FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(localDate(s.timezone, nowSec()), s.id, from, to),
       checks: Object.fromEntries((await db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? AND local_date >= ? AND local_date <= ? GROUP BY status').all(s.id, from, to)).map((r) => [r.status, r.n])),
     },
@@ -469,7 +469,7 @@ app.get('/api/sites/:id/tariffs', async (req, res) => {
   // How many different unit prices the tariff has today (one: "one price all day", whatever its structure says).
   const pricesToday = db.prepare(`SELECT COUNT(DISTINCT r.price_ex_vat) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
     WHERE t.tariff_code = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND (r.site_id IS NULL OR r.site_id = ?)
-      AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ?`);
+      AND r.valid_from < ? AND COALESCE(r.valid_to, 9000000000) > ?`);
   res.json(await mapAsync(rows, async (r) => {
                 const live = r.valid_from <= now && (r.valid_to == null || r.valid_to > now);
                 const p = live ? priceOver(pricing, r.kind, slotOf(s, now), SLOT) : null;
@@ -504,18 +504,18 @@ app.get('/api/sites/:id/breakdown', async (req, res) => {
   const t = await summarise(s, from, to);
   const x = await db.prepare(`SELECT
       SUM(solar_to_grid * export_rate) AS solar_export_credit, SUM(battery_to_grid * export_rate) AS battery_export_credit,
-      SUM(CASE WHEN rate_found = 1 THEN grid_only_cost END) AS grid_only, SUM(CASE WHEN rate_found = 1 THEN total_cost END) AS actual,
-      SUM(CASE WHEN rate_found = 1 THEN solar_to_home * ${IMP} END) AS solar_direct,
-      SUM(CASE WHEN rate_found = 1 THEN battery_to_home * ${IMP} END) AS battery_cover,
-      SUM(CASE WHEN rate_found = 1 THEN grid_to_battery_cost END) AS grid_charging,
-      SUM(CASE WHEN rate_found = 1 THEN loss_cost END) AS loss_priced,
-      SUM(CASE WHEN rate_found = 1 THEN export_credit END) AS export_earned,
-      SUM(CASE WHEN rate_found = 1 THEN standing_cost END) AS standing, SUM(CASE WHEN rate_found = 1 THEN gas_cost END) AS gas_cost,
-      SUM(CASE WHEN rate_found = 1 THEN home * ${IMP} END) AS home_at_grid_price,
+      SUM((CASE WHEN rate_found = 1 THEN grid_only_cost END)::int) AS grid_only, SUM((CASE WHEN rate_found = 1 THEN total_cost END)::int) AS actual,
+      SUM((CASE WHEN rate_found = 1 THEN solar_to_home * ${IMP} END)::int) AS solar_direct,
+      SUM((CASE WHEN rate_found = 1 THEN battery_to_home * ${IMP} END)::int) AS battery_cover,
+      SUM((CASE WHEN rate_found = 1 THEN grid_to_battery_cost END)::int) AS grid_charging,
+      SUM((CASE WHEN rate_found = 1 THEN loss_cost END)::int) AS loss_priced,
+      SUM((CASE WHEN rate_found = 1 THEN export_credit END)::int) AS export_earned,
+      SUM((CASE WHEN rate_found = 1 THEN standing_cost END)::int) AS standing, SUM((CASE WHEN rate_found = 1 THEN gas_cost END)::int) AS gas_cost,
+      SUM((CASE WHEN rate_found = 1 THEN home * ${IMP} END)::int) AS home_at_grid_price,
       SUM(home * carbon_intensity) AS carbon_grid_only_g, SUM(grid_export * carbon_intensity) AS carbon_export_displaced_g,
-      SUM(CASE WHEN carbon_intensity IS NOT NULL THEN grid_import END) AS import_with_carbon,
+      SUM((CASE WHEN carbon_intensity IS NOT NULL THEN grid_import END)::int) AS import_with_carbon,
       AVG(carbon_intensity) AS carbon_avg, MIN(carbon_intensity) AS carbon_min, MAX(carbon_intensity) AS carbon_max,
-      SUM(carbon_intensity IS NULL) AS carbon_missing
+      SUM((carbon_intensity IS NULL)::int) AS carbon_missing
     FROM site_hh WHERE site_id = ? AND local_date >= ? AND local_date <= ?`).get(s.id, from, to);
 
   const slotS = slotLength(s);
@@ -714,11 +714,11 @@ app.get('/api/sites/:id/evidence', async (req, res) => {
   const rates = await db.prepare(`SELECT t.tariff_code, t.direction, r.component, r.register, r.charge_period, r.payment_method, r.valid_from, r.valid_to, r.price_ex_vat, r.recorded_at, r.superseded_at, r.raw_id,
       r.origin, r.origin_note, r.estimated, t.origin AS tariff_origin
     FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id JOIN tariff_agreement a ON a.tariff_id = t.id AND a.site_id = ? AND a.superseded_at IS NULL
-    WHERE r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ? AND a.valid_from <= ? AND IFNULL(a.valid_to, 9000000000) > ?
+    WHERE r.valid_from <= ? AND COALESCE(r.valid_to, 9000000000) > ? AND a.valid_from <= ? AND COALESCE(a.valid_to, 9000000000) > ?
     ORDER BY t.direction, r.component, r.superseded_at IS NOT NULL, r.recorded_at DESC`).all(s.id, slot, slot, slot, slot);
-  const vat = (await db.prepare('SELECT * FROM vat_rate WHERE valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').all(slot, slot))
+  const vat = (await db.prepare('SELECT * FROM vat_rate WHERE valid_from <= ? AND COALESCE(valid_to, 9000000000) > ?').all(slot, slot))
     .map((v) => ({ ...v, origin: 'sourced', origin_note: 'src/db/registry.js VAT_RATES' }));
-  const taxRules = (await db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY fuel, direction, seq')
+  const taxRules = (await db.prepare('SELECT * FROM tax_rule WHERE country = ? AND superseded_at IS NULL AND valid_from <= ? AND COALESCE(valid_to, 9000000000) > ? ORDER BY fuel, direction, seq')
       .all(s.country ?? 'GB', slot, slot)).map((r) => ({ ...r, unverified: r.unverified === 1 }));
   const rawIds = [...new Set([...facts, ...rates].map((f) => f.raw_id).filter(Boolean))];
   const raws = rawIds.length ? await db.prepare(`SELECT p.id, src.code AS source, p.request, p.fetched_at, p.status, p.file FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.id IN (${rawIds.map(() => '?').join(',')})`).all(...rawIds) : [];
@@ -806,7 +806,7 @@ async function providerTariffs(provider, { region = null, limit = 100, offset = 
   const tariffs = await db.prepare(`SELECT id, tariff_code, product_code, name, fuel, direction, structure, kind, region, currency, country, origin, origin_note FROM tariff
     WHERE provider = ? ${code ? 'AND region = ?' : ''} ORDER BY name, tariff_code LIMIT ? OFFSET ?`).all(...[provider, code, limit, offset].filter((v) => v !== null));
   const rates = db.prepare(`SELECT component, register, payment_method, valid_from, valid_to, price_ex_vat, origin FROM rate_interval
-    WHERE tariff_id = ? AND site_id IS NULL AND superseded_at IS NULL AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY component, register, payment_method`);
+    WHERE tariff_id = ? AND site_id IS NULL AND superseded_at IS NULL AND valid_from <= ? AND COALESCE(valid_to, 9000000000) > ? ORDER BY component, register, payment_method`);
   return await mapAsync(tariffs, async ({ id, ...t }) => ({ ...t, rates: await rates.all(id, now, now) }));
 }
 
@@ -845,9 +845,9 @@ app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // D
 // unknown_source, unknown_metric, unknown_device, bad_part, bad_number, bad_date, missing_field, reason_required,
 // not_found) next to the plain message. Every write takes dryRun (in the body or ?dryRun=1): it returns what would
 // happen and keeps nothing. A start date is a local date (2026-10-12) in the home's zone, or epoch seconds.
-const onb = (fn, ok = 200) => (req, res) => {
+const onb = (fn, ok = 200) => async (req, res) => {
   try {
-    const out = fn(req);
+    const out = await fn(req);
     res.status(out?.dryRun ? 200 : ok).json(out);
   } catch (err) {
     if (err instanceof onboardingCore.OnboardingError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.field ? { field: err.field } : {}) });

@@ -181,7 +181,7 @@ export async function handlePush(rawText, { query = {}, headers = {}, now = nowS
     if (duplicate) warnings.push('this exact body was received before: the receipt is the same one');
 
     // 8 ingest through the channels: units, signs, limits, counters, events, states all as for any provider
-    const res = ingestObservations(site.id, source, parsed.observations, rawId, { deviceId: device?.id ?? null, now });
+    const res = await ingestObservations(site.id, source, parsed.observations, rawId, { deviceId: device?.id ?? null, now });
     for (const a of res.acks) { if (a.commandId != null) await recordAckRef(a.commandId, a.ref); }
     const kinds = new Map();
     for (const o of parsed.observations) if (o.point && !kinds.has(o.point)) kinds.set(o.point, (await channelsFor(site.id, source, o.point, device?.id ?? null))[0]?.kind ?? null);

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');
 const { ingestObservations } = await import('../src/core/channels.js');
@@ -91,7 +91,7 @@ await test('a counter channel defined through the API works end to end: ingest d
   const c = await ch({ point: 'e2e', kind: 'counter', derived: 'plug_kwh', min: 0, maxGapS: 7200 });
   assert.equal(c.status, 201);
   const t = 1_800_000_000 - (1_800_000_000 % 300);
-  const res = ingestObservations(SITE, 'push_native', [{ point: 'e2e', ts: t, value: 10 }, { point: 'e2e', ts: t + 300, value: 10.5 }, { point: 'e2e', ts: t + 600, value: 11.25 }], null, { deviceId: plug, now: t + 900 });
+  const res = await ingestObservations(SITE, 'push_native', [{ point: 'e2e', ts: t, value: 10 }, { point: 'e2e', ts: t + 300, value: 10.5 }, { point: 'e2e', ts: t + 600, value: 11.25 }], null, { deviceId: plug, now: t + 900 });
   assert.equal(res.rejected, 0);
   assert.equal(res.counters, 3);
   const e = await db.prepare(`SELECT f.start_ts, f.value FROM interval_fact f JOIN series s ON s.id = f.series_id JOIN metric m ON m.id = s.metric_id

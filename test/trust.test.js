@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const m = {
   ...(await import('../src/db/db.js')), ...(await import('../src/core/facts.js')), ...(await import('../src/core/build.js')),
   ...(await import('../src/core/attributes.js')), ...(await import('../src/core/maintenance.js')), ...(await import('../src/core/time.js')),
@@ -83,12 +83,12 @@ await test('system details keep every version and resolve by source rank', { ski
 
 await test('derived gas kWh facts are withdrawn once, logged, and the build is unchanged', { skip }, async () => {
   await fullBuild('test');
-  const gasBefore = (await m.db.prepare('SELECT ROUND(SUM(gas), 6) g FROM site_hh WHERE site_id = ?').get(SITE)).g;
+  const gasBefore = (await m.db.prepare('SELECT ROUND(SUM(gas)::numeric, 6) g FROM site_hh WHERE site_id = ?').get(SITE)).g;
   const first = await m.withdrawDerivedGas(SITE);
   assert.equal(await m.withdrawDerivedGas(SITE), 0, 'idempotent');
   if (first) assert.ok((await m.db.prepare('SELECT rows FROM fact_correction WHERE site_id = ? ORDER BY id DESC').get(SITE)).rows === first);
   await fullBuild('test');
-  assert.equal((await m.db.prepare('SELECT ROUND(SUM(gas), 6) g FROM site_hh WHERE site_id = ?').get(SITE)).g, gasBefore);
+  assert.equal((await m.db.prepare('SELECT ROUND(SUM(gas)::numeric, 6) g FROM site_hh WHERE site_id = ?').get(SITE)).g, gasBefore);
 });
 
 await test('every inverter counter is cross-checked against the 5-minute samples', { skip }, async () => {

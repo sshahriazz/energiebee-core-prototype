@@ -9,7 +9,7 @@ import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db, dataDir } = await import('../src/db/db.js');
 const R = await import('../src/core/replay.js');
 const { landRaw, quarantine, seriesId } = await import('../src/core/facts.js');
@@ -40,7 +40,7 @@ await test('setup: the receipt is read once with a wrong PV mapping (at most 500
   await defineChannel(SITE, 'sunsynk_5min', 'PV', 'solar_w', { part: 'positive', max: 500 });
   const b = body();
   rawId = (await landRaw({ source: 'sunsynk_5min', siteId: SITE, request: { url: dayUrl(DATE) }, body: b })).rawId;
-  const out = normaliseDay(SITE, 'Europe/London', DATE, b, rawId);
+  const out = await normaliseDay(SITE, 'Europe/London', DATE, b, rawId);
   assert.ok(out.facts > 0);
   assert.deepEqual(await facts('solar_w'), [], 'every PV value is above 500 W: nothing stored for it');
   assert.equal((await facts('load_w')).length, 4);

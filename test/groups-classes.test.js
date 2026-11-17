@@ -5,14 +5,14 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { loadClasses } = await import('../src/core/groups.js');
 const { buildSite } = await import('../src/core/build.js');
 const { nowSec, localDate, addDays } = await import('../src/core/time.js');
 
 await test('every site_hh column has an aggregation class, and every class row names a real column', { skip }, async () => {
-  const cols = (await db.prepare("SELECT name FROM pragma_table_info('site_hh')").all()).map((c) => c.name);
+  const cols = (await db.prepare("SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'site_hh' ORDER BY ordinal_position").all()).map((c) => c.name);
   const classes = await loadClasses();
   assert.deepEqual(cols.filter((c) => !classes.has(c)), [], 'columns without a class');
   assert.deepEqual([...classes.keys()].filter((c) => !cols.includes(c)), [], 'classes for columns that do not exist');

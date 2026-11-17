@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { landRaw, seriesId, putReadings } = await import('../src/core/facts.js');
 const M = await import('../src/core/maintenance.js');
@@ -61,8 +61,7 @@ await test('channel_reject and push_log: rows older than the receipt window are 
   const s = await srcId('sunsynk_5min');
   for (let i = 0; i < 3; i++) await ins.run(site, s, 'PV', 1, 1, 'out_of_range', (NOW - 100 * DAY) * 1000);
   for (let i = 0; i < 2; i++) await ins.run(site, s, 'PV', 1, 1, 'out_of_range', (NOW - 10 * DAY) * 1000);
-  const hasPush = await db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'push_log'").get();
-  if (hasPush) {
+  {
     const p = db.prepare("INSERT INTO push_log (site_id, source, format, received_at, status) VALUES (?, 'push_native', 'native', ?, 'ok')");
     await p.run(site, (NOW - 120 * DAY) * 1000); await p.run(site, (NOW - 120 * DAY) * 1000); await p.run(site, (NOW - 5 * DAY) * 1000);
   }

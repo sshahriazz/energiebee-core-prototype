@@ -112,7 +112,8 @@ function translateError(err, sql) {
           : code === '23P01' ? (EXCLUSION_MESSAGES[name] ?? `overlapping rows: ${name}`)
             : code === 'P0001' ? msg
               : `${msg} (Postgres ${code})`;
-  const out = new Error(text, { cause: err });
+  // DEBUG_SQL=1 names the statement in the message (development).
+  const out = new Error(process.env.DEBUG_SQL ? `${text}\n  SQL: ${sql}` : text, { cause: err });
   out.code = code;
   out.sql = sql;
   return out;
@@ -186,6 +187,40 @@ export async function tx(fn) {
   return await prisma.$transaction((t) => txStore.run(t, fn), { maxWait: 60_000, timeout: 30 * 60_000 });
 }
 export const inTx = () => Boolean(txStore.getStore());
+
+// Run fn and keep none of its writes (a dry run, a preview): inside a transaction, in a savepoint rolled
+// back afterwards; otherwise in a transaction of its own that is rolled back. Returns fn's result.
+const ROLLBACK = new Error('rolled back on purpose');
+let savepoints = 0;
+export async function rolledBack(fn) {
+  if (txStore.getStore()) {
+    const sp = `dry_${++savepoints}`;
+    await db.exec(`SAVEPOINT ${sp}`);
+    try { return await fn(); } finally { await db.exec(`ROLLBACK TO SAVEPOINT ${sp}`); await db.exec(`RELEASE SAVEPOINT ${sp}`); }
+  }
+  let out;
+  try {
+    await tx(async () => { out = await fn(); throw ROLLBACK; });
+  } catch (err) { if (err !== ROLLBACK) throw err; }
+  return out;
+}
+
+// ───────────── schema introspection ─────────────
+// The tables and views of the schema, a table's (or view's) columns in order, and a table's primary key.
+export async function tableNames() {
+  return (await db.prepare("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name").all()).map((r) => r.name);
+}
+export async function viewNames() {
+  return (await db.prepare("SELECT table_name AS name FROM information_schema.views WHERE table_schema = current_schema() ORDER BY table_name").all()).map((r) => r.name);
+}
+export async function columnsOf(table) {
+  return (await db.prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position').all(table)).map((r) => r.name);
+}
+export async function primaryKey(table) {
+  return (await db.prepare(`SELECT k.column_name AS name FROM information_schema.table_constraints c
+    JOIN information_schema.key_column_usage k ON k.constraint_name = c.constraint_name AND k.table_schema = c.table_schema AND k.table_name = c.table_name
+    WHERE c.table_schema = current_schema() AND c.table_name = ? AND c.constraint_type = 'PRIMARY KEY' ORDER BY k.ordinal_position`).all(table)).map((r) => r.name);
+}
 
 // ───────────── registries ─────────────
 // Registry rows are data: adding a source or metric never changes the schema. These rows are owned by
@@ -299,10 +334,10 @@ async function lookup(cache, table, code, what) {
 export const sourceId = async (code) => await lookup(sourceIds, 'source', code, 'source');
 export const metricId = async (code) => await lookup(metricIds, 'metric', code, 'metric');
 
-// Planner statistics: ANALYZE after a rebuild (build.js processQueue, the rebuild endpoint) so the planner
-// keeps choosing the indexes as the tables grow. Best effort.
+// Planner statistics of the serving tables, refreshed after a rebuild (build.js processQueue, the rebuild
+// endpoint) so the planner sees the rows just written; autovacuum keeps the rest up to date. Best effort.
 export async function optimizeDb() {
-  try { await prisma.$executeRawUnsafe('ANALYZE'); return true; } catch { return false; }
+  try { await client().$executeRawUnsafe('ANALYZE site_hh, site_day, check_result, site_heat_slot'); return true; } catch { return false; }
 }
 export async function closeDb() {
   await prisma.$disconnect();

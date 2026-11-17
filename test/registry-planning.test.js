@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { METRICS, SOURCES } = await import('../src/db/registry.js');
 

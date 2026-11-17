@@ -8,7 +8,7 @@ import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { buildSite } = await import('../src/core/build.js');
 const { localDate, addDays, todMinute } = await import('../src/core/time.js');

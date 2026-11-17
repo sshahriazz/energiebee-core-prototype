@@ -255,7 +255,6 @@ export const SETTING_DEF_COLUMNS = Object.freeze(['key', 'label', 'unit', 'value
   'json_shape', 'planner', 'applies_to', 'unverified', 'description', 'refs']);
 
 const missingDefs = async (db) => {
-  if (!await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'setting_def'").get()) return [];
   const have = new Set((await db.prepare('SELECT key FROM setting_def').all()).map((r) => r.key));
   return SETTING_DEFS.filter((d) => !have.has(d.key));
 };

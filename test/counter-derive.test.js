@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { ingestObservations, defineChannel } = await import('../src/core/channels.js');
 const { seriesId, readIntervals, readReadings, QUALITY } = await import('../src/core/facts.js');
@@ -16,7 +16,7 @@ const site = Number((await db.prepare("INSERT INTO site (name, created_at) VALUE
 await db.prepare("INSERT INTO source (code, name, contract) VALUES ('plug_vendor', 'Plug vendor (test)', '{}')").run();
 let n = 0;
 const plug = async () => Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'smart_plug', 'test', ?, 'plug', '{}', 0)").run(site, `plug-${++n}`)).lastInsertRowid);
-const feed = (dev, samples, point = 'energy_total') => ingestObservations(site, 'plug_vendor', samples.map(([ts, value]) => ({ point, ts, value })), null, { deviceId: dev, now: NOW });
+const feed = async (dev, samples, point = 'energy_total') => await ingestObservations(site, 'plug_vendor', samples.map(([ts, value]) => ({ point, ts, value })), null, { deviceId: dev, now: NOW });
 const periods = async (dev) => (await readIntervals([await seriesId('device', dev, 'plug_kwh', 'plug_vendor')], 0, 3e9)).map((r) => [r.start_ts, r.end_ts, r.value, r.quality]);
 const raw = async (dev) => (await readReadings([await seriesId('device', dev, 'plug_counter_kwh', 'plug_vendor')], 0, 3e9)).map((r) => [r.ts, r.value]);
 const total = async (dev) => (await periods(dev)).reduce((s, p) => s + p[2], 0);
@@ -43,7 +43,7 @@ for (const [date, hours, label] of [['2026-10-25', 25, 'the 25-hour day (clocks 
         const samples = [];
         for (let t = a; t < b; t += 1800) samples.push([t, at(t)]);
         samples.push([b - 1, at(b - 1)], [b, 0]);                              // the last sample of the day, then the reset
-        const out = feed(dev, samples);
+        const out = await feed(dev, samples);
         assert.equal(out.rejected, 0);
         const day = await periods(dev);
         assert.ok(Math.abs(await total(dev) - hours) <= 1 / H + 1e-9, `${await total(dev)} kWh vs ${hours}: only the second between the last sample and the reset is lost`);
@@ -56,7 +56,7 @@ for (const [date, hours, label] of [['2026-10-25', 25, 'the 25-hour day (clocks 
 
 await test('a device restart mid-day: the counter drops to nearly zero, only what the counter shows after it is counted, flagged partial', async () => {
   const dev = await plug();
-  feed(dev, [[0, 10], [1800, 12], [3600, 15], [5400, 0.2], [7200, 0.7]]);
+  await feed(dev, [[0, 10], [1800, 12], [3600, 15], [5400, 0.2], [7200, 0.7]]);
   assert.deepEqual((await periods(dev)).map((p) => [p[0], Math.round(p[2] * 1e9) / 1e9]), [[0, 2], [1800, 3], [3600, 0.2], [5400, 0.5]]);
   assert.ok((await periods(dev))[2][3] & QUALITY.PARTIAL);
 });
@@ -64,7 +64,7 @@ await test('a device restart mid-day: the counter drops to nearly zero, only wha
 await test('a wrap at the maximum counts the energy across the roll-over', async () => {
   const dev = await plug();
   await defineChannel(site, 'plug_vendor', 'rollover', 'plug_counter_kwh', { kind: 'counter', derived: 'plug_kwh', counterWrap: 1000, min: 0, max: 1000, deviceId: dev });
-  feed(dev, [[0, 990], [1800, 995], [3600, 3], [5400, 10]], 'rollover');
+  await feed(dev, [[0, 990], [1800, 995], [3600, 3], [5400, 10]], 'rollover');
   assert.deepEqual((await periods(dev)).map((p) => p[2]), [5, 8, 7]);
   assert.ok((await periods(dev)).every((p) => !(p[3] & QUALITY.PARTIAL)));
 });
@@ -72,7 +72,7 @@ await test('a wrap at the maximum counts the energy across the roll-over', async
 await test('a counter going backwards is rejected and recorded, never stored, and the energy around it is still right', async () => {
   const dev = await plug();
   const before = (await rejects()).length;
-  const out = feed(dev, [[0, 100], [1800, 110], [3600, 105], [5400, 120]]);
+  const out = await feed(dev, [[0, 100], [1800, 110], [3600, 105], [5400, 120]]);
   assert.equal(out.rejected, 1);
   const r = (await rejects()).slice(before);
   assert.deepEqual(r.map((x) => [x.point, x.ts, x.value, x.reason]), [['energy_total', 3600, 105, 'counter_backwards']]);
@@ -82,14 +82,14 @@ await test('a counter going backwards is rejected and recorded, never stored, an
 
 await test('a negative or out-of-range counter is rejected by the channel range, not stored', async () => {
   const dev = await plug();
-  const out = feed(dev, [[0, 5], [1800, -1]]);
+  const out = await feed(dev, [[0, 5], [1800, -1]]);
   assert.equal(out.rejected, 1);
   assert.deepEqual((await raw(dev)).map((x) => x[1]), [5]);
 });
 
 await test('a gap keeps the counter total, spread over the gap and flagged estimated, never invented', async () => {
   const dev = await plug();
-  feed(dev, [[0, 0], [1800, 0.5], [1800 + 5 * H, 5.5]]);
+  await feed(dev, [[0, 0], [1800, 0.5], [1800 + 5 * H, 5.5]]);
   const p = await periods(dev);
   assert.deepEqual(p.map((x) => [x[0], x[1], x[2]]), [[0, 1800, 0.5], [1800, 1800 + 5 * H, 5]]);
   assert.ok(p[1][3] & QUALITY.ESTIMATED, 'the five-hour period is flagged estimated');
@@ -99,14 +99,14 @@ await test('a gap keeps the counter total, spread over the gap and flagged estim
 
 await test('duplicate and late samples: the same data again writes nothing, a late sample splits the period it falls in, nothing is counted twice', async () => {
   const dev = await plug();
-  feed(dev, [[0, 0], [2 * H, 10]]);
+  await feed(dev, [[0, 0], [2 * H, 10]]);
   assert.deepEqual((await periods(dev)).map((p) => p[2]), [10]);
-  const again = feed(dev, [[0, 0], [2 * H, 10], [2 * H, 10]]);
+  const again = await feed(dev, [[0, 0], [2 * H, 10], [2 * H, 10]]);
   assert.deepEqual([again.counters, again.derived], [0, 0], 'identical samples, even twice in one batch: nothing new');
 
   const corrections = (await db.prepare('SELECT COUNT(*) n FROM fact_correction').get()).n;
   pause();
-  feed(dev, [[H, 4]]);                                                    // arrives late, between the two
+  await feed(dev, [[H, 4]]);                                                    // arrives late, between the two
   assert.deepEqual((await periods(dev)).map((p) => [p[0], p[1], p[2]]), [[0, H, 4], [H, 2 * H, 6]]);
   assert.equal(await total(dev), 10);
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM fact_correction').get()).n, corrections + 1, 'the superseded period is logged');
@@ -114,15 +114,15 @@ await test('duplicate and late samples: the same data again writes nothing, a la
   assert.equal(old, 1, 'the old period is kept, superseded');
 
   pause();
-  feed(dev, [[H, 5]]);                                                    // the same time with a corrected value: a new version
+  await feed(dev, [[H, 5]]);                                                    // the same time with a corrected value: a new version
   assert.deepEqual((await periods(dev)).map((p) => p[2]), [5, 5]);
   assert.equal(await total(dev), 10);
 });
 
 await test('a late sample that would make the counter go backwards is rejected against its stored neighbours', async () => {
   const dev = await plug();
-  feed(dev, [[0, 0], [2 * H, 10]]);
-  const out = feed(dev, [[H, 12]]);                                       // higher than the reading after it
+  await feed(dev, [[0, 0], [2 * H, 10]]);
+  const out = await feed(dev, [[H, 12]]);                                       // higher than the reading after it
   assert.equal(out.rejected, 1);
   assert.deepEqual((await raw(dev)).map((x) => x[1]), [0, 10]);
 });

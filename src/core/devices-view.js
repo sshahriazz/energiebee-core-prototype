@@ -285,7 +285,7 @@ export async function simulate(siteId, deviceId, body = {}, { now = nowSec() } =
   requireSynthetic(site, device);
   const periods = body.periods == null ? 1 : Number(body.periods);
   if (!Number.isInteger(periods) || periods < 1 || periods > 12) throw new DevicesError(400, 'bad_number', 'periods is a whole number from 1 to 12', 'periods');
-  const r = simulatePeriods(site.id, { periods, now });
+  const r = await simulatePeriods(site.id, { periods, now });
   const key = DEVICES.find((d) => d.ref === device.external_ref)?.key;
   return {
     deviceId: device.id, added: r.added, caughtUp: r.caughtUp, from: r.from, to: r.to, requested: periods,

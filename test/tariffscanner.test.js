@@ -10,7 +10,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const stray = [];
 const refuse = async (url) => { stray.push(String(url)); throw new Error(`no network in tests: ${url}`); };
 globalThis.fetch = refuse;
@@ -376,7 +376,7 @@ await test('sync: the catalogue step runs once per cycle and once a day; a failu
   const home = async (name) => {
     const s = await createSite({ name, postcode: 'BB12 9BY', lat: 53.79, lon: -2.24, gspRegion: 'G', carbonRegion: 3 });
     await db.prepare("UPDATE site SET outcode = 'BB12' WHERE id = ?").run(s.id);
-    for (const p of ['weather', 'carbon', 'solar_forecast', 'compare']) await db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(s.id, p);
+    for (const p of ['weather', 'carbon', 'solar_forecast', 'compare']) await db.prepare('INSERT INTO connection (site_id, provider) VALUES (?, ?) ON CONFLICT DO NOTHING').run(s.id, p);
     return s.id;
   };
   try {

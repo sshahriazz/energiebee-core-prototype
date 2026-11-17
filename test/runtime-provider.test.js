@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { sourceId } = await import('../src/db/db.js');
 const { buildSite } = await import('../src/core/build.js');
@@ -172,7 +172,7 @@ await test('build and planner read agree within 0.1% across a vendor switch', { 
   const asOfMs = Date.now() + 1000;
   const rows = (await buildSite(SITE, first, last, { asOf: Math.ceil(asOfMs / 1000), dryRun: true })).hhRows;
   const [from] = dayBounds(site.timezone, first); const [, to] = dayBounds(site.timezone, last);
-  const r = counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: await slotS(), asOf: asOfMs });
+  const r = await counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: await slotS(), asOf: asOfMs });
   const [dStart] = dayBounds(site.timezone, days[Math.floor(days.length / 2)]);
   assert.deepEqual(r.origin.power.sources.slice().sort(), ['acme_5min', 'sunsynk_5min'], 'the planner read uses both bound sources');
   let build = 0; let planner = 0; let worst = 0;

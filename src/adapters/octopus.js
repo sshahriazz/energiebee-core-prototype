@@ -78,13 +78,13 @@ export async function upsertTariff({ provider = 'octopus', tariffCode, direction
 
 const curRate = db.prepare(
   `SELECT id, valid_to, price_ex_vat, raw_id FROM rate_interval
-   WHERE tariff_id = ? AND component = ? AND register = ? AND payment_method = ? AND IFNULL(site_id, 0) = ?
+   WHERE tariff_id = ? AND component = ? AND register = ? AND payment_method = ? AND COALESCE(site_id, 0) = ?
      AND valid_from = ? AND superseded_at IS NULL`);
 const supRate = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
 const overlapping = db.prepare(
   `SELECT id, valid_from, valid_to, price_ex_vat, raw_id FROM rate_interval
    WHERE superseded_at IS NULL AND tariff_id = ? AND component = ? AND register = ? AND payment_method = ?
-     AND IFNULL(site_id, 0) = ? AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?`);
+     AND COALESCE(site_id, 0) = ? AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ?`);
 // Rate rows from Octopus are provider data (origin 'provider'); raw_id links each to its payload.
 const insRate = db.prepare(
   `INSERT INTO rate_interval (tariff_id, site_id, component, register, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin)
@@ -282,23 +282,23 @@ export async function syncOctopusConsumption(site, { apiKey }, fromTs, toTs, { g
 export async function normaliseConsumption(siteId, deviceId, metric, rows, rawId) {
   await setDeviceChannel(siteId, 'octopus_meter', deviceId, 'consumption', metric);
   const obs = rows.map((r) => ({ point: 'consumption', start: parseIso(r.interval_start), end: parseIso(r.interval_end), value: r.consumption, quality: QUALITY.MEASURED, rawId: r._rawId }));
-  return ingestObservations(siteId, 'octopus_meter', obs, rawId, { deviceId }).written;
+  return (await ingestObservations(siteId, 'octopus_meter', obs, rawId, { deviceId })).written;
 }
 
 // Completed smart-charge dispatches. delta is negative for import; the channel (part abs) stores the amount charged.
-export function normaliseDispatches(siteId, list, rawId) {
+export async function normaliseDispatches(siteId, list, rawId) {
   const obs = (list || [])
     .map((d) => ({ point: 'dispatch', start: parseIso(String(d.start).replace(' ', 'T')), end: parseIso(String(d.end).replace(' ', 'T')), value: d.delta == null ? null : Number(d.delta) }))
     .filter((d) => d.end > d.start);
-  return ingestObservations(siteId, 'octopus_kraken', obs, rawId).written;
+  return (await ingestObservations(siteId, 'octopus_kraken', obs, rawId)).written;
 }
 
 // Planned dispatches: a forecast issue made at issuedAt.
-export function normalisePlanned(siteId, list, issuedAt, rawId) {
+export async function normalisePlanned(siteId, list, issuedAt, rawId) {
   const obs = (list || [])
     .map((p) => ({ point: 'planned', start: parseIso(p.start), end: parseIso(p.end), issuedAt, value: p.energyAddedKwh == null ? null : Number(p.energyAddedKwh) }))
     .filter((p) => p.end > p.start);
-  return ingestObservations(siteId, 'octopus_kraken', obs, rawId).forecasts;
+  return (await ingestObservations(siteId, 'octopus_kraken', obs, rawId)).forecasts;
 }
 
 // ───────────── Kraken GraphQL ─────────────
@@ -352,7 +352,7 @@ export async function syncKraken(site, { apiKey, accountNumber }) {
   const out = { dispatches: 0, planned: 0, devices: 0 };
 
   const completed = await gql(token, 'query($a:String!){completedDispatches(accountNumber:$a){start end delta meta{source location}}}', { a: accountNumber }, site.id);
-  out.dispatches = normaliseDispatches(site.id, completed?.completedDispatches, completed?._rawId);
+  out.dispatches = await normaliseDispatches(site.id, completed?.completedDispatches, completed?._rawId);
 
   try {
     const devs = await gql(token, 'query($a:String!){devices(accountNumber:$a){id name deviceType status{current currentState isSuspended}}}', { a: accountNumber }, site.id);
@@ -365,7 +365,7 @@ export async function syncKraken(site, { apiKey, accountNumber }) {
       await setDeviceAttrs((await db.prepare("SELECT id FROM device WHERE site_id = ? AND provider = 'octopus_kraken' AND external_ref = ?").get(site.id, d.id)).id, { status: d.status });
       out.devices++;
       const planned = await gql(token, 'query($d:String!){flexPlannedDispatches(deviceId:$d){start end type energyAddedKwh}}', { d: d.id }, site.id);
-      out.planned += normalisePlanned(site.id, planned?.flexPlannedDispatches, nowSec(), planned?._rawId);
+      out.planned += await normalisePlanned(site.id, planned?.flexPlannedDispatches, nowSec(), planned?._rawId);
     }
   } catch (err) {
     out.devicesError = err.message;

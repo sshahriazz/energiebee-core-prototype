@@ -187,7 +187,7 @@ export async function storeWindows(tariffId, {
         const want = new Set(rows.map((r) => key(r.register, r.validFrom, r.validTo, r.price, r.estimated)));
         const kept = new Set();
         const sup = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
-        for (const c of await db.prepare(`SELECT id, register, valid_from, valid_to, price_ex_vat, estimated FROM rate_interval WHERE tariff_id = ? AND IFNULL(site_id, 0) = ?
+        for (const c of await db.prepare(`SELECT id, register, valid_from, valid_to, price_ex_vat, estimated FROM rate_interval WHERE tariff_id = ? AND COALESCE(site_id, 0) = ?
         AND component = 'unit' AND superseded_at IS NULL AND valid_from >= ? AND valid_to <= ?`).all(tariffId, siteId ?? 0, a, b)) {
           const k = key(c.register, c.valid_from, c.valid_to, c.price_ex_vat, c.estimated);
           if (want.has(k) && !kept.has(k)) kept.add(k); else await sup.run(recordedAt, c.id);

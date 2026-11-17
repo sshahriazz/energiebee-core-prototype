@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const realFetchLocal = globalThis.fetch;   // the platform fetch, for the test server on 127.0.0.1
 const asked = [];
 let answer = () => [];
@@ -58,7 +58,6 @@ await test('every home binds both carbon sources, NESO first: a new home from bi
   const fr = await createSite({ name: 'Bindings FR', country: 'FR' });
   const gb = await createSite({ name: 'Bindings GB', postcode: 'BB12 9BY', carbonRegion: 3 });
   for (const s of [fr, gb]) assert.deepEqual((await bindingsFor(s.id, 'carbon')).map((b) => b.source), ['carbon_regional', 'rte_eco2mix'], s.name);
-  assert.ok(await db.prepare("SELECT 1 FROM schema_delta WHERE name = '081-carbon-rte'").get());
 });
 
 await test('the export URL asks one dataset for the window, non-null values only, oldest first', () => {

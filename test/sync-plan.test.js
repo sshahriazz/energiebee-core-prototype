@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const calls = [];
 const unexpected = [];
 const json = (b) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -28,7 +28,7 @@ const { syncSite, syncAll } = await import('../src/jobs/sync.js');
 const P = await import('../src/core/providers.js');
 const { createSite } = await import('../src/core/sites.js');
 
-const conn = async (siteId, ...providers) => { for (const p of providers) await db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(siteId, p); };
+const conn = async (siteId, ...providers) => { for (const p of providers) await db.prepare('INSERT INTO connection (site_id, provider) VALUES (?, ?) ON CONFLICT DO NOTHING').run(siteId, p); };
 // A GB home whose location keys are known (so the postcode look-ups make no call), on the .env
 // tariff codes, at one location and in one carbon and price region unless told otherwise.
 async function gbHome(name, { carbon = 3, gsp = 'G' } = {}) {

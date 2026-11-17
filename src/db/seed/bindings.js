@@ -20,7 +20,7 @@ export async function bindingSeedPending(db) {
 
 export async function seedBindings(db) {
   const src = db.prepare('SELECT id FROM source WHERE code = ?');
-  const insDefault = db.prepare('INSERT OR IGNORE INTO binding_default (role, source_id, priority) VALUES (?, ?, ?)');
+  const insDefault = db.prepare('INSERT INTO binding_default (role, source_id, priority) VALUES (?, ?, ?) ON CONFLICT DO NOTHING');
   for (const [role, code, priority] of BINDING_DEFAULTS) {
     const s = await src.get(code);
     if (s) await insDefault.run(role, s.id, priority);

@@ -29,7 +29,7 @@ const { db, closeDb } = await import('../src/db/db.js');
 const { createUser, giveHome, listUsers } = await import('../src/core/users.js');
 
 const home = async (where) => await db.prepare(`SELECT id, name FROM site WHERE ${where} ORDER BY id LIMIT 1`).get();
-const gb = await home("is_demo = 0 AND IFNULL(market_code, 'GB') = 'GB'");
+const gb = await home("is_demo = 0 AND COALESCE(market_code, 'GB') = 'GB'");
 const fr = await home("is_demo = 1 AND country = 'FR'");
 const nl = await home("is_demo = 1 AND country = 'NL'");
 if (!gb || !fr || !nl) { console.error('expected the GB, FR and NL homes of demo-ui.js'); process.exit(1); }

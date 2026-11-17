@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { normaliseConsumption } = await import('../src/adapters/octopus.js');
 const { seriesId, readIntervals, landRaw } = await import('../src/core/facts.js');
@@ -40,13 +40,13 @@ await test('a gas meter that turns out to read m3 replaces its channel, not adds
 
 await test('dispatches: the amount charged is the magnitude of the vendor delta; planned dispatches are a forecast issue', async () => {
   const { normaliseDispatches, normalisePlanned } = await import('../src/adapters/octopus.js');
-  const n = normaliseDispatches(site, [
-    { start: '2026-06-10 01:00:00+00:00', end: '2026-06-10 01:30:00+00:00', delta: -1.5 },
-    { start: '2026-06-10 02:00:00+00:00', end: '2026-06-10 02:30:00+00:00', delta: 2 },      // either sign is stored as an amount
-    { start: '2026-06-10 03:00:00+00:00', end: '2026-06-10 03:00:00+00:00', delta: -9 }]);   // empty period: dropped
+  const n = await normaliseDispatches(site, [
+      { start: '2026-06-10 01:00:00+00:00', end: '2026-06-10 01:30:00+00:00', delta: -1.5 },
+      { start: '2026-06-10 02:00:00+00:00', end: '2026-06-10 02:30:00+00:00', delta: 2 },      // either sign is stored as an amount
+      { start: '2026-06-10 03:00:00+00:00', end: '2026-06-10 03:00:00+00:00', delta: -9 }]);   // empty period: dropped
   assert.equal(n, 2);
   const rows = await readIntervals([await seriesId('site', site, 'ev_charge_kwh', 'octopus_kraken')], 0, 2e9);
   assert.deepEqual(rows.map((r) => r.value), [1.5, 2]);
-  assert.equal(normalisePlanned(site, [{ start: '2026-06-11T01:00:00+00:00', end: '2026-06-11T01:30:00+00:00', energyAddedKwh: 3 }], 1781000000), 1);
+  assert.equal(await normalisePlanned(site, [{ start: '2026-06-11T01:00:00+00:00', end: '2026-06-11T01:30:00+00:00', energyAddedKwh: 3 }], 1781000000), 1);
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM forecast_fact WHERE series_id = ?').get(await seriesId('site', site, 'ev_charge_kwh', 'octopus_kraken'))).n, 1);
 });

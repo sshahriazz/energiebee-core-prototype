@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');
 const inputs = await import('../src/core/inputs.js');
@@ -176,10 +176,10 @@ await test('device scoping: a second device is bound beside the home, and "home"
 });
 
 await test('rejected values and unmapped points are reported by reason and by point', { skip }, async () => {
-  await db.prepare("INSERT OR IGNORE INTO source (code, name, contract) VALUES ('acme_test_kw', 'Acme (test)', '{}')").run();
+  await db.prepare("INSERT INTO source (code, name, contract) VALUES ('acme_test_kw', 'Acme (test)', '{}') ON CONFLICT DO NOTHING").run();
   assert.equal((await post(`/api/sites/${SITE}/channels`, { source: 'acme_test_kw', point: 'pv_kw', metric: 'solar_w', min: 0, max: 60000 })).status, 201);
-  ingestObservations(SITE, 'acme_test_kw', [
-    { point: 'pv_kw', ts: 1900000000, value: 1e9 }, { point: 'pv_kw', ts: 1900000300, value: 'abc' }, { point: 'firmware_temp', ts: 1900000000, value: 41 }, { point: 'firmware_temp', ts: 1900000300, value: 43 }]);
+  await ingestObservations(SITE, 'acme_test_kw', [
+        { point: 'pv_kw', ts: 1900000000, value: 1e9 }, { point: 'pv_kw', ts: 1900000300, value: 'abc' }, { point: 'firmware_temp', ts: 1900000000, value: 41 }, { point: 'firmware_temp', ts: 1900000300, value: 43 }]);
   const { status, body } = await get(`/api/sites/${SITE}/rejects`);
   assert.equal(status, 200);
   assert.deepEqual(body.byReason, { out_of_range: 1, not_a_number: 1, unmapped_point: 1 }, 'an unmapped point is recorded once per batch, however many values it had');

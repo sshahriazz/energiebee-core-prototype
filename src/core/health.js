@@ -35,7 +35,6 @@ export const REASON_TEXT = {
   write_only: 'a point that can only be written', counter_without_time: 'a counter with no time', state_without_time: 'a setting with no time', event_without_time: 'an event with no time',
 };
 const parseJson = (t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } };
-const tableExists = async (name) => Boolean(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
 // "5 minutes", "3 h", "2 days": for the plain-language reasons.
 export function human(s) {
@@ -115,9 +114,8 @@ const rank = { silent: 3, late: 2, never: 2, ok: 0 };
 export async function health(siteId, { now = nowSec() } = {}) {
   const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!site) throw new RangeError(`no home ${siteId}`);
-  const rows = await db.prepare(`SELECT b.id, b.role, b.device_id AS deviceId, b.valid_from AS valFrom, b.valid_to AS valTo, b.priority, so.code AS source, so.traits
+  const rows = await db.prepare(`SELECT b.id, b.role, b.device_id AS "deviceId", b.valid_from AS "valFrom", b.valid_to AS "valTo", b.priority, so.code AS source, so.traits
     FROM binding b JOIN source so ON so.id = b.source_id WHERE b.site_id = ? AND b.superseded_at IS NULL ORDER BY b.role, b.valid_from IS NOT NULL, b.valid_from, b.priority, b.id`).all(siteId);
-  const hasPush = await tableExists('push_log');
   const sinceMs = (now - 86400) * 1000;
   const refused = async (code) => {
     const rs = await db.prepare(`SELECT r.reason, COUNT(*) AS n FROM channel_reject r JOIN source so ON so.id = r.source_id WHERE r.site_id = ? AND so.code = ? AND r.recorded_at >= ? GROUP BY r.reason ORDER BY n DESC`).all(siteId, code, sinceMs);
@@ -130,7 +128,7 @@ export async function health(siteId, { now = nowSec() } = {}) {
     const traits = parseJson(b.traits) ?? {};
     const h = await bindingHealth(site, { id: b.id, role: b.role, source: b.source, deviceId: b.deviceId }, traits, now);
     h.rejected24h = await refused(b.source);
-    h.lastPushAt = hasPush ? ((await db.prepare("SELECT MAX(received_at) AS t FROM push_log WHERE site_id = ? AND source = ? AND status = 'ok'").get(siteId, b.source))?.t ?? null) : null;
+    h.lastPushAt = (await db.prepare("SELECT MAX(received_at) AS t FROM push_log WHERE site_id = ? AND source = ? AND status = 'ok'").get(siteId, b.source))?.t ?? null;
     if (!roles.has(b.role)) roles.set(b.role, []);
     roles.get(b.role).push(h);
   }

@@ -8,7 +8,7 @@ import { useDb, hasLive } from './helpers.js';
 import { filterAsync } from "../src/core/async.js";
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { seriesId, putIntervals, putForecasts, markDirty } = await import('../src/core/facts.js');
 const { buildSite, processQueue } = await import('../src/core/build.js');
@@ -69,7 +69,7 @@ await test('the battery stock follows the measured charge level every day', { sk
 await test('battery energy has a known cost after the opening stock is used', { skip }, async () => {
   const first = (await days())[0];
   const unknown = await db.prepare(`SELECT local_date, COUNT(*) n FROM site_hh WHERE site_id = ? AND battery_to_home > 0 AND battery_to_home_cost IS NULL
-    AND local_date > date(?, '+1 day') GROUP BY local_date`).all(SITE, first);
+    AND local_date > to_char(?::date + 1, 'YYYY-MM-DD') GROUP BY local_date`).all(SITE, first);
   assert.deepEqual(unknown, []);
 });
 
@@ -95,7 +95,7 @@ await test('gas waits for its calorific value, then fills in when it is publishe
     ORDER BY f.start_ts DESC LIMIT 1`).get(cvS, SITE);
   if (!cv) return t.skip('no gas day with both gas and a calorific value');
   const date = localDate((await site()).timezone, cv.start_ts + 12 * 3600);
-  const waiting = async () => (await db.prepare("SELECT COUNT(*) n FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND gas IS NULL AND json_extract(lineage, '$.gasM3') IS NOT NULL").get(SITE, cv.start_ts, cv.end_ts)).n;
+  const waiting = async () => (await db.prepare("SELECT COUNT(*) n FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND gas IS NULL AND (lineage::jsonb ->> 'gasM3') IS NOT NULL").get(SITE, cv.start_ts, cv.end_ts)).n;
   await db.prepare('UPDATE interval_fact SET superseded_at = ? WHERE series_id = ? AND start_ts = ? AND superseded_at IS NULL').run(nowSec(), cvS, cv.start_ts);
   await rebuildFrom(localDate((await site()).timezone, cv.start_ts), 'test: value withdrawn');
   assert.ok(await waiting() > 0, 'half-hours wait for the value');

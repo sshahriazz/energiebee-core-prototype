@@ -114,8 +114,8 @@ export function dbStore(provider = PROVIDER) {
   const get = db.prepare('SELECT next_allowed_at, cooldown_reason FROM provider_state WHERE provider = ?');
   const put = db.prepare(`INSERT INTO provider_state (provider, next_allowed_at, cooldown_reason, updated_at) VALUES (?, ?, ?, ?)
     ON CONFLICT (provider) DO UPDATE SET
-      cooldown_reason = CASE WHEN excluded.next_allowed_at >= IFNULL(provider_state.next_allowed_at, 0) THEN excluded.cooldown_reason ELSE provider_state.cooldown_reason END,
-      next_allowed_at = MAX(IFNULL(provider_state.next_allowed_at, 0), excluded.next_allowed_at),
+      cooldown_reason = CASE WHEN excluded.next_allowed_at >= COALESCE(provider_state.next_allowed_at, 0) THEN excluded.cooldown_reason ELSE provider_state.cooldown_reason END,
+      next_allowed_at = GREATEST(COALESCE(provider_state.next_allowed_at, 0), excluded.next_allowed_at),
       updated_at = excluded.updated_at`);
   return {
     nextAllowedAt: async () => (await get.get(provider))?.next_allowed_at ?? 0,
@@ -462,8 +462,8 @@ async function upsertTariffRow(t) {
 }
 
 const KEY = 'tariff_id = ? AND site_id IS NULL AND component = ? AND register = ? AND payment_method = ? AND charge_period IS NULL AND superseded_at IS NULL';
-const covering = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY valid_from DESC LIMIT 1`);
-const overlapping = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?`);
+const covering = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from <= ? AND COALESCE(valid_to, 9000000000) > ? ORDER BY valid_from DESC LIMIT 1`);
+const overlapping = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ?`);
 const supRate = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
 const insRate = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin, origin_note, estimated)
   VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provider', ?, 0)`);

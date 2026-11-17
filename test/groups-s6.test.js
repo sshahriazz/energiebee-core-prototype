@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { makeHome, fillSlots } = await import('./groups-fixtures.js');
 const G = await import('../src/core/groups.js');
 const A = await import('../src/core/access.js');

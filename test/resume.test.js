@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { resumeDate } = await import('../src/jobs/sync.js');
 const { dayBounds } = await import('../src/core/time.js');

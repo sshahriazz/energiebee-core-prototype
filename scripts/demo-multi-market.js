@@ -225,7 +225,7 @@ const frBefore = {};
   let energyOk = true; let fixedOk = true; let weightedOk = true; let maxDev = 0; let rangeOk = true;
   for (const slotS of [1800, 3600]) {
     const t1 = Date.now();
-    setSlotLength(s.id, slotS);
+    await setSlotLength(s.id, slotS);
     const r = (await processQueue()).find((x) => x.siteId === s.id);
     rangeOk &&= r.days === 3 && r.from === m.NL.from && r.to === m.NL.to;
     const coarse = await m.hhRows(s.id, m.NL.from, m.NL.to);

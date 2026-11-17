@@ -9,10 +9,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 process.env.USER_SWITCHER = '1';
 const m = await import('../scripts/lib/multi-market.js');
-const { db, DELTAS, applyDelta } = await import('../src/db/db.js');
+const { db } = await import('../src/db/db.js');
 const { app } = await import('../src/server.js');
 const { landRaw } = await import('../src/core/facts.js');
 const { createUser, giveHome, canSee, visibleSiteIds } = await import('../src/core/users.js');
@@ -137,11 +137,7 @@ await test('a home added while a user is picked is theirs, and only theirs', asy
   assert.ok(!(await siteIds(null)).includes(r.body.id), 'nobody signed in does not see it');
 });
 
-await test('delta 076 is listed, runs again without change, and deleting a home drops its links', async () => {
-  assert.ok(DELTAS.indexOf('076-users.sql') > DELTAS.indexOf('060-coverage.sql'));
-  const before = (await db.prepare('SELECT COUNT(*) AS n FROM user_site').get()).n;
-  applyDelta(fs.readFileSync(new URL('../src/db/deltas/076-users.sql', import.meta.url), 'utf8'));
-  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM user_site').get()).n, before);
+await test('deleting a home drops its links', async () => {
   const tmp = (await db.prepare("INSERT INTO site (name, created_at) VALUES ('tmp', 0) RETURNING id").get()).id;
   await giveHome(nora.id, tmp);
   await db.prepare('DELETE FROM binding WHERE site_id = ?').run(tmp);   // a home's bindings go with it

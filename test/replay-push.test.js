@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const R = await import('../src/core/replay.js');
 const { landRaw } = await import('../src/core/facts.js');
@@ -22,7 +22,7 @@ let rawId;
 
 await test('a point nobody mapped is refused as unmapped, then recovered from the saved body after a channel is added', { skip }, async () => {
   rawId = (await landRaw({ source: 'push_native', siteId: SITE, request: { path: '/api/ingest', format: 'native', device: null }, body: text })).rawId;
-  const first = ingestObservations(SITE, 'push_native', [{ point: 'ambient', ts: T, value: 18.5 }, { point: 'ambient', ts: T + 300, value: 19 }], rawId);
+  const first = await ingestObservations(SITE, 'push_native', [{ point: 'ambient', ts: T, value: 18.5 }, { point: 'ambient', ts: T + 300, value: 19 }], rawId);
   assert.deepEqual(first.unmapped, ['ambient']);
   assert.deepEqual(await facts(), []);
 

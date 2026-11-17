@@ -13,7 +13,7 @@
 //  - A receipt whose file is gone (retention) is counted, not an error.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, dataDir } from '../db/db.js';
+import { db, tx, dataDir, rolledBack } from '../db/db.js';
 import { ingestObservations } from './channels.js';
 import { forgetSeriesCache } from './facts.js';
 import { nowSec } from './time.js';
@@ -90,10 +90,6 @@ function readReceipt(file) {
   try { return fs.readFileSync(path.join(dataDir, file), 'utf8'); } catch { return null; }
 }
 
-async function rolledBack(fn) {
-  await db.exec('SAVEPOINT replay_dry');
-  try { return fn(); } finally { await db.exec('ROLLBACK TO replay_dry'); await db.exec('RELEASE replay_dry'); }
-}
 
 // Receipts of a home that a replay would read: accepted (never quarantined), of a replayable source, within `days`.
 async function receiptsOf(siteId, { source = null, days = 30, ids = null, limit = 2000, now = nowSec() } = {}) {
@@ -198,10 +194,10 @@ export async function replay(siteId, { source = null, days = 30, ids = null, lim
   }
 
   const run = async () => {
-    const maxReject = (await db.prepare('SELECT IFNULL(MAX(id), 0) AS m FROM channel_reject').get()).m;
+    const maxReject = (await db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM channel_reject').get()).m;
     const unmapped = new Set();
     for (const { r, obs, deviceId } of parsed) {
-      const res = ingestObservations(site.id, r.source, obs, r.id, { deviceId, now: r.fetched_at });
+      const res = await ingestObservations(site.id, r.source, obs, r.id, { deviceId, now: r.fetched_at });
       out.written += res.written; out.forecasts += res.forecasts; out.derived += res.derived; out.rejected += res.rejected;
       out.bySource[r.source].written += res.written; out.bySource[r.source].rejected += res.rejected;
       for (const p of res.unmapped) unmapped.add(`${r.source}:${p}`);
@@ -212,8 +208,7 @@ export async function replay(siteId, { source = null, days = 30, ids = null, lim
     await db.prepare('DELETE FROM channel_reject WHERE id > ?').run(maxReject);
     out.unmapped = [...unmapped].map((x) => { const i = x.indexOf(':'); return { source: x.slice(0, i), point: x.slice(i + 1) }; });
   };
-  // tx() first: the fact writers open their own transactions, which nest inside it (a bare SAVEPOINT would start one SQLite then refuses to nest)
-  if (dryRun) { try { await tx(async () => await rolledBack(run)); } finally { forgetSeriesCache(); } }   // a rolled-back run may have created series rows whose ids are cached
+  if (dryRun) { try { await rolledBack(run); } finally { forgetSeriesCache(); } }   // a rolled-back run may have created series rows whose ids are cached
   else {
     try {
     await tx(async () => {

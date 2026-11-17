@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const m = {
   ...(await import('../src/db/db.js')), ...(await import('../src/core/facts.js')),
   ...(await import('../src/core/solar-expected.js')), ...(await import('../src/core/time.js')),

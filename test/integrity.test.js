@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 import { mapAsync } from "../src/core/async.js";
 
-useDb();
+await useDb();
 const { db, syncGbVat } = await import('../src/db/db.js');
 const { supersedeAgreements } = await import('../src/core/devices.js');
 const { putWindows } = await import('../src/core/tariffs.js');
@@ -89,7 +89,7 @@ await test('register_window: two registers covering the same minute of one windo
   await assert.doesNotReject(async () => await wk({ register: 'hp', start: 360, end: 600, weekdays: 60 }), 'Wednesday to Saturday');
   await assert.rejects(async () => await wk({ register: 'hp2', start: 540, end: 660, weekdays: 4 }), /two registers/, 'another register on Wednesday 09:00');
   // Other window sets: a meter's own windows, another clock, another calendar day type, disjoint validity.
-  await run("INSERT OR IGNORE INTO calendar (code) VALUES ('fr_tempo')");
+  await run("INSERT INTO calendar (code) VALUES ('fr_tempo') ON CONFLICT DO NOTHING");
   await assert.doesNotReject(async () => await win({ register: 'hc_meter', start: 0, end: 600, device: meter }), 'a meter\'s own windows replace the tariff\'s');
   await assert.doesNotReject(async () => await win({ register: 'hc_utc', start: 0, end: 600, clock: 'utc' }));
   await assert.doesNotReject(async () => await win({ register: 'red_hp', start: 0, end: 600, calendar: 'fr_tempo', day_type: 'red' }), 'a calendar window beats a plain one');

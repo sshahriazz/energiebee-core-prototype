@@ -25,6 +25,7 @@
 // (external_ref) is returned, and every text is cleaned of the secret values set in the environment.
 import { ROLES, adapterFor, adapterCodes, plan, licensed, devOverride } from './providers.js';
 import { assertOwner } from '../adapters/contract.js';
+import { mapAsync } from './async.js';
 
 export const CONNECTOR_STATUSES = Object.freeze(['error', 'needs_credentials', 'connected', 'available', 'disabled', 'not_built']);
 // Per home: connected, error, needs_credentials, not_connected, not_run (usable, not synced yet),
@@ -107,7 +108,7 @@ async function homeRecord(db, site) {
 }
 
 // How one connector did for one (non-demo) home: { status, reason, at, has_creds }.
-function homeOutcome(db, c, site, rec) {
+async function homeOutcome(db, c, site, rec) {
   const found = rec.log.filter((l) => c.steps.has(l.step));
   const at = rec.run?.started_at ?? null;
   const entries = rec.plan.filter((e) => e.adapter === c.code);
@@ -123,7 +124,7 @@ function homeOutcome(db, c, site, rec) {
   const candidates = [];
   for (const h of c.hooks.filter((x) => x.markets.has(market) || x.markets.has('*'))) {
     let r;
-    try { r = h.fn(db, site); } catch (e) { r = { status: 'error', reason: e.message }; }
+    try { r = await h.fn(db, site); } catch (e) { r = { status: 'error', reason: e.message }; }
     if (r?.status === 'error') return done({ status: 'error', reason: r.reason ?? 'failed', at: null });
     if (r?.status === 'ok') return done({ status: 'connected', reason: r.reason ?? null, at: null });
     if (r?.reason) candidates.push({ status: 'idle', reason: r.reason });
@@ -144,7 +145,7 @@ function homeOutcome(db, c, site, rec) {
   return done(candidates.map((x, i) => ({ x, i })).sort((a, b) => HOME_RANK.indexOf(a.x.status) - HOME_RANK.indexOf(b.x.status) || a.i - b.i)[0].x);
 }
 
-function connectorEntry(db, code, own, sites, recordOf) {
+async function connectorEntry(db, code, own, sites, recordOf) {
   const impl = adapterFor(code);
   own = own.slice().sort(byRole);
   // Licensed, or (tounify only) run on a development override of an unconfirmed licence (providers.js devOverride).
@@ -175,7 +176,7 @@ function connectorEntry(db, code, own, sites, recordOf) {
   const listed = sites.filter(inMarkets);
   const real = listed.filter((s) => !s.is_demo);
   const demo = listed.filter((s) => s.is_demo);
-  const outs = impl && usable.length ? real.map((s) => ({ site: s, rec: recordOf(s), ...homeOutcome(db, c, s, recordOf(s)) })) : [];
+  const outs = impl && usable.length ? await mapAsync(real, async (s) => { const rec = await recordOf(s); return { site: s, rec, ...await homeOutcome(db, c, s, rec) }; }) : [];
   const connected = outs.filter((o) => o.status === 'connected');
   const errors = outs.filter((o) => o.status === 'error').sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
   const needsCreds = usable.some((r) => r.needs_credentials);
@@ -204,7 +205,7 @@ function connectorEntry(db, code, own, sites, recordOf) {
   let lastSuccess = null;
   for (const s of real) {
     if (!impl || !usable.length) break;
-    const rec = recordOf(s);
+    const rec = await recordOf(s);
     for (const n of conns) { const t = rec.conns.get(n)?.last_success_at; if (t != null && (lastSuccess == null || t > lastSuccess)) lastSuccess = t; }
     if (rec.run && rec.log.some((l) => steps.has(l.step) && l.ok && !l.skipped) && (lastSuccess == null || rec.run.started_at > lastSuccess)) lastSuccess = rec.run.started_at;
   }
@@ -217,9 +218,9 @@ function connectorEntry(db, code, own, sites, recordOf) {
       lastRun = { site_id: o.site.id, at: o.rec.run.started_at, steps: mine.map((l) => ({ step: l.step, ok: l.ok !== false, ...(l.skipped ? { skipped: l.skipped } : {}), ...(l.shared ? { shared: l.shared } : {}), ...(l.ok === false ? { error: l.error ?? 'failed' } : {}) })) };
     }
   }
-  const lastSuccessOf = (s) => {
+  const lastSuccessOf = async (s) => {
     if (!impl || !usable.length) return null;
-    const rec = recordOf(s);
+    const rec = await recordOf(s);
     const ts = [...conns].map((n) => rec.conns.get(n)?.last_success_at).filter((t) => t != null);
     return ts.length ? Math.max(...ts) : null;
   };
@@ -256,9 +257,9 @@ function connectorEntry(db, code, own, sites, recordOf) {
     steps: [...steps],
     last_run: lastRun,
     homes: [
-      ...real.map((s) => {
+      ...await mapAsync(real, async (s) => {
         const o = outs.find((x) => x.site.id === s.id);
-        return { site_id: s.id, name: s.name, market_code: s.market_code ?? 'GB', is_demo: false, status: o?.status ?? status, reason: o ? o.reason ?? null : reason, last_success_at: lastSuccessOf(s), next: o?.next ?? null };
+        return { site_id: s.id, name: s.name, market_code: s.market_code ?? 'GB', is_demo: false, status: o?.status ?? status, reason: o ? o.reason ?? null : reason, last_success_at: await lastSuccessOf(s), next: o?.next ?? null };
       }),
       ...demo.map((s) => ({ site_id: s.id, name: s.name, market_code: s.market_code ?? 'GB', is_demo: true, status: 'demo', reason: DEMO_REASON, last_success_at: null, next: null })),
     ],
@@ -285,7 +286,7 @@ export async function connectors(db, { env = process.env } = {}) {
   const records = new Map();
   const recordOf = async (s) => { if (!records.has(s.id)) records.set(s.id, await homeRecord(db, s)); return records.get(s.id); };
   const codes = [...new Set([...rows.map((r) => r.adapter), ...adapterCodes()])];
-  const list = codes.map((code) => connectorEntry(db, code, rows.filter((r) => r.adapter === code), sites, recordOf))
+  const list = (await mapAsync(codes, async (code) => await connectorEntry(db, code, rows.filter((r) => r.adapter === code), sites, recordOf)))
     .sort((a, b) => CONNECTOR_STATUSES.indexOf(a.status) - CONNECTOR_STATUSES.indexOf(b.status) || a.label.localeCompare(b.label));
   const summary = Object.fromEntries(CONNECTOR_STATUSES.map((s) => [s, list.filter((c) => c.status === s).length]));
   summary.total = list.length;

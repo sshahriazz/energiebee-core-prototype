@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 globalThis.fetch = async (url) => { throw new Error(`no network in tests: ${url}`); };
 // Stand-in secrets and a home with recognisable data, set only in this process: none may reach the JSON.
 const SECRETS = { OCTOPUS_API_KEY: 'sk_test_compat_never_1', SUNSYNK_PASSWORD: 'pw_compat_never_2' };

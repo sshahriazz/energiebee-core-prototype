@@ -80,7 +80,7 @@ export async function syncComparison(site, fromTs, toTs) {
 async function marketScenarios(site, start, end, currentIds) {
   return (await db.prepare(`SELECT t.* FROM tariff t WHERE t.country = ? AND t.currency = ? AND t.direction = 'import' AND t.fuel = 'electricity'
       AND EXISTS (SELECT 1 FROM rate_interval r WHERE r.tariff_id = t.id AND r.component = 'unit' AND r.superseded_at IS NULL
-        AND (r.site_id IS NULL OR r.site_id = ?) AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ?)
+        AND (r.site_id IS NULL OR r.site_id = ?) AND r.valid_from < ? AND COALESCE(r.valid_to, 9000000000) > ?)
     ORDER BY t.tariff_code`).all(site.country, site.currency, site.id, end, start))
     .filter((t) => !currentIds.has(t.id))
     .map((t) => ({ key: `alt:${t.tariff_code}`, name: t.name || t.tariff_code, note: `${t.tariff_code} import, your current export`, import: t.tariff_code, export: null }));
@@ -109,7 +109,7 @@ export async function compareSite(siteId, from, to) {
   const ids = [...tariffs.values()].map((t) => t.id);
   // The alternatives are taxed by the same rules as the home's own tariff (its country's tax_rule).
   const altRates = ids.length ? await db.prepare(`SELECT * FROM rate_interval WHERE tariff_id IN (${ids.map(() => '?').join(',')})
-      AND superseded_at IS NULL AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ? AND (site_id IS NULL OR site_id = ?)`).all(...ids, end, start - 2 * 86400, siteId) : [];
+      AND superseded_at IS NULL AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ? AND (site_id IS NULL OR site_id = ?)`).all(...ids, end, start - 2 * 86400, siteId) : [];
   // A stand-in agreement puts the home on the alternative for the whole period, so it is priced
   // exactly as the home's own tariff is: over the whole slot, time-weighted when the slot spans
   // two prices (an hour on Agile), unpriced if any part has no price.

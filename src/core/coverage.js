@@ -28,14 +28,14 @@ export const TARGET_KINDS = Object.freeze(['table_column', 'registry_key', 'metr
 export function targetChecker(db, { readModules = {}, jsonKeys = new Map() } = {}) {
   const q = (sql) => { const st = db.prepare(sql); return async (...a) => { try { return !!await st.get(...a); } catch { return false; } }; };
   const has = {
-    column: q('SELECT 1 FROM pragma_table_info(?) WHERE name = ?'),
+    column: q('SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?'),
     attribute: q('SELECT 1 FROM attribute_def WHERE key = ?'),
     setting: q('SELECT 1 FROM setting_def WHERE key = ?'),
     kind: q('SELECT 1 FROM device_kind WHERE kind = ?'),
     metric: q('SELECT 1 FROM metric WHERE code = ?'),
     source: q('SELECT 1 FROM source WHERE code = ?'),
     action: q('SELECT 1 FROM device_action WHERE device_kind = ? AND action = ?'),
-    view: q("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?"),
+    view: q('SELECT 1 FROM information_schema.views WHERE table_schema = current_schema() AND table_name = ?'),
   };
   return async function exists(t) {
     const ref = String(t?.ref ?? '');

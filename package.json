@@ -2,7 +2,7 @@
   "name": "energiebee-core-prototype",
   "version": "0.1.0",
   "private": true,
-  "description": "Prototype of the EnergieBee unified energy core: adapters, bitemporal facts, half-hour build engine and a plain HTML front end.",
+  "description": "Prototype of the EnergieBee unified energy core: adapters, bitemporal facts, slot build engine on PostgreSQL (Prisma) and a plain HTML front end.",
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -18,13 +18,19 @@
     "service:install": "sh scripts/service.sh install",
     "service:uninstall": "sh scripts/service.sh uninstall",
     "service:status": "sh scripts/service.sh status",
-    "reset": "rm -f data/core.db data/core.db-wal data/core.db-shm && rm -rf data/raw/*",
+    "reset": "echo \"Drop and recreate the database named in DATABASE_URL, then: npm run db:migrate\"",
     "history:reconstruct": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/reconstruct-history.js",
     "retention": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/retention.js",
     "demo:users": "node --disable-warning=ExperimentalWarning scripts/demo-users.js",
     "demo:start": "node --disable-warning=ExperimentalWarning scripts/demo-start.js",
     "user:pin": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/set-pin.js",
-    "seed:homes": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/seed-homes.js"
+    "seed:homes": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/seed-homes.js",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "db:pull": "prisma db pull",
+    "db:copy-sqlite": "node --disable-warning=ExperimentalWarning scripts/sqlite-to-postgres.js",
+    "pretest": "node -e \"const h = await import('./test/helpers.js'); await h.dropLeftovers();\" --input-type=module"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.1",

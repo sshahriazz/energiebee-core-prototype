@@ -19,6 +19,7 @@
 // with the core's OWN credential, not a home's (Tariffscanner: TARIFFSCAN_USERNAME, TARIFFSCAN_PASSWORD),
 // reads it from .env whichever home's sync runs the step (SERVICE_CREDENTIALS).
 import { assertOwner } from '../adapters/contract.js';
+import { mapAsync } from './async.js';
 
 // Every role a home can need, in the order the sync runs them (a provider's own steps may sit
 // elsewhere: the Octopus postcode look-up runs before the inverter). scope is the usual one.
@@ -128,7 +129,7 @@ export function devOverride(row, impl, env = process.env) {
 export const licensed = (row, impl, env = process.env) => !!row.licence_confirmed || !!devOverride(row, impl, env);
 
 // Why a listed provider cannot be used for this home ({ reason, log }), or {} with its credentials.
-function gate(row, impl, site, conns) {
+async function gate(row, impl, site, conns) {
   if (!row.enabled) return { reason: `disabled: ${row.note || 'switched off'}`, log: true, status: 'disabled' };
   if (!licensed(row, impl)) return { reason: `unlicensed: ${row.note || 'the licence to store and serve its data is unconfirmed'}`, log: true, status: 'disabled' };
   for (const owner of [row.owner, impl?.owner ?? row.owner]) {
@@ -137,7 +138,7 @@ function gate(row, impl, site, conns) {
   if (!impl) return { reason: `adapter not built: no implementation registered for ${row.adapter}`, log: true, status: 'disabled' };
   if (row.scope === 'home' && impl.connection && !conns.has(impl.connection)) return { reason: 'not connected for this home', log: false, status: 'skipped' };
   if (row.needs_credentials && impl.credentials) {
-    const c = impl.credentials(site);
+    const c = await impl.credentials(site);
     if (c?.missing) return { reason: c.missing, log: true, status: 'skipped' };
     return { creds: c?.creds ?? {} };
   }
@@ -172,7 +173,7 @@ export async function plan(db, site, { conns = null } = {}) {
       const skip = (skipped, log, status) => out.push(hidden({ ...base, step: def?.steps[0]?.step ?? `${role}:${row.adapter}`, order,
         connection: def?.steps[0]?.connection ?? impl?.connection ?? null, run: false, chosen: false, log, skipped, status }, { def }));
       if (chosen && !additive) { skip(`fallback: ${chosen} is used`, false, 'skipped'); continue; }
-      const g = gate(row, impl, site, conns);
+      const g = await gate(row, impl, site, conns);
       if (g.reason) { skip(g.reason, g.log && !chosen, g.status); continue; }
       chosen ??= row.adapter;
       // Running on a development override of an unconfirmed licence: said on the entry (never otherwise present).
@@ -207,7 +208,7 @@ const lastLog = async (db, siteId) => {
 
 // How one used provider of a role did ({ status, reason }): its steps (and the steps of other roles
 // that also serve it) in the last sync run, else its own status hook, else its connection row.
-function usedStatus(db, site, used, log, conns) {
+async function usedStatus(db, site, used, log, conns) {
   const head = used[0];
   const roleDef = head.roleDef ?? head.def;
   const names = [...new Set([...used.filter((e) => e.run).map((e) => e.step), ...(roleDef?.via ?? [])])];
@@ -218,7 +219,7 @@ function usedStatus(db, site, used, log, conns) {
   if (ok) return { status: 'ok', reason: ok.shared ?? null };
   const sk = found.find((l) => l.skipped);
   if (sk) return { status: 'skipped', reason: sk.skipped };
-  if (roleDef?.status) return roleDef.status(db, site);
+  if (roleDef?.status) return await roleDef.status(db, site);
   const conn = used.map((e) => conns.get(e.connection)).find(Boolean);
   if (conn && ['ok', 'error', 'skipped'].includes(conn.status)) return { status: conn.status, reason: conn.last_error ?? null };
   return { status: 'skipped', reason: roleDef?.idle ?? (used.some((e) => e.run) ? 'not synced yet' : head.skipped) };
@@ -235,7 +236,7 @@ export async function providerStatus(db, site) {
   const entries = await plan(db, site);
   const log = await lastLog(db, site.id);
   const conns = new Map((await db.prepare('SELECT provider, status, last_error FROM connection WHERE site_id = ?').all(site.id)).map((c) => [c.provider, c]));
-  return ROLES.map(({ role, scope, label }) => {
+  return await mapAsync(ROLES, async ({ role, scope, label }) => {
     const list = entries.filter((e) => e.role === role);
     if (!list.length) return { role, label, adapter: null, status: 'none', origin: null, note: NO_PROVIDER, scope, reason: NO_PROVIDER, alternatives: [] };
     const chosen = list.filter((e) => e.chosen);
@@ -251,11 +252,11 @@ export async function providerStatus(db, site) {
       const demo = { status: 'skipped', reason: 'demo home: its data is generated, nothing is synced' };
       return { ...out, ...demo, ...(others.length ? { also: others.map((a) => ({ adapter: a, ...demo })) } : {}) };
     }
-    const res = { ...out, ...usedStatus(db, site, chosen.filter((e) => e.adapter === head.adapter), log, conns) };
+    const res = { ...out, ...await usedStatus(db, site, chosen.filter((e) => e.adapter === head.adapter), log, conns) };
     if (!others.length) return res;
-    return { ...res, also: others.map((a) => {
+    return { ...res, also: await mapAsync(others, async (a) => {
       const used = chosen.filter((e) => e.adapter === a);
-      return { adapter: a, ...usedStatus(db, site, used, log, conns), origin: used[0].origin, note: used[0].note };
+      return { adapter: a, ...await usedStatus(db, site, used, log, conns), origin: used[0].origin, note: used[0].note };
     }) };
   });
 }

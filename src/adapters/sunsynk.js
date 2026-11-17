@@ -107,10 +107,10 @@ export function parseDay(tz, date, json) {
   return { obs };
 }
 
-export function normaliseDay(siteId, tz, date, json, rawId) {
+export async function normaliseDay(siteId, tz, date, json, rawId) {
   const { obs, error } = parseDay(tz, date, json);
   if (error) return { error };
-  return { facts: ingestObservations(siteId, 'sunsynk_5min', obs, rawId).written };
+  return { facts: (await ingestObservations(siteId, 'sunsynk_5min', obs, rawId)).written };
 }
 
 const MONTH_LABELS = ['PV Generation', 'Load Power Consumption', 'Purchased electricity', 'Sold electricity', 'Charge Energy', 'Discharge Energy'];
@@ -131,10 +131,10 @@ export function parseMonth(tz, json) {
   return { obs };
 }
 
-export function normaliseMonth(siteId, tz, json, rawId) {
+export async function normaliseMonth(siteId, tz, json, rawId) {
   const { obs, error } = parseMonth(tz, json);
   if (error) return { error };
-  return { facts: ingestObservations(siteId, 'sunsynk_daily', obs, rawId).written };
+  return { facts: (await ingestObservations(siteId, 'sunsynk_daily', obs, rawId)).written };
 }
 
 // Realtime flow has no timestamp: the contract stamps it with the fetch time floored to 5 minutes.
@@ -149,10 +149,10 @@ export function parseFlow(json, at = nowSec()) {
   return { obs: Object.entries(points).filter(([, value]) => value !== null).map(([point, value]) => ({ point, ts, value })) };
 }
 
-export function normaliseFlow(siteId, json, rawId) {
+export async function normaliseFlow(siteId, json, rawId) {
   const { obs, error } = parseFlow(json);
   if (error) return { error };
-  return { facts: ingestObservations(siteId, 'sunsynk_live', obs, rawId).written };
+  return { facts: (await ingestObservations(siteId, 'sunsynk_live', obs, rawId)).written };
 }
 
 // ───────────── Sync ─────────────
@@ -187,14 +187,14 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
   for (const date of dates) {
     const r = await api(token, `/v1/plant/energy/${plantId}/day?date=${date}&id=${plantId}&lan=en`, site.id);
     const { rawId } = await landRaw({ source: 'sunsynk_5min', siteId: site.id, request: { url: r.url }, body: r.json });
-    const res = normaliseDay(site.id, tz, date, r.json, rawId);
+    const res = await normaliseDay(site.id, tz, date, r.json, rawId);
     if (res.error) await quarantine({ source: 'sunsynk_5min', siteId: site.id, request: { url: r.url }, body: r.json, reason: res.error });
     else out.days += res.facts;
   }
   for (const month of [...new Set(dates.map((d) => d.slice(0, 7)))]) {
     const r = await api(token, `/v1/plant/energy/${plantId}/month?date=${month}&id=${plantId}&lan=en`, site.id);
     const { rawId } = await landRaw({ source: 'sunsynk_daily', siteId: site.id, request: { url: r.url }, body: r.json });
-    out.months += normaliseMonth(site.id, tz, r.json, rawId).facts || 0;
+    out.months += (await normaliseMonth(site.id, tz, r.json, rawId)).facts || 0;
   }
   // Live flow and battery size from the first inverter.
   const inv = await api(token, `/v1/plant/${plantId}/inverters?page=1&limit=20&status=-1&type=-1`, site.id);
@@ -202,7 +202,7 @@ export async function syncSunsynk(site, { username, password, plantId: wanted },
   if (sn) {
     const flow = await api(token, `/v1/inverter/${sn}/flow`, site.id);
     const { rawId } = await landRaw({ source: 'sunsynk_live', siteId: site.id, request: { url: flow.url }, body: flow.json });
-    out.live = normaliseFlow(site.id, flow.json, rawId).facts || 0;
+    out.live = (await normaliseFlow(site.id, flow.json, rawId)).facts || 0;
     if (!site.battery_kwh) {
       try {
         // Usable capacity = the battery's reported capacity (Ah) × its voltage at that moment.

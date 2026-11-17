@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db, syncVatRules, vatRulesChanged } = await import('../src/db/db.js');
 const { EU_VAT_RULES, rulesFor, applyTaxes } = await import('../src/core/tax.js');
 const { taxesAt } = await import('../src/core/pricing.js');

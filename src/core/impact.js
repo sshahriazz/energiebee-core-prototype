@@ -1,7 +1,7 @@
 // Impact preview: what a change to the inputs would do to the slots already built, before it is made.
 // The change runs inside a savepoint that is rolled back, so nothing is kept; the builder's dry run
 // is compared before and after. Used for provider changes (bind, unbind) and any other input change.
-import { db } from '../db/db.js';
+import { db, rolledBack } from '../db/db.js';
 import { buildSite } from './build.js';
 import { nowSec, localDate, addDays } from './time.js';
 
@@ -16,9 +16,7 @@ export async function previewImpact(siteId, apply) {
   const last = addDays(localDate(site.timezone, nowSec()), -1);
   const read = async () => (await buildSite(siteId, first, last, { asOf: nowSec() + 1, dryRun: true })).hhRows; // +1: rows written this second are known
   const before = new Map((await read()).map((r) => [r.slot_start, r]));
-  await db.exec('SAVEPOINT impact_preview');
-  let after;
-  try { apply(); after = await read(); } finally { await db.exec('ROLLBACK TO impact_preview'); await db.exec('RELEASE impact_preview'); }
+  const after = await rolledBack(async () => { await apply(); return await read(); });
   const byField = {}; const days = new Set(); let changed = 0; let firstChanged = null; let lastChanged = null;
   for (const r of after) {
     const o = before.get(r.slot_start);

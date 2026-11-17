@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 
-useDb({ snapshot: true });
+await useDb({ snapshot: true });
 process.env.SECRET_KEY = 'delete-home-test-key-0123456789abcdef';
 const skip = !hasLive && 'no fixture database';
 
@@ -22,8 +22,8 @@ const { putSecret } = await import('../src/core/secrets.js');
 const { app } = await import('../src/server.js');
 
 const q = (n) => `"${n}"`;
-const tables = async () => (await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()).map((r) => r.name);
-const siteCols = async (t) => (await db.prepare('SELECT name FROM pragma_table_info(?)').all(t)).map((r) => r.name).filter((c) => c === 'site_id');
+const tables = async () => (await db.prepare("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'").all()).map((r) => r.name);
+const siteCols = async (t) => (await db.prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?').all(t)).map((r) => r.name).filter((c) => c === 'site_id');
 // Every row of every table that names the home, as a count per table.
 async function rowsOf(siteId) {
   const out = {};
@@ -58,7 +58,7 @@ await test('setup: the real home A (owned), a second home B with its own data, a
   const dev = await addDevice({ siteId: B.id, kind: 'meter_import', provider: 'test', externalRef: 'B-METER' });
   await putIntervals(await seriesId('device', dev.id, 'grid_import_kwh', 'octopus_meter'), [{ start: 1792969200, end: 1792971000, value: 0.4 }]);
   await putSecret(A.id, 'sunsynk', { username: 'u', password: 'p' });
-  await db.prepare("INSERT OR IGNORE INTO connection (site_id, provider, external_ref) VALUES (?, 'sunsynk', 'plant-1')").run(A.id);
+  await db.prepare("INSERT INTO connection (site_id, provider, external_ref) VALUES (?, 'sunsynk', 'plant-1') ON CONFLICT DO NOTHING").run(A.id);
   // A raw answer only A uses, and a carbon answer landed while syncing A that a region series (every home) reads.
   ownRaw = (await landRaw({ source: 'octopus_meter', siteId: A.id, request: { path: '/a-only' }, body: { only: 'A' } })).rawId;
   ownFile = path.join(dataDir, (await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(ownRaw)).file);
@@ -109,8 +109,7 @@ await test('deleting A removes every row that belongs to it and its raw files; B
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM rate_interval r LEFT JOIN raw_payload p ON p.id = r.raw_id WHERE r.raw_id IS NOT NULL AND p.id IS NULL').get()).n, 0, 'every shared tariff row keeps its raw answer');
   // B is exactly as it was; the database is consistent.
   assert.equal(await fingerprint(B.id), bBefore);
-  assert.deepEqual(await db.prepare('PRAGMA foreign_key_check').all(), []);
-  assert.equal((await db.prepare('PRAGMA integrity_check').get()).integrity_check, 'ok');
+  // Foreign keys are checked by Postgres when the deletion commits: a dangling row would have failed it.
 });
 
 await test('over HTTP: the preview, then DELETE /api/sites/:id with the typed name; the home is gone for its owner', { skip }, async () => {
@@ -131,5 +130,4 @@ await test('over HTTP: the preview, then DELETE /api/sites/:id with the typed na
   assert.equal(ok.json.rows.site, 1);
   assert.equal((await call('GET', `/api/sites/${B.id}/delete-preview`)).status, 404, 'gone');
   assert.ok(!(await call('GET', '/api/sites')).json.some?.((s) => s.id === B.id));
-  assert.deepEqual(await db.prepare('PRAGMA foreign_key_check').all(), []);
 });

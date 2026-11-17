@@ -39,7 +39,7 @@ export async function runControlCycle(siteId, { driver, now = Date.now(), maxAtt
     out.devices.push(step);
     // 1. Ask the device. Its answers become state facts (checked against the channels); receipts come back separately.
     const obs = await driver.read(device, { now });
-    const ing = ingestObservations(siteId, driver.source, obs, null, { deviceId: device.id });
+    const ing = await ingestObservations(siteId, driver.source, obs, null, { deviceId: device.id });
     step.rejected = ing.rejected;
     for (const ack of ing.acks) {
       const c = ack.commandId != null ? await getCommand(ack.commandId) : null;

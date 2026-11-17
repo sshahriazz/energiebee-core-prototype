@@ -65,7 +65,7 @@ async function feedCells(feed, slots, now, served, slotS) {
   let firstEver = null;
   const phase = ((slots[0] % slotS) + slotS) % slotS;
   if (feed.kind === 'reading') {
-    for (const r of await db.prepare(`SELECT ts - ((ts - ${phase}) % ${slotS}) AS s, SUM(superseded_at IS NULL) AS n, MIN(recorded_at) AS t FROM reading
+    for (const r of await db.prepare(`SELECT ts - ((ts - ${phase}) % ${slotS}) AS s, SUM((superseded_at IS NULL)::int) AS n, MIN(recorded_at) AS t FROM reading
         WHERE series_id = ? AND ts >= ? AND ts < ? GROUP BY s`).all(feed.series, slots[0], slots[slots.length - 1] + slotS)) { count.set(r.s, r.n); first.set(r.s, r.t); }
     firstEver = (await db.prepare('SELECT MIN(recorded_at) AS t FROM reading WHERE series_id = ?').get(feed.series))?.t;
   } else if (feed.kind === 'interval' || feed.kind === 'cover') {
@@ -169,7 +169,7 @@ export async function trustFor(siteId, fromDate, toDate) {
   // ── Headline ──
   const state = (st) => hh.filter((r) => r.state === st).length;
   const tallyChecks = (st) => checks.filter((c) => c.status === st).length;
-  const factStats = await db.prepare(`SELECT COUNT(*) AS n, SUM(raw_id IS NOT NULL) AS linked, COUNT(DISTINCT raw_id) AS payloads FROM (
+  const factStats = await db.prepare(`SELECT COUNT(*) AS n, SUM((raw_id IS NOT NULL)::int) AS linked, COUNT(DISTINCT raw_id) AS payloads FROM (
       SELECT r.raw_id FROM reading r JOIN series se ON se.id = r.series_id WHERE r.superseded_at IS NULL AND r.ts >= ? AND r.ts < ?
         AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?)))
       UNION ALL

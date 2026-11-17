@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 import { mapAsync } from "../src/core/async.js";
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { makeHome, fillSlots } = await import('./groups-fixtures.js');
 const G = await import('../src/core/groups.js');

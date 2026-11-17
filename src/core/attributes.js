@@ -152,7 +152,7 @@ async function writeValue(subject, def, v, source, origin, note) {
   }
   const best = await valueAt(subject.col, subject.id, def.key);
   if (def.site_column && subject.col === 'site_id' && best?.value != null) {
-    await db.prepare(`UPDATE site SET ${def.site_column} = ? WHERE id = ? AND ${def.site_column} IS NOT ?`).run(best.value, subject.id, best.value);
+    await db.prepare(`UPDATE site SET ${def.site_column} = ? WHERE id = ? AND ${def.site_column} IS DISTINCT FROM ?`).run(best.value, subject.id, best.value);
   }
   return best;
 }

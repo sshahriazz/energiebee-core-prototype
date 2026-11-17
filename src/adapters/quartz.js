@@ -36,6 +36,6 @@ export async function syncQuartz(site) {
     const t = Math.round(asUtc(k) / 900) * 900;
     return { point: 'power_kw', start: t, end: t + 900, issuedAt: issued, value: kw };
   });
-  const n = ingestObservations(site.id, 'quartz', rows, rawId).forecasts;
+  const n = (await ingestObservations(site.id, 'quartz', rows, rawId)).forecasts;
   return { forecasts: n };
 }

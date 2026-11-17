@@ -53,7 +53,7 @@ export async function syncWeather(site, pastDays) {
       if (t <= now) past.push({ point, start: t - 3600, end: t, value: v }); else fut.push({ point, start: t - 3600, end: t, issuedAt: now, value: v });
     }
   });
-  const out = ingestObservations(site.id, 'open_meteo', [...past, ...fut], rawId);
+  const out = await ingestObservations(site.id, 'open_meteo', [...past, ...fut], rawId);
   const n = out.written; const f = out.forecasts;
   return { facts: n, forecasts: f };
 }

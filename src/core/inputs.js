@@ -47,7 +47,7 @@ async function requireReasonForPast(siteId, from, reason, what) {
 }
 
 // deviceId given: only that device's binding (null = the home's own); omitted: every open binding of the role.
-const openBindings = async (siteId, role, deviceId) => await db.prepare(`SELECT * FROM binding WHERE site_id = ? AND role = ? AND superseded_at IS NULL AND valid_to IS NULL${deviceId === undefined ? '' : ' AND device_id IS ?'}`).all(siteId, role, ...(deviceId === undefined ? [] : [deviceId]));
+const openBindings = async (siteId, role, deviceId) => await db.prepare(`SELECT * FROM binding WHERE site_id = ? AND role = ? AND superseded_at IS NULL AND valid_to IS NULL${deviceId === undefined ? '' : ' AND device_id IS NOT DISTINCT FROM ?'}`).all(siteId, role, ...(deviceId === undefined ? [] : [deviceId]));
 
 // End the open binding(s) of a role at `at`: the role has no source from then on. Nothing before `at`
 // changes. The ended row is superseded and re-recorded with its end, so "as known before" still sees it open.

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { syncWeather } = await import('../src/adapters/openmeteo.js');
 const { seriesId, readForecastOfRecord, readForecastAsOf, readReadings } = await import('../src/core/facts.js');

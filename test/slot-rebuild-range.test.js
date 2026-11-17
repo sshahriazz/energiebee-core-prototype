@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { createSite, setSlotLength } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, agreeTariff, addDevice } = await import('../src/core/tariffs.js');
@@ -34,7 +34,7 @@ await test('a home with three days of data rebuilds exactly those three days in 
   assert.deepEqual(await builtDays(site.id), ['2025-06-10', '2025-06-11', '2025-06-12']);
   assert.equal(localDate(TZ, (await factSpan(site.id)).last), '2025-06-12');
   for (const slotS of [900, 3600]) {
-    const r = setSlotLength(site.id, slotS);
+    const r = await setSlotLength(site.id, slotS);
     assert.equal(r.queued, true);
     const done = (await processQueue()).find((x) => x.siteId === site.id);
     assert.deepEqual([done.from, done.to, done.days], ['2025-06-10', '2025-06-12', 3]);
@@ -50,7 +50,7 @@ await test('a home whose data reaches today rebuilds through today', async () =>
   const first = addDays(today, -2);
   const site = await home('to-today', first, now - (now % 1800));
   assert.equal((await builtDays(site.id)).at(-1), today);
-  setSlotLength(site.id, 900);
+  await setSlotLength(site.id, 900);
   const done = (await processQueue()).find((x) => x.siteId === site.id);
   assert.deepEqual([done.from, done.to], [first, today]);
 });

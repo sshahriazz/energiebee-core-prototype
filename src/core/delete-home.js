@@ -17,26 +17,28 @@
 // row fails the delete instead of half-doing it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, dataDir } from '../db/db.js';
+import { db, tx, dataDir, tableNames, columnsOf } from '../db/db.js';
 import { isSyncing } from '../jobs/sync.js';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const q = (name) => `"${String(name).replace(/"/g, '""')}"`;
 
-// Every foreign key of every table: { child, from, parent, to } (to: the parent's primary key when not named).
+// Every single-column foreign key of every table: { child, from, parent, to }. (A two-column key, region_alias and
+// site_region to region, never points at a home's rows.)
 async function foreignKeys() {
-  const tables = (await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()).map((r) => r.name);
-  const pk = async (t) => (await db.prepare(`SELECT name FROM pragma_table_info(?) WHERE pk = 1`).get(t))?.name ?? 'rowid';
-  const out = [];
-  for (const child of tables) {
-    for (const f of await db.prepare('SELECT "table" AS parent, "from", "to" FROM pragma_foreign_key_list(?)').all(child)) {
-      out.push({ child, from: f.from, parent: f.parent, to: f.to ?? await pk(f.parent) });
-    }
-  }
+  const tables = await tableNames();
+  const out = await db.prepare(`SELECT kcu.table_name AS child, kcu.column_name AS "from", ccu.table_name AS parent, ccu.column_name AS "to"
+      FROM information_schema.referential_constraints rc
+      JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
+      JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name AND ccu.constraint_schema = rc.unique_constraint_schema
+     WHERE rc.constraint_schema = current_schema()
+       AND (SELECT COUNT(*) FROM information_schema.key_column_usage k WHERE k.constraint_name = rc.constraint_name AND k.constraint_schema = rc.constraint_schema) = 1
+     ORDER BY 1, 2`).all();
   return { tables, out };
 }
 
-const inJson = (col) => `${q(col)} IN (SELECT value FROM json_each(?))`;
+// A column's value is one of a JSON list (compared as text, so ids and text keys work alike).
+const inJson = (col) => `${q(col)}::text IN (SELECT jsonb_array_elements_text(?::jsonb))`;
 
 /**
  * What deleting the home would remove: { tables: { name: rows }, raw: { deleted, kept }, files }, and the plan used to
@@ -75,11 +77,11 @@ export async function homeFootprint(siteId) {
   const devices = (await db.prepare('SELECT id FROM device WHERE site_id = ?').all(id)).map((r) => r.id);
   await take('device', 'id', devices);
   const series = (await db.prepare(`SELECT id FROM series WHERE (subject_kind = 'site' AND subject_id = ?)
-    OR (subject_kind = 'device' AND subject_id IN (SELECT value FROM json_each(?)))`).all(String(id), JSON.stringify(devices.map(String)))).map((r) => r.id);
+    OR (subject_kind = 'device' AND subject_id IN (SELECT jsonb_array_elements_text(?::jsonb))))`).all(String(id), JSON.stringify(devices.map(String)))).map((r) => r.id);
   await take('series', 'id', series);
   for (const t of tables) {
     if (t === 'raw_payload' || t === 'site' || t === 'device') continue;
-    const hasCol = await db.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = 'site_id'").get(t);
+    const hasCol = (await columnsOf(t)).includes('site_id');
     const fk = fks.some((f) => f.child === t && f.from === 'site_id');
     if (hasCol && !fk) await take(t, 'site_id', [id]);
   }
@@ -110,7 +112,7 @@ export async function homeFootprint(siteId) {
   const keptRaw = new Set();
   for (const f of rawRefs) {
     const going = conds.get(f.child);
-    const sql = `SELECT DISTINCT ${q(f.from)} AS v FROM ${q(f.child)} WHERE ${q(f.from)} IN (SELECT id FROM raw_payload WHERE site_id = ?)${going ? ` AND NOT COALESCE((${where(f.child)}), 0)` : ''}`;   // NULL site_id (a shared row) stays
+    const sql = `SELECT DISTINCT ${q(f.from)} AS v FROM ${q(f.child)} WHERE ${q(f.from)} IN (SELECT id FROM raw_payload WHERE site_id = ?)${going ? ` AND NOT COALESCE((${where(f.child)}), false)` : ''}`;   // NULL site_id (a shared row) stays
     for (const r of await db.prepare(sql).all(id, ...(going ? params(f.child) : []))) keptRaw.add(r.v);
   }
   return {
@@ -138,14 +140,14 @@ export async function deleteHome(user, site, { confirm } = {}) {
   const { conds, where, params } = f.plan;
   const removed = {};
   await tx(async () => {
-        await db.exec('PRAGMA defer_foreign_keys = ON');
+        await db.exec('SET CONSTRAINTS ALL DEFERRED');
         // Children first is not needed with deferred checks; the site row last keeps ON DELETE CASCADE from doing it twice.
         for (const t of [...conds.keys()].filter((x) => x !== 'site')) {
           const n = (await db.prepare(`DELETE FROM ${q(t)} WHERE ${where(t)}`).run(...params(t))).changes;
           if (n) removed[t] = n;
         }
         const kept = JSON.stringify(f.raw.kept);
-        await db.prepare('UPDATE raw_payload SET site_id = NULL WHERE site_id = ? AND id IN (SELECT value FROM json_each(?))').run(site.id, kept);
+        await db.prepare('UPDATE raw_payload SET site_id = NULL WHERE site_id = ? AND id::text IN (SELECT jsonb_array_elements_text(?::jsonb))').run(site.id, kept);
         const rawGone = (await db.prepare('DELETE FROM raw_payload WHERE site_id = ?').run(site.id)).changes;
         if (rawGone) removed.raw_payload = rawGone;
         removed.site = (await db.prepare('DELETE FROM site WHERE id = ?').run(site.id)).changes;

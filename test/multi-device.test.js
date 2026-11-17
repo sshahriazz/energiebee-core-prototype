@@ -7,7 +7,7 @@ import { useDb, hasLive } from './helpers.js';
 import { mapAsync } from "../src/core/async.js";
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { buildSite } = await import('../src/core/build.js');
 const { bind, unbind } = await import('../src/core/inputs.js');
@@ -44,8 +44,8 @@ await test('two inverters on one home are added: same slots as the single invert
         { point: 'Grid', ts, value: g('grid_import_w', ts) - g('grid_export_w', ts) }, { point: 'Battery', ts, value: g('battery_discharge_w', ts) - g('battery_charge_w', ts) });
       if (m.battery_soc_pct.has(ts)) obs.push({ point: 'SOC', ts, value: m.battery_soc_pct.get(ts) });   // a percentage: each battery reports its own level
     }
-    ingestObservations(SITE, 'sunsynk_5min', obs, null, { deviceId });
-    ingestObservations(SITE, 'sunsynk_daily', totals.map((t) => ({ point: label[t.metric], start: t.start_ts, end: t.end_ts, value: t.value * share })), null, { deviceId });
+    await ingestObservations(SITE, 'sunsynk_5min', obs, null, { deviceId });
+    await ingestObservations(SITE, 'sunsynk_daily', totals.map((t) => ({ point: label[t.metric], start: t.start_ts, end: t.end_ts, value: t.value * share })), null, { deviceId });
   }
 
   const [dStart] = dayBounds(site.timezone, days[Math.floor(days.length / 2)]);
@@ -73,7 +73,7 @@ await test('two inverters on one home are added: same slots as the single invert
 
   // The planner read adds the same devices.
   const [from] = dayBounds(site.timezone, first); const [, to] = dayBounds(site.timezone, last);
-  const pr = counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: await slotS(), asOf: Date.now() + 1000 });
+  const pr = await counterDifferenceSeries(SITE, 'solar_kwh', from, to, { stepS: await slotS(), asOf: Date.now() + 1000 });
   let sb = 0; let sp = 0;
   for (const h of after) { sb += h.solar || 0; sp += pr.values[(h.slot_start - pr.start) / await slotS()] ?? 0; }
   assert.ok(Math.abs(sp - sb) / sb < 0.001, `planner ${sp} vs builder ${sb}`);

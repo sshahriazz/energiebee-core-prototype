@@ -248,7 +248,7 @@ async function build(siteId, fromDate, toDate, opts) {
   const weatherBound = await bindingsFor(siteId, 'weather_temp', asOf);
   const evBound = await bindingsFor(siteId, 'ev_dispatch', asOf);
   const forecastBound = await bindingsFor(siteId, 'solar_forecast', asOf);
-  const intervalsFrom = async (bound, series, lo, hi) => (await flatMapAsync(bound, async (bd) => (await readIntervals([series(bd.source)], Math.max(lo, bd.from), Math.min(hi, bd.to))).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to))).sort((a, b) => a.start_ts - b.start_ts);
+  const intervalsFrom = async (bound, series, lo, hi) => (await flatMapAsync(bound, async (bd) => (await readIntervals([await series(bd.source)], Math.max(lo, bd.from), Math.min(hi, bd.to))).filter((f) => f.start_ts >= bd.from && f.start_ts < bd.to))).sort((a, b) => a.start_ts - b.start_ts);
   const meterSource = (slot) => sourceAt(meterBound, slot) ?? meterBound[0]?.source ?? null;
   const meterFacts = {};
   // Gas in m3 is converted per gas day with National Gas's calorific value for the meter's zone:
@@ -296,7 +296,7 @@ async function build(siteId, fromDate, toDate, opts) {
   const solarFc = [];
   for (const source of [...new Set(forecastBound.map((bd) => bd.source))]) {   // in priority order: the first source with a forecast for a slot wins
     const rows = await db.prepare('SELECT start_ts, end_ts, issued_at, value FROM forecast_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ? AND issued_at <= start_ts AND issued_at <= ?')
-          .all(await sid('solar_kwh', source), winStart, winEnd, now);
+          .all(await sid('solar_kwh', source), winStart, winEnd, Math.floor(now));
     const best = new Map();
     for (const f of rows) if (!best.has(f.start_ts) || f.issued_at > best.get(f.start_ts).issued_at) best.set(f.start_ts, f);
     const covered = new Set(solarFc.map((f) => fl(f.start_ts)));
@@ -704,7 +704,8 @@ async function build(siteId, fromDate, toDate, opts) {
           const ins = db.prepare(`INSERT INTO site_day (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
           for (const r of dayRows) await ins.run(...cols.map((c) => (typeof r[c] === 'number' && !Number.isFinite(r[c]) ? null : r[c] ?? null)));
         }
-        const insC = db.prepare('INSERT OR REPLACE INTO check_result (site_id, local_date, check_code, status, measured, tolerance, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        const insC = db.prepare(`INSERT INTO check_result (site_id, local_date, check_code, status, measured, tolerance, detail) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (site_id, local_date, check_code) DO UPDATE SET status = excluded.status, measured = excluded.measured, tolerance = excluded.tolerance, detail = excluded.detail`);
         for (const c of checks) await insC.run(siteId, ...c);
         const insR = db.prepare(`INSERT INTO site_day_revision (site_id, local_date, revised_at, method_version, reason, slots_final, slots_provisional, slots_missing,
       solar, home, grid_import, grid_export, gas, total_cost, saving, checks, inputs, changed) VALUES (${Array(18).fill('?').join(',')})`);

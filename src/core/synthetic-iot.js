@@ -140,11 +140,11 @@ export const isSyntheticSource = (code) => String(code ?? '').startsWith('synthe
 export const isSyntheticDevice = (device) => device?.provider === 'synthetic';
 
 async function ensureSources() {
-  const ins = db.prepare('INSERT OR IGNORE INTO source (code, name, contract, traits) VALUES (?, ?, ?, ?)');
+  const ins = db.prepare('INSERT INTO source (code, name, contract, traits) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING');
   const units = { synthetic_plug: 'kWh counter, W, 0/1', synthetic_heatpump: 'kWh counters, degC, 0/1', synthetic_evcharger: 'kWh counter, W, 0/1', synthetic_battery: '%, W', synthetic_sensor: 'degC' };
   for (const [code, name] of Object.entries(SOURCE_NAMES)) await ins.run(code, name, contract(units[code]), JSON.stringify({ holdS: STEP_S }));
   // The one metric the registry has no code for yet: a smart plug's relay.
-  await db.prepare("INSERT OR IGNORE INTO metric (code, label, unit, time_role, aggregation, domain) VALUES ('plug_on', 'Smart plug relay on', '0/1', 'instant', 'mean', 'plug')").run();
+  await db.prepare("INSERT INTO metric (code, label, unit, time_role, aggregation, domain) VALUES ('plug_on', 'Smart plug relay on', '0/1', 'instant', 'mean', 'plug') ON CONFLICT DO NOTHING").run();
 }
 
 // The devices of a home by key, with their ids.
@@ -223,12 +223,12 @@ export async function createSyntheticIotHome({ days = 3, now = nowSec() } = {}) 
     for (const k of Object.keys(all)) all[k].push(...r.obs[k]);
   }
   all.sensor.push({ point: 'firmware_temp', ts: start + 3600, value: 41 });   // a point nobody mapped: reported, never stored
-  for (const d of DEVICES) ingestObservations(site.id, d.source, all[d.key], null, { deviceId: dev[d.key].id, now });
+  for (const d of DEVICES) await ingestObservations(site.id, d.source, all[d.key], null, { deviceId: dev[d.key].id, now });
 
   // The battery reports its own settings once (the simulated device in memory).
   const driver = await batteryDriver(dev.battery);
   const stateObs = await driver.read(dev.battery, { now: histEnd * 1000 });
-  ingestObservations(site.id, 'synthetic_battery', stateObs, null, { deviceId: dev.battery.id, now });
+  await ingestObservations(site.id, 'synthetic_battery', stateObs, null, { deviceId: dev.battery.id, now });
   return { site: await db.prepare('SELECT * FROM site WHERE id = ?').get(site.id), created: true };
 }
 
@@ -263,7 +263,7 @@ export async function simulatePeriods(siteId, { periods = 1, now = nowSec() } = 
     const r = stepAll(next, prev, { tz: site.timezone });
     const before = Object.fromEntries(await mapAsync(DEVICES, async (d) => [d.key, await snapshotCounters(dev[d.key])]));
     const results = {};
-    for (const d of DEVICES) results[d.key] = ingestObservations(siteId, d.source, r.obs[d.key], null, { deviceId: dev[d.key].id, now });
+    for (const d of DEVICES) results[d.key] = await ingestObservations(siteId, d.source, r.obs[d.key], null, { deviceId: dev[d.key].id, now });
     lastStep = { ts: next, obs: r.obs, results, before };
     prev = r.prev; ts = next; added++;
   }
@@ -331,7 +331,7 @@ export async function sendTestCommand(siteId, deviceId, { targetSocPct = null } 
   await cycle(1);                      // read it back: acknowledged when the device itself reports the setting
   // The demo battery responds: charging power over the check period, generated and labelled like the rest.
   const obs = []; for (let t = ws + 300; t < ws + 900; t += STEP_S) obs.push({ point: 'charge_power', ts: t, value: 2400 });
-  ingestObservations(siteId, 'synthetic_battery', obs, null, { deviceId, now: nowSec() + 600 });
+  await ingestObservations(siteId, 'synthetic_battery', obs, null, { deviceId, now: nowSec() + 600 });
   await sleep(5);
   await cycle(2);                      // the effect check
   const c = await getCommand(id);

@@ -80,13 +80,13 @@ const gbRegion = (site) => {
 // Tariffs on offer now in a region: an electricity import tariff with a unit row in force now.
 const OFFERED = `t.provider = 'tariffscanner' AND t.region = ? AND t.fuel = 'electricity' AND t.direction = 'import'
   AND EXISTS (SELECT 1 FROM rate_interval r WHERE r.tariff_id = t.id AND r.site_id IS NULL AND r.component = 'unit' AND r.superseded_at IS NULL
-    AND r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ?)`;
+    AND r.valid_from <= ? AND COALESCE(r.valid_to, 9000000000) > ?)`;
 
 function tsKind(structure) { return structure === 'e7' ? 'two_rate' : 'one_price'; }
 
 async function tsOption(t, nowTs, market) {
   const rows = await db.prepare(`SELECT component, register, payment_method, price_ex_vat FROM rate_interval WHERE tariff_id = ? AND site_id IS NULL AND superseded_at IS NULL
-    AND component IN ('unit', 'standing') AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY payment_method, component, register`).all(t.id, nowTs, nowTs);
+    AND component IN ('unit', 'standing') AND valid_from <= ? AND COALESCE(valid_to, 9000000000) > ? ORDER BY payment_method, component, register`).all(t.id, nowTs, nowTs);
   const methods = [...new Set(rows.map((r) => r.payment_method))];
   const options = methods.map((pm) => {
     const mine = rows.filter((r) => r.payment_method === pm);
@@ -123,12 +123,12 @@ registerPickerSource({
     await backfillSuppliers();
     const now = nowSec();
     return await db.prepare(`SELECT s.code, s.name, COUNT(*) AS tariffs FROM tariff t JOIN supplier s ON s.id = t.supplier_id
-      WHERE ${OFFERED} GROUP BY s.id ORDER BY s.name COLLATE NOCASE`).all(gbRegion(site), now, now);
+      WHERE ${OFFERED} GROUP BY s.id ORDER BY lower(s.name)`).all(gbRegion(site), now, now);
   },
   async listTariffs(site, sup) {
     const now = nowSec();
     const rows = await db.prepare(`SELECT t.*, s.name AS supplier_name FROM tariff t JOIN supplier s ON s.id = t.supplier_id
-      WHERE ${OFFERED} AND s.id = ? ORDER BY t.name COLLATE NOCASE, t.structure, t.tariff_code`).all(gbRegion(site), now, now, sup.id);
+      WHERE ${OFFERED} AND s.id = ? ORDER BY lower(t.name), t.structure, t.tariff_code`).all(gbRegion(site), now, now, sup.id);
     return await mapAsync(rows, async (t) => await tsOption(t, now, 'GB'));
   },
   async choose(site, tariff, choice) {
@@ -239,8 +239,8 @@ async function vatRateNow(country, ts) {
 }
 export async function priceSummary(site, tariffCode, now = nowSec()) {
   const tz = site.timezone || 'Europe/London';
-  const q = db.prepare(`SELECT r.valid_from, IFNULL(r.valid_to, ?) AS valid_to, r.price_ex_vat AS p FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
-    WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from < ? AND IFNULL(r.valid_to, 9000000000) > ? ORDER BY r.valid_from`);
+  const q = db.prepare(`SELECT r.valid_from, COALESCE(r.valid_to, ?) AS valid_to, r.price_ex_vat AS p FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
+    WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from < ? AND COALESCE(r.valid_to, 9000000000) > ? ORDER BY r.valid_from`);
   // Today; else the latest day the home holds (a tariff previewed or read some days ago), named in `day`.
   let day = localDate(tz, now);
   let [a, b] = dayBounds(tz, day);
@@ -440,7 +440,7 @@ export async function tariffChoice(site) {
   const avail = src ? src.available(site) : { available: false, reason: 'no tariff list for this market yet' };
   const cur = await db.prepare(`SELECT a.valid_from, a.payment_method, d.provider AS meter, d.id AS device_id, t.tariff_code, t.name, t.structure, s.code AS supplier_code, s.name AS supplier_name
     FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id LEFT JOIN supplier s ON s.id = t.supplier_id
-    WHERE a.site_id = ? AND d.kind = 'meter_import' AND d.retired_at IS NULL AND a.superseded_at IS NULL AND a.valid_from <= ? AND IFNULL(a.valid_to, 9000000000) > ?
+    WHERE a.site_id = ? AND d.kind = 'meter_import' AND d.retired_at IS NULL AND a.superseded_at IS NULL AND a.valid_from <= ? AND COALESCE(a.valid_to, 9000000000) > ?
     ORDER BY a.valid_from DESC LIMIT 1`).get(site.id, nowSec(), nowSec());
   const hours = cur ? (await db.prepare(`SELECT start_min, end_min FROM register_window WHERE device_id = ? AND superseded_at IS NULL ORDER BY start_min`).all(cur.device_id))
     .map((w) => ({ from: hhmm(w.start_min), to: hhmm(w.end_min) })) : [];

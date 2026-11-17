@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 globalThis.fetch = async (url) => { throw new Error(`no network in tests: ${url}`); };
 const m = await import('../scripts/lib/multi-market.js');
 const { db } = await import('../src/db/db.js');
@@ -169,7 +169,7 @@ await test('plain words: each step says what happened, with the slot\'s own numb
 });
 
 await test('plain words: two quarter-hour prices in a half-hour are named and averaged (NL rebuilt at 30 minutes)', async () => {
-  setSlotLength(nl.site.id, 1800);
+  await setSlotLength(nl.site.id, 1800);
   await buildSite(nl.site.id, m.NL.from, m.NL.to, { reason: 'explain test' });
   const rows = await m.hhRows(nl.site.id, m.NL.from, m.NL.from);
   assert.ok(rows.every((r) => r.dur_s === 1800));

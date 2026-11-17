@@ -6,7 +6,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const calls = [];
 globalThis.fetch = async (url) => { calls.push(String(url)); throw new Error(`no network in tests: ${url}`); };
 
@@ -24,7 +24,7 @@ const { ORIGINS } = await import('../src/core/provenance.js');
 const { createSite } = await import('../src/core/sites.js');
 const { app } = await import('../src/server.js');
 
-const conn = async (siteId, ...providers) => { for (const p of providers) await db.prepare('INSERT OR IGNORE INTO connection (site_id, provider) VALUES (?, ?)').run(siteId, p); };
+const conn = async (siteId, ...providers) => { for (const p of providers) await db.prepare('INSERT INTO connection (site_id, provider) VALUES (?, ?) ON CONFLICT DO NOTHING').run(siteId, p); };
 const runSteps = async (site) => (await P.plan(db, site)).filter((e) => e.run).map((e) => e.step);
 const rowsOf = async (market) => (await db.prepare("SELECT * FROM market_provider WHERE market_code = ? ORDER BY role, priority, adapter").all(market)).map((r) => ({ ...r }));
 

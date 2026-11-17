@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { app } = await import('../src/server.js');
 const V = await import('../public/js/devices-view.js');
 const { runEmulator } = await import('../scripts/push-emulator.mjs');

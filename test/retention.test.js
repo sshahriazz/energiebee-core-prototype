@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db, dataDir } = await import('../src/db/db.js');
 const { landRaw, quarantine, seriesId, putReadings, putIntervals, readForecastOfRecord } = await import('../src/core/facts.js');
 const { runRetention, retentionSettings, runMaintenance, endpointOf, MIN_FORECAST_DAYS } = await import('../src/core/maintenance.js');
@@ -79,7 +79,6 @@ await test('raw payloads: a dry run deletes nothing; apply deletes only old payl
   assert.ok(fs.existsSync(filesBefore[1]));
   assert.equal(fs.existsSync(orphanOld), false);
   assert.ok(fs.existsSync(orphanNew), 'a fresh file without a row is left alone (it may be landing now)');
-  assert.deepEqual(await db.prepare('PRAGMA foreign_key_check').all(), []);
   const again = await runRetention({ now: NOW, dryRun: false });
   assert.deepEqual([again.raw.deleted, again.orphanFiles.deleted], [0, 0], 'idempotent');
   // A payload deleted by retention is landed again when the same answer comes back.

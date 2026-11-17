@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const cmd = await import('../src/core/commands.js');
 const plans = await import('../src/core/plans.js');
@@ -148,7 +148,7 @@ await test('gate: a plan that ran on stale inputs cannot queue a charge, but a p
   const first = await enqueue(b.id, charge());
   assert.equal(first.written, true);
   const start = Math.floor(BASE / 1800) * 1800;
-  const stale = plans.savePlan({ siteId: SITE, status: 'stale_inputs', error: 'grid_w 5400 s old (limit 3600 s)', planStart: start, slotS: 1800, horizonH: 24, methodVersion: 't', devices: [{ deviceId: b.id }], slots: [], now: ms(BASE) - 120000, scenario: 'shadow' });
+  const stale = await plans.savePlan({ siteId: SITE, status: 'stale_inputs', error: 'grid_w 5400 s old (limit 3600 s)', planStart: start, slotS: 1800, horizonH: 24, methodVersion: 't', devices: [{ deviceId: b.id }], slots: [], now: ms(BASE) - 120000, scenario: 'shadow' });
   const refused = await enqueue(b.id, charge({ limitPct: 90 }), { planRunId: stale.runId });
   assert.deepEqual([refused.written, refused.reason, refused.blocks.map((x) => x.gate)], [false, 'blocked', ['stale_inputs']]);
   assert.equal((await cmd.getCommand(first.command.id)).status, 'pending', 'a refused command does not cancel the open one');

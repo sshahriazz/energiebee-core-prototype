@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { seriesId, putReadings } = await import('../src/core/facts.js');
 const { sinceWatermark, earliestChange } = await import('../src/jobs/sync.js');
@@ -42,6 +42,6 @@ await test('a batch with a repeated timestamp keeps one current row, the last va
 await test('an empty answer is an error when data is required', { skip }, async () => {
   await db.prepare("INSERT INTO source (code, name, contract) VALUES ('empty_vendor', 'Empty (test)', '{}')").run();
   await defineChannel(SITE, 'empty_vendor', 'p', 'solar_w');
-  assert.throws(() => ingestObservations(SITE, 'empty_vendor', [], null, { requireData: true }), /empty answer/);
-  assert.deepEqual(ingestObservations(SITE, 'empty_vendor', []), { written: 0, forecasts: 0, states: 0, counters: 0, derived: 0, stuck: 0, acks: [], rejected: 0, unmapped: [] }, 'without the option an empty batch is quiet');
+  await assert.rejects(async () => await ingestObservations(SITE, 'empty_vendor', [], null, { requireData: true }), /empty answer/);
+  assert.deepEqual(await ingestObservations(SITE, 'empty_vendor', []), { written: 0, forecasts: 0, states: 0, counters: 0, derived: 0, stuck: 0, acks: [], rejected: 0, unmapped: [] }, 'without the option an empty batch is quiet');
 });

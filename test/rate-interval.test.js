@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db, syncGbVat } = await import('../src/db/db.js');
 const { VAT_RATES } = await import('../src/db/registry.js');
 
@@ -28,8 +28,8 @@ await test('GB VAT in tax_rule follows registry VAT_RATES: a change supersedes t
 });
 
 await test('the index and the overlap trigger are on rate_interval; new components, periods and registers are allowed', async () => {
-  assert.ok(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'rate_current' AND tbl_name = 'rate_interval'").get());
-  assert.match((await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'rate_no_overlap'").get()).sql, /charge_period/);
+  assert.ok(await db.prepare("SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'rate_current' AND tablename = 'rate_interval'").get());
+  assert.match((await db.prepare("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'rate_no_overlap' AND conrelid = 'rate_interval'::regclass").get()).def, /charge_period/);
   const ins = db.prepare('INSERT INTO rate_interval (tariff_id, component, register, charge_period, valid_from, valid_to, price_ex_vat, recorded_at) VALUES (1, ?, ?, ?, ?, ?, ?, 2)');
   await assert.rejects(async () => await ins.run('unit', 'single', null, 2000, 3000, 1), /overlapping current rate interval/);
   await assert.doesNotReject(async () => await ins.run('unit', 'hc', null, 2000, 3000, 14.1));

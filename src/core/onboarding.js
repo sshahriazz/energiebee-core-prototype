@@ -13,7 +13,7 @@
 //  - the roles are read from inputs.js at call time, never copied here;
 //  - a source added from the screen (createSource) is marked created_by 'user' in its traits, so it is plain data like any
 //    other and the registry seed (db.js seedRegistry, which writes only the code-defined SOURCES) never touches it.
-import { db, tx } from '../db/db.js';
+import { db, tx, rolledBack } from '../db/db.js';
 import { carbonSubjectOf } from './carbon-series.js';
 import * as inputs from './inputs.js';
 import { previewImpact } from './impact.js';
@@ -103,11 +103,6 @@ export function toTs(site, v, field = 'from') {
 }
 const dateOf = (site, ts) => (ts == null ? null : localDate(site.timezone, ts));
 
-// Run fn inside a savepoint that is always rolled back: a dry run or a preview keeps nothing.
-async function rolledBack(fn) {
-  await db.exec('SAVEPOINT onboarding_dry');
-  try { return fn(); } finally { await db.exec('ROLLBACK TO onboarding_dry'); await db.exec('RELEASE onboarding_dry'); }
-}
 
 // ───────────── Read model ─────────────
 
@@ -190,7 +185,7 @@ const sourceItem = (s, roles = rolesNow()) => {
 export async function sourcesList() {
   const roles = rolesNow();
   const sources = (await db.prepare('SELECT code, name, contract, traits FROM source ORDER BY code').all()).map((s) => sourceItem(s, roles));
-  const metrics = await db.prepare('SELECT code, label, unit, time_role AS timeRole, domain FROM metric ORDER BY domain, code').all();
+  const metrics = await db.prepare('SELECT code, label, unit, time_role AS "timeRole", domain FROM metric ORDER BY domain, code').all();
   return { sources, metrics, roles: roles.map((r) => ({ role: r, label: labelOf(r), help: ROLE_INFO[r]?.help ?? '', metrics: ROLE_INFO[r]?.metrics ?? [] })), parts: PARTS, access: ACCESS, kinds: KINDS, contractFields: CONTRACT_FIELDS };
 }
 
@@ -266,7 +261,7 @@ export async function onboarding(siteId) {
         bindings: await mapAsync(current.filter((b) => b.role === role).sort((a, b) => (a.from ?? -Infinity) - (b.from ?? -Infinity) || a.priority - b.priority || a.id - b.id), async (b) => ({ ...b, data: await dataFor(b.source), defaultChannels: defaultsOf(b.source) })),
       }));
   const channels = await channelRows(site.id);
-  const devices = await db.prepare('SELECT id, kind, provider, label, retired_at AS retiredAt FROM device WHERE site_id = ? ORDER BY id').all(site.id);
+  const devices = await db.prepare('SELECT id, kind, provider, label, retired_at AS "retiredAt" FROM device WHERE site_id = ? ORDER BY id').all(site.id);
   const rj = await rejects(site.id, { days: 7 });
   return {
     site: { id: site.id, name: site.name, timezone: site.timezone, slot_s: site.slot_s ?? 1800, currency: site.currency ?? 'GBP' },

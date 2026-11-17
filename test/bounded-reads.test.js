@@ -1,16 +1,20 @@
-// Delta 013 and the bounded reads: series.max_span_s is kept by triggers, every read bounded below by
-// it returns exactly the rows the unbounded read returns (current and "as known at"), the new indexes
-// are the ones the planner uses, and PRAGMA optimize runs on close.
+// The bounded reads: series.max_span_s is kept by triggers, every read bounded below by it returns exactly
+// the rows the unbounded read returns (current and "as known at"), an index can serve each read (EXPLAIN with
+// sequential scans switched off: the question is whether the read is bounded, not what a tiny table costs), and
+// optimizeDb refreshes the planner statistics.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
-const { db, optimizeDb } = await import('../src/db/db.js');
+await useDb();
+const { db, tx, optimizeDb } = await import('../src/db/db.js');
 const { seriesId, putIntervals, putForecasts, readIntervals, readForecastOfRecord, spanOf, withKnownAt, inForce } = await import('../src/core/facts.js');
 
 const siteId = Number((await db.prepare("INSERT INTO site (name, created_at, country, market_code, currency) VALUES ('Home', 1, 'GB', 'GB', 'GBP')").run()).lastInsertRowid);
-const plan = async (sql, ...a) => (await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...a)).map((r) => r.detail).join('; ');
+const plan = async (sql, ...a) => await tx(async () => {
+  await db.exec('SET LOCAL enable_seqscan = off');
+  return (await db.prepare(`EXPLAIN ${sql}`).all(...a)).map((r) => r['QUERY PLAN']).join('; ');
+});
 
 await test('series.max_span_s follows the longest fact of a series and never shrinks', async () => {
   const s = await seriesId('site', siteId, 'gas_kwh', 'octopus_meter');
@@ -49,10 +53,10 @@ await test('readIntervals bounded below gives exactly the rows of the unbounded 
     const from = 1700000000 - 90000 + rnd(200) * 900;
     const to = from + 1 + rnd(4) * 3600;
     assert.deepEqual(await readIntervals([s], from, to), await unbounded(from, to), `[${from}, ${to})`);
-    withKnownAt(asOf, async () => assert.deepEqual(await readIntervals([s], from, to), await unbounded(from, to), `as known at, [${from}, ${to})`));
+    await withKnownAt(asOf, async () => assert.deepEqual(await readIntervals([s], from, to), await unbounded(from, to), `as known at, [${from}, ${to})`));
   }
   assert.match(await plan(`SELECT * FROM interval_fact WHERE series_id IN (?) AND end_ts > ? AND start_ts < ? AND start_ts >= ? AND superseded_at IS NULL ORDER BY start_ts`, s, 1, 2, 0),
-    /\(series_id=\? AND start_ts>\? AND start_ts<\?\)/, 'a range on the key, not the whole history');
+    /Index Cond: \(\(series_id = [^)]*\) AND \(start_ts [<>]=? [^)]*\) AND \(start_ts [<>]=? [^)]*\)\)/, 'a range on the key, not the whole history');
 });
 
 await test('readForecastOfRecord: the outer read is bounded too and gives the same rows', async () => {
@@ -69,8 +73,8 @@ await test('readForecastOfRecord: the outer read is bounded too and gives the sa
 await test('the reads use the new indexes', async () => {
   const t = Number((await db.prepare("INSERT INTO tariff (provider, tariff_code, fuel, direction, structure, region, currency, country) VALUES ('t', 'T-IDX', 'electricity', 'import', 'iog', 'G', 'GBP', 'GB')").run()).lastInsertRowid);
   const asOf = withKnownAt(5, () => inForce());
-  assert.match(await plan(`SELECT * FROM rate_interval WHERE tariff_id IN (?) AND ${asOf} AND valid_from < ? ORDER BY valid_from`, t, 1), /USING INDEX rate_asof/, 'rates as known at: no scan');
-  assert.match(await plan(`SELECT * FROM tariff_agreement a WHERE a.site_id = ? AND ${withKnownAt(5, () => inForce('a'))} AND a.valid_from < ?`, siteId, 1), /USING INDEX agreement_site_asof/);
+  assert.match(await plan(`SELECT * FROM rate_interval WHERE tariff_id IN (?) AND ${asOf} AND valid_from < ? ORDER BY valid_from`, t, 1), /rate_asof/, 'rates as known at: no scan');
+  assert.match(await plan(`SELECT * FROM tariff_agreement a WHERE a.site_id = ? AND ${withKnownAt(5, () => inForce('a'))} AND a.valid_from < ?`, siteId, 1), /agreement_site_asof/);
   assert.match(await plan("SELECT r.id FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.structure = 'iog' AND t.region = ? AND r.component = 'unit' AND r.register = 'single' AND r.superseded_at IS NULL", 'G'), /tariff_structure_region/);
   assert.match(await plan('SELECT MAX(issued_at) FROM forecast_fact WHERE series_id = ?', 1), /forecast_issued/);
   assert.match(await plan('SELECT * FROM sync_run WHERE site_id = ? AND started_at >= ? AND started_at < ? ORDER BY started_at', 1, 0, 1), /sync_run_site_started/);
@@ -92,13 +96,13 @@ await test('the /now carbon read and the loadPricing dispatches find a fact long
   await putForecasts(c, 1, [{ start: 1760000000, end: 1760000000 + 4 * 3600, value: 123 }]);
   const row = await db.prepare(`SELECT f.value FROM forecast_fact f JOIN series se ON se.id = f.series_id JOIN metric m ON m.id = se.metric_id
      WHERE se.subject_kind = 'region' AND se.subject_id = ? AND m.code = 'carbon_intensity' AND f.start_ts <= ? AND f.end_ts > ?
-       AND f.start_ts >= ? - IFNULL(se.max_span_s, 9000000000) ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get('carbon:3', 1760000000 + 3 * 3600, 1760000000 + 3 * 3600, 1760000000 + 3 * 3600);
+       AND f.start_ts >= ? - COALESCE(se.max_span_s, 9000000000) ORDER BY f.issued_at DESC, f.start_ts DESC LIMIT 1`).get('carbon:3', 1760000000 + 3 * 3600, 1760000000 + 3 * 3600, 1760000000 + 3 * 3600);
   assert.equal(row?.value, 123, 'a 4-hour period still covers the slot 3 hours in');
 });
 
-await test('PRAGMA optimize: optimizeDb runs and leaves planner statistics', async () => {
-  await db.exec('ANALYZE sqlite_schema');   // make sure sqlite_stat1 exists, as on a database that has been optimised before
+await test('optimizeDb refreshes the planner statistics of the serving tables', async () => {
   assert.equal(await optimizeDb(), true);
-  await db.exec('PRAGMA optimize = 0x10002');
-  assert.ok((await db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'sqlite_stat1'").get()).n === 1);
+  for (const t of ['site_hh', 'site_day', 'check_result']) {
+    assert.ok((await db.prepare('SELECT last_analyze FROM pg_stat_user_tables WHERE relname = ?').get(t))?.last_analyze, t);
+  }
 });

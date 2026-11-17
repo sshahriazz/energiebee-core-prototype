@@ -1,5 +1,5 @@
 // Synthetic homes for the group tests: slot rows written straight into site_hh with simple deterministic
-// shapes (nothing here is real data). Import the db first: useDb() must have run.
+// shapes (nothing here is real data). Import the db first: await useDb() must have run.
 import { db } from '../src/db/db.js';
 import { localDate, todMinute } from '../src/core/time.js';
 

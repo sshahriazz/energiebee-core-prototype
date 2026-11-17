@@ -29,9 +29,9 @@ await tx(async () => {
 });
 const rows = (await db.prepare('SELECT COUNT(*) n FROM site_hh').get()).n;
 console.log(`built ${homes} homes, ${rows} slot rows in ${(performance.now() - t0).toFixed(0)} ms`);
-const time = (label, fn) => { const a = performance.now(); const r = fn(); console.log(`${label}: ${(performance.now() - a).toFixed(0)} ms`); return r; };
-time('groupDay (one day)', async () => await groupDay(g, '2025-06-10'));
-time('groupRange (30 days)', async () => await groupRange(g, '2025-06-01', '2025-06-30'));
+const time = async (label, fn) => { const a = performance.now(); const r = await fn(); console.log(`${label}: ${(performance.now() - a).toFixed(0)} ms`); return r; };
+await time('groupDay (one day)', async () => await groupDay(g, '2025-06-10'));
+await time('groupRange (30 days)', async () => await groupRange(g, '2025-06-01', '2025-06-30'));
 const year = time(`groupRange (${days} days)`, async () => await groupRange(g, '2025-01-01', '2025-12-31'));
 console.log(`year total currencies: ${year.currencies.join(', ')}; days: ${year.days.length}`);
 fs.rmSync(dir, { recursive: true, force: true });

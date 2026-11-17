@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { seriesId, putForecasts, readForecastOfRecord } = await import('../src/core/facts.js');
 const { createSite } = await import('../src/core/sites.js');
@@ -42,7 +42,7 @@ const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} vs ${
 const caseRows = async (metric) => await readForecastOfRecord(await seriesId('site', site.id, metric, SOLAR_CASES_SOURCE), dayBounds(TZ, DAY)[0], dayBounds(TZ, DAY)[1] + 86400, NOW + 1e6);
 
 await test('below the sample guard nothing is stored and the reason says insufficient history', async () => {
-  const r = deriveSolarCases(site.id, NOW, { minSamples: DAYS + 1 });
+  const r = await deriveSolarCases(site.id, NOW, { minSamples: DAYS + 1 });
   assert.match(r.reason, /^insufficient history/);
   assert.equal(r.cases.length, 0);
   assert.deepEqual(r.stored, { solar_kwh_p10: 0, solar_kwh_p50: 0, solar_kwh_p90: 0 });
@@ -50,9 +50,9 @@ await test('below the sample guard nothing is stored and the reason says insuffi
 });
 
 await test('cases = central x the home\'s own ratio quantiles per time of day, labelled derived, stored as issues of core_solar_cases', async () => {
-  const dry = deriveSolarCases(site.id, NOW, { dryRun: true });
+  const dry = await deriveSolarCases(site.id, NOW, { dryRun: true });
   assert.equal((await caseRows('solar_kwh_p10')).length, 0, 'a dry run stores nothing');
-  const r = deriveSolarCases(site.id, NOW);
+  const r = await deriveSolarCases(site.id, NOW);
   assert.deepEqual(r.cases, dry.cases);
   assert.equal(r.origin, 'derived');
   assert.equal(r.reason, null);
@@ -77,17 +77,17 @@ await test('cases = central x the home\'s own ratio quantiles per time of day, l
 });
 
 await test('change-only: the same inputs an hour later store nothing new; a changed central stores only what moved', async () => {
-  const again = deriveSolarCases(site.id, NOW + 3600);
+  const again = await deriveSolarCases(site.id, NOW + 3600);
   assert.deepEqual(again.stored, { solar_kwh_p10: 0, solar_kwh_p50: 0, solar_kwh_p90: 0 });
   await putForecasts(central, NOW + 3600, [{ start: at(DAY, 11), end: at(DAY, 11) + 1800, value: 1.0 }], null, { recordedAt: (NOW + 3600) * 1000 });
-  const moved = deriveSolarCases(site.id, NOW + 7200);
+  const moved = await deriveSolarCases(site.id, NOW + 7200);
   assert.deepEqual(moved.stored, { solar_kwh_p10: 1, solar_kwh_p50: 1, solar_kwh_p90: 1 });
   near((await caseRows('solar_kwh_p90')).find((f) => f.start_ts === at(DAY, 11)).value, 1.355);
 });
 
 await test('the optimistic case never exceeds the most the home made in one slot', async () => {
   await putForecasts(central, NOW + 9000, [{ start: at(DAY, 12), end: at(DAY, 12) + 1800, value: 2.0 }], null, { recordedAt: (NOW + 9000) * 1000 });
-  const r = deriveSolarCases(site.id, NOW + 9600, { dryRun: true });
+  const r = await deriveSolarCases(site.id, NOW + 9600, { dryRun: true });
   const c = r.cases.find((x) => x.slot_start === at(DAY, 12));
   near(c.p10, 2.0 * 0.595);
   near(c.p50, 1.45, 1e-9);
@@ -96,7 +96,7 @@ await test('the optimistic case never exceeds the most the home made in one slot
 
 await test('a home without history or forecast says why and stores nothing', async () => {
   const bare = await createSite({ name: 'No data', isDemo: true });
-  const r = deriveSolarCases(bare.id, NOW);
+  const r = await deriveSolarCases(bare.id, NOW);
   assert.match(r.reason, /^insufficient history/);
-  assert.throws(() => deriveSolarCases(bare.id, NOW, { central: 'solcast' }), /central must be one of/);
+  await assert.rejects(async () => await deriveSolarCases(bare.id, NOW, { central: 'solcast' }), /central must be one of/);
 });

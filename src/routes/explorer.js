@@ -26,7 +26,7 @@ const hidden = async (user, id) => id != null && /^\d+$/.test(String(id)) && !aw
 const handle = (fn) => async (req, res) => {
   try {
     if (await hidden(req.user, req.query?.site)) return res.status(404).json({ error: `no home ${req.query.site}` });
-    const body = fn(req.query ?? {}, req.params ?? {});
+    const body = await fn(req.query ?? {}, req.params ?? {});
     if (await hidden(req.user, body?.site)) return res.status(404).json({ error: 'not found' });
     res.type('application/json').send(redactEnv(JSON.stringify(body)));
   } catch (err) {

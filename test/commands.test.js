@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const cmd = await import('../src/core/commands.js');
 const plans = await import('../src/core/plans.js');
@@ -161,11 +161,11 @@ await test('status flow, retries, skipped writes, fixed desired state and an app
 
 await test('a command from a plan run of the same home only; release and auto are registry rows', async () => {
   const planStart = T0;
-  const run = plans.savePlan({ siteId: site.id, planStart, slotS: 1800, horizonH: 24, methodVersion: 't', devices: [{ deviceId: inverter }],
-    slots: [{ deviceId: inverter, slotStart: planStart + 1800, action: 'charge', chargeLimitPct: 100 }], now: now0 });
+  const run = await plans.savePlan({ siteId: site.id, planStart, slotS: 1800, horizonH: 24, methodVersion: 't', devices: [{ deviceId: inverter }],
+      slots: [{ deviceId: inverter, slotStart: planStart + 1800, action: 'charge', chargeLimitPct: 100 }], now: now0 });
   const r = await cmd.enqueueIfChanged({ deviceId: inverter, planRunId: run.runId, desired: { action: 'charge', targetSocPct: 100, windowStart: planStart + 1800, windowEnd: planStart + 3600 }, validFrom: T0, validUntil: T0 + 3600, now: now0 });
   assert.equal(r.command.plan_run_id, run.runId);
-  const otherRun = plans.savePlan({ siteId: other.id, planStart, slotS: 1800, methodVersion: 't', devices: [{ deviceId: otherBattery }], slots: [], now: now0 });
+  const otherRun = await plans.savePlan({ siteId: other.id, planStart, slotS: 1800, methodVersion: 't', devices: [{ deviceId: otherBattery }], slots: [], now: now0 });
   await plans.setCapability(inverter, 'release', true, { source: 'adapter' });
   await assert.rejects(async () => await cmd.enqueueIfChanged({ deviceId: inverter, planRunId: otherRun.runId, desired: { action: 'release' }, validFrom: T0, validUntil: T0 + 3600, now: now0 }), /plan run belongs to another home/);
   const rel = await cmd.enqueueIfChanged({ deviceId: inverter, desired: { action: 'release' }, validFrom: T0, validUntil: T0 + 3600, now: now0 + 1 });

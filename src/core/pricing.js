@@ -32,7 +32,7 @@
 // priced with a cautious default) makes the price estimated: true.
 import { db } from '../db/db.js';
 import { zonedParts, localDate, addDays, floorTo, dayBounds } from './time.js';
-import { inForce, spanColumn, knownAtMs } from './facts.js';
+import { inForce, knownAtMs } from './facts.js';
 import { rulesFor, applyTaxes } from './tax.js';
 import { fixedChargePerSlot, fixedChargeMicro, periodBounds } from './tariff-expand.js';
 import { tariffFlagsAt } from './versions.js';
@@ -55,13 +55,13 @@ export async function loadPricing(siteId, fromTs, toTs, siteRow = null) {
   const agreements = await db.prepare(
       `SELECT a.*, d.kind, t.tariff_code, t.fuel, t.direction, t.structure, t.name, t.currency, t.kind AS tariff_kind, t.origin AS tariff_origin, t.taxes_in_price
      FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
-     WHERE a.site_id = ? AND ${inForce('a')} AND a.valid_from < ? AND IFNULL(a.valid_to, 9000000000) > ?
+     WHERE a.site_id = ? AND ${inForce('a')} AND a.valid_from < ? AND COALESCE(a.valid_to, 9000000000) > ?
      ORDER BY a.device_id, a.valid_from, a.id`).all(siteId, toTs, fromTs);
   if (knownAtMs() != null) for (const a of agreements) Object.assign(a, await tariffFlagsAt(a.tariff_id, knownAtMs()));
   const tariffIds = [...new Set(agreements.map((a) => a.tariff_id))];
   const rates = tariffIds.length ? await db.prepare(
       `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})
-       AND ${inForce()} AND valid_from < ? AND IFNULL(valid_to, 9000000000) > ?
+       AND ${inForce()} AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ?
        AND (site_id IS NULL OR site_id = ?)
      ORDER BY valid_from, ${rateTies()}`).all(...tariffIds, toTs, fromTs - 86400 * 2, siteId) : [];
   const vat = await db.prepare('SELECT * FROM vat_rate').all();
@@ -72,8 +72,8 @@ export async function loadPricing(siteId, fromTs, toTs, siteRow = null) {
       `SELECT f.start_ts, f.end_ts FROM interval_fact f JOIN series s ON s.id = f.series_id
      JOIN source src ON src.id = s.source_id JOIN metric m ON m.id = s.metric_id
      WHERE s.subject_kind = 'site' AND s.subject_id = ? AND src.code = 'octopus_kraken' AND m.code = 'ev_charge_kwh'
-       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ?${await spanColumn() ? ' AND f.start_ts >= ? - IFNULL(s.max_span_s, 9000000000)' : ''} ORDER BY f.start_ts`)
-      .all(String(siteId), fromTs - 86400, toTs, ...(await spanColumn() ? [fromTs - 86400] : []));
+       AND ${inForce('f')} AND f.end_ts > ? AND f.start_ts < ? AND f.start_ts >= ? - COALESCE(s.max_span_s, 9000000000) ORDER BY f.start_ts`)
+      .all(String(siteId), fromTs - 86400, toTs, fromTs - 86400);
   const site = siteRow ?? await db.prepare('SELECT timezone, gsp_region, country, currency, is_demo, contracted_kva, contracted_kva_origin FROM site WHERE id = ?').get(siteId);
   const tz = site?.timezone || 'Europe/London';
   const country = site?.country ?? null;

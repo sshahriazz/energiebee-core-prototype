@@ -6,8 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
-const { db, applyDeltas } = await import('../src/db/db.js');
+await useDb();
+const { db, columnsOf, primaryKey } = await import('../src/db/db.js');
 const { seriesId, putForecasts, readForecastOfRecord, readForecastAsOf } = await import('../src/core/facts.js');
 const { createSite } = await import('../src/core/sites.js');
 
@@ -16,12 +16,13 @@ const sid = async (metric, source) => await seriesId('site', site.id, metric, so
 const T = 1_800_000_000;   // a period start, s
 const rowsOf = async (s) => (await db.prepare('SELECT start_ts, end_ts, issued_at, value, recorded_at FROM forecast_fact WHERE series_id = ? ORDER BY start_ts, end_ts, issued_at').all(s)).map((r) => ({ ...r }));
 
-await test('the table has recorded_at and end_ts in its key; the indexes and triggers of 013 and 040 are there', async () => {
-  const cols = (await db.prepare("SELECT name, pk FROM pragma_table_info('forecast_fact')").all()).map((c) => ({ ...c }));
-  assert.ok(cols.some((c) => c.name === 'recorded_at'));
-  assert.deepEqual(cols.filter((c) => c.pk).sort((a, b) => a.pk - b.pk).map((c) => c.name), ['series_id', 'start_ts', 'end_ts', 'issued_at']);
-  const objs = (await db.prepare("SELECT name FROM sqlite_master WHERE tbl_name = 'forecast_fact' AND type IN ('index', 'trigger') AND sql IS NOT NULL").all()).map((r) => r.name);
-  assert.ok(objs.includes('forecast_recorded'));
+await test('the table has recorded_at and end_ts in its key; its indexes and span triggers are there', async () => {
+  assert.ok((await columnsOf('forecast_fact')).includes('recorded_at'));
+  assert.deepEqual(await primaryKey('forecast_fact'), ['series_id', 'start_ts', 'end_ts', 'issued_at']);
+  const idx = (await db.prepare("SELECT indexname AS name FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'forecast_fact'").all()).map((r) => r.name);
+  for (const i of ['forecast_recorded', 'forecast_issued', 'forecast_fact_raw']) assert.ok(idx.includes(i), i);
+  const trg = (await db.prepare("SELECT tgname AS name FROM pg_trigger WHERE tgrelid = 'forecast_fact'::regclass AND NOT tgisinternal").all()).map((r) => r.name);
+  assert.deepEqual(trg.sort(), ['forecast_fact_span_insert', 'forecast_fact_span_update']);
 });
 
 await test('readForecastAsOf uses the time the core recorded an issue, not the provider\'s issue time', async () => {
@@ -62,32 +63,3 @@ await test('a provider that moves from 30 to 15-minute periods: the later issue 
   assert.deepEqual(before.map((f) => [f.start_ts - T, f.end_ts - T, f.value]), [[0, 1800, 1], [1800, 3600, 1]]);
 });
 
-await test('delta 040 rebuilds an old-shape table: every row kept, recorded_at = issued_at x 1000, indexes and triggers restored, once', async () => {
-  const s = await sid('solar_kwh', 'core_forecast');
-  await putForecasts(s, T - 100, [{ start: T, end: T + 900, value: 0.5 }, { start: T + 900, end: T + 1800, value: null }]);
-  // Two lengths from one start (the test above) could never exist under the old key.
-  await db.prepare('DELETE FROM forecast_fact WHERE series_id = ?').run(await sid('carbon_intensity', 'carbon_regional'));
-  const keep = (await db.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name = 'forecast_fact' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name").all()).map((r) => `${r.type}:${r.name}`);
-  const before = (await db.prepare('SELECT series_id, start_ts, end_ts, issued_at, value, raw_id FROM forecast_fact ORDER BY 1, 2, 3, 4').all()).map((r) => ({ ...r }));
-  // Put the table back as it was before 040 (old key, no recorded_at), with the other deltas' objects.
-  const others = (await db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = 'forecast_fact' AND type IN ('index', 'trigger') AND sql IS NOT NULL AND name != 'forecast_recorded'").all()).map((r) => r.sql);
-  await db.exec(`BEGIN; CREATE TEMP TABLE ff AS SELECT series_id, start_ts, end_ts, issued_at, value, raw_id FROM forecast_fact; DROP TABLE forecast_fact;
-    CREATE TABLE forecast_fact (series_id INTEGER NOT NULL REFERENCES series(id), start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL, issued_at INTEGER NOT NULL,
-      value REAL, raw_id INTEGER REFERENCES raw_payload(id), PRIMARY KEY (series_id, start_ts, issued_at), CHECK (end_ts > start_ts)) WITHOUT ROWID;
-    INSERT INTO forecast_fact SELECT * FROM temp.ff; DROP TABLE temp.ff; ${others.map((x) => `${x};`).join('\n')}
-    DELETE FROM schema_delta WHERE name = '040-forecast-bitemporal'; COMMIT;`);
-  assert.ok(!await db.prepare("SELECT 1 FROM pragma_table_info('forecast_fact') WHERE name = 'recorded_at'").get());
-  applyDeltas();
-  const after = (await db.prepare('SELECT series_id, start_ts, end_ts, issued_at, value, raw_id FROM forecast_fact ORDER BY 1, 2, 3, 4').all()).map((r) => ({ ...r }));
-  assert.deepEqual(after, before, 'every row, unchanged');
-  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM forecast_fact WHERE recorded_at != issued_at * 1000').get()).n, 0, 'recorded_at backfilled from issued_at');
-  assert.deepEqual((await db.prepare("SELECT type, name FROM sqlite_master WHERE tbl_name = 'forecast_fact' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name").all()).map((r) => `${r.type}:${r.name}`), keep);
-  assert.ok(await db.prepare("SELECT 1 FROM schema_delta WHERE name = '040-forecast-bitemporal'").get());
-  // Recorded, with every object present: a second pass changes nothing.
-  const changes = (await db.prepare('SELECT total_changes() AS n').get()).n;
-  const v = (await db.prepare('PRAGMA schema_version').get()).schema_version;
-  applyDeltas();
-  assert.equal((await db.prepare('SELECT total_changes() AS n').get()).n, changes);
-  assert.equal((await db.prepare('PRAGMA schema_version').get()).schema_version, v);
-  assert.deepEqual(await db.prepare('PRAGMA foreign_key_check(forecast_fact)').all(), []);
-});

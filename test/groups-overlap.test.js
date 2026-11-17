@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 
 const site = Number((await db.prepare("INSERT INTO site (name, created_at) VALUES ('m', 0)").run()).lastInsertRowid);

@@ -62,7 +62,7 @@ async function readDataset(site, key, fromTs, toTs) {
     throw new Error(`RTE éCO2mix ${id}: unexpected answer (${m.problem}), quarantined`);
   }
   const { rawId } = await landRaw({ source: SOURCE, siteId: site.id, request: { url }, body: json });
-  const written = ingestObservations(site.id, SOURCE, m.rows, rawId, { subject: { kind: 'region', id: REGION } }).written;
+  const written = (await ingestObservations(site.id, SOURCE, m.rows, rawId, { subject: { kind: 'region', id: REGION } })).written;
   return { rows: m.rows, written };
 }
 

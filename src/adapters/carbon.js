@@ -31,9 +31,9 @@ export async function syncCarbon(site, fromTs, toTs) {
     const slots = slotsOf(json);
     if (!slots) { await quarantine({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json, reason: 'unexpected shape' }); continue; }
     const { rawId } = await landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
-    past += ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
-      point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), value: s.intensity.forecast, quality: QUALITY.ESTIMATED,
-    })), rawId, { subject }).written;
+    past += (await ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
+          point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), value: s.intensity.forecast, quality: QUALITY.ESTIMATED,
+        })), rawId, { subject })).written;
   }
   // Forward 48 hours as a new forecast issue.
   const now = floorTo(nowSec(), API_STEP);
@@ -42,8 +42,8 @@ export async function syncCarbon(site, fromTs, toTs) {
   const slots = slotsOf(json) || [];
   const { rawId } = await landRaw({ source: 'carbon_regional', siteId: site.id, request: { url }, body: json });
   const issuedAt = nowSec();
-  const fwd = ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
-    point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), issuedAt, value: s.intensity.forecast,
-  })), rawId, { subject }).forecasts;
+  const fwd = (await ingestObservations(site.id, 'carbon_regional', slots.filter((s) => s.intensity?.forecast != null).map((s) => ({
+      point: 'intensity', start: parseIso(s.from), end: parseIso(s.to), issuedAt, value: s.intensity.forecast,
+    })), rawId, { subject })).forecasts;
   return { past, forecast: fwd };
 }

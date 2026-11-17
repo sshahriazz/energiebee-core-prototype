@@ -69,6 +69,6 @@ export async function syncGasCv(site, fromTs, toTs) {
     const [a, b] = gasDayBounds(site.timezone, `${m[3]}-${m[2]}-${m[1]}`);
     rows.push({ point: 'calorific_value', start: a, end: b, value: v, quality: QUALITY.MEASURED });
   }
-  const n = ingestObservations(site.id, 'national_gas_cv', rows, rawId, { subject: { kind: 'region', id: `ldz:${ldz}` } }).written;
+  const n = (await ingestObservations(site.id, 'national_gas_cv', rows, rawId, { subject: { kind: 'region', id: `ldz:${ldz}` } })).written;
   return { ldz, itemId: id, days: rows.length, facts: n };
 }

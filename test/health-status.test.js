@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no test/fixtures/gb-home.db (node scripts/make-fixture.js)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const H = await import('../src/core/health.js');
 const { bind } = await import('../src/core/inputs.js');
@@ -98,9 +98,7 @@ await test('refusals of the last 24 hours are counted per source with the top re
   assert.deepEqual(h.rejected24h.top.map((x) => [x.reason, x.count, x.text]), [['out_of_range', 3, 'outside the allowed range'], ['unmapped_point', 1, 'a point nobody mapped']]);
 });
 
-await test('the last push is reported when the push log exists, from successful pushes of that source only', { skip }, async () => {
-  const has = await db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'push_log'").get();
-  if (!has) return;   // the push log (delta 073) is feature-detected, never assumed
+await test('the last push is reported, from successful pushes of that source only', { skip }, async () => {
   const now = Math.floor(Date.now() / 1000);
   await db.prepare("INSERT INTO push_log (site_id, source, format, received_at, status) VALUES (?, 'sunsynk_5min', 'native', ?, 'ok')").run(SITE, (now - 600) * 1000);
   await db.prepare("INSERT INTO push_log (site_id, source, format, received_at, status) VALUES (?, 'sunsynk_5min', 'native', ?, 'rejected')").run(SITE, (now - 10) * 1000);

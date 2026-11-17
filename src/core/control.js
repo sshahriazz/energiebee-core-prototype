@@ -23,7 +23,7 @@ export async function limitsFor(deviceId, action, nowMs) {
 
 // Installer limit on a command parameter for one device (superseding any current one of the same parameter and action).
 export async function setControlLimit(deviceId, { action = null, param, min = null, max = null, source = 'installer', now = Date.now() }) {
-  await db.prepare('UPDATE control_limit SET superseded_at = ? WHERE device_id = ? AND param = ? AND action IS ? AND superseded_at IS NULL').run(now, deviceId, param, action);
+  await db.prepare('UPDATE control_limit SET superseded_at = ? WHERE device_id = ? AND param = ? AND action IS NOT DISTINCT FROM ? AND superseded_at IS NULL').run(now, deviceId, param, action);
   return Number((await db.prepare('INSERT INTO control_limit (device_id, action, param, min_value, max_value, source, valid_from, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
           .run(deviceId, action, param, min, max, source, now, now)).lastInsertRowid);
 }
@@ -159,7 +159,7 @@ export async function checkEffect(command, nowMs) {
   if (chk.already && nowMs >= command.window_start * 1000) {
     const target = chk.already.targetKeys.map((k) => command[k]).find((v) => v != null);
     if (target != null) {
-      const before = series(dev.site_id, chk.already.metric, command.window_start - 900, command.window_start, { stepS: 300, asOf: nowMs }).values.filter((v) => v != null);
+      const before = (await series(dev.site_id, chk.already.metric, command.window_start - 900, command.window_start, { stepS: 300, asOf: nowMs })).values.filter((v) => v != null);
       const level = before.length ? before[before.length - 1] : null;
       if (level != null && level >= target) return { status: 'verified', evidence: { reason: 'already_at_target', metric: chk.already.metric, level, target } };
     }
@@ -167,7 +167,7 @@ export async function checkEffect(command, nowMs) {
   const from = command.window_start + (chk.afterS ?? 0);
   const to = Math.min(from + (chk.windowS ?? 300), command.window_end ?? Infinity);
   if (nowMs < to * 1000) return { status: 'wait', evidence: { reason: 'the check period has not ended', until: to } };
-  const s = series(dev.site_id, chk.metric, from, to, { stepS: 300, asOf: nowMs });
+  const s = await series(dev.site_id, chk.metric, from, to, { stepS: 300, asOf: nowMs });
   const vals = s.values.filter((v) => v != null);
   const evidence = { metric: chk.metric, min: chk.min, from, to, steps: vals.length };
   if (!vals.length) return nowMs < (to + 600) * 1000 ? { status: 'wait', evidence: { ...evidence, reason: 'no telemetry yet' } } : { status: 'not_verified', evidence: { ...evidence, reason: 'no telemetry for the period' } };

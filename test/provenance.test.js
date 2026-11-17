@@ -5,7 +5,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const m = await import('../scripts/lib/multi-market.js');
 const { db } = await import('../src/db/db.js');
 const { createSite, regionsOf, assignRegion } = await import('../src/core/sites.js');

@@ -21,7 +21,7 @@ export async function defineChannel(siteId, source, point, metric, { scale = 1, 
   kind = 'value', derived = null, counterWrap = null, counterResetBelow = null, maxGapS = null, maxStuckSamples = null, clockOffsetS = 0, futureToleranceS = null } = {}) {
   const now = Date.now();
   const src = await sourceId(source); const met = await metricId(metric);
-  await db.prepare('UPDATE channel SET superseded_at = ? WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS ? AND superseded_at IS NULL').run(now, siteId, src, point, met, deviceId);
+  await db.prepare('UPDATE channel SET superseded_at = ? WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS NOT DISTINCT FROM ? AND superseded_at IS NULL').run(now, siteId, src, point, met, deviceId);
   return Number((await db.prepare(`INSERT INTO channel (site_id, source_id, device_id, point, metric_id, scale, shift, part, min_value, max_value, access, enum_values, recorded_at,
       kind, derived_metric_id, counter_wrap, counter_reset_below, max_gap_s, max_stuck_samples, clock_offset_s, future_tolerance_s)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -41,7 +41,7 @@ export async function ensureChannels(siteId, source, deviceId = null) {
   }
   if (!defs.length) return 0;
   const src = await sourceId(source);
-  const has = db.prepare('SELECT 1 FROM channel WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS ? AND superseded_at IS NULL');
+  const has = db.prepare('SELECT 1 FROM channel WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS NOT DISTINCT FROM ? AND superseded_at IS NULL');
   let made = 0;
   for (const d of defs) {
     if (await has.get(siteId, src, d.point, await metricId(d.metric), deviceId)) continue;
@@ -54,7 +54,7 @@ export async function ensureChannels(siteId, source, deviceId = null) {
 // deviceId: the channels of that device; omitted or null: the home's own.
 export async function channelsFor(siteId, source, point = null, deviceId = null) {
   return await db.prepare(`SELECT c.*, m.code AS metric, m.time_role, dm.code AS derived_metric FROM channel c JOIN metric m ON m.id = c.metric_id LEFT JOIN metric dm ON dm.id = c.derived_metric_id
-    WHERE c.site_id = ? AND c.source_id = ? AND c.superseded_at IS NULL AND c.device_id IS ?${point == null ? '' : ' AND c.point = ?'}`).all(siteId, await sourceId(source), deviceId, ...(point == null ? [] : [point]));
+    WHERE c.site_id = ? AND c.source_id = ? AND c.superseded_at IS NULL AND c.device_id IS NOT DISTINCT FROM ?${point == null ? '' : ' AND c.point = ?'}`).all(siteId, await sourceId(source), deviceId, ...(point == null ? [] : [point]));
 }
 
 // A device's single channel for a point: any current channel of that point on that device is replaced
@@ -198,7 +198,7 @@ export async function ingestObservations(siteId, source, observations, rawId = n
 // the raw readings, then derive the periods around the changed samples again from everything stored (so a late sample splits the
 // period it falls in instead of double counting it).
 async function storeCounter(siteId, source, c, rows, seriesOf, rawId, rejectFn) {
-  const rawSeries = seriesOf(c.metric);
+  const rawSeries = await seriesOf(c.metric);
   const byTs = new Map(); for (const r of rows) byTs.set(r.ts, r);            // the same time twice: the later one wins
   const sorted = [...byTs.values()].sort((a, b) => a.ts - b.ts);
   const accepted = []; let lastAcc = null;
@@ -206,7 +206,7 @@ async function storeCounter(siteId, source, c, rows, seriesOf, rawId, rejectFn) 
     const { prev: dbPrev, next: dbNext } = await neighbours(rawSeries, r.ts);
     const prev = lastAcc && (!dbPrev || lastAcc.ts > dbPrev.ts) ? lastAcc : dbPrev;
     const backwards = (prev && classifyStep(prev.value, r.value, c).type === 'backwards') || (dbNext && classifyStep(r.value, dbNext.value, c).type === 'backwards');
-    if (backwards) { rejectFn(c.point, r.ts, r.value, 'counter_backwards'); continue; }
+    if (backwards) { await rejectFn(c.point, r.ts, r.value, 'counter_backwards'); continue; }
     accepted.push(r); lastAcc = r;
   }
   if (!accepted.length) return { raw: 0, derived: 0, earliest: null };
@@ -216,7 +216,7 @@ async function storeCounter(siteId, source, c, rows, seriesOf, rawId, rejectFn) 
   const hi = (await neighbours(rawSeries, accepted[accepted.length - 1].ts)).next?.ts ?? accepted[accepted.length - 1].ts;
   const samples = await readReadings([rawSeries], lo, hi + 1);
   const { periods } = deriveCounterPeriods(samples, c);
-  const derivedSeries = seriesOf(c.derived_metric);
+  const derivedSeries = await seriesOf(c.derived_metric);
   await withdrawDerived(siteId, derivedSeries, lo, hi, new Set(periods.map((p) => `${p.start}|${p.end}`)));
   const derived = await putIntervals(derivedSeries, periods.map((p) => ({ start: p.start, end: p.end, value: p.value, quality: p.quality })), rawId);
   return { raw, derived, earliest: raw || derived ? lo : null };

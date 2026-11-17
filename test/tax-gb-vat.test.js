@@ -6,7 +6,7 @@ import { useDb } from './helpers.js';
 import { GB_VAT_RULES, rulesFor, applyTaxes } from '../src/core/tax.js';
 import { VAT_RATES } from '../src/db/registry.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { vatAt } = await import('../src/core/pricing.js');
 

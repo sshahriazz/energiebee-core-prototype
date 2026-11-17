@@ -145,7 +145,7 @@ export async function putIntervals(series, rows, rawId) {
 }
 
 const insForecast = db.prepare(
-  'INSERT OR IGNORE INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, raw_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  'INSERT INTO forecast_fact (series_id, start_ts, end_ts, issued_at, value, raw_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING');
 const latestForecast = db.prepare('SELECT value FROM forecast_fact WHERE series_id = ? AND start_ts = ? AND end_ts = ? ORDER BY issued_at DESC LIMIT 1');
 
 // A new issue is stored only for periods whose value changed since the latest issue.
@@ -212,14 +212,9 @@ export async function readReadings(seriesIds, from, to) {
 // has none recorded. A fact that overlaps [from, to) (end_ts > from) then starts at or after
 // from - span, so that bound can be added to a read without leaving any row out, and the primary
 // key (series_id, start_ts, ...) is searched as a range instead of the series' whole history.
-// null: no bound (a series without facts, or a database without the column).
-let hasSpan = null;
-export async function spanColumn() {
-  hasSpan ??= Boolean(await db.prepare("SELECT 1 FROM pragma_table_info('series') WHERE name = 'max_span_s'").get());
-  return hasSpan;
-}
+// null: no bound (a series without facts).
 export async function spanOf(seriesIds) {
-  if (!seriesIds.length || !await spanColumn()) return null;
+  if (!seriesIds.length) return null;
   const r = await db.prepare(`SELECT MAX(max_span_s) AS span, COUNT(max_span_s) AS known, COUNT(*) AS n FROM series WHERE id IN (${seriesIds.map(() => '?').join(',')})`).get(...seriesIds);
   return r && r.known === r.n && r.span != null ? r.span : null;
 }

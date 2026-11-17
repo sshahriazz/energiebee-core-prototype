@@ -261,7 +261,6 @@ export const DEVICE_KIND_COLUMNS = Object.freeze(['kind', 'label', 'class', 'att
 
 // Rows missing from the database (read only: an up-to-date database is opened without writing).
 const missing = async (db, table, keyCol, rows) => {
-  if (!await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return [];
   const have = new Set((await db.prepare(`SELECT ${keyCol} AS k FROM ${table}`).all()).map((r) => r.k));
   return rows.filter((r) => !have.has(r[keyCol]));
 };

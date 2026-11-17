@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
-if (hasLive) useDb({ snapshot: true });
-const { db } = await import('../src/db/db.js');
+if (hasLive) await useDb({ snapshot: true });
+const { db, tx } = await import('../src/db/db.js');
 const { markDirty } = await import('../src/core/facts.js');
 const { processQueue } = await import('../src/core/build.js');
 const { hasHeatingSeries } = await import('../src/core/heat.js');
@@ -36,10 +36,13 @@ await test('GB home: a rebuild runs one heating existence query, touches no heat
 
 await test('GB home: the existence check is cheap (indexed: well under a millisecond)', { skip }, async () => {
   assert.equal(await hasHeatingSeries(SITE), false);
-  const plan = (await db.prepare(`EXPLAIN QUERY PLAN SELECT 1 FROM series se JOIN metric m ON m.id = se.metric_id WHERE m.domain = 'heating'
-    AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))) LIMIT 1`)
-      .all('1', 1)).map((r) => r.detail).join(' | ');
-  assert.doesNotMatch(plan, /SCAN se\b/, plan);
+  const plan = await tx(async () => {
+    await db.exec('SET LOCAL enable_seqscan = off');
+    return (await db.prepare(`EXPLAIN SELECT 1 FROM series se JOIN metric m ON m.id = se.metric_id WHERE m.domain = 'heating'
+      AND ((se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))) LIMIT 1`)
+      .all('1', 1)).map((r) => r['QUERY PLAN']).join(' | ');
+  });
+  assert.doesNotMatch(plan, /Seq Scan on series\b/, plan);
   const n = 2000;
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < n; i++) await hasHeatingSeries(SITE);

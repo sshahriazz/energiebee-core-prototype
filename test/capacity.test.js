@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { createSite, setContractedCapacity } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, agreeTariff, addDevice } = await import('../src/core/tariffs.js');

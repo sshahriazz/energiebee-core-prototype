@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 process.env.REQUIRE_LOGIN = '1';   // the main app: nobody signed in sees nothing
 process.env.SECRET_KEY = 'test-secret-key-0123456789abcdef-0123456789';
 delete process.env.USER_SWITCHER;
@@ -138,23 +138,6 @@ await test('setPin (scripts/set-pin.js) gives an account a new PIN, unlocks it a
   assert.equal((await b('/api/auth/me')).body.user, null, 'signed out by the new PIN');
   assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '2718' } })).status, 401);
   assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'lockme', pin: '5820' } })).status, 200);
-});
-
-await test('delta 079: accounts made before it get their email name as username (unique), and no PIN', async () => {
-  const fs = await import('node:fs');
-  const { applyDelta } = await import('../src/db/db.js');
-  const ins = db.prepare('INSERT INTO app_user (name, email, role, created_at) VALUES (?, ?, ?, 0)');
-  const a = (await ins.run('Old One', 'Legacy@one.test', 'owner')).lastInsertRowid;
-  const c = (await ins.run('Old Two', 'legacy@two.test', 'owner')).lastInsertRowid;
-  const none = (await ins.run('No email', null, 'owner')).lastInsertRowid;
-  applyDelta(fs.readFileSync(new URL('../src/db/deltas/079-pin-auth.sql', import.meta.url), 'utf8'));
-  const name = async (id) => await db.prepare('SELECT username, pin_hash FROM app_user WHERE id = ?').get(id);
-  assert.deepEqual({ ...await name(a) }, { username: 'legacy', pin_hash: null });
-  assert.equal((await name(c)).username, `legacy${c}`);
-  assert.equal((await name(none)).username, null);
-  const b = browser();
-  assert.equal((await b('/api/auth/login', { method: 'POST', body: { username: 'legacy', pin: '0001' } })).status, 401, 'no PIN yet: cannot sign in');
-  await db.prepare('DELETE FROM app_user WHERE id IN (?, ?, ?)').run(a, c, none);
 });
 
 await test('the demo switch header is refused on the main app, so nobody can become someone else', async () => {

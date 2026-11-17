@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { learnSunlight } = await import('../src/core/forecast.js');
 
 function history(solarOf) {

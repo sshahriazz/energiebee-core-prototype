@@ -133,7 +133,7 @@ export async function siteSeries(site) {
       FROM series se JOIN metric m ON m.id = se.metric_id JOIN source so ON so.id = se.source_id
      WHERE (se.subject_kind = 'site' AND se.subject_id = ?)
         OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
-        OR (se.subject_kind = 'region' AND se.subject_id IN (SELECT value FROM json_each(?)))
+        OR (se.subject_kind = 'region' AND se.subject_id IN (SELECT jsonb_array_elements_text(?::jsonb)))
      ORDER BY se.id`).all(String(site.id), site.id, JSON.stringify(await regionsOf(site)));
 }
 // Fact counts per series and table (current and superseded), first and last time.
@@ -141,8 +141,8 @@ async function seriesStats(ids) {
   const st = new Map(ids.map((id) => [id, {}]));
   if (!ids.length) return st;
   const list = ids.map(() => '?').join(',');
-  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, SUM(superseded_at IS NOT NULL) AS sup, MIN(ts) AS a, MAX(ts) AS b FROM reading WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).reading = r;
-  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, SUM(superseded_at IS NOT NULL) AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM interval_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).interval_fact = r;
+  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, SUM((superseded_at IS NOT NULL)::int) AS sup, MIN(ts) AS a, MAX(ts) AS b FROM reading WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).reading = r;
+  for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, SUM((superseded_at IS NOT NULL)::int) AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM interval_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).interval_fact = r;
   for (const r of await db.prepare(`SELECT series_id, COUNT(*) AS n, 0 AS sup, MIN(start_ts) AS a, MAX(end_ts) AS b FROM forecast_fact WHERE series_id IN (${list}) GROUP BY series_id`).all(...ids)) st.get(r.series_id).forecast_fact = r;
   return st;
 }
@@ -463,7 +463,7 @@ export async function overview(q) {
     x.first_at = x.first_at == null ? r.fetched_at : Math.min(x.first_at, r.fetched_at);
     x.last_at = x.last_at == null ? r.fetched_at : Math.max(x.last_at, r.fetched_at);
   }
-  const tl = await db.prepare(`SELECT COUNT(*) AS slots, SUM(state = 'final') AS final, SUM(state = 'provisional') AS provisional, SUM(state = 'missing') AS missing,
+  const tl = await db.prepare(`SELECT COUNT(*) AS slots, SUM((state = 'final')::int) AS final, SUM((state = 'provisional')::int) AS provisional, SUM((state = 'missing')::int) AS missing,
     SUM((quality & ${QUALITY.RESTATED}) != 0) AS restated FROM site_hh WHERE site_id = ?`).get(site.id);
   const ck = Object.fromEntries(['pass', 'warn', 'fail', 'skip'].map((s) => [s, 0]));
   for (const r of await db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? GROUP BY status').all(site.id)) ck[r.status] = r.n;
@@ -710,7 +710,7 @@ async function readVariable(site, v, a, b, step) {
       put(step === 'slot' ? r.slot_start : step === 'hour' ? r.slot_start - (r.tod_min % 60) * 60 : dayOf(r.local_date), r.v);
     }
   } else {
-    const res = plannerSeries(site.id, v.series.metric, a, b, { stepS: step === 'slot' ? 'slot' : 3600, source: v.series.source });
+    const res = await plannerSeries(site.id, v.series.metric, a, b, { stepS: step === 'slot' ? 'slot' : 3600, source: v.series.source });
     for (let i = 0; i < res.n; i++) {
       const t = res.start + i * res.stepS;
       if (t < a || t >= b) continue;
@@ -825,7 +825,7 @@ export async function heatmap(q) {
     const expr = TIMELINE_VARS[v.name].sql ?? v.name;
     for (const r of await db.prepare(`SELECT local_date, tod_min, ${expr} AS v FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ?`).all(site.id, a, b)) add(r.local_date, r.tod_min, r.v);
   } else {
-    const res = plannerSeries(site.id, v.series.metric, a, b, { stepS: 'slot', source: v.series.source });
+    const res = await plannerSeries(site.id, v.series.metric, a, b, { stepS: 'slot', source: v.series.source });
     for (let i = 0; i < res.n; i++) { const t = res.start + i * res.stepS; if (t >= a && t < b && res.values[i] != null) add(localDate(tz, t), todMinute(tz, t), res.values[i]); }
   }
   let min = null; let max = null;
@@ -1165,8 +1165,8 @@ const hhmmOf = (tz, ts) => { const p = zonedParts(tz, ts); return `${pad2(p.hh)}
 // The percentage tax in force for one fuel and direction, read from tax_rule (or vat_rate).
 async function taxInForce(cx, fuel, direction, ts) {
   const { site } = cx;
-  const rules = site.country ? await db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND fuel = ? AND direction = ? AND IFNULL(customer_class, 'domestic') = 'domestic' AND superseded_at IS NULL
-    AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ? ORDER BY seq`).all(site.country, fuel, direction, ts, ts) : [];
+  const rules = site.country ? await db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND fuel = ? AND direction = ? AND COALESCE(customer_class, 'domestic') = 'domestic' AND superseded_at IS NULL
+    AND valid_from <= ? AND COALESCE(valid_to, 9000000000) > ? ORDER BY seq`).all(site.country, fuel, direction, ts, ts) : [];
   const agreement = cx.pricing.agreements.find((a) => a.kind === (direction === 'export' ? 'meter_export' : fuel === 'gas' ? 'meter_gas' : 'meter_import') && a.valid_from <= ts && (a.valid_to == null || a.valid_to > ts));
   const pct = rules.filter((r) => r.kind === 'percent' && r.applies_to !== 'fixed');
   const when = dayWords(localDate(site.timezone, ts));
@@ -1180,7 +1180,7 @@ async function taxInForce(cx, fuel, direction, ts) {
       explanation: `${pct.length ? `The tax on ${fuel} on ${when} was ${pct.map((r) => `${pctWords(r.value)} ${r.code.toUpperCase()}`).join(' and ')}${groups.length > 1 ? ' (one on top of the other)' : ''}` : `No percentage tax applied to ${fuel} on ${when}`}${unverified ? ' (a stand-in rate, not yet checked against an official source)' : ''}${agreement?.taxes_in_price === 1 ? '; the supplier\'s prices already include the other levies' : ''}.` };
   }
   if (site.country == null || site.country === 'GB') {
-    const v = await db.prepare('SELECT * FROM vat_rate WHERE fuel = ? AND direction = ? AND valid_from <= ? AND IFNULL(valid_to, 9000000000) > ?').get(fuel, direction, ts, ts);
+    const v = await db.prepare('SELECT * FROM vat_rate WHERE fuel = ? AND direction = ? AND valid_from <= ? AND COALESCE(valid_to, 9000000000) > ?').get(fuel, direction, ts, ts);
     return { source: 'vat_rate', vat: v ? v.rate : 0, ids: v ? [v.id ?? null] : [], explanation: v ? `UK VAT on ${fuel} was ${pctWords(v.rate)} on ${when}.` : `No UK VAT rate is recorded for ${when}, so 0%.` };
   }
   return { source: 'tax_rule', vat: 0, ids: [], explanation: `We hold no tax rules for ${site.country}, so taxes are taken as 0% (an assumption).` };

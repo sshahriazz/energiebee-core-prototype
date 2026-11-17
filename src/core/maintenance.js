@@ -171,12 +171,13 @@ export function endpointOf(requestText) {
 // rate_interval.raw_id today), read from the schema so a table added later is respected too.
 async function rawRefs() {
   const out = [];
-  for (const { name } of await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()) {
-    for (const fk of await db.prepare('SELECT "table" AS parent, "from" AS col FROM pragma_foreign_key_list(?)').all(name)) if (fk.parent === 'raw_payload') out.push([name, fk.col]);
-  }
+  for (const fk of await db.prepare(`SELECT kcu.table_name AS t, kcu.column_name AS col FROM information_schema.referential_constraints rc
+      JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
+      JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name AND ccu.constraint_schema = rc.unique_constraint_schema
+      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
   return out;
 }
-const notReferenced = (refs, alias) => refs.map(([t, c]) => `NOT EXISTS (SELECT 1 FROM "${t}" WHERE "${c}" = ${alias}.id)`).join(' AND ') || '1';
+const notReferenced = (refs, alias) => refs.map(([t, c]) => `NOT EXISTS (SELECT 1 FROM "${t}" WHERE "${c}" = ${alias}.id)`).join(' AND ') || 'TRUE';
 
 function fileSize(rel) {
   try { return fs.statSync(path.join(dataDir, rel)).size; } catch { return null; }
@@ -190,7 +191,7 @@ async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) 
   const replayable = new Set((await db.prepare(`SELECT id FROM source WHERE code IN (${replayableSources().map(() => '?').join(',')})`).all(...replayableSources())).map((x) => x.id));
   const newest = new Map();
   for (const r of rows) newest.set(`${r.source_id}|${r.site_id ?? ''}|${endpointOf(r.request)}`, r.id);
-  const referenced = db.prepare(`SELECT NOT (${notReferenced(refs, 'p')}) AS ref FROM (SELECT ? AS id) p`);
+  const referenced = db.prepare(`SELECT NOT (${notReferenced(refs, 'p')}) AS ref FROM (SELECT ?::bigint AS id) p`);
   const out = { olderThanWindow: 0, keptReferenced: 0, keptInState: 0, keptNewestOfEndpoint: 0, keptReplayable: 0, quarantinedKept: 0, candidates: 0, bytes: 0, deleted: 0, filesDeleted: 0, filesMissing: 0 };
   out.quarantinedKept = (await db.prepare("SELECT COUNT(*) AS n FROM raw_payload WHERE status = 'quarantined' AND fetched_at < ?").get(cutoff)).n;
   const doomed = [];
@@ -255,7 +256,7 @@ async function syncRunRetention(cutoff, dryRun) {
 // The issues of one old period that a read can still pick (see the note above RETENTION_DEFAULTS).
 const LEAD_S = 12 * 3600;
 function keptIssues(t) {
-  const max = (cond) => `(SELECT IFNULL(MAX(g.issued_at), -1) FROM forecast_fact g WHERE g.series_id = ${t}.series_id AND g.start_ts = ${t}.start_ts${cond})`;
+  const max = (cond) => `(SELECT COALESCE(MAX(g.issued_at), -1) FROM forecast_fact g WHERE g.series_id = ${t}.series_id AND g.start_ts = ${t}.start_ts${cond})`;
   return [max(''), max(` AND g.issued_at <= ${t}.start_ts`), max(` AND g.issued_at <= ${t}.start_ts - ${LEAD_S}`),
     max(` AND g.end_ts = ${t}.end_ts`), max(` AND g.end_ts = ${t}.end_ts AND g.issued_at <= ${t}.start_ts`), max(` AND g.end_ts = ${t}.end_ts AND g.issued_at <= ${t}.start_ts - ${LEAD_S}`)].join(', ');
 }
@@ -273,7 +274,7 @@ async function receiptTables(cutoffS, dryRun) {
   const out = { channelReject: { candidates: 0, deleted: 0 }, pushLog: { present: false, candidates: 0, deleted: 0 } };
   out.channelReject.candidates = (await db.prepare('SELECT COUNT(*) AS n FROM channel_reject WHERE recorded_at < ?').get(cutMs)).n;
   if (!dryRun && out.channelReject.candidates) out.channelReject.deleted = Number(await tx(async () => (await db.prepare('DELETE FROM channel_reject WHERE recorded_at < ?').run(cutMs)).changes));
-  if (await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'push_log'").get()) {
+  {
     out.pushLog.present = true;
     out.pushLog.candidates = (await db.prepare('SELECT COUNT(*) AS n FROM push_log WHERE received_at < ?').get(cutMs)).n;
     if (!dryRun && out.pushLog.candidates) out.pushLog.deleted = Number(await tx(async () => (await db.prepare('DELETE FROM push_log WHERE received_at < ?').run(cutMs)).changes));

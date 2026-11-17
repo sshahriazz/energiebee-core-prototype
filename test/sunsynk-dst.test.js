@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { normaliseDay } = await import('../src/adapters/sunsynk.js');
 for (const id of [1, 2]) await db.prepare("INSERT INTO site (id, name, created_at) VALUES (?, 'dst', 0)").run(id);   // channels belong to a home
@@ -13,7 +13,7 @@ const { isoUtc } = await import('../src/core/time.js');
 const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 const day = async (siteId, date, times) => {
   const records = times.map(([h, m], i) => ({ time: hhmm(h, m), value: String(i) }));
-  normaliseDay(siteId, 'Europe/London', date, { code: 0, data: { infos: [{ label: 'PV', records }] } }, null);
+  await normaliseDay(siteId, 'Europe/London', date, { code: 0, data: { infos: [{ label: 'PV', records }] } }, null);
   return await readReadings([await seriesId('site', siteId, 'solar_w', 'sunsynk_5min')], 0, 2e9);
 };
 

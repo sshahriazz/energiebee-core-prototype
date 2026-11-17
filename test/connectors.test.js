@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 globalThis.fetch = async (url) => { throw new Error(`no network in tests: ${url}`); };
 
 // Stand-in secrets, set only in this test process and never printed. None of them is complete for

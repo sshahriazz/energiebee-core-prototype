@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { slotsOfDay, slotOfDay, todMinute, slotLabel, slotLength, slotPhase, SLOT_LENGTHS, localToUtc } = await import('../src/core/time.js');
 const { priceAt, priceOver, dispatchAllowance } = await import('../src/core/pricing.js');
 

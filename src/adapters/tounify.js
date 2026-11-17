@@ -189,8 +189,8 @@ export function dbStore() {
   const get = db.prepare('SELECT next_allowed_at, cooldown_reason FROM provider_state WHERE provider = ?');
   const put = db.prepare(`INSERT INTO provider_state (provider, next_allowed_at, cooldown_reason, updated_at) VALUES (?, ?, ?, ?)
     ON CONFLICT (provider) DO UPDATE SET
-      cooldown_reason = CASE WHEN excluded.next_allowed_at >= IFNULL(provider_state.next_allowed_at, 0) THEN excluded.cooldown_reason ELSE provider_state.cooldown_reason END,
-      next_allowed_at = MAX(IFNULL(provider_state.next_allowed_at, 0), excluded.next_allowed_at),
+      cooldown_reason = CASE WHEN excluded.next_allowed_at >= COALESCE(provider_state.next_allowed_at, 0) THEN excluded.cooldown_reason ELSE provider_state.cooldown_reason END,
+      next_allowed_at = GREATEST(COALESCE(provider_state.next_allowed_at, 0), excluded.next_allowed_at),
       updated_at = excluded.updated_at`);
   return {
     nextAllowedAt: async () => (await get.get(PROVIDER))?.next_allowed_at ?? 0,
@@ -644,7 +644,7 @@ async function upsertTariff(t) {
   return { row: await db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
 }
 
-const KEY = "tariff_id = ? AND site_id = ? AND component = ? AND register = ? AND payment_method = 'ANY' AND IFNULL(charge_period, '') = ? AND superseded_at IS NULL";
+const KEY = "tariff_id = ? AND site_id = ? AND component = ? AND register = ? AND payment_method = 'ANY' AND COALESCE(charge_period, '') = ? AND superseded_at IS NULL";
 const END = 9000000000;
 
 /**
@@ -654,8 +654,8 @@ const END = 9000000000;
  * (new copies). Returns the rows written.
  */
 export async function putRates(tariffId, siteId, rows, { component = 'unit', rawId = null, recordedAt = recordedNow() } = {}) {
-  const covering = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from <= ? AND IFNULL(valid_to, ${END}) > ? ORDER BY valid_from DESC LIMIT 1`);
-  const overlapping = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from < ? AND IFNULL(valid_to, ${END}) > ?`);
+  const covering = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from <= ? AND COALESCE(valid_to, ${END}) > ? ORDER BY valid_from DESC LIMIT 1`);
+  const overlapping = db.prepare(`SELECT * FROM rate_interval WHERE ${KEY} AND valid_from < ? AND COALESCE(valid_to, ${END}) > ?`);
   const sup = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
   const ins = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin, origin_note, estimated)
     VALUES (?, ?, ?, ?, ?, 'ANY', ?, ?, ?, ?, ?, 'provider', ?, ?)`);
@@ -687,7 +687,7 @@ export async function putRates(tariffId, siteId, rows, { component = 'unit', raw
 async function ensureAgreement(site, tariffId, { kind, externalRef, label, fromTs, captureDayStart }) {
   let dev = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider = 'tounify' AND external_ref = ?").get(site.id, externalRef);
   const others = await db.prepare(`SELECT t.tariff_code FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id
-    WHERE a.site_id = ? AND d.kind = ? AND d.id <> ? AND d.retired_at IS NULL AND a.superseded_at IS NULL AND IFNULL(a.valid_to, ${END}) > ?`).all(site.id, kind, dev?.id ?? -1, fromTs);
+    WHERE a.site_id = ? AND d.kind = ? AND d.id <> ? AND d.retired_at IS NULL AND a.superseded_at IS NULL AND COALESCE(a.valid_to, ${END}) > ?`).all(site.id, kind, dev?.id ?? -1, fromTs);
   if (others.length) return { agreed: false, changed: false, warning: `the home is already priced by ${others[0].tariff_code} (${kind}): tounify rates stored, not agreed` };
   if (!dev) dev = await addDevice({ siteId: site.id, kind, provider: PROVIDER, externalRef, label });
   else if (dev.retired_at) await db.prepare('UPDATE device SET retired_at = NULL WHERE id = ?').run(dev.id);
@@ -895,7 +895,7 @@ export async function quoteTariff(site, tariffId, { client, company = null, dev 
   const code = `TOUNIFY-${cc}-${tariffId}`;
   const now = Math.floor(client.clock.now() / 1000);
   const held = (await db.prepare(`SELECT COUNT(*) AS n FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id WHERE t.tariff_code = ? AND r.site_id = ?
-    AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ? AND IFNULL(r.valid_to, 9000000000) > ?`).get(code, site.id, now, now)).n;
+    AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ? AND COALESCE(r.valid_to, 9000000000) > ?`).get(code, site.id, now, now)).n;
   if (held) return { available: true, tariff: code, cached: true };
   const postal = String(site.postcode ?? '').trim();
   const resolution = RESOLUTIONS.includes(slotLength(site)) ? slotLength(site) : 3600;

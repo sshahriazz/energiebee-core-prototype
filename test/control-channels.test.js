@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { defineChannel, ingestObservations } = await import('../src/core/channels.js');
 const { ensureControlChannels, DEFAULT_MODES } = await import('../src/core/control.js');
@@ -20,7 +20,7 @@ const queue = async () => (await db.prepare('SELECT COUNT(*) n FROM rebuild_queu
 const state = (point, value, ts = NOW) => ({ kind: 'state', point, ts, value });
 
 await test('a state is stored as a reading of the device and queues no rebuild', async () => {
-  const out = ingestObservations(site, 'ctl_test', [state('charge_target_soc', 80), state('work_mode', 1)], null, { deviceId: dev });
+  const out = await ingestObservations(site, 'ctl_test', [state('charge_target_soc', 80), state('work_mode', 1)], null, { deviceId: dev });
   assert.deepEqual([out.states, out.written, out.rejected], [2, 0, 0]);
   assert.deepEqual((await rows('ctl_charge_target_soc_pct')).map((r) => r.value), [80]);
   assert.deepEqual((await rows('ctl_work_mode')).map((r) => r.value), [1]);
@@ -29,7 +29,7 @@ await test('a state is stored as a reading of the device and queues no rebuild',
 
 await test('a state outside the range, outside the enum, without a time, or on a write-only point is rejected and kept apart', async () => {
   await defineChannel(site, 'ctl_test', 'write_only_point', 'ctl_reserve_pct', { deviceId: dev, access: 'write' });
-  const out = ingestObservations(site, 'ctl_test', [state('charge_target_soc', 150), state('work_mode', 9), { kind: 'state', point: 'reserve', value: 5 }, state('write_only_point', 5)], null, { deviceId: dev });
+  const out = await ingestObservations(site, 'ctl_test', [state('charge_target_soc', 150), state('work_mode', 9), { kind: 'state', point: 'reserve', value: 5 }, state('write_only_point', 5)], null, { deviceId: dev });
   assert.equal(out.rejected, 4);
   assert.equal(out.states, 0);
   const why = (await db.prepare('SELECT reason FROM channel_reject WHERE site_id = ? ORDER BY id').all(site)).map((r) => r.reason).slice(-4);
@@ -38,7 +38,7 @@ await test('a state outside the range, outside the enum, without a time, or on a
 
 await test('an ack is returned as a receipt and never stored as a fact', async () => {
   const before = (await db.prepare('SELECT (SELECT COUNT(*) FROM reading) + (SELECT COUNT(*) FROM interval_fact) + (SELECT COUNT(*) FROM forecast_fact) AS n').get()).n;
-  const out = ingestObservations(site, 'ctl_test', [{ kind: 'ack', ref: 'abc', commandId: 7, ts: NOW }], null, { deviceId: dev });
+  const out = await ingestObservations(site, 'ctl_test', [{ kind: 'ack', ref: 'abc', commandId: 7, ts: NOW }], null, { deviceId: dev });
   assert.deepEqual(out.acks, [{ ref: 'abc', commandId: 7, ts: NOW }]);
   assert.deepEqual([out.written, out.states, out.rejected], [0, 0, 0]);
   assert.equal((await db.prepare('SELECT (SELECT COUNT(*) FROM reading) + (SELECT COUNT(*) FROM interval_fact) + (SELECT COUNT(*) FROM forecast_fact) AS n').get()).n, before);

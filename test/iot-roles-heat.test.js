@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { ROLES, bindingsFor, bind, unbind } = await import('../src/core/inputs.js');
 const { ingestObservations, channelsFor } = await import('../src/core/channels.js');
@@ -36,7 +36,7 @@ await test('the new roles exist, and none has a default source', async () => {
 });
 
 await test('a heat pump device brings its standard channels, for whatever source feeds it', async () => {
-  const out = ingestObservations(site.id, 'hp_vendor', [...counterSamples, ...heatSamples], null, { deviceId: pump.id, now: NOW });
+  const out = await ingestObservations(site.id, 'hp_vendor', [...counterSamples, ...heatSamples], null, { deviceId: pump.id, now: NOW });
   assert.equal(out.rejected, 0);
   assert.equal(out.derived, 96);
   const points = (await channelsFor(site.id, 'hp_vendor', null, pump.id)).map((c) => [c.point, c.kind, c.metric, c.derived_metric]).sort();

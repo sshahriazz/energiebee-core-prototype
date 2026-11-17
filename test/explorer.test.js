@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 globalThis.fetch0 = globalThis.fetch;
 const SECRETS = { OCTOPUS_API_KEY: 'sk_live_explorer_never_1', SUNSYNK_PASSWORD: 'pw_explorer_never_2', TOUNIFY_TOKEN: 'tounify_test_sk_explorer_never_3' };
 Object.assign(process.env, SECRETS);

@@ -124,18 +124,12 @@ function momentOf(asOf) {
   return outer != null ? { ms: outer, knownAt: outer } : { ms: Date.now(), knownAt: null };
 }
 
-const tables = new Map();
-async function hasTable(name) {
-  if (!tables.has(name)) tables.set(name, Boolean(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)));
-  return tables.get(name);
-}
-
 // The home as known at knownAt (site_version, versions.js), or today's row (knownAt null, or a
 // database where versions are not kept).
 async function siteOf(siteId, knownAt) {
   const cur = await db.prepare('SELECT * FROM site WHERE id = ?').get(siteId);
   if (!cur) throw new RangeError(`no site ${siteId}`);
-  if (knownAt == null || !await hasTable('site_version')) return cur;
+  if (knownAt == null) return cur;
   try { return await siteAt(siteId, knownAt) ?? cur; } catch { return cur; }
 }
 
@@ -181,7 +175,7 @@ async function seriesFor(site, metric) {
        JOIN series se ON se.subject_kind = 'device' AND se.subject_id = CAST(d.id AS TEXT) AND se.metric_id = ? JOIN source so ON so.id = se.source_id
       WHERE d.site_id = ?
      UNION ALL
-     SELECT se.id, se.subject_kind, se.subject_id, so.code FROM json_each(?) j
+     SELECT se.id, se.subject_kind, se.subject_id, so.code FROM jsonb_array_elements_text(?::jsonb) AS j(value)
        CROSS JOIN series se ON se.subject_kind = 'region' AND se.subject_id = j.value AND se.metric_id = ? JOIN source so ON so.id = se.source_id
      ORDER BY 1`).all(String(site.id), mid, mid, site.id, JSON.stringify(regions), mid);
 }
@@ -189,10 +183,10 @@ async function seriesFor(site, metric) {
 // Interval facts of ONE series over [from, to), bounded below by its longest fact (facts.js
 // readIntervals). A series whose max_span_s is NULL (with the column present) has no interval or
 // forecast fact at all (delta 013 keeps it on every insert): nothing to read, so no unbounded search.
-const noFacts = async (id) => await facts.spanColumn() && await facts.spanOf([id]) == null;
+const noFacts = async (id) => await facts.spanOf([id]) == null;
 async function intervalsOf(id, from, to, bounds) {
   const span = await facts.spanOf([id]);
-  if (span == null && await facts.spanColumn()) { bounds.push({ table: 'interval_fact', seriesIds: [id], from: null, to: null, empty: true }); return []; }
+  if (span == null) { bounds.push({ table: 'interval_fact', seriesIds: [id], from: null, to: null, empty: true }); return []; }
   bounds.push({ table: 'interval_fact', seriesIds: [id], from: span == null ? null : from - span, to });
   return await facts.readIntervals([id], from, to);
 }
@@ -899,7 +893,7 @@ export async function state(siteId, asOf, { lookbackS = STATE_LOOKBACK_S } = {})
   const batt = await (async () => { try { return await attributeAt(siteId, 'battery_kwh', k); } catch { return null; } })();
   const batteryKwh = batt?.value ?? site.battery_kwh ?? null;
   if (inputs.soc_pct && batteryKwh) inputs.soc_kwh = { ...inputs.soc_pct, value: (inputs.soc_pct.value / 100) * batteryKwh, unit: 'kWh', metric: 'battery_soc_pct x battery_kwh', derived: true };
-  const safe = async (table, fn) => { if (!await hasTable(table)) return {}; try { return fn(); } catch { return {}; } };
+  const safe = async (table, fn) => { try { return await fn(); } catch { return {}; } };
   return {
     siteId, asOf: ms, at, inputs,
     battery: { kwh: batteryKwh, source: batt?.source ?? (batteryKwh != null ? 'site (current value)' : null) },

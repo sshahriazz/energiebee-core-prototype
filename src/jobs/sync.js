@@ -26,7 +26,7 @@ const again = new Set();
 
 async function setConnection(siteId, provider, ok, error) {
   await db.prepare(
-        `UPDATE connection SET status = ?, last_success_at = CASE WHEN ? THEN ? ELSE last_success_at END, last_error = ?
+        `UPDATE connection SET status = ?, last_success_at = CASE WHEN ? = 1 THEN ? ELSE last_success_at END, last_error = ?
      WHERE site_id = ? AND provider = ?`).run(ok ? 'ok' : 'error', ok ? 1 : 0, nowSec(), ok ? null : String(error).slice(0, 300), siteId, provider);
 }
 
@@ -155,21 +155,21 @@ export async function runEntry(ctx, e, log) {
     return;
   }
   const def = e.def;
-  if (def.applies && !def.applies(ctx)) return;   // nothing to do for this home yet: not run, not logged
+  if (def.applies && !await def.applies(ctx)) return;   // nothing to do for this home yet: not run, not logged
   if (def.ensure && e.connection) await ensureConnection(ctx.siteId, e.connection);
   let args;
   try {
-    args = def.prepare ? def.prepare(ctx) : {};
+    args = def.prepare ? await def.prepare(ctx) : {};
   } catch (err) {
     await step(log, ctx.siteId, e.step, e.connection, () => { throw err; });
-    if (def.after) def.after(ctx);
+    if (def.after) await def.after(ctx);
     return;
   }
-  const share = def.share ? def.share(ctx, args) : null;
+  const share = def.share ? await def.share(ctx, args) : null;
   const hit = share ? ctx.cycle.shared.get(share.key) : null;
   if (hit && hit.siteId !== ctx.siteId && (hit.from ?? -Infinity) <= (share.from ?? -Infinity)) {
     if (e.connection) await setConnection(ctx.siteId, e.connection, true);
-    def.onShared?.(ctx, hit);
+    await def.onShared?.(ctx, hit);
     ctx.sinceMs = Math.min(ctx.sinceMs, hit.startedMs);   // its facts were written before this sync began
     log.push({ step: e.step, ok: true, ms: 0, shared: `fetched for home ${hit.siteId} earlier in this cycle (${share.key})` });
   } else {
@@ -181,7 +181,7 @@ export async function runEntry(ctx, e, log) {
       ctx.cycle.shared.set(share.key, { siteId: ctx.siteId, from: share.from, startedMs });
     }
   }
-  if (def.after) def.after(ctx);
+  if (def.after) await def.after(ctx);
 }
 
 /**

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 const { db } = await import('../src/db/db.js');
 const { ORIGINS } = await import('../src/core/provenance.js');
 const { ATTRIBUTE_DEFS, DEVICE_KINDS, PREDHEAT_NOTE } = await import('../src/db/seed/attributes.js');
@@ -99,9 +99,9 @@ await test('registries: catalogue references exist in docs/predbat-predheat-requ
     const doc = fs.readFileSync(file, 'utf8');
     for (const r of new Set(refs)) assert.ok(doc.includes(`| ${r} |`), `${r} is in the catalogue`);
   } else t.diagnostic('catalogue not present: ids checked for form only');
-  // The plan tables' action registry (delta 030), when present: every kind it names is registered and
-  // reads its actions, and the seeded lists already hold them (so the merge in deviceKind is a safety net).
-  if (await db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'device_action'").get()) {
+  // The plan tables' action registry: every kind it names is registered and reads its actions, and the
+  // seeded lists already hold them (so the merge in deviceKind is a safety net).
+  {
     const seeded = new Map(DEVICE_KINDS.map((k) => [k.kind, JSON.parse(k.action_codes)]));
     for (const a of await db.prepare('SELECT device_kind, action FROM device_action').all()) {
       assert.ok((await checkDeviceKind(a.device_kind)).action_codes.includes(a.action), `${a.device_kind} reads ${a.action}`);
@@ -210,7 +210,7 @@ await test('origin labels: every stored value carries one, from the writer or fr
 });
 
 await test('extension: one registry row adds a key, a tunable or a device kind, with no schema change', async () => {
-  const v = (await db.prepare('PRAGMA schema_version').get()).schema_version;
+  const v = (await db.prepare("SELECT md5(string_agg(table_name || '.' || column_name || ':' || data_type, ',' ORDER BY table_name, column_name)) AS v FROM information_schema.columns WHERE table_schema = current_schema()").get()).v;
   await db.prepare(`INSERT INTO attribute_def (key, label, unit, value_type, min_value, max_value, applies_to, description)
     VALUES ('ceiling_height_m', 'Ceiling height', 'm', 'number', 1.8, 6, '["site"]', 'test row')`).run();
   assert.equal((await attrs.setAttribute(home.id, 'ceiling_height_m', 2.4, 'installer')).value, 2.4);
@@ -223,7 +223,7 @@ await test('extension: one registry row adds a key, a tunable or a device kind, 
   const hb = await addDevice({ siteId: home.id, kind: 'heat_battery', provider: 'test', externalRef: 'HB-1' });
   assert.equal((await attrs.setDeviceAttribute(hb.id, 'tank_litres', 200, 'installer')).value, 200, 'granted by the kind row');
   await assert.rejects(async () => await attrs.setDeviceAttribute(hb.id, 'reserve_pct', 5, 'installer'), /does not apply to a heat_battery device/);
-  assert.equal((await db.prepare('PRAGMA schema_version').get()).schema_version, v, 'no schema change');
+  assert.equal((await db.prepare("SELECT md5(string_agg(table_name || '.' || column_name || ':' || data_type, ',' ORDER BY table_name, column_name)) AS v FROM information_schema.columns WHERE table_schema = current_schema()").get()).v, v, 'no schema change');
 });
 
 await test('H5: home settings keep their versions (created, slot length, capacity, zone) and siteAt reads them', async () => {
@@ -232,7 +232,7 @@ await test('H5: home settings keep their versions (created, slot length, capacit
   assert.equal(v0.length, 1);
   assert.equal(v0[0].recorded_at, s.created_at * 1000, 'first version at creation');
   const a = await moment();
-  setSlotLength(s.id, 900);
+  await setSlotLength(s.id, 900);
   const b = await moment();
   await setContractedCapacity(s.id, 6, { origin: 'user', note: 'bill' });
   const c = await moment();

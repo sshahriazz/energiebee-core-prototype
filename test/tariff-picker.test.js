@@ -14,7 +14,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { useDb } from './helpers.js';
 
-useDb();
+await useDb();
 for (const k of ['TOUNIFY_API_KEY', 'TOUNIFY_DEV', 'OCTOPUS_API_KEY', 'TARIFFSCAN_USERNAME', 'TARIFFSCAN_PASSWORD']) delete process.env[k];
 globalThis.fetch = async (url) => { throw new Error(`no network in tests: ${url}`); };
 
@@ -70,9 +70,9 @@ function call(method, p, body) {
 }
 
 await test('delta 080: supplier tables, payment method on agreements and the onboarding questions', async () => {
-  for (const t of ['supplier', 'supplier_alias', 'market_question']) assert.ok(await db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t), t);
-  assert.ok(await db.prepare("SELECT 1 FROM pragma_table_info('tariff') WHERE name = 'supplier_id'").get());
-  assert.ok(await db.prepare("SELECT 1 FROM pragma_table_info('tariff_agreement') WHERE name = 'payment_method'").get());
+  for (const t of ['supplier', 'supplier_alias', 'market_question']) assert.ok(await db.prepare("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?").get(t), t);
+  assert.ok(await db.prepare("SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tariff' AND column_name = 'supplier_id'").get());
+  assert.ok(await db.prepare("SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'tariff_agreement' AND column_name = 'payment_method'").get());
   assert.deepEqual(await PK.questionsFor('GB', 'one_price'), []);
   assert.deepEqual((await PK.questionsFor('GB', 'two_rate')).map((q) => [q.field, q.required]), [['off_peak_hours', true]]);
   assert.deepEqual((await PK.questionsFor('FR', 'two_rate')).map((q) => q.field), ['contracted_kva', 'off_peak_hours']);

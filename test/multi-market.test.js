@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { useDb } from './helpers.js';
 import { mapAsync } from "../src/core/async.js";
 
-useDb();
+await useDb();
 const m = await import('../scripts/lib/multi-market.js');
 const { db } = await import('../src/db/db.js');
 const { setSlotLength, createSite, regionsOf } = await import('../src/core/sites.js');
@@ -132,9 +132,9 @@ await test('a fixed charge needs a charge period, and registers beyond single/da
 // Last: rebuilds the NL home's serving rows in 30 and 60-minute slots through the queue.
 await test('NL: switching to 30 and 60-minute slots keeps every kWh and fixed charge; cost follows the time-weighted price', async () => {
   const fine = await m.hhRows(nl.site.id, m.NL.from, m.NL.to);
-  assert.throws(() => setSlotLength(nl.site.id, 1200), /slot_s must be one of/);
+  await assert.rejects(async () => await setSlotLength(nl.site.id, 1200), /slot_s must be one of/);
   for (const slotS of [1800, 3600]) {
-    const r = setSlotLength(nl.site.id, slotS);
+    const r = await setSlotLength(nl.site.id, slotS);
     assert.equal(r.queued, true);
     const done = (await processQueue()).find((x) => x.siteId === nl.site.id);
     assert.equal(done.from, m.NL.from);

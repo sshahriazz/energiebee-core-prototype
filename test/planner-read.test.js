@@ -13,7 +13,7 @@ import path from 'node:path';
 import { useDb, hasLive } from './helpers.js';
 import { reduceAsync, mapAsync } from "../src/core/async.js";
 
-useDb({ snapshot: hasLive });
+await useDb({ snapshot: hasLive });
 const { db, tx } = await import('../src/db/db.js');
 const facts = await import('../src/core/facts.js');
 const pr = await import('../src/core/planner-read.js');
@@ -113,47 +113,47 @@ await test('series: the rule of each metric kind (power mean, level last-held, t
   await putI(await facts.seriesId('region', 'carbon:77', 'carbon_intensity', 'carbon_regional'), [{ start: D0, end: D0 + 1800, value: 100 }, { start: D0 + 1800, end: D0 + 3600, value: 200 }]);
 
   // Instant power: mean over each step; the missing 5-minute sample is taken from the live source (FALLBACK).
-  const p = pr.series(site, 'solar_w', D0, D0 + 3600, { asOf });
+  const p = await pr.series(site, 'solar_w', D0, D0 + 3600, { asOf });
   assert.deepEqual([p.start, p.stepS, p.n, p.origin.rule, p.origin.sources], [D0, 300, 12, 'mean_power_held', ['sunsynk_5min', 'sunsynk_live']]);
   assert.deepEqual(p.values, [1000, 2000, 3000, 4000, 5000, 6000, 7777, 8000, 9000, 10000, 11000, 12000]);
   assert.equal(p.sourceIndex[6], 1);
   assert.ok(p.quality[6] & QUALITY.FALLBACK);
   close(p.energyKwh[0], (1000 * 300) / 3.6e6, 'energy of a step');
-  const only = pr.series(site, 'solar_w', D0, D0 + 3600, { asOf, source: 'sunsynk_5min' });
+  const only = await pr.series(site, 'solar_w', D0, D0 + 3600, { asOf, source: 'sunsynk_5min' });
   assert.equal(only.values[6], null, 'a gap is null, never 0');
   assert.equal(only.cover[6], 0);
-  const q15 = pr.series(site, 'solar_w', D0, D0 + 3600, { asOf, source: 'sunsynk_5min', stepS: 900 });
+  const q15 = await pr.series(site, 'solar_w', D0, D0 + 3600, { asOf, source: 'sunsynk_5min', stepS: 900 });
   assert.deepEqual(q15.values, [2000, 5000, 8500, 11000]);
   close(q15.cover[2], 2 / 3);
   assert.ok(q15.quality[2] & QUALITY.PARTIAL);
-  assert.deepEqual(pr.series(site, 'solar_w', D0, D0 + 3600, { asOf, source: 'sunsynk_5min', stepS: 'slot' }).values, [3500, 10000], 'the mean of what was measured');
-  assert.deepEqual(pr.series(site, 'solar_w', D0 + 3600, D0 + 5400, { asOf }).values, new Array(6).fill(null), 'no data after the last sample');
+  assert.deepEqual((await pr.series(site, 'solar_w', D0, D0 + 3600, { asOf, source: 'sunsynk_5min', stepS: 'slot' })).values, [3500, 10000], 'the mean of what was measured');
+  assert.deepEqual((await pr.series(site, 'solar_w', D0 + 3600, D0 + 5400, { asOf })).values, new Array(6).fill(null), 'no data after the last sample');
 
   // Level (SoC, aggregation last): the value held at the end of each step.
-  assert.deepEqual(pr.series(site, 'battery_soc_pct', D0, D0 + 3600, { asOf, stepS: 1800 }).values, [55, 61]);
-  assert.equal(pr.series(site, 'battery_soc_pct', D0, D0 + 3600, { asOf }).origin.rule, 'last_held');
+  assert.deepEqual((await pr.series(site, 'battery_soc_pct', D0, D0 + 3600, { asOf, stepS: 1800 })).values, [55, 61]);
+  assert.equal((await pr.series(site, 'battery_soc_pct', D0, D0 + 3600, { asOf })).origin.rule, 'last_held');
 
   // Temperature (instant, mean): an hourly value holds its hour, then nothing.
-  const tmp = pr.series(site, 'outdoor_temp_c', D0, D0 + 3 * 3600, { asOf, stepS: 1800 });
+  const tmp = await pr.series(site, 'outdoor_temp_c', D0, D0 + 3 * 3600, { asOf, stepS: 1800 });
   assert.deepEqual(tmp.values, [8, 8, 9, 9, null, null]);
   assert.deepEqual(tmp.origin.holdS, [3600]);
 
   // Interval energy: split by overlap (a half-hour feeds six 5-minute steps by a sixth each).
-  const e = pr.series(site, 'grid_import_kwh', D0, D0 + 7200, { asOf });
+  const e = await pr.series(site, 'grid_import_kwh', D0, D0 + 7200, { asOf });
   assert.equal(e.origin.rule, 'split_by_overlap');
   for (let k = 0; k < 24; k++) {
     const want = k < 6 ? 0.1 : k < 12 ? 0.2 : k < 18 ? null : 0.05;
     if (want == null) assert.equal(e.values[k], null, `step ${k} is a gap`); else close(e.values[k], want, `step ${k}`);
   }
-  const hour = pr.series(site, 'grid_import_kwh', D0, D0 + 7200, { asOf, stepS: 3600 });
+  const hour = await pr.series(site, 'grid_import_kwh', D0, D0 + 7200, { asOf, stepS: 3600 });
   close(hour.values[0], 1.8); close(hour.values[1], 0.3);
   assert.deepEqual([hour.cover[1], (hour.quality[1] & QUALITY.PARTIAL) !== 0], [0.5, true]);
 
   // Interval mean (carbon intensity, the home's region series): time-weighted, not split.
-  assert.deepEqual(pr.series(site, 'carbon_intensity', D0, D0 + 3600, { asOf, stepS: 900 }).values, [100, 100, 200, 200]);
-  assert.deepEqual(pr.series(site, 'carbon_intensity', D0, D0 + 3600, { asOf, stepS: 3600 }).values, [150]);
-  assert.throws(() => pr.series(site, 'solar_w', D0, D0 + 3600, { asOf: D0 }), /looks like seconds/);
-  assert.throws(() => pr.series(site, 'no_such_metric', D0, D0 + 3600, { asOf }), /unknown metric/);
+  assert.deepEqual((await pr.series(site, 'carbon_intensity', D0, D0 + 3600, { asOf, stepS: 900 })).values, [100, 100, 200, 200]);
+  assert.deepEqual((await pr.series(site, 'carbon_intensity', D0, D0 + 3600, { asOf, stepS: 3600 })).values, [150]);
+  await assert.rejects(async () => await pr.series(site, 'solar_w', D0, D0 + 3600, { asOf: D0 }), /looks like seconds/);
+  await assert.rejects(async () => await pr.series(site, 'no_such_metric', D0, D0 + 3600, { asOf }), /unknown metric/);
 });
 
 // ───────────── counterDifferenceSeries ─────────────
@@ -167,7 +167,7 @@ await test('counterDifferenceSeries: 5-minute power fitted to the daily total, r
   await putI(daily, [{ start: a24, end: a25, value: 31.68 }, { start: a25, end: b25, value: 33 }, { start: a26, end: b26, value: 50, rec: T('2026-10-26T11:00:00Z') * 1000 }]);
   const asOf = T('2026-10-26T12:00:00Z') * 1000;
   const from = T('2026-10-24T18:00:00Z'); const to = T('2026-10-26T12:00:00Z');
-  const r = pr.counterDifferenceSeries(site, 'load_today', from, to, { asOf });
+  const r = await pr.counterDifferenceSeries(site, 'load_today', from, to, { asOf });
   assert.equal(r.metric, 'load_kwh');
   assert.deepEqual(r.days.map((d) => [d.date, d.hours, d.today]), [['2026-10-24', 24, false], ['2026-10-25', 25, false], ['2026-10-26', 24, true]]);
   close(r.days[0].fit, 1.1); close(r.days[1].fit, 1.1);
@@ -181,13 +181,13 @@ await test('counterDifferenceSeries: 5-minute power fitted to the daily total, r
   close(r.cumulative[r.resets[1] - 1], 33, 'the 25-hour day');
   close(r.cumulative[r.n - 1], 14.4, 'today so far: unfitted');
   // Slot steps: the same counter, six steps at a time.
-  const slots = pr.counterDifferenceSeries(site, 'load_kwh', a25, b25, { asOf, stepS: 'slot' });
+  const slots = await pr.counterDifferenceSeries(site, 'load_kwh', a25, b25, { asOf, stepS: 'slot' });
   assert.equal(slots.n, 50);
   for (const v of slots.values) close(v, 0.66);
   // As known at: a revised daily total changes the fit only from when it was recorded.
   await putI(daily, [{ start: a24, end: a25, value: 34.56, rec: T('2026-10-27T09:00:00Z') * 1000 }]);
-  close(pr.counterDifferenceSeries(site, 'load_kwh', a24, a25, { asOf }).days[0].fit, 1.1, 'the first version, as known then');
-  close(pr.counterDifferenceSeries(site, 'load_kwh', a24, a25, { asOf: T('2026-10-27T10:00:00Z') * 1000 }).days[0].fit, 1.2, 'the revision');
+  close((await pr.counterDifferenceSeries(site, 'load_kwh', a24, a25, { asOf })).days[0].fit, 1.1, 'the first version, as known then');
+  close((await pr.counterDifferenceSeries(site, 'load_kwh', a24, a25, { asOf: T('2026-10-27T10:00:00Z') * 1000 })).days[0].fit, 1.2, 'the revision');
 
   // Clocks go forward: 23 hours, 276 steps; a gap stays null and the counter stays flat over it;
   // a total outside 0.6-1.6 times the samples is not used to fit (the build rule).
@@ -196,16 +196,16 @@ await test('counterDifferenceSeries: 5-minute power fitted to the daily total, r
   await putR(load, every5(a27, b29, (t) => (t >= gapFrom && t < gapFrom + 1800 ? undefined : 1200)));
   await putI(daily, [{ start: a27, end: b27, value: 57.6 }, { start: a28, end: b28, value: 30.36 }, { start: b28, end: b29, value: (288 - 6) * 0.1 * 1.1 }]);
   const asOf2 = T('2027-03-30T12:00:00Z') * 1000;
-  const short = pr.counterDifferenceSeries(site, 'load_kwh', a28, b28, { asOf: asOf2 });
+  const short = await pr.counterDifferenceSeries(site, 'load_kwh', a28, b28, { asOf: asOf2 });
   assert.deepEqual([short.n, short.resets, short.days[0].hours], [276, [0], 23]);
   close(short.cumulative[275], 30.36);
-  assert.deepEqual([pr.counterDifferenceSeries(site, 'load_kwh', a27, b27, { asOf: asOf2 }).days[0].fitted], [false]);
-  const gap = pr.counterDifferenceSeries(site, 'load_kwh', b28, b29, { asOf: asOf2 });
+  assert.deepEqual([(await pr.counterDifferenceSeries(site, 'load_kwh', a27, b27, { asOf: asOf2 })).days[0].fitted], [false]);
+  const gap = await pr.counterDifferenceSeries(site, 'load_kwh', b28, b29, { asOf: asOf2 });
   const g0 = (gapFrom - b28) / 300;
   assert.deepEqual(gap.values.slice(g0, g0 + 6), new Array(6).fill(null));
   close(gap.cumulative[g0 + 5], gap.cumulative[g0 - 1], 'flat over the gap');
   close(gap.values[0], 0.11);
-  assert.throws(() => pr.counterDifferenceSeries(site, 'gas_kwh', a28, b28), /no daily counter/);
+  await assert.rejects(async () => await pr.counterDifferenceSeries(site, 'gas_kwh', a28, b28), /no daily counter/);
 });
 
 // ───────────── as known at ─────────────
@@ -217,8 +217,8 @@ await test('as known at: a fact recorded after asOf is invisible, a superseded o
   const solar = await sid(site, 'solar_w', 'sunsynk_5min');
   await putR(solar, [{ ts: t1, value: 100, rec: R1 }]);
   await putR(solar, [{ ts: t1, value: 200, rec: R2 }]);
-  const at = (asOf) => pr.series(site, 'solar_w', t1, t1 + 300, { asOf }).values[0];
-  assert.deepEqual([at(R1 - 1), at(R1), at(R2 - 1), at(R2), pr.series(site, 'solar_w', t1, t1 + 300).values[0]], [null, 100, 100, 200, 200]);
+  const at = async (asOf) => (await pr.series(site, 'solar_w', t1, t1 + 300, { asOf })).values[0];
+  assert.deepEqual([await at(R1 - 1), await at(R1), await at(R2 - 1), await at(R2), (await pr.series(site, 'solar_w', t1, t1 + 300)).values[0]], [null, 100, 100, 200, 200]);
 
   // Forecasts by when the core RECORDED each issue, with the issue that fed each step.
   const fc = await sid(site, 'solar_kwh', 'core_forecast');
@@ -226,24 +226,24 @@ await test('as known at: a fact recorded after asOf is invisible, a superseded o
   await facts.putForecasts(fc, I1, [{ start: t1, end: t1 + 1800, value: 0.6 }, { start: t1 + 1800, end: t1 + 3600, value: 0.9 }], null, { recordedAt: I1 * 1000 + 5000 });
   await facts.putForecasts(fc, I2, [{ start: t1, end: t1 + 1800, value: 1.2 }, { start: t1 + 1800, end: t1 + 3600, value: 0.9 }], null, { recordedAt: I2 * 1000 + 5000 });
   await facts.putForecasts(await sid(site, 'solar_kwh', 'quartz'), I2, [{ start: t1 + 3600, end: t1 + 4500, value: 0.3 }], null, { recordedAt: I2 * 1000 + 5000 });
-  const before = pr.forecast(site, 'solar_kwh', t1, t1 + 3600, { asOf: I1 * 1000 + 4999 });
+  const before = await pr.forecast(site, 'solar_kwh', t1, t1 + 3600, { asOf: I1 * 1000 + 4999 });
   assert.deepEqual([before.values.every((v) => v == null), before.segments], [true, []]);
-  const first = pr.forecast(site, 'solar_kwh', t1, t1 + 3600, { asOf: I1 * 1000 + 5000 });
+  const first = await pr.forecast(site, 'solar_kwh', t1, t1 + 3600, { asOf: I1 * 1000 + 5000 });
   for (let k = 0; k < 12; k++) close(first.values[k], k < 6 ? 0.1 : 0.15);
   assert.ok(first.issuedAt.every((x) => x === I1));
-  const second = pr.forecast(site, 'solar_kwh', t1, t1 + 4500, { asOf: I2 * 1000 + 5000 });
+  const second = await pr.forecast(site, 'solar_kwh', t1, t1 + 4500, { asOf: I2 * 1000 + 5000 });
   for (let k = 0; k < 15; k++) close(second.values[k], k < 6 ? 0.2 : k < 12 ? 0.15 : 0.1);
   assert.deepEqual(second.segments.map((s) => [s.from, s.to, s.source, s.issuedAt]),
     [[t1, t1 + 1800, 'core_forecast', I2], [t1 + 1800, t1 + 3600, 'core_forecast', I1], [t1 + 3600, t1 + 4500, 'quartz', I2]], 'unchanged periods keep the issue that set them');
   assert.ok(second.quality[12] & QUALITY.FALLBACK, 'Quartz only where our own forecast has nothing');
   // Cases: none kept yet gives nulls and says why; a stored pessimistic case is read like any forecast.
-  const p10 = pr.forecast(site, 'solar_kwh', t1, t1 + 1800, { asOf: R2, case: 'p10' });
+  const p10 = await pr.forecast(site, 'solar_kwh', t1, t1 + 1800, { asOf: R2, case: 'p10' });
   assert.deepEqual([p10.values.every((v) => v == null), /no forecast series/.test(p10.missing)], [true, true]);
   await facts.putForecasts(await sid(site, 'solar_kwh_p10', 'core_solar_cases'), I2, [{ start: t1, end: t1 + 1800, value: 0.6 }], null, { recordedAt: I2 * 1000 + 6000 });
-  const pess = pr.forecast(site, 'solar_kwh', t1, t1 + 1800, { asOf: R2, case: 'pessimistic' });
+  const pess = await pr.forecast(site, 'solar_kwh', t1, t1 + 1800, { asOf: R2, case: 'pessimistic' });
   assert.deepEqual([pess.metric, pess.origin.sources], ['solar_kwh_p10', ['core_solar_cases']]);
   close(pess.values[0], 0.1);
-  assert.match(pr.forecast(site, 'load_kwh', t1, t1 + 1800, { asOf: R2, case: 'p90' }).missing, /no p90 case/);
+  assert.match((await pr.forecast(site, 'load_kwh', t1, t1 + 1800, { asOf: R2, case: 'p90' })).missing, /no p90 case/);
 
   // Prices: a rate row superseded later is still the price as known before; VAT (5 % in September 2026) applied.
   const dev = Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, recorded_at) VALUES (?, 'meter_import', 'octopus', ?, 1)").run(site, `MPAN-${site}`)).lastInsertRowid);
@@ -254,8 +254,8 @@ await test('as known at: a fact recorded after asOf is invisible, a superseded o
   await rate.run(tariff, 'standing', T('2026-01-01T00:00:00Z'), 50, 1000);
   await db.prepare("UPDATE rate_interval SET superseded_at = ? WHERE tariff_id = ? AND component = 'unit'").run(R2, tariff);
   await rate.run(tariff, 'unit', T('2026-01-01T00:00:00Z'), 30, R2);
-  const old = pr.rates(site, t1, t1 + 3600, { asOf: R2 - 1 });
-  const now = pr.rates(site, t1, t1 + 3600, { asOf: R2 });
+  const old = await pr.rates(site, t1, t1 + 3600, { asOf: R2 - 1 });
+  const now = await pr.rates(site, t1, t1 + 3600, { asOf: R2 });
   close(old.import.values[0], 21); close(now.import.values[0], 31.5);
   assert.deepEqual([old.import.tariff[0], old.import.unpriced[0], old.export.unpriced[0], old.export.values[0]], [`T-FLAT-${site}`, false, true, null], 'no export agreement: unpriced, not 0');
   assert.ok(old.import.quality[0] === 0 && (old.export.quality[0] & QUALITY.CHECK_FAILED));
@@ -274,14 +274,14 @@ await test('loadHistory: previous days on one local-clock axis across both clock
   await putI(await sid(site, 'ev_charge_kwh', 'octopus_kraken'), [{ start: T('2026-10-26T02:00:00Z'), end: T('2026-10-26T03:00:00Z'), value: 1.2 }]);
   const expect = (i) => (1000 + 100 * Math.floor(i / 12)) * 300 / 3.6e6;
 
-  const autumn = pr.loadHistory(site, { daysPrevious: 3, asOf: T('2026-10-27T12:00:00Z') * 1000, excludeMetrics: [], holidays: ['2026-10-25'] });
+  const autumn = await pr.loadHistory(site, { daysPrevious: 3, asOf: T('2026-10-27T12:00:00Z') * 1000, excludeMetrics: [], holidays: ['2026-10-25'] });
   assert.deepEqual([autumn.axis, autumn.n, autumn.stepS], ['local_time_of_day', 288, 300]);
   assert.deepEqual(autumn.days.map((d) => [d.date, d.daysAgo, d.hours, d.dst, d.missingClock, d.holiday]),
     [['2026-10-26', 1, 24, null, 0, false], ['2026-10-25', 2, 25, 'long', 0, true], ['2026-10-24', 3, 24, null, 0, false]]);
   for (const d of autumn.days) for (let i = 0; i < 288; i++) close(d.values[i], expect(i), `${d.date} ${i}`);
   close(autumn.days[1].totalKwh, [...Array(25)].reduce((s, _, h) => s + (1000 + 100 * (h <= 1 ? h : h - 1)) / 1000, 0), 'the 25-hour day keeps its real energy');
 
-  const spring = pr.loadHistory(site, { daysPrevious: 3, asOf: T('2027-03-30T12:00:00Z') * 1000, excludeMetrics: [] });
+  const spring = await pr.loadHistory(site, { daysPrevious: 3, asOf: T('2027-03-30T12:00:00Z') * 1000, excludeMetrics: [] });
   const short = spring.days[1];
   assert.deepEqual([short.date, short.hours, short.dst, short.missingClock], ['2027-03-28', 23, 'short', 12]);
   for (let i = 0; i < 288; i++) {
@@ -289,13 +289,13 @@ await test('loadHistory: previous days on one local-clock axis across both clock
   }
 
   // EV dispatches (Predbat car_charging_energy) are taken out by default, clamped at 0.
-  const noEv = pr.loadHistory(site, { daysPrevious: 1, asOf: T('2026-10-27T12:00:00Z') * 1000 });
+  const noEv = await pr.loadHistory(site, { daysPrevious: 1, asOf: T('2026-10-27T12:00:00Z') * 1000 });
   for (let i = 24; i < 36; i++) close(noEv.days[0].values[i], 0, `02:${String((i - 24) * 5).padStart(2, '0')}`);
   close(noEv.days[0].excludedKwh, 1.2);
   close(noEv.days[0].values[36], expect(36));
 
   // Predbat's own form: days_previous [1, 3] with days_previous_weight [1, 0.5].
-  const pb = pr.loadHistory(site, { daysPrevious: { days: [1, 3], weights: [1, 0.5] }, asOf: T('2026-10-27T12:00:00Z') * 1000, excludeMetrics: [] });
+  const pb = await pr.loadHistory(site, { daysPrevious: { days: [1, 3], weights: [1, 0.5] }, asOf: T('2026-10-27T12:00:00Z') * 1000, excludeMetrics: [] });
   assert.deepEqual(pb.days.map((d) => [d.date, d.weight]), [['2026-10-26', 1], ['2026-10-24', 0.5]]);
   const p = pr.predictLoad(autumn);
   assert.deepEqual(p.used, ['2026-10-26', '2026-10-24'], 'the holiday is left out');
@@ -313,7 +313,7 @@ await test('loadHistory: a day without inverter samples falls back to the ledger
   const ins = db.prepare(`INSERT INTO site_hh (site_id, slot_start, local_date, dur_s, tod_min, state, quality, home, method_version, built_at)
     VALUES (?, ?, '2026-10-21', 1800, ?, 'final', 1, 0.6, 'test', ?)`);
   for (let t = a; t < b; t += 1800) await ins.run(site, t, todMinute(TZ, t), t < a + 3600 ? T('2026-10-25T00:00:00Z') : T('2026-10-22T01:00:00Z'));
-  const h = pr.loadHistory(site, { daysPrevious: 1, asOf: T('2026-10-22T12:00:00Z') * 1000, excludeMetrics: [] });
+  const h = await pr.loadHistory(site, { daysPrevious: 1, asOf: T('2026-10-22T12:00:00Z') * 1000, excludeMetrics: [] });
   const d = h.days[0];
   assert.equal(d.source, 'site_hh');
   assert.deepEqual(d.values.slice(0, 12), new Array(12).fill(null), 'rows rebuilt after asOf are not what was known then');
@@ -369,25 +369,38 @@ await test('state and the stale-input gate: freshest source wins, Predbat signs,
       });
   const heat = (await pr.state(site, asOf)).inputs.indoor_temp_c;
   assert.deepEqual([heat.value, heat.ageS, heat.source, heat.seriesIds.length], [21, 1800, 'heating_telemetry', rooms.length]);
-  assert.deepEqual(pr.series(site, 'indoor_temp_c', at - 1800, at, { asOf, stepS: 900 }).values, [20, 21], 'one sensor, then both');
+  assert.deepEqual((await pr.series(site, 'indoor_temp_c', at - 1800, at, { asOf, stepS: 900 })).values, [20, 21], 'one sensor, then both');
 });
 
 // ───────────── boundedness ─────────────
 
 // Every statement a call prepares, with its arguments (db.prepare wrapped for the call).
-function capture(fn) {
+async function capture(fn) {
   const orig = db.prepare;
   const seen = [];
   db.prepare = function prepare(sql) {
     const st = orig.call(db, sql);
-    const wrap = (m) => (...a) => { seen.push({ sql, args: a, m }); return st[m](...a); };
-    return { all: wrap('all'), get: wrap('get'), run: wrap('run'), iterate: wrap('iterate') };
+    const wrap = (m) => async (...a) => { seen.push({ sql, args: a, m }); return await st[m](...a); };
+    return { all: wrap('all'), get: wrap('get'), run: wrap('run') };
   };
-  try { return { out: fn(), seen }; } finally { db.prepare = orig; }
+  try { return { out: await fn(), seen }; } finally { db.prepare = orig; }
 }
-const explain = async (s) => (await db.prepare(`EXPLAIN QUERY PLAN ${s.sql}`).all(...s.args)).map((r) => r.detail);
+// How each fact table is reached in a statement's plan (sequential scans off: can an index serve it?), as sorted
+// "table:index" / "table:seq" entries; the cost-based choice between an index and a bitmap scan is not compared.
+const explain = async (s) => {
+  const lines = await tx(async () => {
+    await db.exec('SET LOCAL enable_seqscan = off');
+    return (await db.prepare(`EXPLAIN ${s.sql}`).all(...s.args)).map((r) => r['QUERY PLAN']);
+  });
+  const out = new Set();
+  for (const l of lines) {
+    const m = /(Seq Scan|Index Only Scan using \S+|Index Scan using \S+|Bitmap Heap Scan|Index Scan Backward using \S+) on (\w+)/.exec(l);
+    if (m) out.add(`${m[2]}:${m[1].startsWith('Seq') ? 'seq' : 'index'}`);
+  }
+  return [...out].sort();
+};
 const FACT_TABLE = /\b(reading|interval_fact|forecast_fact|rate_interval|site_hh)\b/;
-const FULL_SCAN = /^SCAN (reading|interval_fact|forecast_fact|rate_interval|site_hh|f|r|a)\b/;
+const FULL_SCAN = /^(reading|interval_fact|forecast_fact|rate_interval|site_hh):seq$/;
 const COUNT = {
   reading: 'SELECT COUNT(*) AS n FROM reading WHERE series_id = ? AND ts >= ? AND ts < ?',
   interval_fact: 'SELECT COUNT(*) AS n FROM interval_fact WHERE series_id = ? AND start_ts >= ? AND start_ts < ?',
@@ -418,16 +431,16 @@ await test('bounded: with ten times the history every call makes the same plans 
   };
   const small = await make(10); const large = await make(100);
   const calls = {
-    series: (s) => pr.series(s, 'load_w', END - 48 * 3600, END, { asOf }),
-    counter: (s) => pr.counterDifferenceSeries(s, 'load_kwh', END - 48 * 3600, END, { asOf }),
-    forecast: (s) => pr.forecast(s, 'solar_kwh', END, END + 48 * 3600, { asOf }),
-    loadHistory: (s) => pr.loadHistory(s, { daysPrevious: 7, asOf }),
+    series: async (s) => await pr.series(s, 'load_w', END - 48 * 3600, END, { asOf }),
+    counter: async (s) => await pr.counterDifferenceSeries(s, 'load_kwh', END - 48 * 3600, END, { asOf }),
+    forecast: async (s) => await pr.forecast(s, 'solar_kwh', END, END + 48 * 3600, { asOf }),
+    loadHistory: async (s) => await pr.loadHistory(s, { daysPrevious: 7, asOf }),
     state: async (s) => await pr.state(s, asOf),
-    rates: (s) => pr.rates(s, END, END + 48 * 3600, { asOf }),
-    seriesNow: (s) => pr.series(s, 'solar_w', END - 3600, END),
+    rates: async (s) => await pr.rates(s, END, END + 48 * 3600, { asOf }),
+    seriesNow: async (s) => await pr.series(s, 'solar_w', END - 3600, END),
   };
   for (const [name, call] of Object.entries(calls)) {
-    const a = capture(async () => await call(small)); const b = capture(async () => await call(large));
+    const a = await capture(async () => await call(small)); const b = await capture(async () => await call(large));
     assert.equal(a.seen.filter((s) => s.m === 'run' || /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(s.sql)).length, 0, `${name}: reads only`);
     const plans = async (c) => await mapAsync(c.seen.filter((s) => FACT_TABLE.test(s.sql)), async (s) => (await explain(s)).join(' | '));
     assert.deepEqual(await plans(a), await plans(b), `${name}: the same plans`);
@@ -455,9 +468,9 @@ await test('GB home snapshot: prices per slot and the inverter counters equal th
   return await import('../src/core/build.js').then(async ({ buildSite }) => {
       const b = await buildSite(SITE, d1, d2, { asOf: asOfS, dryRun: true });
       assert.ok(b.hhRows.length >= 140);
-      const r = pr.rates(SITE, a, e, { asOf: asOfS * 1000, stepS: 'slot', direction: ['import', 'export', 'gas'] });
-      const counters = Object.fromEntries(['solar_kwh', 'battery_charge_kwh', 'battery_discharge_kwh'].map((m) => [m, pr.counterDifferenceSeries(SITE, m, a, e, { asOf: asOfS * 1000, stepS: 'slot' })]));
-      const fine = pr.counterDifferenceSeries(SITE, 'solar_kwh', a, e, { asOf: asOfS * 1000 });
+      const r = await pr.rates(SITE, a, e, { asOf: asOfS * 1000, stepS: 'slot', direction: ['import', 'export', 'gas'] });
+      const counters = Object.fromEntries(await mapAsync(['solar_kwh', 'battery_charge_kwh', 'battery_discharge_kwh'], async (m) => [m, await pr.counterDifferenceSeries(SITE, m, a, e, { asOf: asOfS * 1000, stepS: 'slot' })]));
+      const fine = await pr.counterDifferenceSeries(SITE, 'solar_kwh', a, e, { asOf: asOfS * 1000 });
       for (const h of b.hhRows) {
         const i = (h.slot_start - r.start) / r.stepS;
         const imp = h.import_rate_ex != null ? h.import_rate_ex * (1 + h.import_vat) : null;
@@ -476,11 +489,11 @@ await test('GB home snapshot: prices per slot and the inverter counters equal th
       const now = asOfS;
       const H = 48 * 3600;
       for (const [name, fn] of Object.entries({
-        series: () => pr.series(SITE, 'solar_w', now - H, now, { asOf: now * 1000 }),
-        counter: () => pr.counterDifferenceSeries(SITE, 'load_kwh', now - H, now, { asOf: now * 1000 }),
-        rates: () => pr.rates(SITE, now, now + H, { asOf: now * 1000 }),
-        forecast: () => pr.forecast(SITE, 'solar_kwh', now, now + H, { asOf: now * 1000 }),
-        loadHistory: () => pr.loadHistory(SITE, { daysPrevious: 7, asOf: now * 1000 }),
+        series: async () => await pr.series(SITE, 'solar_w', now - H, now, { asOf: now * 1000 }),
+        counter: async () => await pr.counterDifferenceSeries(SITE, 'load_kwh', now - H, now, { asOf: now * 1000 }),
+        rates: async () => await pr.rates(SITE, now, now + H, { asOf: now * 1000 }),
+        forecast: async () => await pr.forecast(SITE, 'solar_kwh', now, now + H, { asOf: now * 1000 }),
+        loadHistory: async () => await pr.loadHistory(SITE, { daysPrevious: 7, asOf: now * 1000 }),
         state: async () => await pr.state(SITE, now * 1000),
         window: async () => await pr.window(SITE, now),
       })) {

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
-if (hasLive) useDb({ snapshot: true });
+if (hasLive) await useDb({ snapshot: true });
 const m = {
   ...(await import('../src/db/db.js')), ...(await import('../src/core/build.js')), ...(await import('../src/core/devices.js')),
   ...(await import('../src/core/history.js')), ...(await import('../src/core/maintenance.js')), ...(await import('../src/core/time.js')),
@@ -43,7 +43,7 @@ await test('a changed tariff history supersedes the old agreements; a rebuild as
   if (!other) return t.skip('no other import tariff to switch to');
   await m.buildSite(SITE, await firstDay(), await today(), { reason: 'test' });
   await sleepMs(5); const before = m.nowSec(); await sleepMs(1100);
-  const all = await m.db.prepare('SELECT tariff_id AS tariffId, valid_from AS "from", valid_to AS "to" FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').all(imp.id);
+  const all = await m.db.prepare('SELECT tariff_id AS "tariffId", valid_from AS "from", valid_to AS "to" FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').all(imp.id);
   await m.supersedeAgreements(SITE, imp.id, all.map((a) => (a.from === cur.valid_from ? { ...a, tariffId: other.id } : a)));
   assert.ok((await m.db.prepare('SELECT COUNT(*) n FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NOT NULL').get(imp.id)).n >= all.length, 'old rows kept');
   const day = await today();

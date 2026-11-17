@@ -77,7 +77,7 @@ export async function homeFootprint(siteId) {
   const devices = (await db.prepare('SELECT id FROM device WHERE site_id = ?').all(id)).map((r) => r.id);
   await take('device', 'id', devices);
   const series = (await db.prepare(`SELECT id FROM series WHERE (subject_kind = 'site' AND subject_id = ?)
-    OR (subject_kind = 'device' AND subject_id IN (SELECT jsonb_array_elements_text(?::jsonb))))`).all(String(id), JSON.stringify(devices.map(String)))).map((r) => r.id);
+    OR (subject_kind = 'device' AND subject_id IN (SELECT jsonb_array_elements_text(?::jsonb)))`).all(String(id), JSON.stringify(devices.map(String)))).map((r) => r.id);
   await take('series', 'id', series);
   for (const t of tables) {
     if (t === 'raw_payload' || t === 'site' || t === 'device') continue;

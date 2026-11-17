@@ -111,7 +111,7 @@ await test('an unexpected answer is quarantined and the step fails, nothing stor
   const site = await frHome('Bad answer');
   answer = () => ({ error_code: 'ODSQLError', message: 'bad where' });
   const before = (await readIntervals([await frSeries()], 0, 9e9)).length;
-  await assert.rejects(await RTE.syncRteCarbon(site, A, B), /unexpected answer \(not a list\), quarantined/);
+  await assert.rejects(RTE.syncRteCarbon(site, A, B), /unexpected answer \(not a list\), quarantined/);
   assert.equal((await readIntervals([await frSeries()], 0, 9e9)).length, before);
   assert.ok(await db.prepare("SELECT 1 FROM raw_payload p JOIN source s ON s.id = p.source_id WHERE s.code = 'rte_eco2mix' AND p.status = 'quarantined'").get());
 });

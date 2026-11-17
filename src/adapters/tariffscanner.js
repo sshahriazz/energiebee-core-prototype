@@ -170,7 +170,7 @@ export async function createClient({ username, password, baseUrl = null, fetch: 
   let token = null;          // { value, refreshAt }: memory only, never stored or logged
   let pendingAuth = null;
   let lastAt = -Infinity;    // end of the last request (ms, on the client's clock)
-  let tail = await Promise.resolve();
+  let tail = Promise.resolve();
   let budget = null;
   let used = 0;
   const scrub = (s) => [username, password, token?.value].filter(Boolean).reduce((o, x) => o.split(x).join('[redacted]'), String(s ?? ''));
@@ -179,34 +179,34 @@ export async function createClient({ username, password, baseUrl = null, fetch: 
 
   // One request at a time, in order, each at least minIntervalMs after the previous one ended and
   // not before the persisted next_allowed_at.
-  const serial = async (fn) => { const r = await tail.then(fn); tail = await r.then(() => {}, () => {}); return r; };
+  const serial = (fn) => { const r = tail.then(fn); tail = r.then(() => {}, () => {}); return r; };
   async function send(pathAndQuery, init) {
     const path = pathAndQuery.split('?')[0];
     if (budget != null && used >= budget) throw fail(`request budget of ${budget} reached`, { kind: 'budget' });
     const now0 = clk().now();
-    const at = Math.max(lastAt + policy.minIntervalMs, store.nextAllowedAt() ?? 0);
+    const at = Math.max(lastAt + policy.minIntervalMs, (await store.nextAllowedAt()) ?? 0);
     if (at - now0 > policy.maxWaitMs) {
-      const why = store.reason?.();
+      const why = await store.reason?.();
       throw fail(`cooling down: no request to Tariffscanner before ${iso(at)}${why ? ` (${why})` : ''}`, { kind: 'cooldown' });
     }
     if (at > now0) await clk().sleep(at - now0);
     used++;
     const started = clk().now();
-    store.setNextAllowedAt(started + policy.minIntervalMs);
+    await store.setNextAllowedAt(started + policy.minIntervalMs);
     let res;
     try {
       res = await doFetch(`${base}${pathAndQuery}`, { ...init, signal: AbortSignal.timeout(policy.timeoutMs) });
     } catch (err) {
       lastAt = clk().now();
-      store.setNextAllowedAt(lastAt + policy.minIntervalMs);
+      await store.setNextAllowedAt(lastAt + policy.minIntervalMs);
       const what = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? `timed out after ${policy.timeoutMs} ms` : (err?.message ?? String(err));
       throw fail(`Tariffscanner ${init.method} ${path} -> ${what}`, { kind: 'network' });
     }
     lastAt = clk().now();
-    store.setNextAllowedAt(lastAt + policy.minIntervalMs);
+    await store.setNextAllowedAt(lastAt + policy.minIntervalMs);
     if (res.status === 429) {
       const until = lastAt + Math.max(retryAfterMs(res, lastAt) ?? 0, policy.cooldown429Ms);
-      store.setNextAllowedAt(until, `HTTP 429 at ${iso(lastAt)}`);
+      await store.setNextAllowedAt(until, `HTTP 429 at ${iso(lastAt)}`);
       await res.text?.().catch(() => '');
       throw fail(`Tariffscanner ${init.method} ${path} -> HTTP 429 (rate limited): run aborted, no request before ${iso(until)}`, { kind: 'rate_limited', status: 429 });
     }

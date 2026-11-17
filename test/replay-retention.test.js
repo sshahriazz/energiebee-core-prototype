@@ -67,13 +67,13 @@ await test('channel_reject and push_log: rows older than the receipt window are 
   }
   const dry = await M.runRetention({ now: NOW });
   assert.equal(dry.channelReject.candidates, 3);
-  assert.equal(dry.pushLog.present, Boolean(hasPush));
-  if (hasPush) assert.equal(dry.pushLog.candidates, 2);
+  assert.equal(dry.pushLog.present, true);
+  assert.equal(dry.pushLog.candidates, 2);
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM channel_reject').get()).n, 5, 'a dry run deletes nothing');
   const done = await M.runRetention({ now: NOW, dryRun: false });
   assert.equal(done.channelReject.deleted, 3);
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM channel_reject').get()).n, 2);
-  if (hasPush) { assert.equal(done.pushLog.deleted, 2); assert.equal((await db.prepare('SELECT COUNT(*) n FROM push_log').get()).n, 1); }
+  { assert.equal(done.pushLog.deleted, 2); assert.equal((await db.prepare('SELECT COUNT(*) n FROM push_log').get()).n, 1); }
   assert.equal((await M.runRetention({ now: NOW, dryRun: false })).channelReject.deleted, 0, 'idempotent');
 });
 

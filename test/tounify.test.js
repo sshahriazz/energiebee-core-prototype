@@ -296,12 +296,12 @@ await test('client: Bearer token, at least 1 s between calls, the request cap re
   assert.equal(api.calls.length, 3);
   assert.equal(api.calls[0].headers.authorization, `Bearer ${TEST_TOKEN}`);
   assert.ok(api.calls.slice(1).every((x, i) => x.at - api.calls[i].at >= 1000), 'one request at a time, 1 s apart');
-  await assert.rejects(await c.request('GET', '/v2/FR/consumption/companies'), (e) => e.kind === 'allowance' && /3 of 3 requests used today/.test(e.message));
+  await assert.rejects(c.request('GET', '/v2/FR/consumption/companies'), (e) => e.kind === 'allowance' && /3 of 3 requests used today/.test(e.message));
   assert.equal(api.calls.length, 3, 'no call when over budget');
   // A "restart": a new client reads the same persisted counters.
   TU.resetClients();
   const c2 = await client({ TOUNIFY_MAX_REQUESTS_DAY: '3' });
-  await assert.rejects(await c2.request('GET', '/v2/NL/consumption/companies'), /3 of 3 requests used today/);
+  await assert.rejects(c2.request('GET', '/v2/NL/consumption/companies'), /3 of 3 requests used today/);
   assert.equal(api.calls.length, 3);
   const a = await TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN, TOUNIFY_MAX_REQUESTS_DAY: '3' } });
   assert.deepEqual([a.token_kind, a.requests_today, a.max_requests_day, a.guarded], ['test', 3, 3, true]);
@@ -340,20 +340,20 @@ await test('a 429 stops the run and honours Retry-After (persisted); a 403 testi
   await fresh();
   const c = await client();
   api.override = (x) => (x.path.endsWith('/companies') ? json(429, { statusCode: 429, error: 'Too Many Requests', message: 'Daily testing limit', code: 'daily_scope_limit', rateLimit: { limit: 5, remaining: 0, resetAt: new Date(clock.now() + 3600e3).toISOString() } }, { 'retry-after': '120' }) : null);
-  await assert.rejects(await c.request('GET', '/v2/FR/consumption/companies'), (e) => e.kind === 'rate_limited' && /HTTP 429 \(daily_scope_limit\): run stopped/.test(e.message));
+  await assert.rejects(c.request('GET', '/v2/FR/consumption/companies'), (e) => e.kind === 'rate_limited' && /HTTP 429 \(daily_scope_limit\): run stopped/.test(e.message));
   const st = await db.prepare("SELECT next_allowed_at, cooldown_reason FROM provider_state WHERE provider = 'tounify'").get();
   assert.equal(st.next_allowed_at, clock.now() + 3600e3, 'until rateLimit.resetAt, the later of it and Retry-After');
   assert.match(st.cooldown_reason, /^HTTP 429 daily_scope_limit/);
   api.override = null;
   const before = api.calls.length;
   TU.resetClients();
-  await assert.rejects(await (await client()).request('GET', '/v2/NL/consumption/companies'), (e) => e.kind === 'cooldown');
+  await assert.rejects((await client()).request('GET', '/v2/NL/consumption/companies'), (e) => e.kind === 'cooldown');
   assert.equal(api.calls.length, before, 'nothing is sent while cooling down, even by a new client');
   assert.match((await TU.tounifyAllowance(db, { env: { TOUNIFY_API_KEY: TEST_TOKEN } })).cooldown.reason, /HTTP 429/);
   // A 429 with neither Retry-After nor rateLimit is a daily limit: until midnight UTC.
   await fresh();
   api.override = () => json(429, { statusCode: 429, error: 'Too Many Requests', message: 'daily', code: 'daily_request_limit' });
-  await assert.rejects(await (await client()).request('GET', '/v2/FR/consumption/companies'), /daily_request_limit/);
+  await assert.rejects((await client()).request('GET', '/v2/FR/consumption/companies'), /daily_request_limit/);
   assert.equal((await db.prepare("SELECT next_allowed_at FROM provider_state WHERE provider = 'tounify'").get()).next_allowed_at, Date.UTC(2026, 10, 13));
   // 403 testingLimit on a price read: the tariffs allowance is used up; a new tariff is then refused here, without a call.
   await fresh();
@@ -709,7 +709,7 @@ await test('nothing in this file reached the network, and no token was written t
     await db.prepare('SELECT origin_note FROM rate_interval').all(), await db.prepare('SELECT detail FROM sync_run').all(),
   ]);
   for (const t of [TEST_TOKEN, PROD_TOKEN]) assert.ok(!dump.includes(t), 'no token in the database');
-  const rawDir = path.join(path.dirname(process.env.DB_FILE), 'raw', 'tounify');
+  const rawDir = path.join(process.env.DATA_DIR, 'raw', 'tounify');
   for (const day of fs.readdirSync(rawDir)) {
     for (const f of fs.readdirSync(path.join(rawDir, day))) assert.ok(!fs.readFileSync(path.join(rawDir, day, f), 'utf8').includes(TU.TEST_PREFIX.slice(0, -1)), f);
   }
@@ -724,7 +724,7 @@ await test('tariff picker, France: suppliers and tariffs from v2 (kept a week), 
   const s = await createSite({ name: 'Paris picker', country: 'FR', postcode: '75008' });
   const row = async () => await db.prepare('SELECT * FROM site WHERE id = ?').get(s.id);
   // Not switched on (no TOUNIFY_DEV, no token): said plainly, nothing called.
-  await assert.rejects(await PK.listSuppliers(await row()), (e) => e.status === 503 && /licence is unconfirmed|TOUNIFY_API_KEY/.test(e.message));
+  await assert.rejects(PK.listSuppliers(await row()), (e) => e.status === 503 && /licence is unconfirmed|TOUNIFY_API_KEY/.test(e.message));
   assert.equal(api.calls.length, 0);
   await withEnv(DEV, async () => {
     const sup = await PK.listSuppliers(await row());
@@ -753,13 +753,13 @@ await test('tariff picker, France: suppliers and tariffs from v2 (kept a week), 
     await PK.listTariffs(await row(), edf.code);
     assert.equal(api.calls.length, before);
     // The subscribed power is required for France.
-    await assert.rejects(await PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC' }), /Subscribed power \(kVA\): an answer is required/);
-    await assert.rejects(await PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 7 }), /must be one of 3, 6, 9/);
+    await assert.rejects(PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC' }), /Subscribed power \(kVA\): an answer is required/);
+    await assert.rejects(PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 7 }), /must be one of 3, 6, 9/);
     // Off-peak hours that are not exactly 8 a day (France) are refused here, before anything is called.
     const sent = api.calls.length;
-    await assert.rejects(await PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '04:43', to: '11:55' } }),
+    await assert.rejects(PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '04:43', to: '11:55' } }),
       (e) => e.status === 400 && /exactly 8 hours a day, as on your bill: 04:43 to 11:55 is 7 h 12 min/.test(e.message));
-    await assert.rejects(await PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '' } }), /HH:MM/);
+    await assert.rejects(PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '' } }), /HH:MM/);
     assert.equal(api.calls.length, sent, 'nothing called');
     assert.deepEqual([PK.windowMinutes('22:00', '06:00'), PK.windowMinutes('01:30', '09:30'), PK.windowMinutes('12:00', '12:00'), PK.windowMinutes('9:00', '17:00')], [480, 480, 1440, null]);
     const r = await PK.chooseTariff(await row(), { supplier: edf.code, tariff: 'EDFTRVHPHC', contracted_kva: 6, hours: { from: '22:00', to: '06:00' } });
@@ -864,7 +864,7 @@ await test('the picker\'s price preview: a tariff selected is priced once for th
     assert.equal((await PK.tariffChoice(await row())).current, null);
     assert.equal(await count("SELECT COUNT(*) n FROM tariff_agreement WHERE site_id = ?", s.id), 0);
     // A tariff the supplier does not list is refused before any call.
-    await assert.rejects(await PK.quoteTariff(await row(), anwb.code, 'NOT-A-TARIFF'), (e) => e.status === 404 && /not offered by ANWB/.test(e.message));
+    await assert.rejects(PK.quoteTariff(await row(), anwb.code, 'NOT-A-TARIFF'), (e) => e.status === 404 && /not offered by ANWB/.test(e.message));
     assert.equal(api.of(/\/dayahead$/).length, n + 1);
   });
   // France: one price (OctoEco Fixe Base) with its VAT; past the distinct-tariff cap a new one says why, without a call.

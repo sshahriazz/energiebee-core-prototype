@@ -118,7 +118,7 @@ await test('lists: the suppliers and tariffs on offer in the home\'s region, in 
   assert.deepEqual(ovo.options[0].unit.map((u) => [u.register, u.price]), [['day', 31.559999999999995], ['night', 20.749999999999996]]);
   assert.deepEqual([ovo.hours.from, ovo.hours.to], ['23:00', '07:00']);
   assert.equal(ovo.questions[0].field, 'off_peak_hours');
-  await assert.rejects(await PK.listTariffs(await siteRow(), 'no-such'), (e) => e.status === 404);
+  await assert.rejects(PK.listTariffs(await siteRow(), 'no-such'), (e) => e.status === 404);
 });
 
 await test('payment methods that disagree: unpriced without the home\'s method, priced at it with the choice', async () => {
@@ -138,7 +138,7 @@ await test('payment methods that disagree: unpriced without the home\'s method, 
   // Paying by cheque instead prices at the cheque rate.
   await PK.chooseTariff(await siteRow(), { supplier: 'sainsburys-energy', tariff: t.tariff_code, since: '2026-10-24', payment_method: 'CAC' });
   near((await price(at('2026-10-30T12:00:00Z'))).unitEx, 28.53, 'the cheque price');
-  await assert.rejects(await PK.chooseTariff(await siteRow(), { supplier: 'sainsburys-energy', tariff: t.tariff_code, payment_method: 'PRE' }), /payment_method must be one of CAC, DDM/);
+  await assert.rejects(PK.chooseTariff(await siteRow(), { supplier: 'sainsburys-energy', tariff: t.tariff_code, payment_method: 'PRE' }), /payment_method must be one of CAC, DDM/);
 });
 
 await test('day / night: priced from the meter\'s own hours; without them the half-hour stays unpriced', async () => {
@@ -160,7 +160,7 @@ await test('day / night: priced from the meter\'s own hours; without them the ha
   assert.equal(meterRegister(p, 1, at('2026-11-02T23:30:00Z')), 'night', 'Monday 23:30, a Monday window');
   assert.equal(meterRegister(p, 1, at('2026-11-03T01:00:00Z')), 'night', 'Tuesday 01:00, the Monday window still');
   assert.equal(meterRegister(p, 1, at('2026-11-03T23:30:00Z')), 'day', 'Tuesday 23:30: not a Tuesday window');
-  await assert.rejects(await PK.chooseTariff(await siteRow(), { supplier: 'ovo-energy', tariff: t.tariff_code, hours: { from: '25:00', to: '07:00' } }), /hours must be/);
+  await assert.rejects(PK.chooseTariff(await siteRow(), { supplier: 'ovo-energy', tariff: t.tariff_code, hours: { from: '25:00', to: '07:00' } }), /hours must be/);
 });
 
 await test('start day and changes: never before the first known price; a change keeps the earlier tariff as history', async () => {
@@ -196,7 +196,7 @@ await test('an Octopus account takes over: the chosen tariff ends where the acco
   assert.ok((await db.prepare("SELECT retired_at FROM device WHERE site_id = ? AND provider = 'picker'").get(home.id)).retired_at);
   near((await price(at('2026-11-01T12:00:00Z'))).unitEx, 31.559999999999995, 'the day before the account: the chosen tariff still');
   near((await price(at('2026-11-03T12:00:00Z'))).unitEx, 24, 'from the account\'s start: the account tariff');
-  await assert.rejects(await PK.chooseTariff(await siteRow(), { supplier: 'ovo-energy', tariff: 'TS-330472-E-day_night-E-21' }), (e) => e.status === 409 && /octopus account/.test(e.message));
+  await assert.rejects(PK.chooseTariff(await siteRow(), { supplier: 'ovo-energy', tariff: 'TS-330472-E-day_night-E-21' }), (e) => e.status === 409 && /octopus account/.test(e.message));
   assert.equal((await PK.tariffChoice(await siteRow())).available, false);
   assert.equal(await PK.retirePickedMeters(home.id), 0, 'idempotent');
 });

@@ -267,6 +267,16 @@ export const SOURCES = [
 ];
 
 export const METRICS = [
+  // Control state read back from a device (control.js STANDARD_POINTS): what it runs now, compared with a command's desired state.
+  { code: 'ctl_work_mode', label: 'Work mode (device code)', unit: 'code', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_charge_target_soc_pct', label: 'Charge target level', unit: '%', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_reserve_pct', label: 'Reserve level', unit: '%', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_export_floor_pct', label: 'Export floor level', unit: '%', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_charge_window_start_min', label: 'Charge window start (minute of day)', unit: 'min', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_charge_window_end_min', label: 'Charge window end (minute of day)', unit: 'min', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_charge_rate_w', label: 'Charge rate limit', unit: 'W', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_discharge_rate_w', label: 'Discharge rate limit', unit: 'W', timeRole: 'instant', aggregation: 'last', domain: 'control' },
+  { code: 'ctl_setpoint_c', label: 'Temperature set-point', unit: 'degC', timeRole: 'instant', aggregation: 'last', domain: 'control' },
   // Instant power and state (5-minute and live readings)
   { code: 'solar_w', label: 'Solar power', unit: 'W', timeRole: 'instant', aggregation: 'integrate', domain: 'solar' },
   { code: 'load_w', label: 'Home load', unit: 'W', timeRole: 'instant', aggregation: 'integrate', domain: 'home' },

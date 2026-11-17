@@ -197,7 +197,7 @@ await test('extension by a registry row only: a new action for a new kind is pla
   const ev = await dev(gb, 'ev', 'SYN-GB-CAR');
   const slot = { deviceId: ev, slotStart: day0 + 1800 * 4, action: 'smart_charge', params: { ready_by_min: 450, target_soc_pct: 80 } };
   const save = async () => await plans.savePlan(base({ variant: 'ev', devices: [{ deviceId: ev }], slots: [slot], now: day0 * 1000 }));
-  assert.throws(save, /not defined for device kind ev/);
+  await assert.rejects(save, /not defined for device kind ev/);
   await assert.rejects(async () => await plans.setCapability(ev, 'smart_charge', true), /not defined/);
   await db.prepare(`INSERT INTO device_action (device_kind, action, label, params_schema, description, side_effect_class) VALUES ('ev', 'smart_charge', 'Smart charge',
     '{"ready_by_min":{"type":"integer","unit":"min","min":0,"max":1439,"required":true},"target_soc_pct":{"type":"number","unit":"%","min":0,"max":100}}', 'Supplier smart charging to a ready-by time.', 'energy')`).run();

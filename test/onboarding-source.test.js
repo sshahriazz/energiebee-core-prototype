@@ -88,13 +88,13 @@ await test('every validation error has a status, a code and the field at fault, 
 });
 
 await test('a source created on the screen survives the registry seed on the next open, and the code-defined ones are intact', { skip }, async () => {
-  const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'eb-src-')), 'copy.db');
-  await db.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
-  const script = `const { db } = await import(${JSON.stringify(path.resolve(import.meta.dirname, '../src/db/db.js'))});
-    const a = db.prepare("SELECT name, contract, traits FROM source WHERE code = 'acme_inverter'").get();
-    const b = db.prepare("SELECT traits FROM source WHERE code = 'sunsynk_5min'").get();
-    console.log(JSON.stringify({ a, b, n: db.prepare('SELECT COUNT(*) n FROM source').get().n }));`;
-  const run = () => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], { env: { ...process.env, DB_FILE: copy }, encoding: 'utf8' });
+  // A second process opens the same database: db.js seeds the registries on every start.
+  const script = `const { db, closeDb } = await import(${JSON.stringify(path.resolve(import.meta.dirname, '../src/db/db.js'))});
+    const a = await db.prepare("SELECT name, contract, traits FROM source WHERE code = 'acme_inverter'").get();
+    const b = await db.prepare("SELECT traits FROM source WHERE code = 'sunsynk_5min'").get();
+    console.log(JSON.stringify({ a, b, n: (await db.prepare('SELECT COUNT(*) n FROM source').get()).n }));
+    await closeDb();`;
+  const run = () => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], { env: process.env, encoding: 'utf8' });
   for (const pass of [1, 2]) {   // open twice: the seed runs on each open
     const r = run();
     assert.equal(r.status, 0, r.stderr);
@@ -105,5 +105,4 @@ await test('a source created on the screen survives the registry seed on the nex
     assert.equal(JSON.parse(out.b.traits).expectedEveryS, 300, 'the code-defined source keeps its traits');
     assert.equal(out.n, (await db.prepare('SELECT COUNT(*) n FROM source').get()).n);
   }
-  fs.rmSync(path.dirname(copy), { recursive: true, force: true });
 });

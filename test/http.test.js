@@ -30,13 +30,13 @@ await test('retries 503 and 429, then succeeds', async () => {
 
 await test('does not retry 401 (a bad key gives the same answer every time)', async () => {
   reset([[401]]);
-  await assert.rejects(await fetchJson(`${base}/x`), /HTTP 401$/);
+  await assert.rejects(fetchJson(`${base}/x`), /HTTP 401$/);
   assert.equal(hits, 1);
 });
 
 await test('gives up after the last attempt and says how many were made', async () => {
   reset([[500], [502], [503]]);
-  await assert.rejects(await fetchJson(`${base}/x`), /HTTP 503 \(3 attempts\)/);
+  await assert.rejects(fetchJson(`${base}/x`), /HTTP 503 \(3 attempts\)/);
   assert.equal(hits, 3);
 });
 
@@ -53,7 +53,7 @@ await test('retries network errors', async () => {
   await new Promise((r) => s.listen(0, '127.0.0.1', r));
   const port = s.address().port;
   await new Promise((r) => s.close(r));
-  await assert.rejects(await fetchJson(`http://127.0.0.1:${port}/x`), /3 attempts/);
+  await assert.rejects(fetchJson(`http://127.0.0.1:${port}/x`), /3 attempts/);
 });
 
 await test('fetchText returns the final status for the caller to check', async () => {

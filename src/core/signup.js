@@ -179,7 +179,7 @@ export async function connectHome(user, site, { provider, credentials } = {}) {
     : { accountNumber: creds.accountNumber, postcode: checked?.postcode ?? null };
   const conn = await db.prepare('SELECT meta FROM connection WHERE site_id = ? AND provider = ?').get(site.id, adapterFor(provider).connection);
   await db.prepare('UPDATE connection SET meta = ? WHERE site_id = ? AND provider = ?').run(JSON.stringify({ ...JSON.parse(conn?.meta || '{}'), account }), site.id, adapterFor(provider).connection);
-  await Promise.resolve().then(async () => await hooks.startSync(site.id)).catch((err) => console.error(`first sync of home ${site.id}:`, err.message));
+  Promise.resolve().then(() => hooks.startSync(site.id)).catch((err) => console.error(`first sync of home ${site.id}:`, err.message));
   const { password, apiKey, ...shown } = checked ?? {};
   return { connected: true, provider, role: card.role, checked: shown, syncing: true, replaced: replaced ? { withdrawn: replaced.withdrawn } : null };
 }

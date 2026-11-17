@@ -361,29 +361,29 @@ const supplierOf = async (site, code) => {
   if (!s) throw bad(`no supplier ${code} in ${country}`, 404);
   return s;
 };
-function requireSource(site) {
+async function requireSource(site) {
   if (site.is_demo) throw bad('demo home: its data is generated, it takes no tariff');
   const src = sourceFor(site);
   if (!src) throw bad(`no tariff list for market ${site.market_code ?? site.country} yet: enter the tariff by hand`, 404);
-  const a = src.available(site);
+  const a = await src.available(site);
   if (!a.available) throw bad(`the ${src.label} tariff list is not available for this home: ${a.reason}`, 503);
   return src;
 }
 
 export async function listSuppliers(site) {
-  const src = requireSource(site);
+  const src = await requireSource(site);
   return { country: site.country, market: site.market_code ?? site.country, source: src.code, suppliers: await src.listSuppliers(site) };
 }
 
 export async function listTariffs(site, supplierCode) {
-  const src = requireSource(site);
+  const src = await requireSource(site);
   const sup = await supplierOf(site, supplierCode);
   return { country: site.country, source: src.code, supplier: { code: sup.code, name: sup.name }, tariffs: await src.listTariffs(site, sup) };
 }
 
 /** A tariff's price for the home before it is chosen (a source that prices on demand: tounify). */
 export async function quoteTariff(site, supplierCode, tariffId) {
-  const src = requireSource(site);
+  const src = await requireSource(site);
   if (!src.quote) throw bad(`${src.label} lists its prices with its tariffs: nothing to ask`, 404);
   const sup = await supplierOf(site, supplierCode);
   return { supplier: { code: sup.code, name: sup.name }, ...(await src.quote(site, sup, String(tariffId ?? ''))) };
@@ -417,7 +417,7 @@ export function checkOffPeakHours(market, hours) {
  * contracted_kva? }. The tariff must be one listTariffs offers now; required questions must be answered.
  */
 export async function chooseTariff(site, choice = {}) {
-  const src = requireSource(site);
+  const src = await requireSource(site);
   const account = await accountMeter(site.id);
   if (account) throw bad(`this home's tariff comes from its ${account.provider} account; disconnect it first to choose one from a list`, 409);
   const sup = await supplierOf(site, choice.supplier);
@@ -437,7 +437,7 @@ export async function chooseTariff(site, choice = {}) {
 /** What the home is on now, and whether the picker applies to it. */
 export async function tariffChoice(site) {
   const src = sourceFor(site);
-  const avail = src ? src.available(site) : { available: false, reason: 'no tariff list for this market yet' };
+  const avail = src ? await src.available(site) : { available: false, reason: 'no tariff list for this market yet' };
   const cur = await db.prepare(`SELECT a.valid_from, a.payment_method, d.provider AS meter, d.id AS device_id, t.tariff_code, t.name, t.structure, s.code AS supplier_code, s.name AS supplier_name
     FROM tariff_agreement a JOIN device d ON d.id = a.device_id JOIN tariff t ON t.id = a.tariff_id LEFT JOIN supplier s ON s.id = t.supplier_id
     WHERE a.site_id = ? AND d.kind = 'meter_import' AND d.retired_at IS NULL AND a.superseded_at IS NULL AND a.valid_from <= ? AND COALESCE(a.valid_to, 9000000000) > ?

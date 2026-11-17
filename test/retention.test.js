@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { useDb } from './helpers.js';
+import { mapAsync } from '../src/core/async.js';
 
 await useDb();
 const { db, dataDir } = await import('../src/db/db.js');
@@ -61,7 +62,7 @@ await test('raw payloads: a dry run deletes nothing; apply deletes only old payl
   fs.utimesSync(orphanOld, (NOW - 30 * DAY), (NOW - 30 * DAY));
   fs.utimesSync(orphanNew, NOW, NOW);
 
-  const filesBefore = await [free, reading].map(fileOf);
+  const filesBefore = await mapAsync([free, reading], fileOf);
   const dry = await runRetention({ now: NOW });
   assert.equal(dry.dryRun, true);
   assert.equal(dry.raw.candidates, 2, 'the free payload and the one whose file is already gone');

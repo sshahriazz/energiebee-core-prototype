@@ -344,7 +344,7 @@ async function build(siteId, fromDate, toDate, opts) {
     // The charge level at an end of the window: the units reading within ten minutes of the earliest (or latest)
     // reading are one moment; one unit as it is, several weighted by size.
     const socAt = async (stmt, first) => {
-      const got = (await mapAsync(socUnits.filter((u) => Math.min(b, u.bd.to) > Math.max(a, u.bd.from)), async (u) => ({ u, r: stmt.get(await unitSeries(u.bd, 'battery_soc_pct'), Math.max(a, u.bd.from), Math.min(b, u.bd.to)) }))).filter((x) => x.r);
+      const got = (await mapAsync(socUnits.filter((u) => Math.min(b, u.bd.to) > Math.max(a, u.bd.from)), async (u) => ({ u, r: await stmt.get(await unitSeries(u.bd, 'battery_soc_pct'), Math.max(a, u.bd.from), Math.min(b, u.bd.to)) }))).filter((x) => x.r);
       if (!got.length) return undefined;
       const edge = first ? Math.min(...got.map((x) => x.r.ts)) : Math.max(...got.map((x) => x.r.ts));
       const near = got.filter((x) => Math.abs(x.r.ts - edge) <= 600);

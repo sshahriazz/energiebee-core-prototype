@@ -24,6 +24,7 @@
 import { db } from '../db/db.js';
 import { carbonSubjectOf } from './carbon-series.js';
 import { nowSec } from './time.js';
+import { mapAsync } from './async.js';
 
 export const DEFAULT_EVERY_S = Object.freeze({ instant: 300, counter: 300, forecast: 3600, interval: 1800 });
 export const LATE_PERIODS = 2;
@@ -84,7 +85,7 @@ async function counterKind(siteId, binding, metric) {
 
 /** Health of one binding at `now`. Pure of everything but the database. */
 export async function bindingHealth(site, binding, traits, now = nowSec()) {
-  const cands = (await seriesOf(site, binding)).map(newestOf).filter(Boolean).sort((a, b) => b.receivedAt - a.receivedAt);
+  const cands = (await mapAsync(await seriesOf(site, binding), newestOf)).filter(Boolean).sort((a, b) => b.receivedAt - a.receivedAt);
   const top = cands[0] ?? null;
   const out = { bindingId: binding.id, role: binding.role, source: binding.source, deviceId: binding.deviceId ?? null, series: cands.length };
   if (!top) return { ...out, status: 'never', kind: null, expectedEveryS: null, lastReceivedAt: null, dataUntil: null, ageS: null, reason: `No data has arrived from ${binding.source} for this home yet.` };

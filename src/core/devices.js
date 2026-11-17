@@ -27,7 +27,7 @@ const parseKind = async (r) => {
   return { ...r, attribute_keys: JSON.parse(r.attribute_keys), action_codes: [...listed, ...defined.filter((a) => !listed.includes(a))] };
 };
 export const deviceKind = async (kind) => await parseKind(await db.prepare('SELECT * FROM device_kind WHERE kind = ?').get(kind));
-export const deviceKinds = async () => (await db.prepare('SELECT * FROM device_kind ORDER BY kind').all()).map(parseKind);
+export const deviceKinds = async () => await mapAsync(await db.prepare('SELECT * FROM device_kind ORDER BY kind').all(), parseKind);
 export async function checkDeviceKind(kind) {
   const k = await deviceKind(kind);
   if (!k) throw new RangeError(`unknown device kind ${kind}: one of ${(await deviceKinds()).map((d) => d.kind).join(', ')} (a new kind is one device_kind row)`);

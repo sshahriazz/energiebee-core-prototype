@@ -11,8 +11,8 @@ import { useDb, hasLive } from './helpers.js';
 
 const skip = hasLive ? false : 'no data/core.db (run the server once first)';
 if (hasLive) {
-  const file = await useDb({ snapshot: true });
-  fs.symlinkSync(path.join(import.meta.dirname, 'fixtures', 'gb-home-raw', 'raw'), path.join(path.dirname(file), 'raw'));
+  await useDb({ snapshot: true });
+  fs.symlinkSync(path.join(import.meta.dirname, 'fixtures', 'gb-home-raw', 'raw'), path.join(process.env.DATA_DIR, 'raw'));
 }
 const { db } = await import('../src/db/db.js');
 const X = await import('../src/core/explorer.js');

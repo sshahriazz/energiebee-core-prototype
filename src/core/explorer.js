@@ -453,7 +453,7 @@ export async function overview(q) {
     }
   }
   const raws = await db.prepare('SELECT p.id, p.file, so.code AS source, p.fetched_at FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ?').all(site.id);
-  const unlinked = new Map((await db.prepare(`SELECT so.code AS source, SUM(${UNLINKED}) AS n FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ? GROUP BY so.code`).all(site.id)).map((r) => [r.source, r.n]));
+  const unlinked = new Map((await db.prepare(`SELECT so.code AS source, SUM((${UNLINKED})::int) AS n FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.site_id = ? GROUP BY so.code`).all(site.id)).map((r) => [r.source, r.n]));
   const rawBy = new Map();
   for (const r of raws) {
     const x = rawBy.get(r.source) || rawBy.set(r.source, { source: r.source, count: 0, bytes: 0, first_at: null, last_at: null, unlinked: unlinked.get(r.source) ?? 0, missing_files: 0 }).get(r.source);

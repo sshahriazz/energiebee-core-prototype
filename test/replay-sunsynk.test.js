@@ -144,8 +144,8 @@ await test('a body that is not the expected shape is a parse error: kept, never 
 });
 
 await test('sources that cannot replay are refused with their reason; the routes default to a dry run', { skip }, async () => {
-  await assert.rejects(await R.replay(SITE, { source: 'octopus_meter' }), (e) => e.code === 'not_replayable' && /the meter, its unit/i.test(e.message));
-  await assert.rejects(await R.replay(SITE, { source: 'made_up' }), (e) => e.code === 'not_replayable');
+  await assert.rejects(R.replay(SITE, { source: 'octopus_meter' }), (e) => e.code === 'not_replayable' && /the meter, its unit/i.test(e.message));
+  await assert.rejects(R.replay(SITE, { source: 'made_up' }), (e) => e.code === 'not_replayable');
   assert.equal((await post(`/api/sites/${SITE}/replay`, { source: 'octopus_meter' })).status, 400);
   assert.equal((await post(`/api/sites/${SITE}/replay`, { source: 'octopus_meter' })).body.code, 'not_replayable');
   assert.equal((await post('/api/sites/999/replay', {})).status, 404);

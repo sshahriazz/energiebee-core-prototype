@@ -264,8 +264,8 @@ export async function createClient({ token, baseUrl = BASE_URL, fetch: fetchFn =
   const fail = (msg, opts) => new TounifyError(scrub(msg), opts);
   const note = (msg, fields = {}) => { try { log(scrub(msg), JSON.parse(scrub(JSON.stringify(fields)))); } catch { /* a logger never breaks a sync */ } };
   let lastAt = -Infinity;
-  let tail = await Promise.resolve();
-  const serial = async (fn) => { const r = await tail.then(fn); tail = await r.then(() => {}, () => {}); return r; };
+  let tail = Promise.resolve();
+  const serial = (fn) => { const r = tail.then(fn); tail = r.then(() => {}, () => {}); return r; };
 
   // Refused before any call: the reason, or null when the call may be sent. Pure on the state.
   function refusal(a, { scope, names }) {

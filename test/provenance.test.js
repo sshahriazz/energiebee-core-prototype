@@ -155,7 +155,7 @@ await test('a GB live-style slot stays provider (Octopus prices) with sourced VA
 });
 
 await test('slots built before origins were recorded are labelled from the inputs in force', async () => {
-  await db.exec(`UPDATE site_hh SET lineage = json_remove(lineage, '$.origin', '$.placeholder_inputs') WHERE site_id = ${frHome.id}`);
+  await db.exec(`UPDATE site_hh SET lineage = (lineage::jsonb - 'origin' - 'placeholder_inputs')::text WHERE site_id = ${frHome.id}`);
   const tz = 'Europe/Paris';
   const p = await periodProvenance(db, frHome, '2026-01-10', '2026-01-11', [dayBounds(tz, '2026-01-10')[0], dayBounds(tz, '2026-01-11')[1]]);
   assert.equal(p.unlabelled_slots, 96);

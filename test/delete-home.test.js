@@ -34,10 +34,10 @@ async function rowsOf(siteId) {
     }
   }
   const dev = (await db.prepare('SELECT id FROM device WHERE site_id = ?').all(siteId)).map((r) => String(r.id));
-  out.series = (await db.prepare(`SELECT COUNT(*) AS n FROM series WHERE (subject_kind = 'site' AND subject_id = ?) OR (subject_kind = 'device' AND subject_id IN (SELECT value FROM json_each(?)))`)
+  out.series = (await db.prepare(`SELECT COUNT(*) AS n FROM series WHERE (subject_kind = 'site' AND subject_id = ?) OR (subject_kind = 'device' AND subject_id IN (SELECT jsonb_array_elements_text(?::jsonb)))`)
       .get(String(siteId), JSON.stringify(dev))).n;
   out.interval_fact = (await db.prepare(`SELECT COUNT(*) AS n FROM interval_fact f JOIN series s ON s.id = f.series_id WHERE (s.subject_kind = 'site' AND s.subject_id = ?)
-    OR (s.subject_kind = 'device' AND s.subject_id IN (SELECT value FROM json_each(?)))`).get(String(siteId), JSON.stringify(dev))).n;
+    OR (s.subject_kind = 'device' AND s.subject_id IN (SELECT jsonb_array_elements_text(?::jsonb)))`).get(String(siteId), JSON.stringify(dev))).n;
   return out;
 }
 // A fingerprint of everything a home owns, to show it did not change.
@@ -87,7 +87,7 @@ await test('the preview counts what would go, and changes nothing', { skip }, as
   // Kept: the carbon answer the region reads, and the real home's catalogue answers its shared tariff rows point at.
   assert.ok(f.raw.kept.includes(sharedRaw) && !f.raw.kept.includes(ownRaw));
   assert.ok(f.raw.deleted.some((r) => r.id === ownRaw));
-  const sharedRates = (await db.prepare('SELECT COUNT(*) AS n FROM rate_interval WHERE site_id IS NULL AND raw_id IN (SELECT value FROM json_each(?))').get(JSON.stringify(f.raw.kept))).n;
+  const sharedRates = (await db.prepare('SELECT COUNT(*) AS n FROM rate_interval WHERE site_id IS NULL AND raw_id::text IN (SELECT jsonb_array_elements_text(?::jsonb))').get(JSON.stringify(f.raw.kept))).n;
   assert.ok(sharedRates > 0, 'catalogue tariff rows (no home) point at some of them');
   assert.equal(await fingerprint(A.id), before);
 });

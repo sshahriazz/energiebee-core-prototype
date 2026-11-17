@@ -23,7 +23,7 @@ await test('GB home: a rebuild runs one heating existence query, touches no heat
   const prepare = db.prepare;
   db.prepare = function (sql) { seen.push(sql); return prepare.call(this, sql); };
   let out;
-  try { out = await processQueue(); } finally { delete db.prepare; }
+  try { out = await processQueue(); } finally { db.prepare = prepare; }
   assert.equal(db.prepare, prepare);
   const heating = seen.filter((s) => /domain = 'heating'|site_heat_slot|heating_telemetry/.test(s));
   assert.equal(heating.length, 1, 'only the existence check');
@@ -34,7 +34,7 @@ await test('GB home: a rebuild runs one heating existence query, touches no heat
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM site_heat_slot').get()).n, 0);
 });
 
-await test('GB home: the existence check is cheap (indexed: well under a millisecond)', { skip }, async () => {
+await test('GB home: the existence check is cheap (indexed: one round trip to Postgres)', { skip }, async () => {
   assert.equal(await hasHeatingSeries(SITE), false);
   const plan = await tx(async () => {
     await db.exec('SET LOCAL enable_seqscan = off');
@@ -47,5 +47,5 @@ await test('GB home: the existence check is cheap (indexed: well under a millise
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < n; i++) await hasHeatingSeries(SITE);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6 / n;
-  assert.ok(ms < 0.5, `${ms.toFixed(4)} ms per check`);
+  assert.ok(ms < 2, `${ms.toFixed(4)} ms per check (one indexed query: the round trip to Postgres is most of it)`);
 });

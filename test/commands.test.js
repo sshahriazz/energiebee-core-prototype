@@ -111,7 +111,7 @@ await test('supersede: one open command per device; a changed desired state canc
   assert.deepEqual([same.written, same.reason, same.command.id], [false, 'pending_same', a2.command.id]);
   const b = await cmd.enqueueIfChanged({ deviceId: charger, desired: { action: 'charge', rateW: 7400 }, validFrom: T0 + 300, validUntil: T0 + 3600, now: now0 + 300000 });
   assert.deepEqual([b.written, b.cancelled, b.command.supersedes_command_id, (await cmd.getCommand(a2.command.id)).status], [true, a2.command.id, a2.command.id, 'cancelled']);
-  await assert.rejects(async () => await raw(charger, 'charge', 'second-open'), /UNIQUE constraint failed: command.device_id/);
+  await assert.rejects(async () => await raw(charger, 'charge', 'second-open'), /UNIQUE constraint failed: command_open/);
   // Back to what the device already runs: the open command is cancelled and nothing new is written.
   await cmd.markSent(b.command.id, { now: now0 + 301000 });
   await cmd.markAcked(b.command.id, { reported: { action: 'charge', rate_w: 7400 }, now: now0 + 310000 });

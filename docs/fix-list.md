@@ -29,8 +29,8 @@ Rule: **same model, same numbers.** The golden test and the fingerprint must mat
 | ID | Item | Status | Docs | Code | Verified by | Commit |
 |---|---|---|---|---|---|---|
 | B1 | Live data stale since 28 October; one sync stuck in `running`; 7 rebuild requests unprocessed | ✅ | — | after P7: sync to today | last slot is today | no code change |
-| B2 | 6 tests fail on the frozen GB fixture copy, not the live database (partial vs full rebuild, Quartz scoring ×2, forecast accuracy, 15-minute house use, a fact without a raw link) | ✅ | cause noted here | fix whatever is real | the 6 tests pass | `a941f0d` |
-| B3 | 25 October (clocks went back): daily counters 40–45 % above the 5-minute samples; meter vs inverter CT 38 % apart | ✅ | cause noted here | fix if it is ours | the day's checks pass or the cause is upstream and documented | `a941f0d` |
+| B2 | 6 tests fail on the frozen GB fixture copy, not the live database (partial vs full rebuild, Quartz scoring ×2, forecast accuracy, 15-minute house use, a fact without a raw link) | ✅ | cause noted here | fix whatever is real | the 6 tests pass | `1ce5d00` |
+| B3 | 25 October (clocks went back): daily counters 40–45 % above the 5-minute samples; meter vs inverter CT 38 % apart | ✅ | cause noted here | fix if it is ours | the day's checks pass or the cause is upstream and documented | `1ce5d00` |
 
 ## R: design review fixes
 

@@ -1,14 +1,11 @@
 // Times the group views on synthetic data: 20 homes (mixed slot lengths and currencies) by one year of slots.
-// A throwaway database in the temp folder; data/core.db is never opened.
+// A throwaway Postgres database on the server of DATABASE_URL, dropped at the end; the app's own database is never opened.
 //   node --disable-warning=ExperimentalWarning scripts/bench-groups.mjs [homes] [days]
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import { scriptDatabase } from './lib/databases.js';
 
 const homes = Number(process.argv[2]) || 20;
 const days = Number(process.argv[3]) || 365;
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-bench-'));
-process.env.DB_FILE = path.join(dir, 'bench.db');
+await scriptDatabase({ prefix: 'energiebee_bench' });
 const { db, tx } = await import('../src/db/db.js');
 const { makeHome, fillSlots } = await import('../test/groups-fixtures.js');
 const { createGroup, addMember, groupDay, groupRange } = await import('../src/core/groups.js');
@@ -34,4 +31,3 @@ await time('groupDay (one day)', async () => await groupDay(g, '2025-06-10'));
 await time('groupRange (30 days)', async () => await groupRange(g, '2025-06-01', '2025-06-30'));
 const year = await time(`groupRange (${days} days)`, async () => await groupRange(g, '2025-01-01', '2025-12-31'));
 console.log(`year total currencies: ${year.currencies.join(', ')}; days: ${year.days.length}`);
-fs.rmSync(dir, { recursive: true, force: true });

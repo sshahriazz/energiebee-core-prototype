@@ -103,8 +103,8 @@ export function appendixCounts(text) {
 
 /** What a fresh database holds: tables and views with their columns, and every registry row. */
 export async function schemaContext(db) {
-  const objects = await db.prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'").all();
-  const columns = new Map(await mapAsync(objects, async (o) => [o.name, new Set((await db.prepare('SELECT name FROM pragma_table_info(?)').all(o.name)).map((r) => r.name))]));
+  const objects = await db.prepare("SELECT table_name AS name, CASE table_type WHEN 'VIEW' THEN 'view' ELSE 'table' END AS type FROM information_schema.tables WHERE table_schema = current_schema() AND table_name <> '_prisma_migrations'").all();
+  const columns = new Map(await mapAsync(objects, async (o) => [o.name, new Set((await db.prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?').all(o.name)).map((r) => r.name))]));
   const refsOf = async (table) => new Map((await db.prepare(`SELECT key, refs FROM ${table}`).all()).map((r) => [r.key, JSON.parse(r.refs || '[]')]));
   return {
     tables: new Set(objects.filter((o) => o.type === 'table').map((o) => o.name)),
@@ -399,14 +399,15 @@ export function renderReport(m) {
 
 async function main() {
   const args = new Set(process.argv.slice(2));
-  // A fresh, temporary database: db.js opens DB_FILE on import, so it is set first. Never data/core.db.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-coverage-'));
-  process.env.DB_FILE = path.join(dir, 'core.db');
-  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  // A fresh, temporary database on the server of DATABASE_URL (migrated, dropped at exit): db.js connects on import, so it is set first.
+  try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides DATABASE_URL */ }
+  const { tempDatabase } = await import(pathToFileURL(path.join(root, 'scripts', 'lib', 'databases.js')).href);
+  process.env.DATABASE_URL = (await tempDatabase(process.env.DATABASE_URL, { prefix: 'energiebee_coverage' })).url;
+  process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-coverage-'));
   const { db, closeDb } = await import(pathToFileURL(path.join(root, 'src', 'db', 'db.js')).href);
   const readFunctions = new Set(Object.keys(await import(pathToFileURL(path.join(root, 'src', 'core', 'planner-read.js')).href)));
   const ctx = await schemaContext(db);
-  closeDb?.();
+  await closeDb();
   const catalogueText = fs.readFileSync(path.join(root, CATALOGUE), 'utf8');
   const databaseMd = fs.readFileSync(path.join(root, DATABASE_DOC), 'utf8');
 

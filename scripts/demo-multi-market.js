@@ -3,9 +3,8 @@
 //
 //   node --disable-warning=ExperimentalWarning scripts/demo-multi-market.js
 //
-// Never touches data/core.db or .env and calls no provider: the database is a new file in the
-// system temp folder (DB_FILE, as the tests do) and is deleted when the script ends
-// (unless DEMO_DB is set).
+// Never touches the app's database and calls no provider: a throwaway Postgres database on the server of
+// DATABASE_URL, dropped when the script ends (unless DEMO_DB names a database to keep).
 // Exit code 1 if any check fails.
 //
 // Provenance: every figure printed is tagged with where it came from, in the vocabulary of
@@ -17,15 +16,12 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { mapAsync, flatMapAsync } from "../src/core/async.js";
 
-// DEMO_DB=/some/path/core.db keeps the demo database there (to browse it in the web pages).
-const keep = process.env.DEMO_DB;
-const dir = keep ? path.dirname(path.resolve(keep)) : fs.mkdtempSync(path.join(os.tmpdir(), 'eb-demo-'));
-if (keep) fs.mkdirSync(dir, { recursive: true });
-process.env.DB_FILE = keep ? path.resolve(keep) : path.join(dir, 'core.db');
-if (!keep) process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+// DEMO_DB=energiebee_markets keeps the demo database under that name (to browse it in the web pages).
+const { scriptDatabase } = await import('./lib/databases.js');
+const demoDb = await scriptDatabase({ prefix: 'energiebee_demo', keep: process.env.DEMO_DB ?? null });
 
 const m = await import('./lib/multi-market.js');
-const { db } = await import('../src/db/db.js');
+const { db, closeDb } = await import('../src/db/db.js');
 const { setSlotLength, regionsOf, createSite, setContractedCapacity } = await import('../src/core/sites.js');
 const { createTariff, agreeTariff, putRateRows, storeWindows } = await import('../src/core/tariffs.js');
 const { processQueue, buildSite } = await import('../src/core/build.js');
@@ -68,7 +64,7 @@ const pricesTag = async (country) => `[synthetic prices, ${await taxOrigin(count
 const marketTag = async (code) => `[${(await db.prepare('SELECT origin FROM market WHERE code = ?').get(code))?.origin ?? 'no origin'} market row]`;
 
 line('EnergieBee core · multi-market demonstration');
-line(`Database: a throwaway file in ${dir} (deleted on exit). data/core.db and .env are not touched; no provider is called.`);
+line(`Database: ${demoDb.name} on the DATABASE_URL server (${process.env.DEMO_DB ? 'kept' : 'dropped on exit'}). The app's own database is not touched; no provider is called.`);
 rule('PROVENANCE');
 line('Every figure below carries a tag saying where it came from (src/core/provenance.js). Strongest first:');
 line('  sourced      taken from a named, checkable source (the note names it)');
@@ -184,7 +180,7 @@ const frBefore = {};
   line('  (A monthly charge is split in whole millionths of a cent so that every month adds up exactly.)');
   const lin = JSON.parse(hc29[0].lineage);
   line(`Slot lineage of that off-peak slot: origin = ${lin.origin}; not verified: ${lin.placeholder_inputs.join('; ')}`);
-  line(`  (${check(lin.placeholder_inputs.includes('tax_rule FR/accise [placeholder]') && lin.placeholder_inputs.includes('tax_rule FR/tva [placeholder]'), 'FR: lineage names the placeholder accise and TVA')})`);
+  line(`  (${check(lin.placeholder_inputs.includes('tax_rule FR/accise [placeholder]') && !lin.placeholder_inputs.includes('tax_rule FR/tva [placeholder]'), 'FR: lineage names the placeholder accise; TVA is sourced (20 %)')})`);
   // A tariff in pounds on a home billed in euros is refused by the database.
   const gbpTariff = await createTariff({ provider: 'synthetic', tariffCode: 'SYN-FR-IN-GBP', country: 'FR', currency: 'GBP', structure: 'flat', kind: 'flat', origin: 'synthetic' });
   let refused = null;
@@ -297,7 +293,7 @@ const inputs = [
   ...(await db.prepare('SELECT tariff_code AS what, origin, origin_note AS note FROM tariff ORDER BY tariff_code').all()).map((r) => ({ ...r, what: `tariff ${r.what}` })),
   ...(await db.prepare(`SELECT t.tariff_code AS code, r.component, r.origin, COUNT(*) AS n, SUM(r.estimated) AS est FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
       GROUP BY 1, 2, 3 ORDER BY 1, 2`).all()).map((r) => ({ what: `rates ${r.code} ${r.component} (${r.n} rows${r.est ? `, ${r.est} estimated` : ''})`, origin: r.origin, note: 'scripts/lib/multi-market.js and this script' })),
-  ...(await db.prepare('SELECT country, code, origin, origin_note AS note FROM tax_rule WHERE superseded_at IS NULL GROUP BY country, code, origin ORDER BY country, code').all()).map((r) => ({ what: `tax_rule ${r.country}/${r.code}`, origin: r.origin, note: r.note })),
+  ...(await db.prepare('SELECT country, code, origin, MIN(origin_note) AS note FROM tax_rule WHERE superseded_at IS NULL GROUP BY country, code, origin ORDER BY country, code').all()).map((r) => ({ what: `tax_rule ${r.country}/${r.code}`, origin: r.origin, note: r.note })),
   ...(await db.prepare("SELECT code, origin, origin_note AS note FROM market WHERE code IN ('GB', 'FR', 'NL') ORDER BY code").all()).map((r) => ({ what: `market ${r.code}`, origin: r.origin, note: r.note })),
   ...[...new Map((await flatMapAsync([homes.gb, homes.fr, homes.nl], async (h) => await regionsOf(h.site.id))).map((r) => [`${r.scheme}/${r.code}`, r])).values()].map((r) => ({ what: `region ${r.scheme} ${r.code}`, origin: r.origin, note: r.origin_note })),
   ...await mapAsync(await db.prepare('SELECT code, origin, origin_note AS note FROM calendar').all(), async (r) => ({ what: `calendar ${r.code} (${(await db.prepare('SELECT COUNT(*) n FROM calendar_day WHERE calendar = ? AND superseded_at IS NULL').get(r.code)).n} days)`, origin: r.origin, note: r.note })),
@@ -315,5 +311,5 @@ for (const r of results) line(`${r.ok ? 'PASS' : 'FAIL'}  ${r.what}`);
 line();
 line(`${results.length - failed.length} of ${results.length} checks passed.`);
 line('Nothing in this demo is real market data. FR/NL tax values are placeholders.');
-db.close();
+await closeDb();
 process.exitCode = failed.length ? 1 : 0;

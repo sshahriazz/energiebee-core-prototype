@@ -12,9 +12,8 @@ if (!process.env.TARIFFSCAN_USERNAME || !process.env.TARIFFSCAN_PASSWORD) {
   console.log('TARIFFSCAN_USERNAME and TARIFFSCAN_PASSWORD are not set: nothing requested. Run: node --env-file=.env scripts/tariffscanner-smoke.js');
   process.exit(0);
 }
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-tariffscanner-smoke-'));
-process.env.DB_FILE = path.join(dir, 'smoke.db');
-process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+const { scriptDatabase } = await import('./lib/databases.js');
+await scriptDatabase({ prefix: 'energiebee_smoke' });   // a throwaway database, dropped at the end
 
 const TS = await import('../src/adapters/tariffscanner.js');
 const { creds } = TS.credentialsFromEnv();

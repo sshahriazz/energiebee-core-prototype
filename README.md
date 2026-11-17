@@ -162,6 +162,8 @@ provider API ─► adapter ─► raw payload ─► facts ─► build engine 
   4. **Price**: take the rate for each slot, add VAT and the standing charge share, and value battery stock first in, first out.
   5. **Check**: run the balance, meter-against-clamp, counter fit, rate coverage and completeness checks.
 
+  A change is rebuilt from the day it touched and carried forward only while later days still come out differently (the battery's stored energy carries over); the result is always what a full rebuild gives.
+
   House use is the inverter's measured load. What the sources supplied beyond
   that, exports and charging is the inverter's own conversion and standby loss,
   carried as its own flow (`*_to_loss`, `loss_cost`), so it is in the bill but not

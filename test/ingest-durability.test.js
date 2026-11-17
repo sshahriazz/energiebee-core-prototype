@@ -8,7 +8,8 @@ const skip = hasLive ? false : 'no test/fixtures/gb-home.json.gz (node scripts/m
 if (hasLive) await useDb({ snapshot: true });
 const { db } = await import('../src/db/db.js');
 const { seriesId, putReadings } = await import('../src/core/facts.js');
-const { sinceWatermark, earliestChange } = await import('../src/jobs/sync.js');
+const { sinceWatermark, changeSpan } = await import('../src/jobs/sync.js');
+const { FILL_MAX_S } = await import('../src/core/inputs.js');
 const { defineChannel, ingestObservations } = await import('../src/core/channels.js');
 
 const SITE = 1;
@@ -26,8 +27,9 @@ await test('a sync that stopped before its build leaves facts the next sync stil
   const next = Number((await db.prepare("INSERT INTO sync_run (site_id, started_at, status) VALUES (?, ?, 'running')").run(SITE, nowS)).lastInsertRowid);
   const startMs = Date.now() + 50;   // this sync starts after the crashed one wrote its fact
   assert.equal(await sinceWatermark(SITE, next, startMs), (nowS - 3000) * 1000, 'the watermark is the start of the last sync that reached its build');
-  assert.equal(await earliestChange(SITE, site, await sinceWatermark(SITE, next, startMs)), old.ts, 'the corrected slot is found');
-  assert.equal(await earliestChange(SITE, site, startMs), null, 'measured from the start of this sync it would be lost');
+  const span = await changeSpan(SITE, site, await sinceWatermark(SITE, next, startMs));
+  assert.deepEqual([span.first, span.last], [old.ts - FILL_MAX_S, old.ts + 1], 'the corrected slot is found (with the gap before it, which the sample can fill)');
+  assert.equal(await changeSpan(SITE, site, startMs), null, 'measured from the start of this sync it would be lost');
   void good; void crashed;
 });
 

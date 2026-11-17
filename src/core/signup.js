@@ -231,7 +231,7 @@ export async function disconnectHome(user, site, provider) {
   let rebuilt = [];
   if (first) {
     await markDirty(site.id, dayBounds(site.timezone, first)[0], nowSec(), `${provider} disconnected`);
-    rebuilt = (await processQueue()).filter((r) => r.siteId === site.id);
+    rebuilt = await processQueue({ siteId: site.id });
   }
   return { disconnected: true, provider, withdrawn, agreements, devices: devices.length, rebuilt };
 }

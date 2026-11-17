@@ -6,6 +6,7 @@ import { db, sourceId, metricId } from '../db/db.js';
 import { seriesId, putReadings, putIntervals, putForecasts, readReadings, markDirty, asWriter, QUALITY } from './facts.js';
 import { classifyStep, deriveCounterPeriods, neighbours, withdrawDerived } from './counters.js';
 import { nowSec } from './time.js';
+import { FILL_MAX_S } from './inputs.js';
 import { SOURCES, DEVICE_KIND_CHANNELS } from '../db/registry.js';
 
 const insertChannel = 'INSERT INTO channel (site_id, source_id, point, metric_id, scale, shift, part, min_value, max_value, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
@@ -170,7 +171,7 @@ export async function ingestObservations(siteId, source, observations, rawId = n
     }
   }
   for (const p of unmapped) await reject(siteId, src, p, nowSec(), null, 'unmapped_point');
-  let written = 0; let forecasts = 0; let states = 0; let counters = 0; let derived = 0; let stuck = 0; let earliest = Infinity;
+  let written = 0; let forecasts = 0; let states = 0; let counters = 0; let derived = 0; let stuck = 0; let earliest = Infinity; let latest = -Infinity;
   const seriesOf = async (metric) => (subject ? await seriesId(subject.kind, String(subject.id), metric, source)
     : deviceId == null ? await seriesId('site', siteId, metric, source) : await seriesId('device', deviceId, metric, source));
   await asWriter(source, async () => {
@@ -182,15 +183,17 @@ export async function ingestObservations(siteId, source, observations, rawId = n
           // Forecasts of the future change nothing already built; only facts about the past or present mark a rebuild.
           if (kind === 'forecast') forecasts += n;
           else if (kind === 'state') states += n;
-          else if (n) { written += n; earliest = Math.min(earliest, ...rows.map((r) => r.ts ?? r.start)); }
+          // A new power sample can also change the gap before it (filled on the line between samples, up to FILL_MAX_S).
+          else if (n) { written += n; earliest = Math.min(earliest, ...rows.map((r) => (r.ts != null ? r.ts - FILL_MAX_S : r.start))); latest = Math.max(latest, ...rows.map((r) => (r.end ?? r.ts + 1))); }
         }
         for (const { c, rows } of counterGroups.values()) {
           const r = await storeCounter(siteId, source, c, rows, seriesOf, rawId, async (point, at, value, reason) => { await reject(siteId, src, point, at, value, reason); rejected++; });
           counters += r.raw; derived += r.derived; written += r.derived;
-          if (r.earliest != null) earliest = Math.min(earliest, r.earliest);
+          if (r.earliest != null) { earliest = Math.min(earliest, r.earliest); latest = Math.max(latest, nowSec()); }   // derived counter energy: up to now
         }
       });
-  if (earliest < Infinity) await markDirty(siteId, earliest, nowSec(), `new ${source} data`);
+  // The rebuild covers the time the new facts touch (R9: it carries on past it only while later days change).
+  if (earliest < Infinity) await markDirty(siteId, earliest, Math.max(latest, earliest + 1), `new ${source} data`);
   return { written, forecasts, states, counters, derived, stuck, acks, rejected, unmapped: [...unmapped] };
 }
 

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, dataDir, optimizeDb, closeDb, vatRulesChanged } from './db/db.js';
 import { carbonSubjectOf } from './core/carbon-series.js';
-import { buildSite, processQueue, METHOD_VERSION } from './core/build.js';
+import { buildSite, processQueue, queueStaleMethods, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
 import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
@@ -188,7 +188,7 @@ app.get('/api/sites/:id/suppliers/:supplier/tariffs/:tariff/price', async (req, 
 app.post('/api/sites/:id/tariff', async (req, res) => {
   const s = await site(req);
   const r = await chooseTariff(s, req.body || {});
-  const rebuilt = (await processQueue()).filter((x) => x.siteId === s.id);
+  const rebuilt = await processQueue({ siteId: s.id });
   res.status(201).json({ ...r, rebuilt: rebuilt.length, choice: await tariffChoice(await db.prepare('SELECT * FROM site WHERE id = ?').get(s.id)) });
 });
 
@@ -236,7 +236,7 @@ app.post('/api/sites/:id/slot', async (req, res) => {
   const slotS = Number(req.body?.slot_s);
   let r;
   try { r = await setSlotLength(s.id, slotS); } catch (err) { throw badRequest(err.message); }
-  const rebuilt = r.queued && req.body?.rebuild !== false ? (await processQueue()).filter((x) => x.siteId === s.id) : [];
+  const rebuilt = r.queued && req.body?.rebuild !== false ? await processQueue({ siteId: s.id }) : [];
   res.json({ ...r, rebuilt });
 });
 
@@ -939,6 +939,9 @@ export async function start() {
   await closeInterruptedRuns();
   const envSite = await ensureEnvSite();
   const maintenance = await runMaintenance();
+  // Days built by another method than this code's (a method change): their homes are queued, and each home's sync rebuilds them.
+  const restated = await queueStaleMethods();
+  if (restated.length) console.log(`build method ${METHOD_VERSION}: ${restated.length} home(s) queued for a rebuild of days built by an earlier method`);
   if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
   // Retention: a dry-run report unless RETENTION=apply (counts only; src/core/maintenance.js).
   if (maintenance.retention) console.log(retentionSummary(maintenance.retention));

@@ -7,6 +7,7 @@ import { db } from '../db/db.js';
 import { carbonSubjectOf } from '../core/carbon-series.js';
 import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
+import { FILL_MAX_S } from '../core/inputs.js';
 import { forecastSite } from '../core/forecast.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength } from '../core/time.js';
 import { assertOwner } from '../adapters/contract.js';
@@ -114,19 +115,20 @@ export async function sinceWatermark(siteId, runId, syncStartMs) {
   return t != null ? Math.min(t * 1000, syncStartMs) : syncStartMs;
 }
 
-// Earliest time touched by facts recorded since `sinceMs`: this home's readings and
-// intervals (its own, its meters' and its regions'), and prices of its tariffs.
-export async function earliestChange(siteId, site, sinceMs) {
+// The time touched by facts recorded since `sinceMs`: this home's readings and intervals (its own, its meters' and its
+// regions'), and prices of its tariffs. { first, last } (s), or null when nothing changed. A reading reaches back over the
+// gap before it (filled up to FILL_MAX_S) and forward to its next instant; a price with no end reaches to now.
+export async function changeSpan(siteId, site, sinceMs) {
   const gas = (await db.prepare("SELECT attrs FROM device WHERE site_id = ? AND kind = 'meter_gas'").all(siteId)).map((d) => JSON.parse(d.attrs || '{}').ldz).find(Boolean);
   const regions = [carbonSubjectOf(site), gas ? `ldz:${gas}` : null].filter(Boolean);
   const ours = `(se.subject_kind = 'site' AND se.subject_id = ?) OR (se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))
     ${regions.length ? `OR (se.subject_kind = 'region' AND se.subject_id IN (${regions.map(() => '?').join(',')}))` : ''}`;
   const args = [String(siteId), siteId, ...regions];
-  const r = (await db.prepare(`SELECT MIN(r.ts) AS t FROM reading r JOIN series se ON se.id = r.series_id WHERE r.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args))?.t;
-  const f = (await db.prepare(`SELECT MIN(f.start_ts) AS t FROM interval_fact f JOIN series se ON se.id = f.series_id WHERE f.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args))?.t;
-  const p = (await db.prepare(`SELECT MIN(r.valid_from) AS t FROM rate_interval r WHERE r.recorded_at >= ? AND r.tariff_id IN (SELECT tariff_id FROM tariff_agreement WHERE site_id = ? AND superseded_at IS NULL)`).get(sinceMs, siteId))?.t;
-  const ts = [r, f, p].filter((v) => v != null);
-  return ts.length ? Math.min(...ts) : null;
+  const r = await db.prepare(`SELECT MIN(r.ts) - ${FILL_MAX_S} AS a, MAX(r.ts) + 1 AS b FROM reading r JOIN series se ON se.id = r.series_id WHERE r.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args);
+  const f = await db.prepare(`SELECT MIN(f.start_ts) AS a, MAX(f.end_ts) AS b FROM interval_fact f JOIN series se ON se.id = f.series_id WHERE f.recorded_at >= ? AND (${ours})`).get(sinceMs, ...args);
+  const p = await db.prepare(`SELECT MIN(r.valid_from) AS a, MAX(COALESCE(r.valid_to, ?)) AS b FROM rate_interval r WHERE r.recorded_at >= ? AND r.tariff_id IN (SELECT tariff_id FROM tariff_agreement WHERE site_id = ? AND superseded_at IS NULL)`).get(nowSec(), sinceMs, siteId);
+  const spans = [r, f, p].filter((x) => x?.a != null);
+  return spans.length ? { first: Math.min(...spans.map((x) => x.a)), last: Math.max(...spans.map((x) => x.b)) } : null;
 }
 
 // One step: its result, or its error, in the run's log and on its connection row (none for 'geo').
@@ -221,10 +223,20 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     const [yStart, yEnd] = dayBounds(tz, yesterday);
     const yRows = (await db.prepare('SELECT COUNT(*) AS n FROM site_hh WHERE site_id = ? AND local_date = ?').get(siteId, yesterday)).n;
     const yShort = !firstRun && yRows > 0 && yRows < Math.round((yEnd - yStart) / slotLength(site)) ? yStart : Infinity;
-    const dirtyFrom = firstRun ? fromTs : Math.min(dayBounds(tz, today)[0], allFrom, yShort, await earliestChange(siteId, ctx.site, ctx.sinceMs) ?? Infinity);
-    await markDirty(siteId, dirtyFrom, nowSec(), firstRun ? 'initial load' : ctx.agreementsChanged ? 'tariff agreements changed' : 'facts changed');
+    // What to rebuild, as separate ranges (R9): today (new samples), the time the new facts touched, yesterday while it is
+    // short, everything when the tariff agreements changed. The queue merges what overlaps and stops each range once later
+    // days come out as stored. Only this home's requests are processed here.
+    const now = nowSec();
+    const span = firstRun ? null : await changeSpan(siteId, ctx.site, ctx.sinceMs);
+    if (firstRun) await markDirty(siteId, fromTs, now, 'initial load');
+    else {
+      await markDirty(siteId, dayBounds(tz, today)[0], now, 'facts changed');
+      if (span) await markDirty(siteId, span.first, Math.max(span.last, span.first + 1), 'facts changed');
+      if (yShort < Infinity) await markDirty(siteId, yShort, yEnd, 'yesterday is short');
+      if (allFrom < Infinity) await markDirty(siteId, allFrom, now, 'tariff agreements changed');
+    }
     const t0 = Date.now();
-    const rebuilt = await processQueue();
+    const rebuilt = await processQueue({ siteId });
     log.push({ step: 'build', ok: true, ms: Date.now() - t0, rebuilt });
     const t1 = Date.now();
     try {

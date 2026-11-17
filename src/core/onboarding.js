@@ -348,7 +348,7 @@ export async function applyBinding(siteId, body, action = 'bind', { dryRun = fal
     await markDirty(site.id, Math.max(fromTs, firstBuilt), nowSec(), `${action} ${a.role}${a.source ? ` ${a.source}` : ''}`);
     queued = { from: Math.max(fromTs, firstBuilt), fromDate: dateOf(site, Math.max(fromTs, firstBuilt)) };
   }
-  const rebuilt = rebuild && queued ? (await processQueue()).filter((x) => x.siteId === site.id) : [];
+  const rebuilt = rebuild && queued ? await processQueue({ siteId: site.id }) : [];
   return { dryRun: false, ...result, action, bindings: await currentOf(site, a.role), queued, rebuilt };
 }
 
@@ -381,7 +381,7 @@ export async function changeBindingPriority(siteId, body, { dryRun = false, rebu
   const newId = await tx(async () => await apply(why));
   let queued = null;
   if (needsReason && impact.firstChanged != null) { await markDirty(site.id, impact.firstChanged, nowSec(), `priority of ${row.source} on ${row.role}`); queued = { from: impact.firstChanged, fromDate: dateOf(site, impact.firstChanged) }; }
-  const rebuilt = rebuild && queued ? (await processQueue()).filter((x) => x.siteId === site.id) : [];
+  const rebuilt = rebuild && queued ? await processQueue({ siteId: site.id }) : [];
   return { dryRun: false, id: newId, role: row.role, source: row.source, from: row.priority, to: priority, needsReason, bindings: await currentOf(site, row.role), queued, rebuilt, impact: view };
 }
 

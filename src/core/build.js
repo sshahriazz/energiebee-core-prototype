@@ -26,7 +26,7 @@
 // reads values already computed, so no row changes. Absent, every trace line is skipped.
 import { db, tx, optimizeDb } from '../db/db.js';
 import { carbonSubjectOf } from './carbon-series.js';
-import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce } from './facts.js';
+import { seriesId, readReadings, readIntervals, readForecastOfRecord, QUALITY, withKnownAt, inForce, markDirty } from './facts.js';
 import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
 import { bindingsFor, sourceAt, holdSOf, FILL_MAX_S } from './inputs.js';
@@ -35,7 +35,7 @@ import { loadPricing, priceOver, fixedOver } from './pricing.js';
 import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
-import { buildHeat, hasHeatingSeries } from './heat.js';
+import { buildHeat, hasHeatingSeries, HEAT_METHOD_VERSION } from './heat.js';
 import { reduceAsync, flatMapAsync, mapAsync, someAsync } from "./async.js";
 
 export const METHOD_VERSION = 'v4-gaps-filled';
@@ -176,7 +176,7 @@ async function build(siteId, fromDate, toDate, opts) {
   if (toDate > today) toDate = today;
   if (fromDate > toDate) return { days: 0 };
   const [winStart] = dayBounds(tz, fromDate);
-  const [, winEnd] = dayBounds(tz, toDate);
+  let [, winEnd] = dayBounds(tz, toDate);
   const phase = ((winStart % slotS) + slotS) % slotS;
   const fl = (t) => slotFloor(t, slotS, phase);
   const sid = async (metric, source) => await seriesId('site', siteId, metric, source);
@@ -397,6 +397,7 @@ async function build(siteId, fromDate, toDate, opts) {
   const checks = [];
   const dayInputs = new Map();
 
+  let converged = null; let lastLossChange = null;
   for (const date of daysBetween(fromDate, toDate)) {
     const daySlots = slotsOfDay(tz, date, slotS);
     const slots = daySlots.filter((s) => s + slotS <= now);
@@ -687,6 +688,23 @@ async function build(siteId, fromDate, toDate, opts) {
     if (day.capacityUnknown) checks.push([date, 'capacity_charge', 'warn', day.capacityUnknown, 0, `the tariff has a capacity charge per kW, but this home's contracted capacity is not known: ${day.capacityUnknown} ${slotNoun(slotS)}s leave it out`]);
     if (gasM3) checks.push([date, 'gas_calorific_value', day.gasNoCv ? 'warn' : 'pass', day.gasNoCv, 0, day.gasNoCv ? `${day.gasNoCv} ${slotNoun(slotS)}s of gas wait for National Gas's calorific value for ${gasLdz}` : `converted with National Gas's calorific value for ${gasLdz}`]);
     checks.push([date, 'completeness', dayRow.slots_missing === 0 ? 'pass' : 'warn', R.length ? 1 - dayRow.slots_missing / R.length : 0, 1, `${dayRow.slots_final} final, ${dayRow.slots_provisional} provisional, ${dayRow.slots_missing} missing`]);
+
+    // ── Convergence (fix list R9): after the last day whose inputs changed (opts.convergeAfter), the rebuild stops at
+    // the first day that comes out exactly as stored (slots, day row with its closing battery stock, checks) once no
+    // day's inverter loss has changed in the 30 days the balance check looks back over: every later day reads only
+    // stored state and unchanged facts, so it would come out as stored too. A partial rebuild still equals a full one.
+    if (opts.convergeAfter && asOf == null && !opts.dryRun) {
+      const before = previousDays.get(date);
+      const lossOf = (r) => (r ? (r.solar_to_loss ?? 0) + (r.battery_to_loss ?? 0) + (r.grid_to_loss ?? 0) : null);
+      if (!before || lossOf(before) !== lossOf(dayRow)) lastLossChange = date;
+      if (date > opts.convergeAfter && date < today && before && (lastLossChange == null || lastLossChange <= addDays(date, -LOSS_HISTORY_DAYS))
+          && sameRow(before, dayRow) && await sameSlots(siteId, date, hhRows) && await sameChecks(siteId, date, checks)) {
+        converged = date;
+        toDate = date;
+        [, winEnd] = dayBounds(tz, date);
+        break;
+      }
+    }
   }
   if (unknownStock && checks.length) checks.push([fromDate, 'battery_stock', 'warn', null, null, `Energy already in the battery when the data starts has unknown cost; those ${slotNoun(slotS)}s show no stored cost`]);
   if (lastEff) checks.push([lastEff.date, 'battery_efficiency', lastEff.eff < 1 ? 'pass' : 'skip', lastEff.eff, null, lastEff.eff < 1 ? `measured round trip ${(lastEff.eff * 100).toFixed(1)}%: ${lastEff.note}` : lastEff.note]);
@@ -732,7 +750,27 @@ async function build(siteId, fromDate, toDate, opts) {
       solar, home, grid_import, grid_export, gas, total_cost, saving, checks, inputs, changed) VALUES (${Array(18).fill('?').join(',')})`);
         for (const r of revisions) await insR.run(...r);
       });
-  return { days: dayRows.length, slots: hhRows.length };
+  return { days: dayRows.length, slots: hhRows.length, to: toDate, converged };
+}
+
+// Convergence comparisons (R9): a built row against the stored one, built_at aside.
+const same = (a, b) => (a ?? null) === (b ?? null);
+function sameRow(stored, built) {
+  return Object.keys(built).every((k) => k === 'built_at' || same(stored[k], built[k]));
+}
+async function sameSlots(siteId, date, hhRows) {
+  const stored = await db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND local_date = ? ORDER BY slot_start').all(siteId, date);
+  const built = hhRows.filter((r) => r.local_date === date);
+  return stored.length === built.length && built.every((r, i) => sameRow(stored[i], r));
+}
+// battery_stock and battery_efficiency are written once per build, at its first and last day: not a day's own checks.
+const RUN_CHECKS = new Set(['battery_stock', 'battery_efficiency']);
+async function sameChecks(siteId, date, checks) {
+  const stored = (await db.prepare('SELECT check_code, status, measured, tolerance, detail FROM check_result WHERE site_id = ? AND local_date = ? ORDER BY check_code').all(siteId, date))
+    .filter((c) => !RUN_CHECKS.has(c.check_code));
+  const built = checks.filter((c) => c[0] === date && !RUN_CHECKS.has(c[1])).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  return stored.length === built.length && built.every((c, i) => same(stored[i].check_code, c[1]) && same(stored[i].status, c[2])
+    && same(stored[i].measured, c[3]) && same(stored[i].tolerance, c[4]) && same(stored[i].detail, c[5]));
 }
 
 // The first and last instant of a home's own energy data (inverter samples or meter readings).
@@ -745,48 +783,88 @@ export async function factSpan(siteId) {
         WHERE se.subject_kind = 'device' AND se.subject_id IN (SELECT CAST(id AS TEXT) FROM device WHERE site_id = ?))`).get(String(siteId), ...sources, siteId) ?? {};
 }
 
-// Rebuild from the earliest day a change touched to the latest day it asked for (the sync asks
-// up to now, so today). Each day saves its battery stock, so the rebuild continues from the day
-// before; it falls back to the first day only when that saved stock is missing (for example rows
-// built before it was saved). The range never starts before the home's first energy data, and a
-// request that ends in the past (a slot-length change of a home whose data stops there) is not
-// stretched to today, so no run of empty days is built.
-export async function processQueue() {
-  const pending = await db.prepare('SELECT site_id, MIN(from_ts) AS from_ts, MAX(to_ts) AS to_ts FROM rebuild_queue WHERE done_at IS NULL GROUP BY site_id').all();
+// The rebuild queue (fix list R9). Each request is a range of time whose inputs changed; a home's ranges are merged where
+// they overlap or touch, and each merged range is rebuilt day by day from its first day and carried on past its last day
+// only while the days it reaches still come out differently from what is stored: the battery's stored energy and the
+// balance check's 30-day history carry from one day to the next, so a change can reach later days, but once a day comes
+// out exactly as stored with nothing left to carry, every later day would too (buildSite convergeAfter). A range never
+// starts before the home's first energy data, starts at the first built day when the day before it has no saved battery
+// stock, and is never carried past the last built day or today (no run of empty days is made). Rows of another slot
+// length (the slot length changed) are all rebuilt.
+// siteId: only that home's requests (a sync rebuilds its own home: a change queued for every home, such as new VAT
+// rules, is then spread over each home's own sync). maxHomes: at most that many homes in one call.
+export async function processQueue({ siteId = null, maxHomes = Infinity } = {}) {
+  const homes = siteId != null ? [{ site_id: Number(siteId) }]
+    : (await db.prepare('SELECT site_id, MIN(enqueued_at) AS first FROM rebuild_queue WHERE done_at IS NULL GROUP BY site_id ORDER BY first, site_id').all()).slice(0, maxHomes);
   const out = [];
-  for (const p of pending) {
-    const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(p.site_id);
+  for (const { site_id: id } of homes) {
+    const requests = await db.prepare('SELECT id, from_ts, to_ts, reason FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL ORDER BY from_ts').all(id);
+    if (!requests.length) continue;
+    const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(id);
     if (!site) continue;
-    const firstDay = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id))?.d;
-    const lastDay = (await db.prepare('SELECT MAX(local_date) AS d FROM site_day WHERE site_id = ?').get(p.site_id))?.d;
-    let from = localDate(site.timezone, p.from_ts);
-    const today = localDate(site.timezone, nowSec());
-    let to = p.to_ts != null && p.to_ts > p.from_ts ? localDate(site.timezone, p.to_ts - 1) : today;
-    if (to > today) to = today;
-    // Never before the home's own first energy data (inverter or meter readings): a change
-    // elsewhere (a price list starting months earlier, weather history) must not create empty half-hours.
-    const firstFact = (await factSpan(p.site_id)).first;
-    if (firstFact != null && from < localDate(site.timezone, firstFact)) from = localDate(site.timezone, firstFact);
-    // Rows of another slot length (the home's slot_s was changed): everything is rebuilt, so the
-    // timeline never mixes lengths and the battery stock runs through one grid.
-    if (firstDay && await db.prepare('SELECT 1 FROM site_hh WHERE site_id = ? AND dur_s != ? LIMIT 1').get(p.site_id, slotLength(site))) {
-      if (from > firstDay) from = firstDay;
-      if (lastDay && to < lastDay) to = lastDay < today ? lastDay : today;
+    const tz = site.timezone;
+    const firstDay = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(id))?.d;
+    const lastDay = (await db.prepare('SELECT MAX(local_date) AS d FROM site_day WHERE site_id = ?').get(id))?.d;
+    const today = localDate(tz, nowSec());
+    const firstFact = (await factSpan(id)).first;
+    const factDay = firstFact != null ? localDate(tz, firstFact) : null;
+    const resized = firstDay && await db.prepare('SELECT 1 FROM site_hh WHERE site_id = ? AND dur_s != ? LIMIT 1').get(id, slotLength(site));
+    // Each request as days [from, to].
+    let ranges = requests.map((r) => {
+      let from = localDate(tz, r.from_ts);
+      let to = r.to_ts != null && r.to_ts > r.from_ts ? localDate(tz, r.to_ts - 1) : today;
+      if (to > today) to = today;
+      if (factDay && from < factDay) from = factDay;
+      if (resized) { if (from > firstDay) from = firstDay; if (lastDay && to < lastDay) to = lastDay < today ? lastDay : today; }
+      return { from, to, reason: r.reason };
+    }).filter((r) => r.from <= r.to).sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+    const merged = [];
+    for (const r of ranges) {
+      const last = merged[merged.length - 1];
+      if (last && r.from <= addDays(last.to, 1)) { if (r.to > last.to) last.to = r.to; if (r.reason) last.reasons.add(r.reason); }
+      else merged.push({ from: r.from, to: r.to, reasons: new Set(r.reason ? [r.reason] : []) });
     }
-    if (firstDay && from > firstDay) {
-      const prev = await db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(p.site_id, addDays(from, -1));
-      if (!prev?.battery_stock) from = firstDay;
-    }
+    ranges = merged;
     const t0 = Date.now();
-    const reasons = (await db.prepare('SELECT DISTINCT reason FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL AND reason IS NOT NULL').all(p.site_id)).map((r) => r.reason);
-    const res = from <= to ? await buildSite(p.site_id, from, to, { reason: reasons.join('; ') || null }) : { days: 0, slots: 0 };
+    const res = { days: 0, slots: 0, ranges: [] };
+    let builtTo = null;   // the last day rebuilt so far
+    for (const r of ranges) {
+      let from = builtTo && r.from <= builtTo ? addDays(builtTo, 1) : r.from;
+      if (from > r.to) continue;                       // an earlier range carried on through this one
+      if (firstDay && from > firstDay) {
+        const prev = await db.prepare('SELECT battery_stock FROM site_day WHERE site_id = ? AND local_date = ?').get(id, addDays(from, -1));
+        if (!prev?.battery_stock) from = firstDay;
+      }
+      const until = lastDay && lastDay > r.to ? (lastDay < today ? lastDay : today) : r.to;
+      const b = await buildSite(id, from, until, { reason: [...r.reasons].join('; ') || null, convergeAfter: r.to });
+      res.days += b.days || 0; res.slots += b.slots || 0;
+      res.ranges.push({ from, to: r.to, built: b.to ?? until, converged: b.converged ?? null });
+      builtTo = b.to ?? until;
+    }
+    const from = res.ranges[0]?.from ?? null;
     // Heating rows (site_heat_slot, src/core/heat.js) only for a home with a heating series: one query otherwise.
-    const heat = from <= to && await hasHeatingSeries(p.site_id) ? await buildHeat(p.site_id, from, to) : null;
-    // Processed requests are removed; the sync run records what was rebuilt.
-    await db.prepare('DELETE FROM rebuild_queue WHERE site_id = ? AND done_at IS NULL').run(p.site_id);
-    out.push({ siteId: p.site_id, from, to, ms: Date.now() - t0, ...res, ...(heat ? { heat: { days: heat.days, slots: heat.slots } } : {}) });
+    const heat = from && builtTo && await hasHeatingSeries(id) ? await buildHeat(id, from, builtTo) : null;
+    // Processed requests are removed (only those read here: one queued meanwhile waits for the next call).
+    await db.prepare('DELETE FROM rebuild_queue WHERE id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)').run(JSON.stringify(requests.map((r) => r.id)));
+    out.push({ siteId: id, from, to: builtTo, ms: Date.now() - t0, ...res, ...(heat ? { heat: { days: heat.days, slots: heat.slots } } : {}) });
   }
   // Fresh planner statistics after a rebuild (cheap when nothing is out of date).
   if (out.length) await optimizeDb();
   return out;
+}
+
+// Each serving layer carries the method that built it (site_day.method_version, site_heat_slot.method_version). A home
+// with days built by another method than the code's own is queued from its first such day, so a method change reaches
+// every home and every layer built on it, instead of waiting for a hand-run rebuild. Returns the homes queued.
+export async function queueStaleMethods() {
+  const queued = [];
+  const stale = await db.prepare(`SELECT site_id, MIN(local_date) AS first, 'build ' || MIN(method_version) AS method FROM site_day WHERE method_version <> ? GROUP BY site_id
+    UNION ALL SELECT site_id, MIN(local_date), 'heating ' || MIN(method_version) FROM site_heat_slot WHERE method_version <> ? GROUP BY site_id`).all(METHOD_VERSION, HEAT_METHOD_VERSION);
+  for (const r of stale) {
+    const site = await db.prepare('SELECT timezone FROM site WHERE id = ?').get(r.site_id);
+    if (!site) continue;
+    await markDirty(r.site_id, dayBounds(site.timezone, r.first)[0], nowSec(), `method changed (${r.method} → build ${METHOD_VERSION}, heating ${HEAT_METHOD_VERSION})`);
+    queued.push(r.site_id);
+  }
+  return [...new Set(queued)];
 }

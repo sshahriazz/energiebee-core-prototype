@@ -142,11 +142,12 @@ await test('"Grid carbon now" for a French home: RTE has no forecast, so the lat
 });
 
 await test('new RTE values mark a French home for rebuild from their first period (the sync\'s earliest change)', async () => {
-  const { earliestChange } = await import('../src/jobs/sync.js');
+  const { changeSpan } = await import('../src/jobs/sync.js');
   const site = await frHome('Changes FR');
   await new Promise((r) => setTimeout(r, 20));   // the home's own meter rows are older than `since`
   const since = Date.now();
   answer = (dataset) => (dataset === 'eco2mix-national-tr' ? [row(A + 3600, 51), row(A + 4500, 52)] : []);
   await RTE.syncRteCarbon(site, A + 3600, B);
-  assert.equal(await earliestChange(site.id, site, since), A + 3600);
+  const span = await changeSpan(site.id, site, since);
+  assert.deepEqual([span.first, span.last], [A + 3600, A + 5400], 'from the first new period to the end of the last');
 });

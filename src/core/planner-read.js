@@ -176,7 +176,7 @@ async function seriesFor(site, metric) {
       WHERE d.site_id = ?
      UNION ALL
      SELECT se.id, se.subject_kind, se.subject_id, so.code FROM jsonb_array_elements_text(?::jsonb) AS j(value)
-       CROSS JOIN series se ON se.subject_kind = 'region' AND se.subject_id = j.value AND se.metric_id = ? JOIN source so ON so.id = se.source_id
+       JOIN series se ON se.subject_kind = 'region' AND se.subject_id = j.value AND se.metric_id = ? JOIN source so ON so.id = se.source_id
      ORDER BY 1`).all(String(site.id), mid, mid, site.id, JSON.stringify(regions), mid);
 }
 
@@ -355,7 +355,7 @@ export async function series(siteId, metric, from, to, opts = {}) {
   const rule = ruleOf(def, kind);
   const bounds = [];
   const holds = [];
-  const results = facts.withKnownAt(at.knownAt, async () => await mapAsync(groups, async ({ source, series: list }) => {
+  const results = await facts.withKnownAt(at.knownAt, async () => await mapAsync(groups, async ({ source, series: list }) => {
         const ids = list.map((s) => s.id);
         if (kind === 'reading') {
           const holdS = opts.holdS ?? traits.get(source)?.holdS ?? DEFAULT_HOLD_S;
@@ -479,7 +479,7 @@ export async function counterDifferenceSeries(siteId, metric, from, to, opts = {
   const dates = [];
   for (let d = localDate(tz, g.start); d <= localDate(tz, g.end - 1); d = addDays(d, 1)) dates.push(d);
   const bounds = [];
-  const f = facts.withKnownAt(at.knownAt, async () => await fittedDays(siteId, tz, counter, dates, stepS, today, bounds, at.knownAt));
+  const f = await facts.withKnownAt(at.knownAt, async () => await fittedDays(siteId, tz, counter, dates, stepS, today, bounds, at.knownAt));
   const off = (g.start - f.g.start) / stepS;
   const values = new Array(g.n).fill(null); const cover = new Array(g.n).fill(0); const quality = new Array(g.n).fill(0);
   const cumulative = new Array(g.n).fill(null); const resets = [];
@@ -530,7 +530,7 @@ export async function rates(siteId, from, to, opts = {}) {
   const wanted = (dir === 'both' ? ['import', 'export'] : [].concat(dir));
   for (const d of wanted) if (!DIRECTIONS[d]) throw new RangeError(`direction must be import, export, gas or both, not ${d}`);
   const bounds = [{ table: 'rate_interval', seriesIds: [], from: g.start - 2 * 86400, to: g.end, note: 'loadPricing: agreements and rate rows overlapping the window; rate rows searched by (tariff_id, valid_from < to)' }];
-  return facts.withKnownAt(at.knownAt, async () => {
+  return await facts.withKnownAt(at.knownAt, async () => {
     // The home as known then, as build.js passes it (null: today's row, read by loadPricing itself).
     const p = await loadPricing(siteId, g.start, g.end, at.knownAt == null ? null : site);
     const dayCache = new Map();
@@ -688,7 +688,7 @@ export async function loadHistory(siteId, opts = {}) {
   const today = localDate(tz, Math.floor(asOf / 1000));
   const nTod = 86400 / stepS;
   const bounds = [];
-  const days = facts.withKnownAt(at.knownAt, async () => await mapAsync(wanted, async ({ daysAgo, weight }) => {
+  const days = await facts.withKnownAt(at.knownAt, async () => await mapAsync(wanted, async ({ daysAgo, weight }) => {
         const date = addDays(today, -daysAgo);
         const f = await fittedDays(siteId, tz, 'load_kwh', [date], stepS, today, bounds);
         const day = f.days[0];
@@ -845,7 +845,7 @@ export async function state(siteId, asOf, { lookbackS = STATE_LOOKBACK_S } = {})
   const traits = await sourceTraits();
   const live = await liveOrder(siteId, traits, moment.knownAt == null ? null : moment.knownAt / 1000);
   const forecastOnly = withFlag(traits, ['forecastOnly']);
-  facts.withKnownAt(moment.knownAt, async () => {
+  await facts.withKnownAt(moment.knownAt, async () => {
     const cache = new Map();
     // The freshest source of a metric; within it every series' latest reading.
     const read = async (metric, how = 'one') => {
@@ -897,7 +897,7 @@ export async function state(siteId, asOf, { lookbackS = STATE_LOOKBACK_S } = {})
   return {
     siteId, asOf: ms, at, inputs,
     battery: { kwh: batteryKwh, source: batt?.source ?? (batteryKwh != null ? 'site (current value)' : null) },
-    devices: (await devicesAt(siteId, '1', k)).map((d) => ({ id: d.id, kind: d.kind, provider: d.provider, label: d.label, attrs: JSON.parse(d.attrs || '{}'), approximateAttrs: d.approximateAttrs })),
+    devices: (await devicesAt(siteId, 'TRUE', k)).map((d) => ({ id: d.id, kind: d.kind, provider: d.provider, label: d.label, attrs: JSON.parse(d.attrs || '{}'), approximateAttrs: d.approximateAttrs })),
     attributes: await safe('attribute_value', async () => await attributesAt({ siteId }, k)),
     settings: await safe('site_setting', async () => await settingsAt(siteId, k)),
     site: { timezone: site.timezone, slot_s: slotLength(site), currency: site.currency ?? null, country: site.country ?? null },

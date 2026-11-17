@@ -4,7 +4,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, dataDir, dbFile, optimizeDb, closeDb, vatRulesChanged } from './db/db.js';
+import { db, dataDir, optimizeDb, closeDb, vatRulesChanged } from './db/db.js';
 import { carbonSubjectOf } from './core/carbon-series.js';
 import { buildSite, processQueue, METHOD_VERSION } from './core/build.js';
 import { forecastSite } from './core/forecast.js';
@@ -748,9 +748,9 @@ app.get('/api/sites/:id/health', async (req, res) => {
     days: await db.prepare('SELECT local_date, slots, slots_final, slots_provisional, slots_missing, integrity, solar, home, total_cost FROM site_day WHERE site_id = ? ORDER BY local_date DESC LIMIT 31').all(s.id),
     checks: await db.prepare('SELECT * FROM check_result WHERE site_id = ? AND local_date >= ? ORDER BY local_date DESC, check_code').all(s.id, addDays(today, -31)),
     quarantined: await db.prepare('SELECT p.id, src.code AS source, p.request, p.fetched_at, p.reason FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.site_id = ? AND p.status = ? ORDER BY p.id DESC LIMIT 20').all(s.id, 'quarantined'),
-    restated: await count('SELECT COUNT(*) AS n FROM site_hh WHERE site_id = ? AND quality & 128', s.id),
+    restated: await count('SELECT COUNT(*) AS n FROM site_hh WHERE site_id = ? AND quality & 128 <> 0', s.id),
     storage: {
-      dbBytes: fs.statSync(dbFile).size,
+      dbBytes: (await db.prepare('SELECT pg_database_size(current_database()) AS n').get()).n,
       raw: await count('SELECT COUNT(*) AS n FROM raw_payload WHERE site_id = ?', s.id),
       readings: await count('SELECT COUNT(*) AS n FROM reading r JOIN series se ON se.id = r.series_id WHERE se.subject_kind = ? AND se.subject_id = ?', 'site', String(s.id)),
       superseded: await count('SELECT COUNT(*) AS n FROM reading r JOIN series se ON se.id = r.series_id WHERE se.subject_kind = ? AND se.subject_id = ? AND r.superseded_at IS NOT NULL', 'site', String(s.id)),

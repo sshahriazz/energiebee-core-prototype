@@ -464,7 +464,7 @@ export async function overview(q) {
     x.last_at = x.last_at == null ? r.fetched_at : Math.max(x.last_at, r.fetched_at);
   }
   const tl = await db.prepare(`SELECT COUNT(*) AS slots, SUM((state = 'final')::int) AS final, SUM((state = 'provisional')::int) AS provisional, SUM((state = 'missing')::int) AS missing,
-    SUM((quality & ${QUALITY.RESTATED}) != 0) AS restated FROM site_hh WHERE site_id = ?`).get(site.id);
+    SUM(((quality & ${QUALITY.RESTATED}) != 0)::int) AS restated FROM site_hh WHERE site_id = ?`).get(site.id);
   const ck = Object.fromEntries(['pass', 'warn', 'fail', 'skip'].map((s) => [s, 0]));
   for (const r of await db.prepare('SELECT status, COUNT(*) AS n FROM check_result WHERE site_id = ? GROUP BY status').all(site.id)) ck[r.status] = r.n;
   return {

@@ -272,8 +272,8 @@ await test('H5: tariff pricing columns keep their versions, and pricing reads th
   assert.deepEqual([(await tariffAt(t.id, b)).taxes_in_price, (await tariffAt(t.id, b)).kind], [1, 'tou']);
   assert.deepEqual((await tariffFlagsAt(t.id, a)).tariff_kind, 'flat');
   const flags = (ms) => withKnownAt(ms, async () => (await loadPricing(s.id, 1700000000, 1700086400)).agreements.map((x) => [x.taxes_in_price, x.tariff_kind]));
-  assert.deepEqual(flags(a), [[0, 'flat']], 'as known before the change');
-  assert.deepEqual(flags(b), [[1, 'tou']]);
+  assert.deepEqual(await flags(a), [[0, 'flat']], 'as known before the change');
+  assert.deepEqual(await flags(b), [[1, 'tou']]);
   assert.deepEqual((await loadPricing(s.id, 1700000000, 1700086400)).agreements.map((x) => [x.taxes_in_price, x.tariff_kind]), [[1, 'tou']], 'today: the current row');
 });
 

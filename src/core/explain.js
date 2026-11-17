@@ -124,8 +124,8 @@ export async function traceSlot(siteId, slot, { asOfMs = null } = {}) {
 }
 
 // recorded_at of the readings and interval facts the slot used (the version in force, or as known at).
-function recordedAtOf(readings, intervals, asOfMs) {
-  return withKnownAt(asOfMs, async () => {
+async function recordedAtOf(readings, intervals, asOfMs) {
+  return await withKnownAt(asOfMs, async () => {
     const out = new Map();
     const bySeries = new Map();
     for (const r of readings) (bySeries.get(r.series_id) || bySeries.set(r.series_id, []).get(r.series_id)).push(r.ts);
@@ -241,7 +241,7 @@ export async function explainSlot(siteId, slot, { asOfMs = null } = {}) {
   const samples = Object.entries(TS.samples).flatMap(([k, rows]) => rows.map((r) => ({ ...r, node: k })));
   const intervals = [...['import', 'export', 'gas', 'ev'].flatMap((k) => TS.meter[k] || []), ...X.carbon, ...(TS.meter.gasCv ? [TS.meter.gasCv] : []),
     ...Object.values(TD.align).map((a) => a.counter).filter(Boolean)];
-  const rec = recordedAtOf(samples, intervals, asOfMs);
+  const rec = await recordedAtOf(samples, intervals, asOfMs);
   const inputs = [];
   for (const s of samples) {
     inputs.push(item(`${NODE_METRIC[s.node]} at ${hhmm(tz, s.ts)}`, s.value, s.node === 'soc' ? '%' : 'W', {

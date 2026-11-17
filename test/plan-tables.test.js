@@ -259,13 +259,13 @@ await test('plan_input_ref: a plan records what it read, and the same read as kn
   await putReadings(series, [0, 1, 2, 3].map((h) => ({ ts: from + h * H, value: 8 + h })));
   const asOf = Date.now();
   while (Date.now() <= asOf) await new Promise((r) => setTimeout(r, 1));
-  const ref = withKnownAt(asOf, async () => plans.inputRef({ kind: 'weather', refTable: 'reading', refKey: `series:${series}`, rows: (await readReadings([series], from, to)).map((r) => [r.ts, r.value]), asOf, fromTs: from, toTs: to }));
+  const ref = await withKnownAt(asOf, async () => plans.inputRef({ kind: 'weather', refTable: 'reading', refKey: `series:${series}`, rows: (await readReadings([series], from, to)).map((r) => [r.ts, r.value]), asOf, fromTs: from, toTs: to }));
   const run = await plans.savePlan(base({ variant: 'inputs', slots: daySlots(), inputs: [ref], factsAsOf: asOf, now: asOf + 10 }));
   await putReadings(series, [{ ts: from + H, value: 12.5 }]);   // a corrected value supersedes the one the plan used
   const stored = await db.prepare('SELECT * FROM plan_input_ref WHERE plan_run_id = ?').get(run.runId);
   assert.deepEqual([stored.kind, stored.ref_table, stored.ref_key, stored.row_count, stored.as_of, stored.from_ts, stored.to_ts], ['weather', 'reading', `series:${series}`, 4, asOf, from, to]);
   const read = async () => (await readReadings([series], from, to)).map((r) => [r.ts, r.value]);
-  assert.equal(plans.verifyInput(stored, withKnownAt(stored.as_of, read)), true, 'replayed as known at the plan: same inputs');
+  assert.equal(plans.verifyInput(stored, await withKnownAt(stored.as_of, read)), true, 'replayed as known at the plan: same inputs');
   assert.equal(plans.verifyInput(stored, await read()), false, 'read now: the corrected value differs');
   const r = await db.prepare('SELECT inputs_hash, facts_as_of FROM plan_run WHERE id = ?').get(run.runId);
   assert.deepEqual([r.facts_as_of, r.inputs_hash], [asOf, plans.hashOf([['weather', 'reading', `series:${series}`, ref.refHash, asOf]])]);

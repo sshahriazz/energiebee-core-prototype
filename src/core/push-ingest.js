@@ -14,6 +14,7 @@ import { nowSec } from './time.js';
 import { FORMATS, PushError, parsePush } from './push-formats.js';
 import { mapAsync } from "./async.js";
 import { linkFor } from './links.js';
+import { discoverDevices } from './integration.js';
 
 export const MAX_BODY_BYTES = 1024 * 1024;       // enforced by the route (413 too_large)
 export const MAX_OBSERVATIONS = 5000;            // enforced here (400 too_many_observations)
@@ -91,12 +92,14 @@ async function findDevice(site, ref) {
     ?? (/^\d+$/.test(s) ? await db.prepare('SELECT * FROM device WHERE site_id = ? AND retired_at IS NULL AND id = ?').get(site.id, Number(s)) : undefined);
 }
 
-async function registerDevice(site, ref, { kind, label, emulated }) {
+// A push that registers a device is a discovery report of one device (integration contract v2): the same call every integration makes, so the device
+// gets its thing, its link and its standard point bindings the one way.
+async function registerDevice(site, ref, { kind, label, emulated, source }) {
   if (!kind) throw new PushError(400, 'kind_required', 'To register a device say what it is: "kind": e.g. smart_plug, heat_pump, ev_charger, temperature_sensor', 'kind');
   try { await checkDeviceKind(kind); } catch (err) { throw new PushError(400, 'unknown_kind', err.message, 'kind'); }
   const name = String(label ?? ref).slice(0, 80);
-  const id = Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, ?, 'push', ?, ?, '{}', ?)")
-          .run(site.id, kind, String(ref).slice(0, 80), name, Date.now())).lastInsertRowid);
+  const found = await discoverDevices({ siteId: site.id, provider: 'push', source, devices: [{ externalRef: String(ref).slice(0, 80), kind, label: name }] });
+  const id = found.devices[0].thingId;
   await setDeviceAttrs(id, emulated ? { emulated: true } : {});
   return await db.prepare('SELECT * FROM device WHERE id = ?').get(id);
 }
@@ -165,7 +168,7 @@ export async function handlePush(rawText, { query = {}, headers = {}, now = nowS
       if (device?.provider === 'synthetic') throw new PushError(400, 'synthetic_device', `"${ref}" is a synthetic demo device: the demo generator feeds it, not pushes`, 'device');
       if (!device) {
         if (!truthy(pick('register'))) throw new PushError(404, 'unknown_device', `No device "${ref}" in home ${site.id}. Register it by sending "register": true (and "kind": e.g. smart_plug), or create it first`, 'device');
-        device = await registerDevice(site, ref, { kind: pick('kind') ?? parsed.kindHint, label: pick('label'), emulated: truthy(pick('emulated')) });
+        device = await registerDevice(site, ref, { kind: pick('kind') ?? parsed.kindHint, label: pick('label'), emulated: truthy(pick('emulated')), source });
         created = true; warnings.push(`registered a new ${device.kind} "${device.label}" with its standard channels`);
       }
       ctx.deviceId = device.id;

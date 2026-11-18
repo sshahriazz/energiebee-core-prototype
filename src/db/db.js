@@ -36,6 +36,8 @@ import { seedAttributeDefs, attributeSeedPending } from './seed/attributes.js';
 import { seedBindings, bindingSeedPending } from './seed/bindings.js';
 import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
 import { seedThings, thingSeedDiff } from './seed/things.js';
+import { capabilitySeedDiff, seedCapabilities } from './seed/capabilities.js';
+import { derivedSeedDiff, seedDerived } from './seed/derived.js';
 import { resolveRegion } from '../core/regions.js';
 import { EU_VAT_RULES } from '../core/tax.js';
 import { resolveRawDir, rawFileIn } from './raw-dir.js';
@@ -334,6 +336,10 @@ if (await marketSeedPending(db) || await regionSeedPending(db) || await provider
 if (await bindingSeedPending(db)) await tx(async () => await seedBindings(db));
 if (await attributeSeedPending(db) || await settingSeedPending(db)) await tx(async () => { await seedAttributeDefs(db); await seedSettingDefs(db); });
 {
+  const derived = await derivedSeedDiff(db);
+  if (derived.length) await tx(async () => await seedDerived(db, derived));
+  const caps = await capabilitySeedDiff(db);   // before the thing types: a type may only name a capability that is registered
+  if (caps.length) await tx(async () => await seedCapabilities(db, caps));
   const diff = await thingSeedDiff(db);
   if (diff.types.length || diff.rules.length) await tx(async () => await seedThings(db, diff));
 }

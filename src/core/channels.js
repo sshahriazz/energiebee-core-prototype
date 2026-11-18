@@ -3,13 +3,12 @@
 // units or one signed figure is rows in `channel`, not code. Values that cannot be trusted are kept in
 // channel_reject and never written as facts (the build then sees the input as missing, not as zero).
 import { db, sourceId, metricId } from '../db/db.js';
+import { pointOf } from './points.js';
 import { seriesId, putReadings, putIntervals, putForecasts, readReadings, markDirty, asWriter, QUALITY } from './facts.js';
 import { classifyStep, deriveCounterPeriods, neighbours, withdrawDerived } from './counters.js';
 import { nowSec } from './time.js';
 import { FILL_MAX_S } from './inputs.js';
 import { SOURCES, DEVICE_KIND_CHANNELS } from '../db/registry.js';
-
-const insertChannel = 'INSERT INTO channel (site_id, source_id, point, metric_id, scale, shift, part, min_value, max_value, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
 
 // Define a channel. Replaces the current channel of the same point and metric (the old row is superseded, not deleted).
 // deviceId: the channel belongs to that device (null = the home itself).
@@ -22,11 +21,12 @@ export async function defineChannel(siteId, source, point, metric, { scale = 1, 
   kind = 'value', derived = null, counterWrap = null, counterResetBelow = null, maxGapS = null, maxStuckSamples = null, clockOffsetS = 0, futureToleranceS = null } = {}) {
   const now = Date.now();
   const src = await sourceId(source); const met = await metricId(metric);
-  await db.prepare('UPDATE channel SET superseded_at = ? WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS NOT DISTINCT FROM ? AND superseded_at IS NULL').run(now, siteId, src, point, met, deviceId);
-  return Number((await db.prepare(`INSERT INTO channel (site_id, source_id, device_id, point, metric_id, scale, shift, part, min_value, max_value, access, enum_values, recorded_at,
+  await db.prepare('UPDATE point_binding SET superseded_at = ? WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS NOT DISTINCT FROM ? AND superseded_at IS NULL').run(now, siteId, src, point, met, deviceId);
+  const pointId = await pointOf(deviceId ?? siteId, met);   // the point it feeds: on the device thing, or on the home thing
+  return Number((await db.prepare(`INSERT INTO point_binding (point_id, site_id, source_id, device_id, point, metric_id, scale, shift, part, min_value, max_value, access, enum_values, recorded_at,
       kind, derived_metric_id, counter_wrap, counter_reset_below, max_gap_s, max_stuck_samples, clock_offset_s, future_tolerance_s)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(siteId, src, deviceId, point, met, scale, shift, part, min, max, access, enumValues ? JSON.stringify(enumValues) : null, now,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(pointId, siteId, src, deviceId, point, met, scale, shift, part, min, max, access, enumValues ? JSON.stringify(enumValues) : null, now,
             kind, derived ? await metricId(derived) : null, counterWrap, counterResetBelow, maxGapS, maxStuckSamples, clockOffsetS, futureToleranceS)).lastInsertRowid);
 }
 
@@ -42,7 +42,7 @@ export async function ensureChannels(siteId, source, deviceId = null) {
   }
   if (!defs.length) return 0;
   const src = await sourceId(source);
-  const has = db.prepare('SELECT 1 FROM channel WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS NOT DISTINCT FROM ? AND superseded_at IS NULL');
+  const has = db.prepare('SELECT 1 FROM point_binding WHERE site_id = ? AND source_id = ? AND point = ? AND metric_id = ? AND device_id IS NOT DISTINCT FROM ? AND superseded_at IS NULL');
   let made = 0;
   for (const d of defs) {
     if (await has.get(siteId, src, d.point, await metricId(d.metric), deviceId)) continue;
@@ -54,7 +54,7 @@ export async function ensureChannels(siteId, source, deviceId = null) {
 
 // deviceId: the channels of that device; omitted or null: the home's own.
 export async function channelsFor(siteId, source, point = null, deviceId = null) {
-  return await db.prepare(`SELECT c.*, m.code AS metric, m.time_role, dm.code AS derived_metric FROM channel c JOIN metric m ON m.id = c.metric_id LEFT JOIN metric dm ON dm.id = c.derived_metric_id
+  return await db.prepare(`SELECT c.*, m.code AS metric, m.time_role, dm.code AS derived_metric FROM point_binding c JOIN metric m ON m.id = c.metric_id LEFT JOIN metric dm ON dm.id = c.derived_metric_id
     WHERE c.site_id = ? AND c.source_id = ? AND c.superseded_at IS NULL AND c.device_id IS NOT DISTINCT FROM ?${point == null ? '' : ' AND c.point = ?'}`).all(siteId, await sourceId(source), deviceId, ...(point == null ? [] : [point]));
 }
 
@@ -62,12 +62,13 @@ export async function channelsFor(siteId, source, point = null, deviceId = null)
 // (a meter that turns out to read m3 instead of kWh changes its metric, it does not write both).
 export async function setDeviceChannel(siteId, source, deviceId, point, metric, opts = {}) {
   const src = await sourceId(source);
-  const cur = await db.prepare('SELECT c.id, c.metric_id, c.scale, c.shift, c.part FROM channel c WHERE c.site_id = ? AND c.source_id = ? AND c.device_id = ? AND c.point = ? AND c.superseded_at IS NULL').all(siteId, src, deviceId, point);
+  const cur = await db.prepare('SELECT c.id, c.metric_id, c.scale, c.shift, c.part FROM point_binding c WHERE c.site_id = ? AND c.source_id = ? AND c.device_id = ? AND c.point = ? AND c.superseded_at IS NULL').all(siteId, src, deviceId, point);
   if (cur.length === 1 && cur[0].metric_id === await metricId(metric) && cur[0].scale === (opts.scale ?? 1) && cur[0].shift === (opts.shift ?? 0) && cur[0].part === (opts.part ?? 'all')) return cur[0].id;
   const now = Date.now();
-  await db.prepare('UPDATE channel SET superseded_at = ? WHERE site_id = ? AND source_id = ? AND device_id = ? AND point = ? AND superseded_at IS NULL').run(now, siteId, src, deviceId, point);
-  return Number((await db.prepare('INSERT INTO channel (site_id, source_id, device_id, point, metric_id, scale, shift, part, min_value, max_value, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(siteId, src, deviceId, point, await metricId(metric), opts.scale ?? 1, opts.shift ?? 0, opts.part ?? 'all', opts.min ?? null, opts.max ?? null, now)).lastInsertRowid);
+  await db.prepare('UPDATE point_binding SET superseded_at = ? WHERE site_id = ? AND source_id = ? AND device_id = ? AND point = ? AND superseded_at IS NULL').run(now, siteId, src, deviceId, point);
+  const met = await metricId(metric);
+  return Number((await db.prepare('INSERT INTO point_binding (point_id, site_id, source_id, device_id, point, metric_id, scale, shift, part, min_value, max_value, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(await pointOf(deviceId, met), siteId, src, deviceId, point, met, opts.scale ?? 1, opts.shift ?? 0, opts.part ?? 'all', opts.min ?? null, opts.max ?? null, now)).lastInsertRowid);
 }
 
 const reject = async (siteId, src, point, ts, value, reason) =>

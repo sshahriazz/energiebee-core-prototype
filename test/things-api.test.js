@@ -210,3 +210,27 @@ await test('who may see what: another owner, nobody signed in, an admin, and sha
   assert.equal((await call(`/api/things/${tariff.uid}`, alice, { method: 'PATCH', body: { name: 'Mine' } })).body.code, 'read_only_kind');
   for (const r of [asAlice, asBob]) noIds(r.body);
 });
+
+await test('a thing\'s points with their state, and its timeline slot by slot and day by day; another owner sees neither', { skip }, async () => {
+  const { buildHomePointSlots } = await import('../src/core/point-slots.js');
+  const { buildHomeNodeSlots } = await import('../src/core/node-slots.js');
+  const all = await things(alice, homeUid);
+  const meter = byType(all, 'meter_import');
+  const pts = await call(`/api/things/${meter.uid}/points`, alice);
+  assert.equal(pts.status, 200); noIds(pts.body);
+  const imp = pts.body.points.find((p) => p.metric === 'grid_import_kwh');
+  assert.ok(imp && imp.reported && imp.reported.value != null && imp.reported.source === 'octopus_meter', 'the state came from the facts');
+  await buildHomePointSlots(1, '2026-10-14', '2026-10-14');
+  const day = await call(`/api/things/${meter.uid}/timeline?from=2026-10-14&to=2026-10-15&res=day`, alice);
+  assert.equal(day.status, 200); noIds(day.body);
+  const line = day.body.lines.find((l) => l.metric === 'grid_import_kwh');
+  assert.ok(line.slots.length > 40 && line.slots.every((s) => s.coverage > 0 && s.dur_s === 1800), 'a half-hour slot each, on the home\'s grid');
+  assert.equal(line.days.length, 1);
+  assert.ok(Math.abs(line.days[0].delta - line.slots.reduce((t, s) => t + s.delta, 0)) < 1e-6, 'the day is its slots added up');
+  await buildHomeNodeSlots(1, '2026-10-14', '2026-10-14');
+  const home = await call(`/api/things/${homeUid}/timeline?from=2026-10-14&to=2026-10-15`, alice);
+  assert.equal(home.body.kind, 'place');
+  assert.equal((await call(`/api/things/${meter.uid}/timeline?from=2026-10-14&to=2026-12-31`, alice)).status, 400, 'at most 31 days');
+  assert.equal((await call(`/api/things/${meter.uid}/timeline?res=week`, alice)).status, 400);
+  for (const p of [`/api/things/${meter.uid}/points`, `/api/things/${meter.uid}/timeline`]) assert.equal((await call(p, bob)).status, 404, p);
+});

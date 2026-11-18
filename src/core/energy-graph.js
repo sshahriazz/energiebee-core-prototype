@@ -19,6 +19,9 @@
 // them now would change about 25 readers twice (they change once, with Phase 2.7).
 import { db, tx, inTx } from '../db/db.js';
 import { createThing, relate, lockHome } from './things.js';
+import { placePlantPoints } from './points.js';
+import { refreshPointState } from './point-state.js';
+import { ensureLink } from './links.js';
 
 // Home-wide devices sit at home level and need no room: no rule here places one in a room, even when asked.
 export const HOME_WIDE = Object.freeze(['inverter', 'pv_array', 'battery', 'home_supply', 'grid_connection', 'hub']);
@@ -174,6 +177,18 @@ export async function applyPlan(homeId, plan, facts) {
   return { created: plan.create.length, related: plan.relate.length };
 }
 
+// What follows from the graph being there: the home's own series move onto the plant things, and the inverter is named by the
+// provider's plant (a Sunsynk plant id) so a second look at the plant is the same inverter.
+async function settle(homeId) {
+  await placePlantPoints(homeId);
+  await refreshPointState(homeId);   // points that have facts and no state yet
+  const inverter = await db.prepare(`SELECT t.id FROM thing t JOIN device d ON d.id = t.id AND d.provider = 'thing' WHERE t.home_id = ? AND t.type = 'inverter' AND t.superseded_at IS NULL AND t.valid_to IS NULL`).all(homeId);
+  if (inverter.length !== 1) return;
+  const conn = await db.prepare(`SELECT c.id, c.provider, c.external_ref FROM connection c WHERE c.site_id = ? AND c.external_ref IS NOT NULL AND c.external_ref <> ''
+    AND c.provider IN (SELECT adapter FROM market_provider WHERE role = 'inverter') ORDER BY c.id LIMIT 1`).get(homeId);
+  if (conn) await ensureLink({ homeId, thingId: Number(inverter[0].id), provider: conn.provider, externalRef: conn.external_ref, connectionId: Number(conn.id) });
+}
+
 /**
  * Make what a home's evidence shows and wire it, once. Cheap when there is nothing to do (a few reads); otherwise one transaction
  * under the home's lock, with the facts read again inside it, so two callers make one set of things.
@@ -183,12 +198,14 @@ export async function ensureEnergyGraph(homeId, { declare = {} } = {}) {
   const first = await graphFacts(homeId);
   if (!first) return null;
   const quick = planGraph(first, declare);
-  if (isEmptyPlan(quick)) return { created: 0, related: 0, wired: quick.wired };
+  if (isEmptyPlan(quick)) { await settle(homeId); return { created: 0, related: 0, wired: quick.wired }; }
   const run = async () => {
     await lockHome(homeId);
     const facts = await graphFacts(homeId);
     const plan = planGraph(facts, declare);
-    return { ...(await applyPlan(homeId, plan, facts)), wired: plan.wired };
+    const made = await applyPlan(homeId, plan, facts);
+    await settle(homeId);
+    return { ...made, wired: plan.wired };
   };
   return inTx() ? await run() : await tx(run);
 }

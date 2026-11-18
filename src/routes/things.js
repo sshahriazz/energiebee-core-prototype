@@ -9,6 +9,12 @@ import express from 'express';
 import { db, tx } from '../db/db.js';
 import { canSee, visibleSiteIds } from '../core/users.js';
 import * as T from '../core/things.js';
+import { stateOf } from '../core/point-state.js';
+import { readPointSlots } from '../core/point-slots.js';
+import { eventsOf } from '../core/events.js';
+import { lanesOf, LANE_NAMES } from '../core/lanes.js';
+import { readNodeSlots } from '../core/node-slots.js';
+import { dayBounds, localDate } from '../core/time.js';
 import { parseAt, parseKnown, viewThing, viewThings, viewRelations, viewTree, viewHistory, lookup, scrub } from '../core/things-view.js';
 
 const router = express.Router();
@@ -160,6 +166,86 @@ router.get('/things/:uid/tree', route(async (req) => {
   if (!Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > 50) throw bad('maxDepth is 1 to 50');
   if (thing.home_id == null) return { body: { tree: await viewTree({ ...thing, children: [] }) } };
   return { body: { tree: await viewTree(await T.tree(thing.id, { siteId: homeOf(thing), rel, maxDepth, ...timeOpts(req) })) } };
+}));
+
+router.get('/things/:uid/points', route(async (req) => {
+  const { thing } = await guard(req, req.params.uid);
+  const shown = await stateOf(thing.id);
+  return { body: { points: shown.map(({ id, ...p }) => p) } };
+}));
+
+// One local day of a point's slots: totals and events add up; anything else is the mean weighted by coverage, with the day's lowest and highest.
+const r9 = (x) => Math.round(x * 1e9) / 1e9;
+function dayOfPoint(cls, list) {
+  if (cls === 'total' || cls === 'event') return { delta: r9(list.reduce((t, x) => t + (x.delta ?? 0), 0)) };
+  const withMean = list.filter((x) => x.mean != null);
+  const weight = withMean.reduce((t, x) => t + x.coverage, 0);
+  return { mean: weight ? r9(withMean.reduce((t, x) => t + x.mean * x.coverage, 0) / weight) : null, min: withMean.length ? Math.min(...withMean.map((x) => x.min ?? x.mean)) : null, max: withMean.length ? Math.max(...withMean.map((x) => x.max ?? x.mean)) : null };
+}
+
+// The timeline of a thing: a device's points slot by slot, a place's rolled-up metrics (docs/build/timelines.md). from and to are epoch
+// seconds or local dates of the home (default: today); at most 31 days. res=day adds one row per local day to each line.
+router.get('/things/:uid/timeline', route(async (req) => {
+  const { thing } = await guard(req, req.params.uid);
+  const tz = thing.home_id == null ? 'UTC' : (await db.prepare('SELECT timezone FROM site WHERE id = ?').get(thing.home_id))?.timezone ?? 'UTC';
+  const stamp = (v, edge) => {
+    if (v == null || v === '') return null;
+    if (/^\d{1,11}$/.test(String(v))) return Number(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return dayBounds(tz, String(v))[edge];
+    throw bad('from and to are epoch seconds or local dates (YYYY-MM-DD)');
+  };
+  const today = dayBounds(tz, localDate(tz, Math.floor(Date.now() / 1000)));
+  const from = stamp(req.query.from, 0) ?? today[0];
+  const to = stamp(req.query.to, 1) ?? today[1];
+  if (!(to > from)) throw bad('to is after from');
+  if (to - from > 31 * 86400 + 3600) throw bad('at most 31 days at a time');
+  const res = req.query.res ?? 'slot';
+  if (!['slot', 'day'].includes(res)) throw bad('res is slot or day');
+  const day = (rows, pick) => {
+    const by = new Map();
+    for (const r of rows) { const d = localDate(tz, r.slot_start); (by.get(d) ?? by.set(d, []).get(d)).push(r); }
+    return [...by].map(([date, list]) => ({ date, ...pick(list) }));
+  };
+  if (['home', 'space', 'system'].includes(thing.kind)) {
+    const rows = await readNodeSlots(thing.id, from, to);
+    const metrics = [...new Set(rows.map((r) => r.metric))].sort();
+    return { body: { thing: await viewThing(thing), kind: 'place', from, to, lines: metrics.map((metric) => {
+      const slots = rows.filter((r) => r.metric === metric).map(({ metric: _m, ...r }) => r);
+      return { metric, slots, ...(res === 'day' ? { days: day(slots, (l) => ({ value: Math.round(l.reduce((t, s) => t + (s.value ?? 0), 0) * 1e9) / 1e9, slots: l.length })) } : {}) };
+    }) } };
+  }
+  const points = await db.prepare('SELECT p.id, p.key, p.class, m.code AS metric, m.unit FROM point p JOIN metric m ON m.id = p.metric_id WHERE p.thing_id = ? AND p.superseded_at IS NULL ORDER BY p.key').all(thing.id);
+  const lines = [];
+  for (const p of points) {
+    const slots = await readPointSlots(p.id, from, to);
+    if (!slots.length) continue;
+    lines.push({ key: p.key, metric: p.metric, unit: p.unit, class: p.class, slots, ...(res === 'day' ? { days: day(slots, (l) => dayOfPoint(p.class, l)) } : {}) });
+  }
+  const asked = req.query.lanes == null ? null : String(req.query.lanes).split(',').filter(Boolean);
+  if (asked && (!asked.length || asked.some((l) => !LANE_NAMES.includes(l)))) throw bad(`lanes is a list of ${LANE_NAMES.join(', ')}`);
+  return { body: { thing: await viewThing(thing), kind: 'device', from, to, lines, ...(asked ? { lanes: await lanesOf(thing, from, to, asked) } : {}) } };
+}));
+
+router.get('/things/:uid/events', route(async (req) => {
+  const { thing } = await guard(req, req.params.uid);
+  if (thing.home_id == null) return { body: { events: [] } };
+  const tz = (await db.prepare('SELECT timezone FROM site WHERE id = ?').get(thing.home_id))?.timezone ?? 'UTC';
+  const stamp = (v, edge) => {
+    if (v == null || v === '') return null;
+    if (/^\d{1,11}$/.test(String(v))) return Number(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return dayBounds(tz, String(v))[edge];
+    throw bad('from and to are epoch seconds or local dates (YYYY-MM-DD)');
+  };
+  const today = dayBounds(tz, localDate(tz, Math.floor(Date.now() / 1000)));
+  const from = stamp(req.query.from, 0) ?? today[0];
+  const to = stamp(req.query.to, 1) ?? today[1];
+  if (!(to > from)) throw bad('to is after from');
+  if (to - from > 31 * 86400 + 3600) throw bad('at most 31 days at a time');
+  const limit = req.query.limit == null ? 500 : Number(req.query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw bad('limit is 1 to 500');
+  const events = await eventsOf(thing.id, from, to, { limit });
+  const uids = await lookup(events.map((e) => e.thing?.id));
+  return { body: { from, to, events: events.map((e) => ({ ts: e.ts, kind: e.kind, what: e.what, detail: e.detail, thing: e.thing ? { uid: uids.get(e.thing.id)?.uid, name: e.thing.name, type: e.thing.type } : null })) } };
 }));
 
 router.get('/things/:uid/place', route(async (req) => {

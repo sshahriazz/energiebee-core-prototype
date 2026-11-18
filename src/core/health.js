@@ -79,7 +79,7 @@ async function periodOf(seriesId) {
 }
 
 async function counterKind(siteId, binding, metric) {
-  return Boolean(await db.prepare(`SELECT 1 FROM channel c JOIN metric m ON m.id = c.metric_id JOIN source so ON so.id = c.source_id
+  return Boolean(await db.prepare(`SELECT 1 FROM point_binding c JOIN metric m ON m.id = c.metric_id JOIN source so ON so.id = c.source_id
     WHERE c.site_id = ? AND so.code = ? AND m.code = ? AND c.kind = 'counter' AND c.superseded_at IS NULL`).get(siteId, binding.source, metric));
 }
 

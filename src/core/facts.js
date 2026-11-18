@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, tx, sourceId, metricId, rawDir, rawFilePath } from '../db/db.js';
 import { nowSec } from './time.js';
+import { subjectThing, pointOf } from './points.js';
+import { touchReported } from './point-state.js';
 
 // ───────────── Raw landing ─────────────
 
@@ -135,10 +137,8 @@ export async function quarantine({ source, siteId, request, body, reason }) {
 
 // ───────────── Series ─────────────
 
-const findSeries = db.prepare(
-  'SELECT id FROM series WHERE subject_kind = ? AND subject_id = ? AND metric_id = ? AND source_id = ?');
-const insertSeries = db.prepare(
-  'INSERT INTO series (subject_kind, subject_id, metric_id, source_id) VALUES (?, ?, ?, ?)');
+const findSeries = db.prepare('SELECT id FROM series WHERE point_id = ? AND metric_id = ? AND source_id = ?');
+const insertSeries = db.prepare('INSERT INTO series (point_id, metric_id, source_id) VALUES (?, ?, ?)');
 const seriesCache = new Map();
 // Forget the cached series ids: a dry run or a failed transaction that created series rows and was rolled back leaves ids that no longer exist.
 export const forgetSeriesCache = () => seriesCache.clear();
@@ -146,7 +146,9 @@ export const forgetSeriesCache = () => seriesCache.clear();
 export async function seriesId(subjectKind, subjectId, metric, source) {
   const key = `${subjectKind}|${subjectId}|${metric}|${source}`;
   if (seriesCache.has(key)) return seriesCache.get(key);
-  const args = [subjectKind, String(subjectId), await metricId(metric), await sourceId(source)];
+  // The series is the feed of a source into the point of the subject's thing for this metric (made on first use).
+  const mid = await metricId(metric);
+  const args = [await pointOf(await subjectThing(subjectKind, subjectId, metric), mid), mid, await sourceId(source)];
   let row = await findSeries.get(...args);
   if (!row) row = { id: Number((await insertSeries.run(...args)).lastInsertRowid) };
   seriesCache.set(key, row.id);
@@ -192,6 +194,7 @@ export async function putReadings(series, rows, rawId) {
   await checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
+  let latest = null;   // the newest reading stored: the point's reported state
   await tx(async () => {
         for (const r of lastPerKey(rows, (x) => x.ts)) {
           const value = r.value === undefined ? null : r.value;
@@ -203,7 +206,9 @@ export async function putReadings(series, rows, rawId) {
           if (cur) await supReading.run(at, series, r.ts);
           await insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
           changed++;
+          if (latest == null || r.ts > latest.ts || (r.ts === latest.ts && at >= latest.at)) latest = { ts: r.ts, value, at };
         }
+        if (latest) await touchReported(series, latest);
       });
   return changed;
 }
@@ -219,6 +224,7 @@ export async function putIntervals(series, rows, rawId) {
   await checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
+  let latest = null;   // the period that ended last: the point's reported state
   await tx(async () => {
         for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
           const value = r.value === undefined ? null : r.value;
@@ -228,7 +234,9 @@ export async function putIntervals(series, rows, rawId) {
           if (cur) await supInterval.run(at, series, r.start, r.end);
           await insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
           changed++;
+          if (latest == null || r.end > latest.ts || (r.end === latest.ts && at >= latest.at)) latest = { ts: r.end, value, at };
         }
+        if (latest) await touchReported(series, latest);
       });
   return changed;
 }

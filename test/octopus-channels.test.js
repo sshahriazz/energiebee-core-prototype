@@ -34,7 +34,7 @@ await test('a gas meter that turns out to read m3 replaces its channel, not adds
   assert.equal(await normaliseConsumption(site, dev, 'gas_m3', rows, null), 2);
   const ch = await channelsFor(site, 'octopus_meter', 'consumption', dev);
   assert.deepEqual(ch.map((c) => c.metric), ['gas_m3']);
-  const history = (await db.prepare('SELECT COUNT(*) n FROM channel WHERE device_id = ?').get(dev)).n;
+  const history = (await db.prepare('SELECT COUNT(*) n FROM point_binding WHERE device_id = ?').get(dev)).n;
   assert.equal(history, 2, 'the old channel is kept, superseded');
 });
 

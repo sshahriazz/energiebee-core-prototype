@@ -46,7 +46,7 @@ await test('an ack is returned as a receipt and never stored as a fact', async (
 
 await test('the standard control points are one device\'s readwrite channels, made once', async () => {
   assert.equal(await ensureControlChannels(site, 'ctl_test', dev), 0);
-  const ch = await db.prepare("SELECT access, enum_values FROM channel WHERE device_id = ? AND point = 'work_mode' AND superseded_at IS NULL").get(dev);
+  const ch = await db.prepare("SELECT access, enum_values FROM point_binding WHERE device_id = ? AND point = 'work_mode' AND superseded_at IS NULL").get(dev);
   assert.equal(ch.access, 'readwrite');
   assert.deepEqual(JSON.parse(ch.enum_values), DEFAULT_MODES);
 });

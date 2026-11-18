@@ -47,8 +47,8 @@ await test('meter and carbon roles switch vendor from a date, with no engine edi
   const clone = async (from, to) => {
     await db.prepare("INSERT INTO source (code, name, contract) VALUES (?, 'Test vendor', '{}')").run(to);
     const target = await sourceId(to);
-    for (const s of await db.prepare('SELECT s.id, s.subject_kind, s.subject_id, s.metric_id FROM series s JOIN source so ON so.id = s.source_id WHERE so.code = ?').all(from)) {
-      const id = Number((await db.prepare('INSERT INTO series (subject_kind, subject_id, metric_id, source_id) VALUES (?, ?, ?, ?)').run(s.subject_kind, s.subject_id, s.metric_id, target)).lastInsertRowid);
+    for (const s of await db.prepare('SELECT s.id, s.point_id, s.metric_id FROM series s JOIN source so ON so.id = s.source_id WHERE so.code = ?').all(from)) {
+      const id = Number((await db.prepare('INSERT INTO series (point_id, metric_id, source_id) VALUES (?, ?, ?)').run(s.point_id, s.metric_id, target)).lastInsertRowid);
       await db.prepare('INSERT INTO interval_fact (series_id, start_ts, end_ts, value, quality, recorded_at) SELECT ?, start_ts, end_ts, value * 2, quality, recorded_at FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL').run(id, s.id);
     }
   };
@@ -133,8 +133,8 @@ await test('R2 and R3: a new vendor bound from a date changes slots from that da
   for (const [legacy, code] of [['sunsynk_5min', 'acme_5min'], ['sunsynk_daily', 'acme_daily']]) {
     await db.prepare("INSERT INTO source (code, name, contract) VALUES (?, 'Acme inverter (test)', '{}')").run(code);
     const acme = await sourceId(code);
-    for (const s of await db.prepare('SELECT s.id, s.metric_id FROM series s JOIN source so ON so.id = s.source_id WHERE so.code = ? AND s.subject_kind = ? AND s.subject_id = ?').all(legacy, 'site', String(SITE))) {
-      const id = Number((await db.prepare('INSERT INTO series (subject_kind, subject_id, metric_id, source_id) VALUES (?, ?, ?, ?)').run('site', String(SITE), s.metric_id, acme)).lastInsertRowid);
+    for (const s of await db.prepare('SELECT s.id, s.point_id, s.metric_id FROM series s JOIN source so ON so.id = s.source_id WHERE so.code = ? AND s.subject_kind = ? AND s.subject_id = ?').all(legacy, 'site', String(SITE))) {
+      const id = Number((await db.prepare('INSERT INTO series (point_id, metric_id, source_id) VALUES (?, ?, ?)').run(s.point_id, s.metric_id, acme)).lastInsertRowid);
       await db.prepare('INSERT INTO reading (series_id, ts, value, quality, recorded_at) SELECT ?, ts, value * 2, quality, recorded_at FROM reading WHERE series_id = ? AND superseded_at IS NULL').run(id, s.id);
       await db.prepare('INSERT INTO interval_fact (series_id, start_ts, end_ts, value, quality, recorded_at) SELECT ?, start_ts, end_ts, value * 2, quality, recorded_at FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL').run(id, s.id);
     }

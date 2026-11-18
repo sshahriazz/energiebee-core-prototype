@@ -174,7 +174,8 @@ await test('homes on rows: a series takes its subject\'s home, a fact its series
   const sA = await seriesId('device', batA, 'battery_soc_pct', 'sunsynk_5min');
   const { metric_id: m, source_id: so } = await get('SELECT metric_id, source_id FROM series WHERE id = ?', sA);
   assert.equal((await get('SELECT site_id FROM series WHERE id = ?', sA)).site_id, A);
-  await refused('series_home', "INSERT INTO series (subject_kind, subject_id, metric_id, source_id, site_id) VALUES ('device', ?, ?, ?, ?)", String(meterA), m, so, B);
+  const { point_id: pt } = await get('SELECT point_id FROM series WHERE id = ?', sA);
+  await refused('series_home', 'INSERT INTO series (point_id, metric_id, source_id, site_id) VALUES (?, ?, ?, ?)', pt, m, so, B);
   await refused('series_home', 'UPDATE series SET site_id = ? WHERE id = ?', B, sA);
   await refused('reading_home', 'INSERT INTO reading (series_id, ts, value, recorded_at, site_id) VALUES (?, 0, 1, 0, ?)', sA, B);
   await refused('interval_fact_home', 'INSERT INTO interval_fact (series_id, start_ts, end_ts, value, recorded_at, site_id) VALUES (?, 0, 1800, 1, 0, ?)', sA, B);

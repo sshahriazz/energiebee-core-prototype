@@ -80,7 +80,7 @@ await test('errors carry a status, a machine code and a plain message', { skip }
 });
 
 await test('a preview keeps nothing and shows the impact; "from now on" touches no built slot and needs no reason', { skip }, async () => {
-  const before = [await count('binding'), await count('channel'), await count('rebuild_queue')];
+  const before = [await count('binding'), await count('point_binding'), await count('rebuild_queue')];
   const past = await post(`/api/sites/${SITE}/bindings/preview`, { action: 'unbind', role: 'inverter_5min', at: '2026-10-20' });
   assert.equal(past.status, 200);
   assert.equal(past.body.needsReason, true);
@@ -90,20 +90,20 @@ await test('a preview keeps nothing and shows the impact; "from now on" touches 
   const now = await post(`/api/sites/${SITE}/bindings/preview`, { action: 'bind', role: 'inverter_5min', source: 'sunsynk_5min', from: 'now' });
   assert.equal(now.body.needsReason, false);
   assert.equal(now.body.impact.changed, 0);
-  assert.deepEqual([await count('binding'), await count('channel'), await count('rebuild_queue')], before, 'previews wrote nothing');
+  assert.deepEqual([await count('binding'), await count('point_binding'), await count('rebuild_queue')], before, 'previews wrote nothing');
 });
 
 await test('a dry run on every write returns what would happen and keeps nothing', { skip }, async () => {
-  const before = [await count('binding'), await count('channel')];
+  const before = [await count('binding'), await count('point_binding')];
   const b = await post(`/api/sites/${SITE}/bindings`, { dryRun: true, role: 'weather_temp', source: 'open_meteo', from: 'now' });
   assert.equal(b.status, 200); assert.equal(b.body.dryRun, true);
   const u = await post(`/api/sites/${SITE}/bindings/unbind?dryRun=1`, { role: 'weather_temp', at: 'now' });
   assert.equal(u.status, 200); assert.equal(u.body.dryRun, true);
   const c = await post(`/api/sites/${SITE}/channels`, { dryRun: true, source: 'open_meteo', point: 'temp_dry', metric: 'outdoor_temp_c' });
   assert.equal(c.status, 200); assert.equal(c.body.dryRun, true); assert.equal(c.body.channel.point, 'temp_dry');
-  const r = await post(`/api/sites/${SITE}/channels/retire`, { dryRun: true, id: (await db.prepare('SELECT id FROM channel LIMIT 1').get())?.id ?? 1 });
+  const r = await post(`/api/sites/${SITE}/channels/retire`, { dryRun: true, id: (await db.prepare('SELECT id FROM point_binding LIMIT 1').get())?.id ?? 1 });
   assert.ok([200, 404].includes(r.status));
-  assert.deepEqual([await count('binding'), await count('channel')], before, 'nothing was kept');
+  assert.deepEqual([await count('binding'), await count('point_binding')], before, 'nothing was kept');
 });
 
 await test('a change that alters built slots is refused without a reason (409, nothing written), accepted with one, and queues a rebuild', { skip }, async () => {

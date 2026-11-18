@@ -17,8 +17,9 @@ export const TABLE_KINDS = {
   binding: 'config', control_limit: 'config', rate_interval: 'config', register_window: 'config',
   site_group_member: 'config', tariff_agreement: 'config', tax_rule: 'config',
   thing: 'config', thing_attr_version: 'config', thing_relation: 'config',
+  point: 'config', thing_link: 'config',
   // configuration, before the rule (LEGACY_CONFIG)
-  attribute_value: 'config', calendar_day: 'config', channel: 'config', connection: 'config', connection_secret: 'config',
+  attribute_value: 'config', calendar_day: 'config', point_binding: 'config', connection: 'config', connection_secret: 'config',
   device: 'config', device_attr_version: 'config', device_capability: 'config', group_grant: 'config', site: 'config',
   site_attribute: 'config', site_grant: 'config', site_group: 'config', site_region: 'config', site_setting: 'config',
   site_version: 'config', supplier: 'config', tariff: 'config', tariff_version: 'config', tenant_site: 'config', user_site: 'config',
@@ -27,16 +28,16 @@ export const TABLE_KINDS = {
   reading: 'fact', interval_fact: 'fact', forecast_fact: 'fact', raw_payload: 'fact',
   // serving
   site_hh: 'serving', site_day: 'serving', site_heat_slot: 'serving', check_result: 'serving',
-  tariff_price_run: 'serving', supply_price_slot: 'serving', tariff_price_state: 'serving', plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
+  tariff_price_run: 'serving', point_slot: 'serving', node_slot: 'serving', supply_price_slot: 'serving', tariff_price_state: 'serving', plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
   // logs
   sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log', erasure_log: 'log', raw_check_run: 'log', thing_op: 'log',
   // registries
   attribute_def: 'registry', setting_def: 'registry', binding_default: 'registry', column_class: 'registry', currency: 'registry',
   device_kind: 'registry', device_action: 'registry', market: 'registry', market_provider: 'registry', market_question: 'registry',
-  metric: 'registry', region: 'registry', source: 'registry', series: 'registry', thing_type: 'registry', relation_rule: 'registry',
+  metric: 'registry', capability: 'registry', derived_def: 'registry', region: 'registry', source: 'registry', series: 'registry', thing_type: 'registry', relation_rule: 'registry',
   // runtime
   home_key: 'secret',
-  rebuild_queue: 'runtime', raw_payload_check: 'runtime', price_dirty: 'runtime', provider_state: 'runtime', user_session: 'runtime', command_block: 'runtime',
+  rebuild_queue: 'runtime', point_state: 'runtime', raw_payload_check: 'runtime', price_dirty: 'runtime', provider_state: 'runtime', user_session: 'runtime', command_block: 'runtime',
 };
 
 // Configuration tables from before the rule: the record time they have today, and what replaces them.
@@ -44,7 +45,7 @@ export const LEGACY_CONFIG = {
   attribute_value: 'record time only; Phase 1.1 (thing attributes, bitemporal)',
   calendar_day: 'valid time is the day itself; record time only',
   calendar: 'a named calendar; its days are versioned (calendar_day)',
-  channel: 'record time only; Phase 2.3 (point_binding)',
+  point_binding: 'record time only; the window of a source is in binding until Phase 2.7',
   connection: 'no time columns; Phase 2.1 (integrations as things with links)',
   connection_secret: 'recorded_at only; Phase 2.1',
   device: 'the detail row of a device thing (same id); recorded_at only; versions in device_attr_version; Phase 2 (points and links)',

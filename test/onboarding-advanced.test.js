@@ -45,7 +45,7 @@ await test('replacing a channel with different advanced options supersedes the o
 });
 
 await test('combinations that make no sense are refused with the field at fault, and write nothing', { skip }, async () => {
-  const before = (await db.prepare('SELECT COUNT(*) n FROM channel').get()).n;
+  const before = (await db.prepare('SELECT COUNT(*) n FROM point_binding').get()).n;
   const cases = [
     [{ kind: 'counter' }, 400, 'missing_field', 'derived'],
     [{ kind: 'counter', derived: 'plug_counter_kwh' }, 400, 'bad_value', 'derived'],
@@ -73,16 +73,16 @@ await test('combinations that make no sense are refused with the field at fault,
     const r = await ch({ point: 'bad', ...o });
     assert.deepEqual([r.status, r.body.code, r.body.field], [status, code, field], JSON.stringify(o).slice(0, 80));
   }
-  assert.equal((await db.prepare('SELECT COUNT(*) n FROM channel').get()).n, before);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM point_binding').get()).n, before);
 });
 
 await test('a dry run of an advanced channel validates it and keeps nothing', { skip }, async () => {
-  const before = (await db.prepare('SELECT COUNT(*) n FROM channel').get()).n;
+  const before = (await db.prepare('SELECT COUNT(*) n FROM point_binding').get()).n;
   const r = await ch({ point: 'dry', kind: 'counter', derived: 'plug_kwh', dryRun: true });
   assert.equal(r.status, 200);
   assert.equal(r.body.dryRun, true);
   assert.equal(r.body.channel.kind, 'counter');
-  assert.equal((await db.prepare('SELECT COUNT(*) n FROM channel').get()).n, before);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM point_binding').get()).n, before);
   assert.equal((await ch({ point: 'dry', kind: 'counter', dryRun: true })).status, 400, 'a dry run validates too');
 });
 

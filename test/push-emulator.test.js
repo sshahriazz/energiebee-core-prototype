@@ -117,7 +117,7 @@ await test('a device that pushed in two formats does not get an empty twin chart
   assert.equal(early.channels.filter((c) => c.point === 'energy_total').length, 1);
   await runEmulator({ url, site: SITE, device: ref, format: 'native', every: 0, step: 300, count: 4, start: new Date((Math.floor(Date.now() / 1000) - 4 * 3600) * 1000).toISOString(), log: quiet });
   const d = await get(`/api/sites/${SITE}/devices/${await devId(ref)}?hours=1`);       // a window where only the newer source has data
-  const sources = [...new Set((await db.prepare("SELECT so.code FROM channel c JOIN source so ON so.id = c.source_id WHERE c.device_id = ? AND c.superseded_at IS NULL").all(await devId(ref))).map((r) => r.code))].sort();
+  const sources = [...new Set((await db.prepare("SELECT so.code FROM point_binding c JOIN source so ON so.id = c.source_id WHERE c.device_id = ? AND c.superseded_at IS NULL").all(await devId(ref))).map((r) => r.code))].sort();
   assert.deepEqual(sources, ['push_native', 'push_shelly_gen2'], 'one device, channels under two sources');
   for (const point of ['energy_total', 'power', 'relay']) assert.equal(d.channels.filter((c) => c.point === point).length, 1, `${point} is drawn once`);
   const V = await import('../public/js/devices-view.js');

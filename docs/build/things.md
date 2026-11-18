@@ -224,6 +224,13 @@ Reads, all "as known": `at` is valid time (default now; `null` reads every windo
 | nested transaction does not fail whole | Changed: inside a caller's transaction the operation runs in a savepoint. Test: the caller catches the refusal and keeps its own work. |
 | retire with no sanity bound | Changed in part: a date that would cancel every relation of the thing is refused (409). A retirement before `recorded_at` stays possible: back-dating a retirement is legitimate. |
 
+## Review round 2: what was changed and what was not
+
+| Finding | Action |
+|---|---|
+| `home_id` and the two home rules (minor, open since round 1) | Not changed, same reason as in round 1 (decision 1): the work package says `site_id` until the fold, and a second home column kept in step with it would be thrown away by the fold. This is the integrator's call: if the stand-in and the deferral are accepted, the two triggers with D1 cases are fold item 2; if not, the column has to be asked for explicitly and is a small change to the migration, the library and the rule cases. |
+| `test/uid.test.js` copy test fails with `invalid input syntax for type json` (twice: one finding from the review, one from the regression run) | Fixed, and it was a defect of this branch: the seeded `thing_type` rows hold jsonb arrays (`capabilities`, `ports`, `attribute_keys`), node-pg sends a JS array as a Postgres array literal, so `loadTables` in `scripts/lib/databases.js` could not copy any database that holds thing rows. `loadTables` now reads `data_type` per column (it already did, for bytea) and sends an array or object bound for a `json` or `jsonb` column as JSON text. Every caller (`test/helpers.js`, `scripts/make-fixture.js`, `scripts/demo-ui.js`, `scripts/sqlite-to-postgres.js`) goes through that one function. The copy test now also creates a home thing and a device thing and checks that `thing_type` (arrays and objects) and the thing row (uid) arrive in the copy; it fails with the original error without the fix and passes with it. |
+
 ## What the fold of `site` and `device` into things must do with these tables
 
 The next wave converts every `site` row to a home thing and every `device` row to a device thing. With the tables as they are:
@@ -257,7 +264,7 @@ TEST_DB_PREFIX=wp_things node --test --disable-warning=ExperimentalWarning test/
 # after a change to the rule cases: UPDATE_RULES=1 re-records test/rules/things.json
 ```
 
-Run at the end of review round 1 and passing (this checkout, database prefix `wp_things`): `test/things.test.js`, `test/rules-things.test.js` and `test/rules-all.test.js` together (49 cases), `test/table-kinds.test.js`, `test/delete-home.test.js` and `test/erasure.test.js` (12). `prisma/schema.prisma` was refreshed again (`scripts/refresh-prisma.js`). Not run: the whole suite and `npm run db:migrate` on the development database (the integrator does both; the development database needs both new migrations before start-up reads `thing_type`).
+Run at the end of review round 2 and passing: `test/uid.test.js`, `test/rules-all.test.js` and `test/table-kinds.test.js` together (9 cases). Run at the end of review round 1 and passing (this checkout, database prefix `wp_things`): `test/things.test.js`, `test/rules-things.test.js` and `test/rules-all.test.js` together (49 cases), `test/table-kinds.test.js`, `test/delete-home.test.js` and `test/erasure.test.js` (12). `prisma/schema.prisma` was refreshed again (`scripts/refresh-prisma.js`). Not run: the whole suite and `npm run db:migrate` on the development database (the integrator does both; the development database needs both new migrations before start-up reads `thing_type`).
 
 ## What is left
 

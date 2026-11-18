@@ -92,12 +92,13 @@ export async function loadTables(url, source, { log = () => {} } = {}) {
         const missing = pgCols.filter((c) => !have.has(c.column_name)).map((c) => c.column_name);
         if (missing.length) log(`${table}: columns not in the source, left at their default: ${missing.join(', ')}`);
         const bytea = cols.map((c) => c.data_type === 'bytea');
+        const json = cols.map((c) => c.data_type === 'json' || c.data_type === 'jsonb');   // node-pg returns json arrays as JS arrays and would send them as Postgres arrays
         const per = Math.max(1, Math.floor(60000 / Math.max(1, cols.length)));   // under Postgres' 65,535 parameters
         for (let i = 0; i < rows.length; i += per) {
           const params = [];
           const values = rows.slice(i, i + per).map((r) => `(${cols.map((c, j) => {
             const v = r[c.column_name];
-            params.push(bytea[j] && v != null ? Buffer.from(v) : (typeof v === 'bigint' ? v.toString() : v));
+            params.push(bytea[j] && v != null ? Buffer.from(v) : (json[j] && v != null && typeof v === 'object' ? JSON.stringify(v) : (typeof v === 'bigint' ? v.toString() : v)));
             return `$${params.length}`;
           }).join(', ')})`);
           await client.query(`INSERT INTO ${quoteId(table)} (${cols.map((c) => quoteId(c.column_name)).join(', ')}) VALUES ${values.join(', ')}`, params);

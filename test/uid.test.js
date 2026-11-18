@@ -34,7 +34,13 @@ await test('a hub that discovered a device gives its uid, and it is kept; the sa
 });
 
 await test('a copy to another database keeps every uid, whatever happens to the integer ids', async () => {
+  // Things and the seeded thing types hold jsonb arrays and objects: the copy must send them as JSON text, not as Postgres arrays.
+  const { createThing } = await import('../src/core/things.js');
+  const home = await createSite({ name: 'thing copy home' });
+  await createThing({ siteId: home.id, type: 'house', name: 'thing copy house' });
+  const t = await createThing({ siteId: home.id, type: 'inverter', name: 'copied inverter' });
   const before = await db.prepare('SELECT id, uid FROM device ORDER BY id').all();
+  const typesBefore = await db.prepare('SELECT type, capabilities, ports, attribute_keys FROM thing_type ORDER BY type').all();
   const name = `energiebee_t_uidcopy_${process.pid}_${crypto.randomBytes(3).toString('hex')}`;
   const copy = await createDatabase(name, adminUrl);
   try {
@@ -42,5 +48,10 @@ await test('a copy to another database keeps every uid, whatever happens to the 
     await loadTables(copy, postgresTables(url));
     const after = await withClient(copy, async (c) => (await c.query('SELECT id::int AS id, uid::text AS uid FROM device ORDER BY id')).rows);
     assert.deepEqual(after, before);
+    const typesAfter = await withClient(copy, async (c) => (await c.query('SELECT type, capabilities, ports, attribute_keys FROM thing_type ORDER BY type')).rows);
+    assert.ok(typesAfter.length > 0 && Array.isArray(typesAfter[0].capabilities));
+    assert.deepEqual(typesAfter, typesBefore);
+    const thingAfter = await withClient(copy, async (c) => (await c.query('SELECT uid::text AS uid, name FROM thing WHERE name = $1', ['copied inverter'])).rows);
+    assert.deepEqual(thingAfter, [{ uid: t.uid, name: 'copied inverter' }]);
   } finally { await dropDatabase(name, adminUrl); }
 });

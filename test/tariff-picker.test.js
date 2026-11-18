@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { useDb } from './helpers.js';
+import { useDb, erasing } from './helpers.js';
 
 await useDb();
 for (const k of ['TOUNIFY_API_KEY', 'TOUNIFY_DEV', 'OCTOPUS_API_KEY', 'TARIFFSCAN_USERNAME', 'TARIFFSCAN_PASSWORD']) delete process.env[k];
@@ -128,7 +128,7 @@ await test('payment methods that disagree: unpriced without the home\'s method, 
   await agreeTariff({ siteId: home.id, deviceId: meter.id, tariffId: t.id, validFrom: at('2026-10-24T00:00:00Z') });
   assert.equal((await price(at('2026-10-30T12:00:00Z'))).unitEx, null, 'CAC 28.53 and DDM 27.00 disagree: no price without the method');
   await db.prepare('DELETE FROM tariff_agreement WHERE device_id = ?').run(meter.id);
-  await db.prepare('DELETE FROM device WHERE id = ?').run(meter.id);
+  await erasing(home.id, 'DELETE FROM device WHERE id = ?', meter.id);
 
   const r = await PK.chooseTariff(await siteRow(), { supplier: 'sainsburys-energy', tariff: t.tariff_code, since: '2026-10-24' });
   assert.equal(r.payment_method, 'DDM');

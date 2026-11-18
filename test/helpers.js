@@ -107,3 +107,11 @@ export async function dropLeftovers() {
   });
 }
 export const testDatabase = () => created;
+
+// Delete rows that only a logged erasure may delete (a site, a device: their things keep append-only versions): the test says
+// so, and the erasure log records it like any other synthetic erasure.
+export async function erasing(siteId, sql, ...params) {
+  const { erase } = await import('../src/core/erasure.js');
+  const { db } = await import('../src/db/db.js');
+  return await erase({ kind: 'synthetic', siteId, reason: 'test: rows removed on purpose' }, async () => await db.prepare(sql).run(...params));
+}

@@ -49,6 +49,11 @@ await test('a device makes its device thing: a device or a system thing of its h
   const uid = (await thing(made)).uid;
   await run("INSERT INTO device (id, site_id, kind, provider, external_ref, label, uid) VALUES (?, ?, 'smart_plug', 'thing', ?, 'Library plug', ?::uuid)", made, s, uid, uid);
   assert.equal((await get('SELECT COUNT(*) AS n FROM thing WHERE id = ?', made)).n, 1, 'no second thing');
+  // a device kind added by one registry row has its thing type made from that row
+  await run("INSERT INTO device_kind (kind, label, class, attribute_keys, action_codes) VALUES ('rules_heat_battery', 'Heat battery', 'controllable', '[]', '[]')");
+  const hb = await device(s, 'rules_heat_battery', 'hb1');
+  assert.deepEqual([(await thing(hb)).kind, (await thing(hb)).type], ['device', 'rules_heat_battery']);
+  assert.equal((await get("SELECT label FROM thing_type WHERE type = 'rules_heat_battery'")).label, 'Heat battery');
 });
 
 await test('a rename of the site or the device is its thing\'s, and a retirement of the device ends the thing', async () => {

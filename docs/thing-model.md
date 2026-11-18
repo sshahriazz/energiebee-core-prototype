@@ -814,8 +814,8 @@ A reported change that no EnergieBee command explains (the owner used the invert
 
 | Today | Becomes |
 |---|---|
-| `site`, `site_version` | `thing` of kind `home`, its settings as versioned attributes |
-| `device`, `device_kind`, `device_attr_version` | `thing` of kind `device`, `thing_type`, `thing_attr_version` |
+| `site`, `site_version` | `thing` of kind `home` (the same id); `site` and `site_version` stay as its typed detail: the settings and their versions |
+| `device`, `device_kind`, `device_attr_version` | `thing` of kind `device` or `system` (same uid; id moved up by G), `thing_type`; `device` and `device_attr_version` stay as its detail (provider, external reference, adapter attributes) |
 | `series.subject_kind / subject_id` | `series.point_id` (a point's feed from one link) |
 | `channel`, `binding` | `point_binding` (mapping, role, priority) |
 | `tariff_agreement` | `supplied_on` relations |

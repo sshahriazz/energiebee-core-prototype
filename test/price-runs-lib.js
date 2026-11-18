@@ -16,6 +16,9 @@ const ref = JSON.parse(fs.readFileSync(REF_FILE, 'utf8'));
 // The fields of a price that are numbers, labels and lineage: what a slot's price is, without the time its rows were written.
 const stable = (price, fixed) => (price == null ? [null, fixed] : [price.tariffCode, price.structure, price.currency, price.standingEx, price.fixed, price.vat, price.levy, price.tax?.source ?? null, price.tax?.unverified ?? null,
   price.register, price.unitEx, price.supplyEx, price.weighted ?? null, price.estimated ?? null, price.capacityUnknown ?? null, (price.inputs ?? []).map((i) => [i.what, i.origin]), fixed]);
+// A topology home names its tariffs with its own id (`SYN-TOPO-FLAT-<id>`, also in the labels of the inputs), and ids are assigned by order of
+// creation: the hash of a topology is taken without that id.
+const noId = (json, label) => (label.startsWith('topology') ? json.replace(/(SYN-TOPO-[A-Z]+)-\d+/g, '$1-#') : json);
 const seenKeys = new Map();
 const recorded = {};
 if (process.env.UPDATE_PRICE_REF === '1') {
@@ -43,7 +46,7 @@ export async function diffPricing(contexts, tz, fromDate, toDate, { slotLengths 
           const want = slotPrice(first, kind, slot, slotS);
           const wantFixed = want ? fixedShare(want, slot, slotS, tz) : 0;
           const hk = `${label}#${n} ${slotS} ${kind}`;
-          (hashes.get(hk) ?? hashes.set(hk, createHash('sha1')).get(hk)).update(JSON.stringify(stable(want, wantFixed)));
+          (hashes.get(hk) ?? hashes.set(hk, createHash('sha1')).get(hk)).update(noId(JSON.stringify(stable(want, wantFixed)), label));
           const at = `${label} ${kind} ${date} slot ${slot} (${slotS} s)`;
           for (const [how, ctx] of others) {
             const got = slotPrice(ctx, kind, slot, slotS);

@@ -70,7 +70,7 @@ model attribute_value {
   note          String?
   recorded_at   BigInt
   superseded_at BigInt?
-  device        device?       @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device        thing?        @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   attribute_def attribute_def @relation(fields: [key], references: [key], onDelete: NoAction, onUpdate: NoAction)
   site          site?         @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -91,7 +91,7 @@ model binding {
   reason        String?
   priority      BigInt  @default(0)
   device_id     BigInt?
-  device        device? @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device        thing?  @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   site          site    @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   source        source  @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -161,7 +161,7 @@ model channel {
   clock_offset_s                           BigInt  @default(0)
   future_tolerance_s                       BigInt?
   metric_channel_derived_metric_idTometric metric? @relation("channel_derived_metric_idTometric", fields: [derived_metric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  device                                   device? @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device                                   thing?  @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   metric_channel_metric_idTometric         metric  @relation("channel_metric_idTometric", fields: [metric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   site                                     site    @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   source                                   source  @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -248,7 +248,7 @@ model command {
   verified_at           BigInt?
   applied_late_at       BigInt?
   ack_ref               String?
-  device                device        @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device                thing         @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   plan_run              plan_run?     @relation(fields: [plan_run_id], references: [id], onUpdate: NoAction)
   raw_payload           raw_payload?  @relation(fields: [readback_raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   command               command?      @relation("commandTocommand", fields: [supersedes_command_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -271,7 +271,7 @@ model command_block {
   gate        String
   detail      String
   at          BigInt
-  device      device    @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device      thing     @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   plan_run    plan_run? @relation(fields: [plan_run_id], references: [id], onUpdate: NoAction)
 
   @@index([device_id, at], map: "command_block_device")
@@ -334,7 +334,7 @@ model control_limit {
   recorded_at   BigInt
   superseded_at BigInt?
   basis         String?
-  device        device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device        thing   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([device_id, param], map: "control_limit_device", where: raw("(superseded_at IS NULL)"))
 }
@@ -356,32 +356,18 @@ model currency {
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model device {
-  id                  BigInt                @id @default(autoincrement())
-  site_id             BigInt
-  kind                String
-  provider            String
-  external_ref        String
-  label               String?
-  attrs               String?
-  recorded_at         BigInt?
-  retired_at          BigInt?
-  uid                 String                @unique @default(dbgenerated("uuidv7()")) @db.Uuid
-  attribute_value     attribute_value[]
-  binding             binding[]
-  channel             channel[]
-  command             command?
-  command_block       command_block[]
-  control_limit       control_limit[]
-  site                site                  @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  device_attr_version device_attr_version[]
-  device_capability   device_capability[]
-  plan_run_device     plan_run_device[]
-  plan_score          plan_score[]
-  plan_slot           plan_slot[]
-  push_log            push_log[]
-  register_window     register_window[]
-  supply_price_slot   supply_price_slot[]
-  tariff_agreement    tariff_agreement[]
+  id           BigInt  @id
+  site_id      BigInt
+  kind         String
+  provider     String
+  external_ref String
+  label        String?
+  attrs        String?
+  recorded_at  BigInt?
+  retired_at   BigInt?
+  uid          String  @unique @default(dbgenerated("uuidv7()")) @db.Uuid
+  thing        thing   @relation(fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "device_id_thing_fkey")
+  site         site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([site_id, provider, external_ref])
 }
@@ -406,7 +392,7 @@ model device_attr_version {
   attrs         String
   recorded_at   BigInt
   superseded_at BigInt?
-  device        device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device        thing   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([device_id, recorded_at])
 }
@@ -420,7 +406,7 @@ model device_capability {
   source      String
   note        String?
   recorded_at BigInt
-  device      device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device      thing   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([device_id, action])
 }
@@ -645,7 +631,7 @@ model plan_run_device {
   plan_run_id BigInt
   device_id   BigInt
   role        String   @default("controlled")
-  device      device   @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device      thing    @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   plan_run    plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([plan_run_id, device_id])
@@ -666,7 +652,7 @@ model plan_score {
   error         Float?
   actual_source String   @default("site_hh")
   scored_at     BigInt
-  device        device?  @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device        thing?   @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   plan_run      plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
@@ -719,7 +705,7 @@ model plan_slot {
   import_rate_adjust         String?
   export_rate_adjust         String?
   clipped_kwh                Float?
-  device                     device   @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device                     thing    @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   plan_run                   plan_run @relation(fields: [plan_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@id([plan_run_id, device_id, slot_start])
@@ -755,7 +741,7 @@ model push_log {
   status       String
   error        String?
   error_code   String?
-  device       device?      @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  device       thing?       @relation(fields: [device_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   raw_payload  raw_payload? @relation(fields: [raw_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   site         site?        @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -897,7 +883,7 @@ model register_window {
   recorded_at                                 BigInt
   superseded_at                               BigInt?
   calendar_register_window_calendarTocalendar calendar? @relation("register_window_calendarTocalendar", fields: [calendar], references: [code], onDelete: NoAction, onUpdate: NoAction)
-  device                                      device?   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device                                      thing?    @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   tariff                                      tariff    @relation(fields: [tariff_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([tariff_id, device_id], map: "register_window_tariff", where: raw("(superseded_at IS NULL)"))
@@ -968,22 +954,22 @@ model setting_def {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model site {
-  id                               BigInt               @id @default(autoincrement())
+  id                               BigInt              @id
   name                             String
   postcode                         String?
   outcode                          String?
   lat                              Float?
   lon                              Float?
-  timezone                         String               @default("Europe/London")
+  timezone                         String              @default("Europe/London")
   gsp_region                       String?
   carbon_region                    BigInt?
   pv_kwp                           Float?
   pv_tilt                          Float?
   pv_orientation                   Float?
   battery_kwh                      Float?
-  slot_s                           BigInt               @default(1800)
-  is_demo                          BigInt               @default(0)
-  env_key                          String?              @unique
+  slot_s                           BigInt              @default(1800)
+  is_demo                          BigInt              @default(0)
+  env_key                          String?             @unique
   created_at                       BigInt
   currency                         String?
   country                          String?
@@ -991,7 +977,7 @@ model site {
   contracted_kva                   Float?
   contracted_kva_origin            String?
   contracted_kva_note              String?
-  uid                              String               @unique @default(dbgenerated("uuidv7()")) @db.Uuid
+  uid                              String              @unique @default(dbgenerated("uuidv7()")) @db.Uuid
   attribute_value                  attribute_value[]
   binding                          binding[]
   channel                          channel[]
@@ -1013,8 +999,9 @@ model site {
   rebuild_queue                    rebuild_queue[]
   replay_log                       replay_log[]
   series                           series[]
-  currency_site_currencyTocurrency currency?            @relation("site_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
-  market                           market?              @relation(fields: [market_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  currency_site_currencyTocurrency currency?           @relation("site_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  thing                            thing               @relation(fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "site_id_thing_fkey")
+  market                           market?             @relation(fields: [market_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
   site_attribute                   site_attribute[]
   site_day                         site_day[]
   site_day_revision                site_day_revision[]
@@ -1030,10 +1017,6 @@ model site {
   tariff_agreement                 tariff_agreement[]
   tariff_price_run                 tariff_price_run[]
   tenant_site                      tenant_site?
-  thing                            thing?
-  thing_attr_version               thing_attr_version[]
-  thing_op                         thing_op[]
-  thing_relation                   thing_relation[]
   user_site                        user_site[]
 
   @@index([market_code], map: "site_market")
@@ -1452,7 +1435,7 @@ model tariff_agreement {
   recorded_at    BigInt?
   superseded_at  BigInt?
   payment_method String?
-  device         device  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device         thing   @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   site           site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   tariff         tariff  @relation(fields: [tariff_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -1610,53 +1593,74 @@ model relation_rule {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
 model thing {
-  id                                           BigInt              @id @default(autoincrement())
-  uid                                          String              @unique @default(dbgenerated("uuidv7()")) @db.Uuid
-  site_id                                      BigInt?             @unique(map: "thing_one_home", where: raw("((kind = 'home'::text) AND (superseded_at IS NULL))"))
-  kind                                         String
-  type                                         String
-  name                                         String
-  attrs                                        Json                @default("{}")
-  std_ref                                      String?
-  valid_from                                   BigInt?
-  valid_to                                     BigInt?
-  recorded_at                                  BigInt              @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
-  superseded_at                                BigInt?
-  merged_into                                  BigInt?
-  thing                                        thing?              @relation("thingTothing", fields: [merged_into], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  other_thing                                  thing[]             @relation("thingTothing")
-  site                                         site?               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  thing_type                                   thing_type          @relation(fields: [type, kind], references: [type, kind], onDelete: NoAction, onUpdate: NoAction, map: "thing_type_fk")
-  thing_attr_version                           thing_attr_version?
-  thing_op_thing_op_other_idTothing            thing_op[]          @relation("thing_op_other_idTothing")
-  thing_op_thing_op_thing_idTothing            thing_op[]          @relation("thing_op_thing_idTothing")
-  thing_relation_thing_relation_from_idTothing thing_relation[]    @relation("thing_relation_from_idTothing")
-  thing_relation_thing_relation_to_idTothing   thing_relation[]    @relation("thing_relation_to_idTothing")
+  id                                                   BigInt                @id @default(autoincrement())
+  uid                                                  String                @unique @default(dbgenerated("uuidv7()")) @db.Uuid
+  home_id                                              BigInt?
+  kind                                                 String
+  type                                                 String
+  name                                                 String
+  attrs                                                Json                  @default("{}")
+  std_ref                                              String?
+  valid_from                                           BigInt?
+  valid_to                                             BigInt?
+  recorded_at                                          BigInt                @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
+  superseded_at                                        BigInt?
+  merged_into                                          BigInt?
+  attribute_value                                      attribute_value[]
+  binding                                              binding[]
+  channel                                              channel[]
+  command                                              command?
+  command_block                                        command_block[]
+  control_limit                                        control_limit[]
+  device                                               device?
+  device_attr_version                                  device_attr_version[]
+  device_capability                                    device_capability[]
+  plan_run_device                                      plan_run_device[]
+  plan_score                                           plan_score[]
+  plan_slot                                            plan_slot[]
+  push_log                                             push_log[]
+  register_window                                      register_window[]
+  site                                                 site?
+  supply_price_slot                                    supply_price_slot[]
+  tariff_agreement                                     tariff_agreement[]
+  thing_thing_home_idTothing                           thing?                @relation("thing_home_idTothing", fields: [home_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  other_thing_thing_home_idTothing                     thing[]               @relation("thing_home_idTothing")
+  thing                                                thing?                @relation("thingTothing", fields: [merged_into], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_thing                                          thing[]               @relation("thingTothing")
+  thing_type                                           thing_type            @relation(fields: [type, kind], references: [type, kind], onDelete: NoAction, onUpdate: NoAction, map: "thing_type_fk")
+  thing_attr_version_thing_attr_version_home_idTothing thing_attr_version[]  @relation("thing_attr_version_home_idTothing")
+  thing_attr_version                                   thing_attr_version?
+  thing_op_thing_op_home_idTothing                     thing_op[]            @relation("thing_op_home_idTothing")
+  thing_op_thing_op_other_idTothing                    thing_op[]            @relation("thing_op_other_idTothing")
+  thing_op_thing_op_thing_idTothing                    thing_op[]            @relation("thing_op_thing_idTothing")
+  thing_relation_thing_relation_from_idTothing         thing_relation[]      @relation("thing_relation_from_idTothing")
+  thing_relation_thing_relation_home_idTothing         thing_relation[]      @relation("thing_relation_home_idTothing")
+  thing_relation_thing_relation_to_idTothing           thing_relation[]      @relation("thing_relation_to_idTothing")
 
-  @@index([site_id, kind], map: "thing_site", where: raw("(site_id IS NOT NULL)"))
   @@index([type])
   @@index([merged_into], where: raw("(merged_into IS NOT NULL)"))
+  @@index([home_id, kind], map: "thing_home", where: raw("(home_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
 model thing_attr_version {
-  id            BigInt  @id @default(autoincrement())
-  thing_id      BigInt  @unique(map: "thing_attr_version_current", where: raw("(superseded_at IS NULL)"))
-  site_id       BigInt?
-  name          String
-  attrs         Json
-  valid_from    BigInt?
-  valid_to      BigInt?
-  recorded_at   BigInt
-  superseded_at BigInt?
-  life_from     BigInt?
-  life_to       BigInt?
-  site          site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  thing         thing   @relation(fields: [thing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                                      BigInt  @id @default(autoincrement())
+  thing_id                                BigInt  @unique(map: "thing_attr_version_current", where: raw("(superseded_at IS NULL)"))
+  home_id                                 BigInt?
+  name                                    String
+  attrs                                   Json
+  valid_from                              BigInt?
+  valid_to                                BigInt?
+  recorded_at                             BigInt
+  superseded_at                           BigInt?
+  life_from                               BigInt?
+  life_to                                 BigInt?
+  thing_thing_attr_version_home_idTothing thing?  @relation("thing_attr_version_home_idTothing", fields: [home_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  thing                                   thing   @relation(fields: [thing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([thing_id, recorded_at], map: "thing_attr_version_at")
-  @@index([site_id], map: "thing_attr_version_site", where: raw("(site_id IS NOT NULL)"))
+  @@index([home_id], map: "thing_attr_version_home", where: raw("(home_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -1665,7 +1669,7 @@ model thing_attr_version {
 model thing_relation {
   id                                  BigInt  @id @default(autoincrement())
   uid                                 String  @unique @default(dbgenerated("uuidv7()")) @db.Uuid
-  site_id                             BigInt?
+  home_id                             BigInt?
   from_id                             BigInt
   from_port                           String?
   rel                                 String
@@ -1678,12 +1682,12 @@ model thing_relation {
   recorded_at                         BigInt  @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
   superseded_at                       BigInt?
   thing_thing_relation_from_idTothing thing   @relation("thing_relation_from_idTothing", fields: [from_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  site                                site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  thing_thing_relation_home_idTothing thing?  @relation("thing_relation_home_idTothing", fields: [home_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   thing_thing_relation_to_idTothing   thing   @relation("thing_relation_to_idTothing", fields: [to_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([from_id, rel], map: "thing_relation_from", where: raw("(superseded_at IS NULL)"))
-  @@index([site_id], map: "thing_relation_site", where: raw("(site_id IS NOT NULL)"))
   @@index([to_id, rel], map: "thing_relation_to", where: raw("(superseded_at IS NULL)"))
+  @@index([home_id], map: "thing_relation_home", where: raw("(home_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -1707,7 +1711,7 @@ model thing_type {
 /// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
 model thing_op {
   id                             BigInt  @id @default(autoincrement())
-  site_id                        BigInt?
+  home_id                        BigInt?
   op                             String
   thing_id                       BigInt
   other_id                       BigInt
@@ -1715,13 +1719,13 @@ model thing_op {
   reason                         String
   detail                         Json    @default("{}")
   recorded_at                    BigInt  @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
+  thing_thing_op_home_idTothing  thing?  @relation("thing_op_home_idTothing", fields: [home_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   thing_thing_op_other_idTothing thing   @relation("thing_op_other_idTothing", fields: [other_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  site                           site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   thing_thing_op_thing_idTothing thing   @relation("thing_op_thing_idTothing", fields: [thing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([other_id], map: "thing_op_other")
-  @@index([site_id], map: "thing_op_site", where: raw("(site_id IS NOT NULL)"))
   @@index([thing_id], map: "thing_op_thing")
+  @@index([home_id], map: "thing_op_home", where: raw("(home_id IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -1802,7 +1806,7 @@ model supply_price_slot {
   lineage          Json
   stamp            String
   built_at         BigInt
-  device           device? @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device           thing?  @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   site             site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   tariff           tariff? @relation(fields: [tariff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 

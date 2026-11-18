@@ -166,8 +166,11 @@ BEGIN
   -- a device row whose thing already exists is that thing's detail row (the library makes the thing first, with everything it needs)
   IF NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM thing WHERE id = NEW.id) THEN RETURN NEW; END IF;
   IF NEW.id IS NULL THEN NEW.id := thing_next_id(); END IF;
+  -- a device kind added by one registry row has its thing type made from that row (the start-up seed brings the label, the ports and
+  -- the attribute keys in line); a kind that is not registered at all is refused by the device row's own key
+  INSERT INTO thing_type (type, kind, label) SELECT dk.kind, 'device', dk.label FROM device_kind dk WHERE dk.kind = NEW.kind ON CONFLICT (type) DO NOTHING;
   SELECT kind INTO k FROM thing_type WHERE type = NEW.kind;
-  IF k IS NULL THEN RAISE EXCEPTION 'device kind % has no thing type', NEW.kind; END IF;
+  k := COALESCE(k, 'device');
   INSERT INTO thing (id, uid, home_id, kind, type, name, valid_from, valid_to, recorded_at)
     VALUES (NEW.id, NEW.uid, NEW.site_id, k, NEW.kind, COALESCE(NULLIF(btrim(NEW.label), ''), NEW.kind),
             NEW.recorded_at / 1000,

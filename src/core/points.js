@@ -24,12 +24,14 @@ export async function regionThing(subject) {
   const find = async () => (await db.prepare("SELECT id FROM thing WHERE kind = 'context' AND type = ANY(?::text[]) AND name = ? AND superseded_at IS NULL ORDER BY id LIMIT 1").get(`{${REGION_TYPES.join(',')}}`, subject))?.id;
   const found = await find();
   if (found != null) return Number(found);
-  const [scheme, ...rest] = subject.split(':');
-  const code = rest.join(':');
-  if (!scheme || !code) throw new RangeError(`region subject ${JSON.stringify(subject)}: scheme:code, such as carbon:3 or ldz:NW`);
+  // 'carbon:3' is region 3 of the carbon scheme, 'ldz:NW' a gas zone, and a plain 'G' a region with a code and no scheme
+  const colon = subject.indexOf(':');
+  const scheme = colon < 0 ? null : subject.slice(0, colon);
+  const code = colon < 0 ? subject : subject.slice(colon + 1);
+  if (!subject.trim() || !code || scheme === '') throw new RangeError(`region subject ${JSON.stringify(subject)}: a code, or scheme:code such as carbon:3 or ldz:NW`);
   const { createThing } = await import('./things.js');
   try {
-    return (await createThing(scheme === 'ldz' ? { type: 'gas_zone', name: subject, attrs: { code } } : { type: 'region', name: subject, attrs: { scheme, code } })).id;
+    return (await createThing(scheme === 'ldz' ? { type: 'gas_zone', name: subject, attrs: { code } } : { type: 'region', name: subject, attrs: scheme == null ? { code } : { scheme, code } })).id;
   } catch (err) {
     const again = await find();   // another writer made it first (the unique index on a region's name)
     if (again != null) return Number(again);

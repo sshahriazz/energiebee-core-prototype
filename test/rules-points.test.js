@@ -45,7 +45,8 @@ await test('a series follows its point: the home, and the subject the pages stil
   assert.deepEqual([(await row(gas)).type, (await get('SELECT attrs FROM thing WHERE id = ?', (await row(gas)).thing_id)).attrs], ['gas_zone', { code: 'ZZ' }]);
   assert.equal(await seriesId('region', 'carbon:99', 'carbon_intensity', 'carbon_regional'), carbon, 'the same subject, metric and source is the same series');
   assert.equal(await regionThing('carbon:99'), c.thing_id, 'one thing per region');
-  await assert.rejects(() => regionThing('nonsense'), /scheme:code/);
+  await assert.rejects(() => regionThing(':x'), /scheme:code/);
+  assert.ok(await regionThing('G'), 'a plain code is a region with no scheme');
   // a point of a home thing is found again, and lists
   assert.equal(await pointOf(h, 'load_w'), (await get('SELECT point_id FROM series WHERE id = ?', homeSeries)).point_id);
   assert.deepEqual((await pointsOf(bat)).map((p) => [p.key, p.metric, p.class, p.access]), [['battery_soc_pct', 'battery_soc_pct', 'measurement', 'read']]);

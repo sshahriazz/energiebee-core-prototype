@@ -88,8 +88,9 @@ INSERT INTO thing_type (type, kind, label, attribute_keys) VALUES ('region', 'co
   ON CONFLICT (type) DO UPDATE SET attribute_keys = excluded.attribute_keys;   -- (the start-up seed brings the rest in line)
 INSERT INTO thing (home_id, kind, type, name, attrs)
   SELECT NULL, 'context', CASE WHEN split_part(r.subject_id, ':', 1) = 'ldz' THEN 'gas_zone' ELSE 'region' END, r.subject_id,
-         CASE WHEN split_part(r.subject_id, ':', 1) = 'ldz' THEN jsonb_build_object('code', split_part(r.subject_id, ':', 2))
-              ELSE jsonb_build_object('scheme', split_part(r.subject_id, ':', 1), 'code', split_part(r.subject_id, ':', 2)) END
+         CASE WHEN split_part(r.subject_id, ':', 1) = 'ldz' THEN jsonb_build_object('code', substr(r.subject_id, 5))
+              ELSE CASE WHEN position(':' IN r.subject_id) = 0 THEN jsonb_build_object('code', r.subject_id)
+                   ELSE jsonb_build_object('scheme', split_part(r.subject_id, ':', 1), 'code', substr(r.subject_id, position(':' IN r.subject_id) + 1)) END END
     FROM (SELECT DISTINCT subject_id FROM series WHERE subject_kind = 'region') r;
 
 -- A region subject is one thing: two writers meeting at once make one.

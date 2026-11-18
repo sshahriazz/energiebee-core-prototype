@@ -29,6 +29,7 @@ CREATE TABLE thing_share (
   valid_from  bigint NOT NULL,
   valid_to    bigint,
   recorded_at bigint NOT NULL DEFAULT (EXTRACT(epoch FROM clock_timestamp()) * 1000)::bigint,
+  superseded_at bigint,
   CHECK (valid_to IS NULL OR valid_to > valid_from)
 );
 CREATE INDEX thing_share_thing ON thing_share (thing_id, valid_from);

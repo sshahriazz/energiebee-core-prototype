@@ -13,6 +13,7 @@ CREATE TABLE occupancy (
   valid_to    bigint,
   sees_from   bigint,
   erased_at   bigint,
+  superseded_at bigint,
   recorded_at bigint NOT NULL DEFAULT (EXTRACT(epoch FROM clock_timestamp()) * 1000)::bigint,
   CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to > valid_from),
   CHECK (erased_at IS NULL OR user_id IS NULL)

@@ -34,7 +34,7 @@
    "command: past valid_until, dropped (a late command is never sent)"
   ],
   "command_status_flow": [
-   "command: status change not allowed (acked, failed, expired, cancelled and skipped_unchanged are final)"
+   "command: status change not allowed (acked, sent_unverified, failed, expired, cancelled and skipped_unchanged are final)"
   ],
   "connection_uid_fixed": [
    "uid never changes (it is the identity outside this database)"

@@ -192,7 +192,7 @@ await test('the database rules of the command tables are intact: final states, o
   await cmd.cancelCommand(id, 'done', { now: ms(BASE) - 30000 });
   await assert.rejects(async () => await db.prepare("UPDATE command SET status = 'sent', sent_at = ? WHERE id = ?").run(ms(BASE) - 20000, id), /status change not allowed/);
   await assert.rejects(async () => await db.prepare('DELETE FROM command_log WHERE command_id = ?').run(id), /append-only/);
-  await assert.rejects(async () => await cmd.setVerify(id, 'verified', {}), /only an acked command/);
+  await assert.rejects(async () => await cmd.setVerify(id, 'verified', {}), /only an acked or sent_unverified command/);
   await assert.rejects(async () => await cmd.markAppliedLate(id, { reported: {} }), /only an expired, sent command/);
 });
 

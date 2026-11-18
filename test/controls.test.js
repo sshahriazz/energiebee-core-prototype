@@ -98,7 +98,7 @@ await test('an external change is a manual request that nothing reverts before i
 });
 
 await test('a limit on a place binds what is in it; a request on the garage reaches every capable member, each through its own limits', async () => {
-  await setControlLimit(garage.id, { action: 'set_target_temp', param: 'setpoint_c', min: 16, max: 22, source: 'owner' });
+  await setControlLimit(garage.id, { action: 'set_target_temp', param: 'setpoint_c', min: 16, max: 22, source: 'owner', now: NOW });
   const g = await C.groupRequest({ placeId: garage.id, capability: 'thermostat', action: 'set_target_temp', desired: { setpointC: 30 }, validFrom: at + 8000, validUntil: at + 9000, source: 'test', now: NOW + 8000 * 1000 });
   assert.deepEqual(g.members.map((m) => [m.name, m.status]), [['thermostat', 'blocked']], 'the garage\'s comfort range holds the thermostat in it');
   assert.equal(g.members[0].blocks[0].gate, 'limit');

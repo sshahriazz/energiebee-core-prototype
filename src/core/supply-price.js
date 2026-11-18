@@ -1,7 +1,9 @@
 // The price slots of a home (Phase T.3): what each supply point pays in each slot of the home's own length, and the share of the
 // fixed charges that falls in it. A supply point is a meter kind ('meter_import', 'meter_export', 'meter_gas') or, for a sub-meter
-// with a tariff of its own (R11), 'device:<id>'. Every cost is slot energy x slot price: the build (stage 4), the planner and the
-// comparison read prices from here, so a number is never priced two ways.
+// with a tariff of its own (R11), 'device:<id>'. Every cost is slot energy x slot price. The build (stage 4) reads
+// the slots from here; the planner, the forecast, heating, the explorer and the explanations price a slot with slotPrice
+// (slot-price.js) over the current runs, which is the same maths this file stores, so a number is never priced two ways. The
+// comparison and the tariff picker read the slots in a later step.
 //
 // One code path for the maths, two ways to read it:
 //   - computed in memory (slot-price.js slotPrice, fixedShare) from a pricing.js context. A build "as known at" a past moment does

@@ -17,7 +17,7 @@ import { knownAtMs, inForce } from './facts.js';
 import { currentRuns } from './price-run-store.js';
 import { runsFromRates, indexRuns } from './price-runs.js';
 import { supplyPricer, supplyPoints } from './supply-price.js';
-import { loadPricing, learnIogWindow } from './pricing.js';
+import { loadPricing } from './pricing.js';
 import { unitInc } from './slot-price.js';
 import { inputsProvenance } from './provenance.js';
 import { MARKETS } from '../db/seed/markets.js';

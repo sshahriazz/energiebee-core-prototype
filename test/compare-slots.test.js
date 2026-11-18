@@ -1,8 +1,8 @@
 // T.6: the comparison prices a candidate tariff from slots (the home's slot energy x the candidate's slots, the same supply-price
 // code as the home's own bill) and the totals are the ones compare.js gave when it priced on the fly.
 // test/fixtures/compare-ref.json.gz was recorded with the code before T.6 (compare.js pricing an alternative with slotPrice and
-// fixedPerDay per slot) over: the real GB home with its real Agile and Agile Outgoing prices, the synthetic GB, FR and NL homes with an alternative tariff that has a daily, a monthly and a yearly fixed
-// charge. Numbers are compared to 1e-9 relative: a fixed charge is shared per slot now and per day then, so the last bits differ.
+// fixedPerDay per slot) over: the real GB home with its real Agile and Agile Outgoing prices, and the synthetic GB, FR and NL
+// homes (the FR and NL ones with alternative tariffs that have daily, monthly and yearly fixed charges). Numbers are compared to 1e-9 relative: a fixed charge is shared per slot now and per day then, so the last bits differ.
 // UPDATE_COMPARE_REF=1 re-records from the code as it is: only for a number that is meant to change.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

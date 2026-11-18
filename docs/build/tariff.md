@@ -1,6 +1,6 @@
 # Phase T: the slotted tariff baseline (build notes)
 
-Branch `wp/tariff`, started from `f59ce42`. This file is written per step; each step says what is done, what is not, and how it was measured.
+Branch `wp/tariff`, started from `f59ce42`. This file is written per step; each step says what is done, what is not, and how it was measured. A step's text describes the code at the end of that step; step C (the last) says what changed after it. For the state now, read "Phase T as it stands" at the end.
 
 ## Step A: T.1 price runs and T.2 fixed-charge shares
 
@@ -172,7 +172,7 @@ So the full rebuild is not faster: the stored rebuild is about the same, the in-
 
 ### What is left (not done)
 
-- T.6: the comparison (`compare.js`) and the tariff picker still price from runs in memory, not from `supply_price_slot`; the planner, forecast, heating, explorer and explanation code use `slotPrice` over the current runs. They give the same numbers, but they do not read the table.
+- T.6: the comparison (`compare.js`) and the tariff picker still price from runs in memory, not from `supply_price_slot`; the planner, forecast, heating, explorer and explanation code use `slotPrice` over the current runs. They give the same numbers, but they do not read the table. (Done in step C for the comparison and the picker; the planner, forecast, heating, explorer and explanation code still price with `slotPrice`, see step C.)
 - A scheduled job that fills the 14-day horizon for every home (today only a published price extends it) and the hub download of future slots.
 - Consumption-dependent charges (tiers, peak demand): not in the data.
 - Whole-suite run: not done (the integrator runs it).
@@ -187,4 +187,135 @@ cd /Users/macbookpro/eb-wt/tariff
 TEST_DB_PREFIX=wp_tariff node --test --disable-warning=ExperimentalWarning test/supply-price.test.js
 TEST_DB_PREFIX=wp_tariff node --test --disable-warning=ExperimentalWarning test/price-queue.test.js
 TEST_DB_PREFIX=wp_tariff node --test --disable-warning=ExperimentalWarning test/golden-gb.test.js test/site-version-gb.test.js test/topologies.test.js
+```
+
+## Step C: T.6 comparison and picker, T.7 API, exit criteria
+
+State: done as scoped. The comparison and the tariff picker price from slots; the two endpoints exist with per-user access; the exit criteria are tests. No golden, fingerprint or recorded hash moved; one fixture was added (`test/fixtures/compare-ref.json.gz`).
+
+### What was built
+
+**`src/core/tariff-slots.js`** (new). A candidate tariff, or a tariff as such, as slots, made by the same code as the home's own bill (`supplyPricer` over `slotPrice` and `fixedShare`).
+- `candidatePricing(base, candidates, siteId, from, to, runs?)`: a pricing context in which a stand-in agreement puts the home on each candidate tariff for all time (`standIn`: `valid_from` 0, no end, the candidate's own columns); the home's taxes, zone, contracted capacity and dispatches stay, its own agreements are out. `candidateRuns` reads the candidates' runs once: current runs from `tariff_price_run` (made fresh by `ensureRuns` if the rate rows changed) for a current read, or made in memory from the rate rows of the moment inside `withKnownAt` (the same two ways `loadPricing` reads them), so one read can be shared by several scenarios.
+- `candidatePricer({ siteId, pricing, slotS, tz })`: `supplyPricer` with `materialise: false`: the candidate's slots computed in memory, nothing stored. Only tariffs in use have stored runs (plan rule 4); a candidate's runs are made on demand by the same pure function and kept in `tariff_price_run` like any other tariff's. There is no `supply_price_slot` row for a candidate, because that table is "this home on its own tariffs" and a candidate is not.
+- `slotMoney(imp, exp, importSlot, exportSlot)`: the money of one slot, energy times the slot's price including tax, plus the import slot's share of the fixed charges. `unitInc(price)` (in `slot-price.js`) is the one expression `unitEx * (1 + vat)`; the build, the comparison and the API use it. (The build's gas cost line keeps its own product on purpose: `gas * unitEx * (1 + vat)` is not the same float as `gas * (unitEx * (1 + vat))`, and the goldens hash the bits.)
+- `tariffSlots(tariff, { site, from, to, slotS })`: a tariff's slots over a span, for a home (zone, taxes, own rows, contracted capacity, the meter windows of the home's meter that is on that tariff, the home's slot length by default) or, with no home, for the tariff's own market (zone from `src/db/seed/markets.js`, the country's tax rules, shared runs only). A tariff in a currency other than the home's is refused (no FX).
+- `homePriceTimeline(site, { from, to, points })`: the home's price slots per supply point over a span, past and future: the stored ones where `supply_price_slot` has them with a valid stamp, the rest computed in memory by the same code; a read stores nothing. `supplyPricer.load(slots, only)` takes an optional list of points so a one-point read does not load the others.
+- `dayPrices(site, tariff, date)`: the supplier's price before tax in each 15-minute slot of a local day, for the tariff picker's preview.
+- `slotView`: a slot as the API shows it (the columns of `supply_price_slot`, `known`, and the weakest origin of its inputs).
+
+**Comparison (`compare.js`).** The home's own scenario reads its slots with `supplyPricer({ materialise: true, persist: false })` (the stored slots, computed where missing, nothing written); each alternative is a `candidatePricer` over the candidate's runs. Every scenario's cost of a slot is `slotMoney(import kWh, export kWh, importSlot, exportSlot)`. The old per-slot `fixedPerDay(...) * share-of-day` is gone: the fixed charge is the slot's own `fixedInc` (`fixedShare`), the same figure the build books. The scenarios, insights and the "like-for-like" rule (a slot counts only if every tariff has a price) are unchanged.
+
+**Tariff picker (`tariff-picker.js`).** `priceSummary` (the price preview and the list of previewed tounify tariffs) reads `dayPrices`: 96 slots of 15 minutes of the day, one price, a peak and an off-peak price, or the day's lowest, highest and time-weighted mean. The choice of day (today, else the latest day the home has runs for) reads `tariff_price_run`. `tsOption` (the Tariffscanner catalogue listing, rate rows by payment method with their labels) is not a slot view and is left as it was.
+
+**API (`src/routes/prices.js`, mounted by one line in `src/server.js`).**
+- `GET /api/tariffs/:id/slots?from&to&slot_s&site`. `:id` is the tariff id or its code. Times are epoch seconds or `YYYY-MM-DD` (local midnight in the home's zone, or the tariff's market zone when no home is named; a date with no zone is a 400). Default: today and tomorrow, at the home's slot length (30 minutes with no home). Answer: `{ tariff, tariff_id, point, currency, country, tz, slot_s, from, to, priced_for: { site } | { market }, known, unknown, priced_until, generated_at, slots: [{ slot_start, dur_s, tariff, register, unit_ex, supply_ex, vat, levy, unit_inc, fixed_inc, known, weighted, estimated, capacity_unknown, tax_source, tax_unverified, origin }] }`. A slot with no price has `known: false` and null prices, never a guess.
+- `GET /api/sites/:id/prices?from&to&point`. The home's slots per supply point (`meter_import`, `meter_export`, `meter_gas`, `device:<id>`; `point` may repeat). Default: today and seven days ahead. Answer: `{ site, currency, tz, slot_s, from, to, stored, computed, points: [{ point, kind, device_id, slots, known, unknown, priced_until, slots: [...] }] }`; `stored` is the number of slots read from the table, `computed` the number made on the spot.
+- A read covers at most 62 days; `slot_s` is 900, 1800 or 3600; every bad input is a 400 with the reason.
+- Access: `/api/sites/:id/prices` is under the existing home guard (`canSee`) and checks again; a home the user may not see is `404 No such home`, as for any home route. `/api/tariffs/:id/slots` with `site=` checks the home the same way. A tariff is visible if it has a shared rate row, or if it is known only through home-specific rows or agreements and the user may see one of those homes (admins see all); otherwise `404 No such tariff`, the same words as for a tariff that does not exist. With no home named only the shared runs are read, so one home's own prices of a tariff are never in an answer about no home.
+
+### How as-of builds work (trap 1)
+
+One code path for the maths, two ways to read it:
+1. **Current**: the tables serve it. `loadPricing` reads runs from `tariff_price_run` (made fresh by `ensureRuns` when a tariff's rate-row fingerprint changed), the build and the comparison read the home's slots from `supply_price_slot` (each row valid only while its `stamp` equals the stamp of the inputs now), and compute and store the slots that are missing.
+2. **As known at a moment** (`buildSite(..., { asOf })`, or any read inside `withKnownAt`): `loadPricing` reads the rate rows, windows, tax rules and tariff columns as they stood then (`recorded_at` / `superseded_at`), makes the runs in memory with `runsFromRates` (the very function that fills the table), and the build's `supplyPricer` has `materialise: false`: every slot is computed in memory by `slotPrice` and `fixedShare` from that context. Nothing is read from or written to `supply_price_slot` or `tariff_price_run`, so the past is never mixed with the table, which describes now. `candidateRuns` follows the same rule for candidates; a dry run (`opts.dryRun`) computes the same and writes nothing.
+3. Proof: `test/supply-price.test.js` (a current build and an as-of build at a later moment give the same rows; an as-of build writes nothing), `test/compare-slots.test.js` (a candidate's slots from rate rows of a moment equal those from the stored runs, whole answer), `golden-gb` and `site-version-gb` (the as-of builds of the real home, unchanged).
+
+### Proof that the comparison did not move (trap 2)
+
+`test/fixtures/compare-ref.json.gz` was recorded with the code of the commit before this step changed `compare.js` (`bca6110`, which priced an alternative with `slotPrice` and the home's own tariff with `slotPrice` and `fixedPerDay` per slot): for each of four homes, every scenario's totals (`importCost`, `exportCredit`, `standing`, `net`, averages, per-year), every day, the average-day profile, the windows, the insights text and every slot's seven numbers:
+
+| Home | Alternatives | Slots | Skipped |
+|---|---|---|---|
+| real GB home, 12 to 26 Oct 2026 (the real Agile and Agile Outgoing prices, the 25-hour day) | Agile, Agile + Agile Outgoing | 693 | 0 |
+| synthetic GB home, 3 days over the clock change | Agile, Agile + Agile Outgoing (synthetic half-hours with a gap and a negative price) | 144 | 2 |
+| synthetic FR home (HP/HC, Tempo; 23-hour day) | a flat tariff with standing and a monthly charge | 190 | 0 |
+| synthetic NL home (quarter-hour spot, placeholder taxes; 25-hour day) | a flat tariff; a tariff with daily, monthly and yearly charges | 292 | 0 |
+
+The new code is compared with the recorded numbers to 1e-9 relative (`near`); everything else (keys, text, counts, origins) must be identical. It passes. The only differences are in the last bits of the fixed charge, which is now shared per slot instead of per day. `compare-market`, `multi-market`, `tariff-picker`, `tounify`, `tariffscanner` pass with their expectations unchanged.
+
+### Exit criteria, as tests
+
+- **`test/price-exit.test.js`, no gaps inside validity.** For every home in the database (the real GB home, the seven topologies, the synthetic GB, FR and NL homes) and every current agreement, the tariff's unit runs are cut into contiguous blocks; inside each block, within the agreement and over its last 60 days (to 8 days ahead), every slot at 15, 30 and 60 minutes, across the clock changes, has a price. Measured: 11 homes, 36 agreements, 24 blocks, 39,488 slots, all priced. 9 agreements are of tariffs with no rate row at all (the fixture holds old agreements of tariffs it has no prices for): they have no validity, are counted, and are not skipped silently. A home whose day/night tariff has no switch times for its meter prices nothing, and the check finds it (negative test).
+- **A price timeline at least seven days ahead.** The real GB home's `homePriceTimeline` from now to nine days ahead: import (Intelligent Octopus: day and night registers from the learned window) and export have a price in every slot and are priced until at least `now + 7 days`; the day repeats; after a `supplyPricer` with `materialise: true` has loaded the slots, the table holds 8 days of slots ahead and the API reads them all from the table. Over HTTP (`tariff-api.test.js`): the default read of `/api/sites/1/prices` is priced 7 days ahead for import and export, with nothing stored by the read.
+- **A comparison gives the same totals**: above.
+
+### Tests added
+
+`test/compare-slots.test.js` (11 tests: the four homes' comparison against the recorded numbers; the comparison reads the stored slot and writes nothing, shown by changing a stored price and seeing the comparison follow; as-of candidate slots equal current; `slotMoney`), `test/tariff-api.test.js` (8: stored slots equal the pricing code, seven days ahead, 25-hour and 23-hour days, missing means missing, hour slots are the weighted mean of two half-hours, 404 for another user's home and tariff, admin sees all, every 400), `test/price-exit.test.js` (15: one test per home, the tally, the negative test, the timeline, the table). The rules tests are unchanged: this step adds no table, trigger or constraint.
+
+### Measured
+
+Process CPU time, minimum of 7 runs after one warm-up, shared and loaded machine (indicative):
+
+| | before (`bca6110`) | after |
+|---|---|---|
+| `compareSite`, real GB home, 15 days, 693 slots, 3 scenarios | 40 / 58 ms | 85 / 104 ms |
+| `homePriceTimeline`, 8 days ahead, 3 points, 30 minutes (computed on the spot) | n/a | 24 ms |
+| same, import only | n/a | 14 ms |
+| `tariffSlots`, Agile, 2 days, no home | n/a | 6 ms |
+| `tariffSlots`, Agile, 31 days, home, 15 minutes (2,976 slots) | n/a | 57 ms |
+
+The comparison costs about twice as much CPU as before (about 45 ms more for 15 days): it now reads the home's 1,386 stored rows (parsing each row's lineage), takes the stamp of the home's inputs (about ten small queries) and reads the candidates' runs through the table. The absolute figure is small; I did not tune it.
+
+### Decisions and deviations from the plan
+
+1. **A candidate is not stored in `supply_price_slot`.** The plan says a candidate's cost is "the home's slot energy x the candidate's slots, the same code". The candidate's slots are made by the same `supplyPricer` code in memory from its price runs; the table keeps only the home's own supply points. Storing every candidate for every home would multiply the table by the catalogue (about 8,400 tariffs) for a read that is cheap to compute (6 ms for two days).
+2. **The home's own scenario reads the table but never writes it** (`persist: false`): a comparison is a read. The build, `extendTimeline` and nothing else fill the table.
+3. **The comparison's fixed charge is the slot's `fixedShare` (the build's number), not `fixedPerDay` spread by day**, so the comparison's "current" scenario now books exactly what the home's bill booked, including monthly and yearly charges by real seconds. For the recorded homes the totals agree to 1e-9; they differ from the old code only in the last bits.
+4. **The picker's preview is read at 15-minute slots**, whatever the home's length, so a price that changes inside an hour or half-hour is still seen as two prices (the old code read the rate rows). It reads the supplier's price (`supplyEx`), before tax and levies, like the old rows. A price with no known register (a day/night tariff with no meter windows) is not shown, where the old code listed every register's row.
+5. **The tariff API without a home reads only shared runs**, so one home's private prices never appear in a tariff answer about no home; this means a tariff known only through one home's rows has no price in the no-home answer (`known: 0`) and needs `site=`.
+6. **A day/night tariff needs a meter's switch times**: `GET /api/tariffs/:id/slots?site=` uses the windows of the home's meter that is on that tariff; with no home, or no such meter, its day/night slots are unpriced (never a guess). A tariff whose windows are its own (France, Tempo, any `windows` structure) is priced either way.
+7. **The default span** of `/api/sites/:id/prices` is today and the next seven days; a read is capped at 62 days. `extendTimeline` still keeps at most 14 days stored ahead.
+8. **`prisma/schema.prisma` and the shared docs are not touched** (integrator).
+
+### What is left (not done)
+
+- The planner, forecast, heating, explorer and explanation code still price with `slotPrice` over the current runs (same maths, same numbers), not from `supply_price_slot`. The home timeline in Phase 3.4 should read `supply_price_slot` or `homePriceTimeline`.
+- No scheduled job fills the 14-day horizon for every home (only a published price extends it, `processPriceQueue`), and nothing sends future slots to the hub (`down/data`).
+- Consumption-dependent charges (tiers, peak demand) are not in the data.
+- The comparison's CPU time is about twice the old; no tuning was done.
+- The whole suite was not run (the integrator runs it). Tests run here: see the end.
+
+### Phase 1.3: tables and columns to repoint from device to thing
+
+The supply point is the meter device today. When devices become things, these must follow (names stay plain until then):
+
+| Table / place | Column | Today | Phase 1.3 |
+|---|---|---|---|
+| `supply_price_slot` (this work, migration `20261118100100`) | `device_id` (FK to `device`, ON DELETE CASCADE, index `supply_price_slot_device`) | the meter device the agreement is on; null with no agreement (CHECK `(device_id IS NULL) = (tariff_id IS NULL)`) | the meter thing's id (and its FK) |
+| `supply_price_slot` | `point` | the meter kind (`meter_import`, `meter_export`, `meter_gas`) or `device:<id>` for a sub-meter | `thing:<id>` for a sub-meter (rows of the old key are stale by stamp and rebuilt; `PRICE_METHOD` should be bumped with the change) |
+| `tariff_agreement` (existing; read by `loadPricing`, `inputsStamp`, `supplyPoints`) | `device_id` (FK to `device`) | which meter a tariff is on | the meter thing; `agreementAt(p, point, ts)` takes a numeric point as a device id |
+| `register_window` (existing) | `device_id` (FK to `device`) | a meter's own switch times (`meterRegister`, `p.meterWindows` keyed by device id) | the meter thing |
+| `series` / `interval_fact` (existing) | `subject_kind = 'device'`, `subject_id` | a sub-meter's energy (`readSubMeterFacts`: `heatpump_elec_kwh`, `ev_charge_kwh`, `immersion_kwh`) | subject kind `thing` |
+| `device.kind` | joined in `loadPricing` | the agreement's `kind` is the meter kind that names the point | the meter thing's type |
+| `tariff_price_run`, `tariff_price_state`, `price_dirty` | none | keyed by tariff, home (`site_id`) or country | nothing to repoint (`site_id` becomes `home_id` with the site fold) |
+
+In code: `supply-price.js` (`supplyPoints`, `subMeterPoint`, `slotRow`, `priceOfRow`, `inputsStamp`, `readSubMeterFacts`), `pricing.js` (the agreements join, `agreementAt`, `meterRegister`, `meterWindows`), `slot-price.js` (`deviceId` in the price object), `tariff-slots.js` (`standIn.device_id`, the `device_id` field of `/api/sites/:id/prices`), `price-queue.js` (none), `tariffs.js` (`agreeTariff`, `putWindows`), `devices.js` (`supersedeAgreements`), and the picker's meter (`chooseOnPickerMeter`, provider `picker`).
+
+### Phase T as it stands
+
+| Item | State |
+|---|---|
+| T.1 `tariff_price_run`, pure expansion | done (step A) |
+| T.2 fixed charges as slot shares | done (step A) |
+| T.3 `supply_price_slot`, sub-meters | done (step B) |
+| T.4 the build reads the slots; the old price functions removed | done (step B) |
+| T.5 marks, queue, extending the timeline | done (step B) |
+| T.6 comparison and picker price from slots | done (this step); planner, forecast, heating, explorer, explanation not moved to the table |
+| T.7 API | done (this step) |
+| Exit: no gaps inside validity | test, this step |
+| Exit: timeline at least 7 days ahead | test, this step |
+| Exit: same totals as before | test, this step (`compare-ref.json.gz`) |
+
+### Tests run in this checkout (all passing, each seen to pass in this step)
+
+`compare-slots` (11), `tariff-api` (8), `price-exit` (15), `compare-market`, `tariff-picker`, `tounify`, `tariffscanner` (56 together), `golden-gb`, `site-version-gb`, `topologies` (12 together), `multi-market`, `slot-build`, `core` (25 together), `rules-tariff`, `rules-all`, `table-kinds` (9), `supply-price`, `price-queue`, `price-runs` (28), `price-runs-gb`, `price-runs-synthetic` (14 with `compare-market`), `tax-apply`, `tax-eu-vat`, `tax-gb-vat` (16), `put-rates`, `users`, `signup` (34), `explain`, `explorer`, `slots` (27).
+
+```
+export PATH=~/.nvm/versions/node/v22.22.0/bin:$PATH
+cd /Users/macbookpro/eb-wt/tariff
+TEST_DB_PREFIX=wp_tariff node --test --disable-warning=ExperimentalWarning test/compare-slots.test.js test/tariff-api.test.js test/price-exit.test.js
+# re-record the comparison reference (only for a number that is meant to change):
+UPDATE_COMPARE_REF=1 TEST_DB_PREFIX=wp_tariff node --test --disable-warning=ExperimentalWarning test/compare-slots.test.js
 ```

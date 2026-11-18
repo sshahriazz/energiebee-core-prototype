@@ -1,0 +1,17 @@
+{
+ "triggers": {
+  "point_home_matches": [
+   "point home differs from the home of its thing"
+  ],
+  "point_identity_fixed": [
+   "a point's thing, key and metric never change: make another point"
+  ],
+  "point_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ],
+  "thing_type_capabilities_exist": [
+   "a thing type names a capability that is not registered: %"
+  ]
+ },
+ "exclusions": []
+}

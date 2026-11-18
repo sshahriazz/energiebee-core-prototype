@@ -912,7 +912,7 @@ export async function state(siteId, asOf, { lookbackS = STATE_LOOKBACK_S } = {})
   return {
     siteId, asOf: ms, at, inputs,
     battery: { kwh: batteryKwh, source: batt?.source ?? (batteryKwh != null ? 'site (current value)' : null) },
-    devices: (await devicesAt(siteId, 'TRUE', k)).map((d) => ({ id: d.id, kind: d.kind, provider: d.provider, label: d.label, attrs: JSON.parse(d.attrs || '{}'), approximateAttrs: d.approximateAttrs })),
+    devices: (await devicesAt(siteId, "provider <> 'thing'", k)).map((d) => ({ id: d.id, kind: d.kind, provider: d.provider, label: d.label, attrs: JSON.parse(d.attrs || '{}'), approximateAttrs: d.approximateAttrs })),
     attributes: await safe('attribute_value', async () => await attributesAt({ siteId }, k)),
     settings: await safe('site_setting', async () => await settingsAt(siteId, k)),
     site: { timezone: site.timezone, slot_s: slotLength(site), currency: site.currency ?? null, country: site.country ?? null },

@@ -18,6 +18,7 @@ import { seedSiteAttributes } from '../core/maintenance.js';
 import { createSite } from '../core/sites.js';
 import { plan, newCycle, adapterFor, providersFor } from '../core/providers.js';
 import { INITIAL_DAYS, resumeDate } from './steps.js';
+import { ensureEnergyGraph } from '../core/energy-graph.js';
 
 const PRICE_MARKS_PER_SYNC = 20;   // marks of each scope one home's sync works off; the rest waits for the next sync or start
 
@@ -212,6 +213,11 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     const ctx = { siteId, site, conns, tz, today, firstRun, fromDate, fromTs, cycle, agreementsChanged: false, sinceMs: await sinceWatermark(siteId, runId, syncStartMs) };
 
     for (const e of await plan(db, site, { conns })) await runEntry(ctx, e, log);
+    // What the steps found (a plant size, a device) may be new evidence for the home's energy graph; a working graph leaves the log as it was.
+    try {
+      const g = await ensureEnergyGraph(siteId);
+      if (g?.created || g?.related) log.push({ step: 'graph', ok: true, ms: 0, ...g });
+    } catch (err) { log.push({ step: 'graph', ok: false, ms: 0, error: err.message }); }
 
     // Rebuild only from the earliest slot whose facts changed in this sync (always including
     // today, which is still being filled in). A changed tariff history rebuilds all the days built,

@@ -19,8 +19,8 @@ Written 18 November 2026. `test/cases.test.js` holds the 22 cases of `docs/thing
 | 13 | The house is sold | occupancy: `handOver` ends the old one, removes its logins, requests and personal answers, and the new owner reads from the handover (`readableFrom`) |
 | 14 | The owner asks for their data to be erased | `erasePerson`: the account, their occupancies' personal answers (sealed with the occupancy's key, destroyed) and their groups go; the home keeps its history |
 | 15 | A block of flats with communal heating | `thing_share` (dated shares that never add up to more than 1) and `allocateShared`: each flat's timeline gets `shared_*` rows labelled allocated |
-| 16 | An EV moves with its owner to a new home | **todo**: the dated home of a thing (R24) |
-| 17 | A detached garage on a second hub | passes for the graph (devices of both hubs in one home); marking only one hub's devices offline is not built |
+| 16 | An EV moves with its owner to a new home | `rehomeThing`: the old thing ends in the old home with its history, a successor begins in the new one empty, `thing_rehome` ties them |
+| 17 | A detached garage on a second hub | passes: both hubs in one home graph; `hubStatus` marks the devices of a silent hub offline, the other hub's stay online |
 | 18 | One broken temperature sensor in the bedroom | passes: the bedroom is final at half coverage, the dead optional sensor named |
 | 19 | Tomorrow's prices are not published yet | passes: the slot has no price, none is estimated |
 | 20 | A home with no hub and only cloud devices | passes: cloud links, everything works, no action is offered as confirmed |

@@ -256,12 +256,19 @@ await test('case 16: an EV moves with its owner to a new home: the old home keep
   await assert.rejects(S.rehomeThing(r.thing.id, { toHomeId: newHome, reason: 'x' }), /already/);
 });
 
-await test('case 17: a detached garage on a second hub: devices of both hubs in one home graph (the offline marking per hub is not built)', async () => {
+await test('case 17: a detached garage on a second hub: devices of both hubs in one home graph, and a silent hub marks only its own devices offline', async () => {
+  const { hubStatus } = await import('../src/core/hubs.js');
   const h = await home('Hubs'); const hub1 = await T.createThing({ siteId: h, type: 'hub', name: 'House hub', validFrom: T0 + 3600 }); const hub2 = await T.createThing({ siteId: h, type: 'hub', name: 'Garage hub', validFrom: T0 + 3600 });
   const a = await device(h, 'smart_plug', 'p-house'); const b = await device(h, 'smart_plug', 'p-garage');
   await T.relate({ siteId: h, from: a.id, rel: 'served_by', to: hub1.id, at: T0 + 86400 }); await T.relate({ siteId: h, from: b.id, rel: 'served_by', to: hub2.id, at: T0 + 86400 });
   const served = await T.relationsAt(h, { rels: ['served_by'], at: null });
   assert.deepEqual(served.map((r) => Number(r.to_id)).sort(), [hub1.id, hub2.id].sort(), 'both hubs in one home graph');
+  const now = Math.floor(Date.now() / 1000);
+  const sa = await series('device', a.id, 'plug_w', 'push_native'); const sb = await series('device', b.id, 'plug_w', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sa, [{ ts: now - 60, value: 5 }]); await F.putReadings(sb, [{ ts: now - 7200, value: 5 }]); });
+  const st = await hubStatus(h, { now });
+  assert.deepEqual(st.map((x) => [x.name, x.state]), [['House hub', 'online'], ['Garage hub', 'offline']], 'only the silent hub is offline');
+  assert.deepEqual(st.flatMap((x) => x.devices.map((d) => [d.name, d.offline])).map(([, o]) => o), [false, true], 'and only its devices are marked');
 });
 
 await test('case 18: one broken temperature sensor in the bedroom: the home stays final, the bedroom shows lower coverage', async () => {

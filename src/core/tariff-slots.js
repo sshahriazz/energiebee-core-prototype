@@ -146,7 +146,7 @@ export async function tariffSlots(tariff, { site = null, from, to, slotS = 1800 
 
 // A home's price timeline over [from, to): for each supply point the home has an agreement on in the span, the slots at the
 // home's own length: the stored ones where the table has them (made by the build or by extending the timeline), the rest computed
-// in memory by the same code, none stored (a read changes nothing). A point with no agreement at a slot has a slot with no
+// in memory by the same code, none stored (a read changes nothing in supply_price_slot; it may remake a tariff's runs, see currentRuns). A point with no agreement at a slot has a slot with no
 // tariff. `from` and `to` may lie in the future: a price known ahead (an open-ended rate, a published Agile day) is a slot with a price.
 export async function homePriceTimeline(site, { from, to, points = null }) {
   const slotS = slotLength(site);

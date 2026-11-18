@@ -245,7 +245,8 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     const tp = Date.now();
     try {
       const priced = await processPriceQueue({ maxMarks: PRICE_MARKS_PER_SYNC });
-      log.push({ step: 'prices', ok: priced.failed.length === 0, ms: Date.now() - tp, queued: priced.queued, ...(priced.failed.length ? { error: priced.failed.map((f) => `${f.scope} ${f.id ?? ''}: ${f.error}`).join('; ') } : {}) });
+      // Only a failure is a step of its own: a working price queue leaves the log as it was.
+      if (priced.failed.length) log.push({ step: 'prices', ok: false, ms: Date.now() - tp, error: priced.failed.map((f) => `${f.scope} ${f.id ?? ''}: ${f.error}`).join('; ') });
     } catch (err) {
       log.push({ step: 'prices', ok: false, ms: Date.now() - tp, error: err.message });
     }

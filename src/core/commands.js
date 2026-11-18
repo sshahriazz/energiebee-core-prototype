@@ -81,7 +81,7 @@ async function cancel(c, now, reason) {
  * freshnessLimits: also require the home's live inputs to be fresh now (true = the default limits).
  * actorUserId: the person asking; without a control right on the home the call throws (code 'forbidden') and writes nothing.
  */
-export async function enqueueIfChanged({ deviceId, desired, planRunId = null, validFrom, validUntil, idempotencyKey = null, force = false, now = Date.now(), freshnessLimits = null, actorUserId = null }) {
+export async function enqueueIfChanged({ deviceId, desired, planRunId = null, requestId = null, validFrom, validUntil, idempotencyKey = null, force = false, now = Date.now(), freshnessLimits = null, actorUserId = null }) {
   const d = normaliseDesired(desired);
   const dev = await db.prepare('SELECT id, kind, site_id FROM device WHERE id = ?').get(deviceId);
   if (!dev) throw new Error(`no device ${deviceId}`);
@@ -104,9 +104,9 @@ export async function enqueueIfChanged({ deviceId, desired, planRunId = null, va
       const last = await lastAcked(deviceId);
       if (last && last.desired_hash === hash && !force) return { written: false, reason: 'unchanged', command: last, cancelled: open?.id ?? null };
       const typed = Object.values(TYPED).map((c) => d[c] ?? null);
-      const id = Number((await db.prepare(`INSERT INTO command (plan_run_id, device_id, requested_at, valid_from, valid_until, ${Object.values(TYPED).join(', ')},
-        desired, desired_hash, idempotency_key, supersedes_command_id) VALUES (?, ?, ?, ?, ?, ${typed.map(() => '?').join(', ')}, ?, ?, ?, ?)`)
-                .run(planRunId, deviceId, now, validFrom, validUntil, ...typed, canonical(d), hash, key, open?.id ?? last?.id ?? null)).lastInsertRowid);
+      const id = Number((await db.prepare(`INSERT INTO command (plan_run_id, request_id, device_id, requested_at, valid_from, valid_until, ${Object.values(TYPED).join(', ')},
+        desired, desired_hash, idempotency_key, supersedes_command_id) VALUES (?, ?, ?, ?, ?, ?, ${typed.map(() => '?').join(', ')}, ?, ?, ?, ?)`)
+                .run(planRunId, requestId, deviceId, now, validFrom, validUntil, ...typed, canonical(d), hash, key, open?.id ?? last?.id ?? null)).lastInsertRowid);
       await log(id, now, 'enqueued', { desired_hash: hash, supersedes: open?.id ?? last?.id ?? null });
       return { written: true, command: await getCommand(id), cancelled: open?.id ?? null };
     });

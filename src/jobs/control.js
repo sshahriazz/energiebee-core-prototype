@@ -5,6 +5,7 @@
 // home from stopping the others.
 import { db } from '../db/db.js';
 import { runControlCycle } from '../core/executor.js';
+import { settleAll, applyDueSchedules } from '../core/controls.js';
 
 const drivers = [];
 export function registerControlDriver(driver) {
@@ -28,6 +29,24 @@ export async function controlTick({ now = Date.now(), driversList = drivers } = 
     }
   }
   return out;
+}
+
+// The requests' own tick: scenes whose schedule is about to start are asked for, and every thing with an open request is settled again, so a request
+// that ran out lets the one below it return and a request that began is sent. Needs no driver (a command waits as pending until one registers).
+export async function requestTick({ now = Date.now() } = {}) {
+  const scenes = await applyDueSchedules({ now });
+  const settled = await settleAll({ now });
+  return { scenes: scenes.length, settled: settled.filter((s) => s.written).length };
+}
+export function startRequestScheduler(seconds = 60) {
+  const every = Math.max(Number(seconds) || 60, 10);
+  let busy = false;
+  setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try { await requestTick(); } catch (err) { console.error('request tick:', err.message); } finally { busy = false; }
+  }, every * 1000).unref();
+  return every;
 }
 
 // Start the periodic tick (seconds; default 30, at least 5). Returns the interval used.

@@ -21,7 +21,7 @@ const siteKeys = ATTRIBUTE_DEFS.filter((d) => JSON.parse(d.applies_to).includes(
 
 // Keys that are not in attribute_def (the catalogue of planner attributes): the home's own settings and plain descriptions.
 const HOME_SETTINGS = ['timezone', 'slot_s', 'currency', 'country', 'market_code', 'postcode', 'gsp_region', 'carbon_region', 'contracted_kva', 'is_demo'];
-const DESCRIBE = ['manufacturer', 'model', 'serial_number', 'firmware_version'];
+const DESCRIBE = ['manufacturer', 'model', 'serial_number', 'firmware_version', 'external_controller'];   // external_controller: a service that runs the device (Octopus Intelligent Go for a car)
 export const THING_ONLY_KEYS = Object.freeze([...HOME_SETTINGS, ...DESCRIBE, 'mpan', 'mprn', 'level', 'scheme', 'code', 'provider', 'tariff_code']);
 
 // t(kind, type, label, { capabilities, ports, keys, std, description })

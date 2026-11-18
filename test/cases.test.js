@@ -223,8 +223,38 @@ await test('case 14: the owner asks for their data to be erased: the person\'s d
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM raw_payload WHERE id = ?').get(answer.rawId)).n, 0, 'the personal raw answer is gone');
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 10, 'the home\'s device history stays');
 });
-await test('case 15: a block of flats with communal heating: each flat\'s heating cost is its share, labelled allocated', { todo: 'shared things with shares (R20) are not built' }, () => { assert.fail('not built'); });
-await test('case 16: an EV moves with its owner to a new home: the old home keeps its history, the new one starts empty', { todo: 'the dated home of a thing (R24) is not built' }, () => { assert.fail('not built'); });
+await test('case 15: a block of flats with communal heating: each flat\'s heating cost is its share, labelled allocated', async () => {
+  const S = await import('../src/core/shared.js');
+  const block = await home('Block'); const flatA = await home('Flat A'); const flatB = await home('Flat B');
+  const heat = await device(block, 'meter_heat', 'plant-15'); const sid = await series('device', heat.id, 'heat_output_kwh', 'push_native');
+  const half = (i) => ({ start: D0 + i * 1800, end: D0 + (i + 1) * 1800 });
+  await write('push_native', async () => { await F.putIntervals(sid, Array.from({ length: 48 }, (_, i) => ({ ...half(i), value: 10 }))); });   // 480 kWh in the day
+  await buildPointSlots(await pointOf(heat.id, 'heat_output_kwh'), DAY, DAY);
+  await S.shareThing({ thingId: heat.id, homeId: flatA, share: 0.25, from: T0 });
+  await S.shareThing({ thingId: heat.id, homeId: flatB, share: 0.6, from: T0, basis: 'submeter' });
+  await assert.rejects(S.shareThing({ thingId: heat.id, homeId: flatB, share: 0.2, from: T0 }), /at most 1/, 'the shares of a thing never add up to more than all of it');
+  const r = await S.allocateShared(heat.id, DAY, DAY, { unitPrice: 0.08 });
+  assert.equal(r.rows, 48 * 2 * 2);
+  const a = (await readNodeSlots(flatA, D0, D0 + 86400, ['shared_heat_output_cost'])); const b = (await readNodeSlots(flatB, D0, D0 + 86400, ['shared_heat_output_kwh']));
+  assert.ok(Math.abs(a.reduce((t, x) => t + x.value, 0) - 480 * 0.25 * 0.08) < 1e-6, 'flat A pays a quarter of the day\'s heat');
+  assert.ok(Math.abs(b.reduce((t, x) => t + x.value, 0) - 480 * 0.6) < 1e-6, 'flat B gets its 60 %');
+  assert.deepEqual([a[0].lineage.allocated, a[0].lineage.share, b[0].lineage.basis], [true, 0.25, 'submeter'], 'labelled allocated, with the share and its basis');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM thing_share WHERE thing_id = ?').get(heat.id)).n, 2, 'the shares are the shared thing\'s record, not the flats\'');
+});
+await test('case 16: an EV moves with its owner to a new home: the old home keeps its history, the new one starts empty', async () => {
+  const S = await import('../src/core/shared.js');
+  const oldHome = await home('Old home'); const newHome = await home('New home'); const ev = await device(oldHome, 'ev', 'car-16');
+  const sid = await series('device', ev.id, 'ev_soc_pct', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sid, Array.from({ length: 20 }, (_, i) => ({ ts: D0 + i * 1800, value: 50 + i }))); });
+  const at = D0 + 12 * 3600;
+  const r = await S.rehomeThing(ev.id, { toHomeId: newHome, at, reason: 'case 16: the owner moved' });
+  assert.equal(r.old.valid_to, r.boundary, 'in the old home the car\'s life ends at the move');
+  assert.deepEqual([r.thing.home_id, r.thing.valid_from], [newHome, r.boundary], 'in the new home it begins there');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 20, 'the old home keeps its history');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading r JOIN series s ON s.id = r.series_id JOIN point p ON p.id = s.point_id WHERE p.thing_id = ?').get(r.thing.id)).n, 0, 'the new home starts empty');
+  assert.deepEqual((await S.movesOf(r.thing.id)).map((m) => [Number(m.from_home), Number(m.to_home)]), [[oldHome, newHome]]);
+  await assert.rejects(S.rehomeThing(r.thing.id, { toHomeId: newHome, reason: 'x' }), /already/);
+});
 
 await test('case 17: a detached garage on a second hub: devices of both hubs in one home graph (the offline marking per hub is not built)', async () => {
   const h = await home('Hubs'); const hub1 = await T.createThing({ siteId: h, type: 'hub', name: 'House hub', validFrom: T0 + 3600 }); const hub2 = await T.createThing({ siteId: h, type: 'hub', name: 'Garage hub', validFrom: T0 + 3600 });

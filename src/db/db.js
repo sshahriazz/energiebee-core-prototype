@@ -98,6 +98,7 @@ export const EXCLUSION_MESSAGES = {
   rate_no_overlap: 'overlapping current rate interval',
   agreement_no_overlap: 'overlapping tariff agreement for this meter',
   member_no_overlap: 'overlapping current membership of this home in the group',
+  price_run_no_overlap: 'overlapping price runs for this tariff',
 };
 function translateError(err, sql) {
   const cause = err?.meta?.driverAdapterError?.cause ?? err?.cause;

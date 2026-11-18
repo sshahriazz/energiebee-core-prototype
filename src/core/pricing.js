@@ -159,7 +159,7 @@ export async function learnIogWindow(region, tz) {
   return { start, end, source: best.code, rows: best.n };
 }
 
-function agreementAt(p, kind, ts) {
+export function agreementAt(p, kind, ts) {
   return p.agreements.find((a) => a.kind === kind && a.valid_from <= ts && (a.valid_to == null || a.valid_to > ts));
 }
 
@@ -217,7 +217,7 @@ export function taxesAt(p, fuel, direction, ts, { inPrice = false } = {}) {
 //   prices, plus completed smart-charge dispatches reported by Kraken.
 // - windows (HP/HC, Tempo, any day/night with known times): the unit rows were expanded from
 //   the tariff's register windows (tariff-expand.js), so the row covering the instant says.
-const ANY_REGISTER = '*';
+export const ANY_REGISTER = '*';
 // The register a meter's own windows put an instant in: the window covering it (its register, e.g.
 // 'night'), else 'day' when the meter has windows, else null (not known: the slot stays unpriced).
 // weekdays: bit 0 = Monday ... bit 6 = Sunday, read on the day the window starts (tariff-expand.js).
@@ -238,7 +238,7 @@ export function meterRegister(p, deviceId, ts) {
   }
   return 'day';
 }
-function registerAt(p, a, ts) {
+export function registerAt(p, a, ts) {
   if (a.structure === 'windows') return ANY_REGISTER;
   if (a.structure === 'e7') return meterRegister(p, a.device_id, ts);
   if (a.structure === 'iog') {
@@ -303,7 +303,7 @@ function fixedAt(p, tariffId, ts) {
 }
 
 // The labelled inputs of one price: tariff, rate rows, tax rules, contracted capacity.
-function inputsOf(p, a, tax, fixed, unit) {
+export function inputsOf(p, a, tax, fixed, unit) {
   const out = [{ what: `tariff ${a.tariff_code}`, origin: a.tariff_origin }];
   if (unit) out.push({ what: `rate ${a.tariff_code} unit/${unit.register}`, origin: unit.origin });
   for (const r of fixed.rows) out.push({ what: `rate ${a.tariff_code} ${r.component}/${r.register}${r.charge_period ? `/${r.charge_period}` : ''}`, origin: r.origin });
@@ -360,7 +360,7 @@ export function priceAt(p, kind, ts) {
 // (unitEx null), as one unpriced moment means the slot's cost is not known. Otherwise the unit
 // price is the time-weighted mean of the samples, marked weighted: true; taxes, fixed charges
 // and tariff are the first sample's.
-const SAMPLE = 900;
+export const SAMPLE = 900;
 export function priceOver(p, kind, start, durS) {
   const samples = [];
   for (let t = start; t < start + durS; t += SAMPLE) samples.push([t, Math.min(SAMPLE, start + durS - t), priceAt(p, kind, t)]);
@@ -383,7 +383,7 @@ export function priceOver(p, kind, start, durS) {
 }
 
 // Period lengths a per-period tax needs (the local day, month or year holding the slot).
-function periodLengths(rules, tz, ts) {
+export function periodLengths(rules, tz, ts) {
   const out = {};
   const key = { day: 'dayLengthS', month: 'monthLengthS', year: 'yearLengthS' };
   for (const r of rules) {

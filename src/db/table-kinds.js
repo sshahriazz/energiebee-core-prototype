@@ -26,7 +26,7 @@ export const TABLE_KINDS = {
   reading: 'fact', interval_fact: 'fact', forecast_fact: 'fact', raw_payload: 'fact',
   // serving
   site_hh: 'serving', site_day: 'serving', site_heat_slot: 'serving', check_result: 'serving',
-  plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
+  tariff_price_run: 'serving', plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
   // logs
   sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log', erasure_log: 'log',
   // registries

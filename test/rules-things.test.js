@@ -7,6 +7,7 @@ import { harness } from './rules/lib.js';
 
 const { db, run, get, ins, refused, maintained, excluded, checkDeclared } = await harness('things');
 const { erase } = await import('../src/core/erasure.js');
+const { rolledBack } = await import('../src/db/db.js');
 const { THING_TYPES, RELATION_RULES, THING_ONLY_KEYS, thingSeedDiff, seedThings } = await import('../src/db/seed/things.js');
 const { DEVICE_KINDS, ATTRIBUTE_DEFS } = await import('../src/db/seed/attributes.js');
 
@@ -81,19 +82,34 @@ await test('things: a home thing per home, a context thing has no home, everythi
   assert.equal((await get('SELECT COUNT(*) AS n FROM thing WHERE site_id IS NULL')).n, 1);
 });
 
-await test('identity: a thing\'s uid, kind and home never change', async () => {
+await test('identity: a thing\'s uid, kind, type and home never change; a hub\'s own uid is a UUIDv7', async () => {
   await refused('thing_uid_fixed', 'UPDATE thing SET uid = uuidv7() WHERE id = ?', inverter);
   await refused('thing_identity_fixed', "UPDATE thing SET kind = 'system' WHERE id = ?", trv);
+  await refused('thing_identity_fixed', "UPDATE thing SET type = 'thermostat' WHERE id = ?", trv);   // even within its kind: a different type is a different thing
+  await refused('thing_identity_fixed', "UPDATE thing SET type = 'generic_device' WHERE id = ?", trv);
   await refused('thing_identity_fixed', 'UPDATE thing SET site_id = ? WHERE id = ?', B, trv);
-  await run('UPDATE thing SET uid = uid, site_id = site_id, name = name WHERE id = ?', trv);   // an update that keeps them is fine
-  await run("UPDATE thing SET type = 'thermostat' WHERE id = ?", trv);                          // a type may change within its kind
-  await run("UPDATE thing SET type = 'trv' WHERE id = ?", trv);
+  await run('UPDATE thing SET uid = uid, site_id = site_id, type = type, kind = kind, name = name WHERE id = ?', trv);   // an update that keeps them is fine
+  await assert.rejects(() => run("INSERT INTO thing (uid, site_id, kind, type, name) VALUES ('2f1c1b1e-4c3a-4b8e-9d3f-5a6b7c8d9e0f', ?, 'device', 'hub', 'Version 4')", A), /thing_uid_v7/);
+});
+
+await test('home: nothing is put in a home that has no home thing, and a home thing names its site\'s slot length and time zone', async () => {
+  const D = await site('D');
+  await refused('thing_home_exists', "INSERT INTO thing (site_id, kind, type, name) VALUES (?, 'device', 'inverter', 'First')", D);
+  await refused('thing_home_exists', "INSERT INTO thing (site_id, kind, type, name) VALUES (?, 'space', 'room', 'First room')", D);
+  await context('tariff', 'Tariff for D');   // shared context needs no home
+  await refused('thing_home_clock', "INSERT INTO thing (site_id, kind, type, name, attrs) VALUES (?, 'home', 'house', 'D', '{\"slot_s\": 900}'::jsonb)", D);
+  await refused('thing_home_clock', "INSERT INTO thing (site_id, kind, type, name, attrs) VALUES (?, 'home', 'house', 'D', '{\"timezone\": \"Europe/Paris\"}'::jsonb)", D);
+  const home = await thing(D, 'home', 'house', 'D', { slot_s: 1800, timezone: 'Europe/London' });
+  await refused('thing_home_clock', "UPDATE thing SET attrs = '{\"slot_s\": 3600}'::jsonb WHERE id = ?", home);
+  await run("UPDATE thing SET attrs = '{\"timezone\": \"Europe/London\"}'::jsonb WHERE id = ?", home);
+  await thing(D, 'device', 'inverter', 'First');   // now it can take things
+  await run('UPDATE thing SET superseded_at = recorded_at WHERE id = ?', home);   // a superseded home thing is no home thing
+  await refused('thing_home_exists', "INSERT INTO thing (site_id, kind, type, name) VALUES (?, 'device', 'inverter', 'Second')", D);
 });
 
 await test('attributes: a thing carries only the keys its type lists', async () => {
   await refused('thing_attrs_allowed', "INSERT INTO thing (site_id, kind, type, name, attrs) VALUES (?, 'device', 'battery', 'x', '{\"flux\": 1}'::jsonb)", A);
   await refused('thing_attrs_allowed', 'UPDATE thing SET attrs = ?::jsonb WHERE id = ?', JSON.stringify({ pv_kwp: 4 }), battery);
-  await refused('thing_attrs_allowed', "UPDATE thing SET type = 'battery', attrs = attrs WHERE id = ?", pv);   // the keys must suit the new type too
   await run('UPDATE thing SET attrs = ?::jsonb WHERE id = ?', JSON.stringify({ capacity_kwh: 9.5, manufacturer: 'x' }), battery);
 });
 
@@ -128,8 +144,25 @@ await test('relations: they join things of one home (or shared context), and the
   await refused('thing_relation_checks', "INSERT INTO thing_relation (site_id, from_id, rel, to_id) VALUES (?, ?, 'controls', ?)", B, trv, inverter);
   const id = await relId(meter, 'supplied_on', tariff);
   assert.equal((await get('SELECT site_id FROM thing_relation WHERE id = ?', id)).site_id, A, 'set from the thing that has a home');
-  await refused('thing_relation_checks', 'UPDATE thing_relation SET site_id = ? WHERE id = ?', B, id);
+  await refused('thing_relation_append_only', 'UPDATE thing_relation SET site_id = ? WHERE id = ?', B, id);   // a relation is never edited
   await assert.rejects(() => run("INSERT INTO thing_relation (from_id, rel, to_id) VALUES (?, 'controls', ?)", meter, meter), /thing_relation_not_self/);
+});
+
+await test('relations are append-only and carry a uid: one supersede, never a change, never a delete', async () => {
+  const id = await relId(supply, 'located_in', floor);
+  const row = await get('SELECT uid, recorded_at FROM thing_relation WHERE id = ?', id);
+  assert.match(row.uid, /^[0-9a-f]{8}-[0-9a-f]{4}-7/, 'a UUIDv7 made by the database');
+  await refused('thing_relation_append_only', 'UPDATE thing_relation SET valid_to = 5000000000 WHERE id = ?', id);
+  await refused('thing_relation_append_only', "UPDATE thing_relation SET rel = 'part_of' WHERE id = ?", id);
+  await refused('thing_relation_append_only', 'UPDATE thing_relation SET superseded_at = recorded_at, valid_from = 1 WHERE id = ?', id);   // supersede, and change something else
+  await refused('thing_relation_append_only', 'DELETE FROM thing_relation WHERE id = ?', id);
+  // the uid never changes: append-only refuses it first, so the trigger of the uid is reached only inside a logged erasure
+  await erase({ kind: 'synthetic', siteId: A, reason: 'rules test: a relation uid under erasure' }, async () => {
+    await rolledBack(async () => await refused('thing_relation_uid_fixed', 'UPDATE thing_relation SET uid = uuidv7() WHERE id = ?', id));
+  });
+  await run('UPDATE thing_relation SET superseded_at = recorded_at + 1 WHERE id = ?', id);
+  await refused('thing_relation_append_only', 'UPDATE thing_relation SET superseded_at = superseded_at + 1 WHERE id = ?', id);   // superseded once only
+  assert.equal((await get('SELECT uid FROM thing_relation WHERE id = ?', id)).uid, row.uid);
 });
 
 await test('relation rules: only what a rule allows, with the ports the rule asks for', async () => {
@@ -168,15 +201,15 @@ await test('placement: a thing is in one place at a time, a move keeps the old p
   await relId(floor, 'located_in', homeA);
   const first = await relId(trv, 'located_in', living, { vf: dayOne });
   await excluded('located_in_one_place', "INSERT INTO thing_relation (from_id, rel, to_id, valid_from) VALUES (?, 'located_in', ?, ?)", trv, kitchen, dayOne + 3600);
-  await run('UPDATE thing_relation SET valid_to = ? WHERE id = ?', dayOne + 3600, first);                                       // the move ends the old placement at a slot boundary ...
-  await relId(trv, 'located_in', kitchen, { vf: dayOne + 3600 });                                                                // ... and starts the new one
-  assert.deepEqual((await db.prepare("SELECT to_id FROM thing_relation WHERE from_id = ? AND rel = 'located_in' ORDER BY valid_from").all(trv)).map((r) => r.to_id), [living, kitchen], 'the old placement stays in history');
-  // Superseded rows are history: they do not block a current one.
-  await run('UPDATE thing_relation SET superseded_at = recorded_at + 1 WHERE id = ?', first);
-  await relId(trv, 'located_in', living, { vf: dayOne, vt: dayOne + 1800 });
+  // The move supersedes the old row and writes it again with its end at a slot boundary (a superseded row is history: it blocks nothing) ...
+  await run('UPDATE thing_relation SET superseded_at = recorded_at WHERE id = ?', first);
+  await relId(trv, 'located_in', living, { vf: dayOne, vt: dayOne + 3600 });
+  await relId(trv, 'located_in', kitchen, { vf: dayOne + 3600 });                                                                // ... and starts the new placement
+  const placed = "SELECT to_id FROM thing_relation WHERE from_id = ? AND rel = 'located_in' AND superseded_at IS NULL ORDER BY valid_from";
+  assert.deepEqual((await db.prepare(placed).all(trv)).map((r) => r.to_id), [living, kitchen], 'the old placement stays, with its end');
+  assert.equal((await get("SELECT COUNT(*) AS n FROM thing_relation WHERE from_id = ? AND rel = 'located_in'", trv)).n, 3, 'and the row it replaced is still there');
   // No loop: a room on a floor cannot hold that floor, however far round.
   await refused('thing_relation_checks', "INSERT INTO thing_relation (from_id, rel, to_id) VALUES (?, 'located_in', ?)", floor, living);
-  await refused('thing_relation_checks', 'UPDATE thing_relation SET to_id = ? WHERE from_id = ? AND to_id = ?', kitchen, floor, homeA);   // kitchen -> floor -> kitchen, by an update
   // Only relations that overlap in time can form a loop: the floor may sit in the room it contained, once that was over.
   const s1 = await thing(A, 'space', 'loft', 'Loft 1');
   const s2 = await thing(A, 'space', 'loft', 'Loft 2');
@@ -219,7 +252,7 @@ await test('erasure: a home\'s things, versions and relations go with it inside 
   const d1 = await thing(s, 'device', 'inverter', 'I');
   const d2 = await thing(s, 'device', 'battery', 'B');
   await relId(d2, 'part_of', d1);
-  await refused('thing_attr_version_append_only', 'DELETE FROM thing WHERE site_id = ?', s);   // the cascade reaches the versions
+  await assert.rejects(() => run('DELETE FROM thing WHERE site_id = ?', s), /append-only/);   // the cascade reaches the versions and the relation
   await erase({ kind: 'synthetic', siteId: s, reason: 'rules test: a home with things' }, async () => await run('DELETE FROM thing WHERE site_id = ?', s));
   for (const t of ['thing', 'thing_attr_version', 'thing_relation']) assert.equal((await get(`SELECT COUNT(*) AS n FROM ${t} WHERE site_id = ?`, s)).n, 0, t);
   assert.ok(await get('SELECT 1 AS x FROM thing WHERE id = ?', tariff), 'shared context stays');
@@ -247,8 +280,16 @@ await test('merge: a thing is merged once, into a live thing of its own home and
   const op = (n, x, y) => run("INSERT INTO thing_op (site_id, op, thing_id, other_id, reason) VALUES (?, ?, ?, ?, ?)", A, n, x, y, 'because');
   await assert.rejects(() => op('shuffle', a, b), /CHECK constraint failed/);
   await assert.rejects(() => op('merge', a, a), /thing_op_two_things/);
+  await refused('thing_op_home', "INSERT INTO thing_op (site_id, op, thing_id, other_id, reason) VALUES (?, 'merge', ?, ?, 'x')", B, a, b);        // another home than its things'
+  await refused('thing_op_home', "INSERT INTO thing_op (site_id, op, thing_id, other_id, reason) VALUES (?, 'merge', ?, ?, 'x')", A, a, other);    // two homes
   await assert.rejects(() => run("INSERT INTO thing_op (site_id, op, thing_id, other_id, reason) VALUES (?, 'merge', ?, ?, ' ')", A, a, b), /CHECK constraint failed/);
   await op('merge', a, b);
+  const logged = await get("SELECT id FROM thing_op WHERE thing_id = ? AND other_id = ?", a, b);
+  assert.equal((await get('SELECT site_id FROM thing_op WHERE id = ?', logged.id)).site_id, A);
+  await run("INSERT INTO thing_op (op, thing_id, other_id, reason) VALUES ('split', ?, ?, 'home taken from the things')", a, c);
+  assert.equal((await get("SELECT site_id FROM thing_op WHERE reason = 'home taken from the things'")).site_id, A);
+  await refused('thing_op_append_only', "UPDATE thing_op SET reason = 'rewritten' WHERE id = ?", logged.id);
+  await refused('thing_op_append_only', 'DELETE FROM thing_op WHERE id = ?', logged.id);
 });
 
 await test('what the cases above proved is what test/rules/things.json declares (test/rules-all.test.js checks every area against the database)', () => { checkDeclared(); });

@@ -1653,6 +1653,7 @@ model thing_attr_version {
 /// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
 model thing_relation {
   id                                  BigInt  @id @default(autoincrement())
+  uid                                 String  @unique @default(dbgenerated("uuidv7()")) @db.Uuid
   site_id                             BigInt?
   from_id                             BigInt
   from_port                           String?

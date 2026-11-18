@@ -9,8 +9,15 @@
   "thing_attrs_allowed": [
    "attribute % is not carried by type %"
   ],
+  "thing_home_clock": [
+   "the slot length of a home thing is the slot length of its site until the site is folded into it",
+   "the time zone of a home thing is the time zone of its site until the site is folded into it"
+  ],
+  "thing_home_exists": [
+   "a home needs its home thing before anything else is put in it"
+  ],
   "thing_identity_fixed": [
-   "a thing keeps its kind and its home"
+   "a thing keeps its kind, its type and its home"
   ],
   "thing_merge_checks": [
    "a merged thing stays merged",
@@ -18,8 +25,19 @@
    "a thing merges into a live thing",
    "a thing merges into a thing of its own home and kind"
   ],
+  "thing_op_append_only": [
+   "append-only: a thing operation is never changed or deleted (only by a logged erasure)"
+  ],
+  "thing_op_home": [
+   "an operation joins two things of one home",
+   "operation home differs from the home of its things"
+  ],
   "thing_relation_alive": [
    "a merged thing takes no new relation (use the thing it was merged into)"
+  ],
+  "thing_relation_append_only": [
+   "append-only: a thing relation changes only by being superseded once (a change is a new relation)",
+   "append-only: a thing relation is never deleted (only by a logged erasure)"
   ],
   "thing_relation_checks": [
    "a % relation cannot form a cycle",
@@ -35,6 +53,9 @@
    "ports % and % carry different media (% and %)",
    "relation home differs from the home of its things",
    "type % has no port %"
+  ],
+  "thing_relation_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
   ],
   "thing_uid_fixed": [
    "uid never changes (it is the identity outside this database)"

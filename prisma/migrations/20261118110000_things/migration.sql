@@ -45,8 +45,8 @@ CREATE TABLE relation_rule (
   same_type bigint NOT NULL DEFAULT 0 CHECK (same_type IN (0, 1)),
   acyclic bigint NOT NULL DEFAULT 0 CHECK (acyclic IN (0, 1)),
   description text,
-  CONSTRAINT relation_rule_from_type_fk FOREIGN KEY (from_type, from_kind) REFERENCES thing_type (type, kind),
-  CONSTRAINT relation_rule_to_type_fk FOREIGN KEY (to_type, to_kind) REFERENCES thing_type (type, kind)
+  CONSTRAINT relation_rule_from_type_fk FOREIGN KEY (from_type, from_kind) REFERENCES thing_type (type, kind) DEFERRABLE INITIALLY IMMEDIATE,
+  CONSTRAINT relation_rule_to_type_fk FOREIGN KEY (to_type, to_kind) REFERENCES thing_type (type, kind) DEFERRABLE INITIALLY IMMEDIATE
 );
 CREATE UNIQUE INDEX relation_rule_key ON relation_rule (rel, from_kind, COALESCE(from_type, ''), to_kind, COALESCE(to_type, ''));
 
@@ -64,7 +64,8 @@ CREATE TABLE thing (
   valid_to bigint,                             -- when it left service (retired), s
   recorded_at bigint NOT NULL DEFAULT (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
   superseded_at bigint,                        -- set when a merge replaces it by another thing (Phase 1.8)
-  CONSTRAINT thing_type_fk FOREIGN KEY (type, kind) REFERENCES thing_type (type, kind),
+  CONSTRAINT thing_type_fk FOREIGN KEY (type, kind) REFERENCES thing_type (type, kind) DEFERRABLE INITIALLY IMMEDIATE,
+  CONSTRAINT thing_uid_v7 CHECK (uuid_extract_version(uid) = 7),   -- a hub that makes the identity makes a UUIDv7, like the database does
   CONSTRAINT thing_home_unless_context CHECK ((kind = 'context') = (site_id IS NULL)),
   CONSTRAINT thing_valid_window CHECK (valid_from IS NULL OR valid_to IS NULL OR valid_to > valid_from),
   CONSTRAINT thing_record_window CHECK (superseded_at IS NULL OR superseded_at >= recorded_at)
@@ -77,10 +78,38 @@ CREATE TRIGGER thing_uid_fixed BEFORE UPDATE OF uid ON thing FOR EACH ROW WHEN (
 
 CREATE FUNCTION trg_thing_identity_fixed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  RAISE EXCEPTION 'a thing keeps its kind and its home';
+  RAISE EXCEPTION 'a thing keeps its kind, its type and its home';
 END $$;
-CREATE TRIGGER thing_identity_fixed BEFORE UPDATE OF kind, site_id ON thing FOR EACH ROW
-  WHEN (NEW.kind IS DISTINCT FROM OLD.kind OR NEW.site_id IS DISTINCT FROM OLD.site_id) EXECUTE FUNCTION trg_thing_identity_fixed();
+-- A thing never changes kind or type: a different type is a different thing (a replacement, or a merge into the typed one).
+CREATE TRIGGER thing_identity_fixed BEFORE UPDATE OF kind, type, site_id ON thing FOR EACH ROW
+  WHEN (NEW.kind IS DISTINCT FROM OLD.kind OR NEW.type IS DISTINCT FROM OLD.type OR NEW.site_id IS DISTINCT FROM OLD.site_id) EXECUTE FUNCTION trg_thing_identity_fixed();
+
+-- Until the site is folded into the home thing (Phase 1.3b, which turns site_id into home_id -> thing(id)), the rule "a thing's home
+-- is a thing of kind home" is kept here: nothing but a home thing (and shared context) is put in a home that has no live home thing.
+CREATE FUNCTION trg_thing_home_exists() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM thing WHERE site_id = NEW.site_id AND kind = 'home' AND superseded_at IS NULL) THEN
+    RAISE EXCEPTION 'a home needs its home thing before anything else is put in it';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER thing_home_exists BEFORE INSERT ON thing FOR EACH ROW WHEN (NEW.kind NOT IN ('home', 'context') AND NEW.site_id IS NOT NULL) EXECUTE FUNCTION trg_thing_home_exists();   -- (no home at all is thing_home_unless_context)
+
+-- Until then the site row is the authority for the home's slot length and time zone (the library snaps by it): a home thing that
+-- names either must name the site's.
+CREATE FUNCTION trg_thing_home_clock() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE s site%ROWTYPE;
+BEGIN
+  SELECT * INTO s FROM site WHERE id = NEW.site_id;
+  IF NEW.attrs->'slot_s' IS NOT NULL AND NEW.attrs->'slot_s' IS DISTINCT FROM to_jsonb(s.slot_s) THEN
+    RAISE EXCEPTION 'the slot length of a home thing is the slot length of its site until the site is folded into it';
+  END IF;
+  IF NEW.attrs->'timezone' IS NOT NULL AND NEW.attrs->'timezone' IS DISTINCT FROM to_jsonb(s.timezone) THEN
+    RAISE EXCEPTION 'the time zone of a home thing is the time zone of its site until the site is folded into it';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER thing_home_clock BEFORE INSERT OR UPDATE OF attrs ON thing FOR EACH ROW WHEN (NEW.kind = 'home') EXECUTE FUNCTION trg_thing_home_clock();
 
 -- A thing carries only the attributes its type lists (thing_type.attribute_keys).
 CREATE FUNCTION trg_thing_attrs_allowed() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -92,7 +121,7 @@ BEGIN
   IF bad IS NOT NULL THEN RAISE EXCEPTION 'attribute % is not carried by type %', bad, NEW.type; END IF;
   RETURN NEW;
 END $$;
-CREATE TRIGGER thing_attrs_allowed BEFORE INSERT OR UPDATE OF attrs, type ON thing FOR EACH ROW EXECUTE FUNCTION trg_thing_attrs_allowed();
+CREATE TRIGGER thing_attrs_allowed BEFORE INSERT OR UPDATE OF attrs ON thing FOR EACH ROW EXECUTE FUNCTION trg_thing_attrs_allowed();
 
 -- ───────────── attribute versions ─────────────
 -- Every change of a thing's name or attributes is a version (record time: what was known when; valid time: from when it holds).
@@ -150,6 +179,7 @@ CREATE TRIGGER thing_attr_version_append_only BEFORE UPDATE OR DELETE ON thing_a
 -- change (R13: a timeline never splits a slot); changed_at keeps the exact moment (seconds) for history.
 CREATE TABLE thing_relation (
   id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  uid uuid NOT NULL DEFAULT uuidv7() UNIQUE,   -- names this row as written: ending or moving a relation writes a new row, with a new uid
   site_id bigint REFERENCES site (id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,   -- set from the two things; none when both are shared context
   from_id bigint NOT NULL REFERENCES thing (id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
   from_port text CHECK (from_port <> ''),
@@ -175,6 +205,21 @@ CREATE INDEX thing_relation_from ON thing_relation (from_id, rel) WHERE supersed
 CREATE INDEX thing_relation_to ON thing_relation (to_id, rel) WHERE superseded_at IS NULL;
 CREATE INDEX thing_relation_site ON thing_relation (site_id) WHERE site_id IS NOT NULL;
 
+CREATE TRIGGER thing_relation_uid_fixed BEFORE UPDATE OF uid ON thing_relation FOR EACH ROW WHEN (NEW.uid IS DISTINCT FROM OLD.uid) EXECUTE FUNCTION trg_uid_fixed();
+
+-- A relation is never edited: a change supersedes the row once and writes the next one, so "as known at" any earlier moment still
+-- shows what was known. Deleted only inside a logged erasure.
+CREATE FUNCTION trg_thing_relation_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF erasure_open() THEN RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END; END IF;
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'append-only: a thing relation is never deleted (only by a logged erasure)'; END IF;
+  IF OLD.superseded_at IS NOT NULL OR NEW.superseded_at IS NULL OR (to_jsonb(NEW) - 'superseded_at') <> (to_jsonb(OLD) - 'superseded_at') THEN
+    RAISE EXCEPTION 'append-only: a thing relation changes only by being superseded once (a change is a new relation)';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER thing_relation_append_only BEFORE UPDATE OR DELETE ON thing_relation FOR EACH ROW EXECUTE FUNCTION trg_thing_relation_append_only();
+
 -- A port of a type, or null.
 CREATE FUNCTION thing_port(t text, p text) RETURNS jsonb LANGUAGE sql STABLE AS $$
   SELECT e FROM thing_type y, jsonb_array_elements(y.ports) e WHERE y.type = t AND e->>'name' = p
@@ -189,7 +234,7 @@ BEGIN
     RAISE EXCEPTION 'a relation joins things of one home, or shared context';
   END IF;
   home := COALESCE(a.site_id, b.site_id);
-  IF TG_OP = 'INSERT' AND NEW.site_id IS NULL THEN NEW.site_id := home; END IF;
+  IF NEW.site_id IS NULL THEN NEW.site_id := home; END IF;
   IF NEW.site_id IS DISTINCT FROM home THEN RAISE EXCEPTION 'relation home differs from the home of its things'; END IF;
 
   SELECT * INTO r FROM relation_rule x
@@ -231,5 +276,4 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
-CREATE TRIGGER thing_relation_checks BEFORE INSERT OR UPDATE OF from_id, to_id, rel, from_port, to_port, site_id, valid_from, valid_to ON thing_relation
-  FOR EACH ROW EXECUTE FUNCTION trg_thing_relation_checks();
+CREATE TRIGGER thing_relation_checks BEFORE INSERT ON thing_relation FOR EACH ROW EXECUTE FUNCTION trg_thing_relation_checks();

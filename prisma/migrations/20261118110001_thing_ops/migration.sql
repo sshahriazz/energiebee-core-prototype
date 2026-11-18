@@ -15,7 +15,9 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION trg_thing_attr_version_on_update() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE at_ms bigint := GREATEST((extract(epoch FROM statement_timestamp()) * 1000)::bigint,
+-- The library names one record time for a whole operation (thing.record_ms, set for the transaction), so a replace or a merge is one
+-- point in record time; without it (a plain UPDATE) the statement's own time is used.
+DECLARE at_ms bigint := GREATEST(COALESCE(NULLIF(current_setting('thing.record_ms', true), '')::bigint, (extract(epoch FROM statement_timestamp()) * 1000)::bigint),
   (SELECT COALESCE(MAX(recorded_at), 0) + 1 FROM thing_attr_version WHERE thing_id = NEW.id));
 BEGIN
   UPDATE thing_attr_version SET superseded_at = at_ms WHERE thing_id = NEW.id AND superseded_at IS NULL;
@@ -57,7 +59,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
-CREATE TRIGGER thing_relation_alive BEFORE INSERT OR UPDATE OF from_id, to_id, superseded_at ON thing_relation
+CREATE TRIGGER thing_relation_alive BEFORE INSERT ON thing_relation
   FOR EACH ROW WHEN (NEW.superseded_at IS NULL) EXECUTE FUNCTION trg_thing_relation_alive();
 
 -- What was done to the graph by hand: one row per replace, merge or split.
@@ -79,3 +81,23 @@ CREATE TABLE thing_op (
 CREATE INDEX thing_op_thing ON thing_op (thing_id);
 CREATE INDEX thing_op_other ON thing_op (other_id);
 CREATE INDEX thing_op_site ON thing_op (site_id) WHERE site_id IS NOT NULL;
+
+-- The log is append-only (deleted only inside a logged erasure), and its home is the home of the things it names.
+CREATE FUNCTION trg_thing_op_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF erasure_open() THEN RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END; END IF;
+  RAISE EXCEPTION 'append-only: a thing operation is never changed or deleted (only by a logged erasure)';
+END $$;
+CREATE TRIGGER thing_op_append_only BEFORE UPDATE OR DELETE ON thing_op FOR EACH ROW EXECUTE FUNCTION trg_thing_op_append_only();
+
+CREATE FUNCTION trg_thing_op_home() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint;
+BEGIN
+  SELECT site_id INTO a FROM thing WHERE id = NEW.thing_id;
+  SELECT site_id INTO b FROM thing WHERE id = NEW.other_id;
+  IF a IS DISTINCT FROM b THEN RAISE EXCEPTION 'an operation joins two things of one home'; END IF;
+  IF NEW.site_id IS NULL THEN NEW.site_id := a; END IF;
+  IF NEW.site_id IS DISTINCT FROM a THEN RAISE EXCEPTION 'operation home differs from the home of its things'; END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER thing_op_home BEFORE INSERT ON thing_op FOR EACH ROW EXECUTE FUNCTION trg_thing_op_home();

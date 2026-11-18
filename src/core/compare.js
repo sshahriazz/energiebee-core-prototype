@@ -15,6 +15,7 @@
 import { db } from '../db/db.js';
 import { loadPricing, fixedPerDay } from './pricing.js';
 import { slotPrice } from './slot-price.js';
+import { withRunsFromRates } from './price-runs.js';
 import { dayBounds, zonedParts, slotLength, slotsPerDay, slotOfDay, slotNoun } from './time.js';
 import { CURRENCIES } from './money.js';
 import { fetchJson } from './http.js';
@@ -119,7 +120,7 @@ export async function compareSite(siteId, from, to) {
   const altPricing = new Map(sc.map((x) => {
     const ti = tariffs.get(x.import); const te = x.export ? tariffs.get(x.export) : null;
     const agreements = [ti && standIn(ti, 'meter_import'), te && standIn(te, 'meter_export')].filter(Boolean);
-    return [x.key, { ...pricing, agreements, rates: altRates, shapes: new Map(), hasFixed: altRates.some((r) => r.component === 'fixed' || r.component === 'capacity') }];
+    return [x.key, withRunsFromRates({ ...pricing, agreements, rates: altRates, shapes: new Map() })];
   }));
   const altInputs = new Map(sc.map((x) => [x.key, []]));
   const altPrice = (key, kind, ts) => {

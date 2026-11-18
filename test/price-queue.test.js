@@ -11,6 +11,7 @@ const { db, syncGbVat } = await import('../src/db/db.js');
 const { createSite } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, putWindows, agreeTariff, addDevice } = await import('../src/core/tariffs.js');
 const { supersedeAgreements } = await import('../src/core/devices.js');
+const { seriesId, putIntervals } = await import('../src/core/facts.js');
 const { markTariffDirty, markCountryDirty, markHomeDirty } = await import('../src/core/price-marks.js');
 const { processPriceQueue, HORIZON_S } = await import('../src/core/price-queue.js');
 const { processQueue } = await import('../src/core/build.js');
@@ -26,6 +27,10 @@ async function homeOn(t, name, { country = 'GB', from = A - 86400 } = {}) {
   const site = await createSite({ name, ...(country === 'GB' ? {} : { country, postcode: '75005' }) });
   const meter = await addDevice({ siteId: site.id, kind: 'meter_import', provider: 'test', externalRef: `M-${name}` });
   await agreeTariff({ siteId: site.id, deviceId: meter.id, tariffId: t.id, validFrom: from });
+  // The home holds energy from `from`: a price change reaches no further back than a home's first data (a home with none has nothing
+  // to rebuild yet), and the request this write leaves in the rebuild queue is not what the tests below look at.
+  await putIntervals(await seriesId('device', meter.id, 'grid_import_kwh', 'octopus_meter'), [{ start: from, end: from + 1800, value: 0.1 }]);
+  await db.prepare('DELETE FROM rebuild_queue WHERE site_id = ?').run(site.id);
   return { site, meter };
 }
 const dirty = async () => await db.prepare('SELECT scope, tariff_id, country, site_id, from_ts, reason FROM price_dirty ORDER BY id').all();
@@ -164,4 +169,23 @@ await test('each mark is worked once by one worker, and a mark that failed is st
   assert.equal((await dirty()).length, 1, 'the mark stays when the work fails');
   assert.equal((await processPriceQueue({ now: nowSec() })).tariffs.length, 1);
   assert.equal((await dirty()).length, 0);
+});
+
+await test('a change reaches no further back than a home\'s first data, and a home with no data and nothing built is not queued (a rebuild from 1970 would price every day since)', async () => {
+  await clear();
+  const t = await tariff();
+  const withData = await homeOn(t, 'floor1', { from: A });
+  const empty = await createSite({ name: 'floor2' });
+  const meter = await addDevice({ siteId: empty.id, kind: 'meter_import', provider: 'test', externalRef: 'M-floor2' });
+  await agreeTariff({ siteId: empty.id, deviceId: meter.id, tariffId: t.id, validFrom: 0 });
+  await db.prepare("DELETE FROM price_dirty WHERE scope = 'home'").run();
+  await markTariffDirty(t.id, 0, 'from the start of time');
+  await putRateRows(t.id, [{ component: 'unit', validFrom: 0, price: 20 }]);
+  const r = await processPriceQueue({ now: A + 86400 });
+  assert.deepEqual(r.tariffs.map((x) => [x.homes, x.queued]), [[2, 1]]);
+  assert.deepEqual((await queued()).map((q) => [q.site_id, q.from_ts]), [[withData.site.id, A]], 'from the first data, and the empty home left out');
+  await clear();
+  await markHomeDirty(empty.id, 0, 'meter windows');
+  assert.deepEqual((await processPriceQueue({ now: A + 86400 })).homes, [{ siteId: empty.id, queued: 0 }]);
+  assert.equal((await queued()).length, 0);
 });

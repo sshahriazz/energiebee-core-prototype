@@ -8,7 +8,8 @@
 //   home    an agreement or a meter's windows changed: that home is queued.
 // A home queued here is rebuilt by build.js processQueue like any other request (its ranges are merged, a rebuild stops where it converges).
 import { db, tx } from '../db/db.js';
-import { nowSec, slotLength, slotsOfDay, localDate, daysBetween } from './time.js';
+import { nowSec, slotLength, slotsOfDay, localDate, daysBetween, dayBounds } from './time.js';
+import { factSpan } from './build.js';
 import { materialiseRuns } from './price-run-store.js';
 import { loadPricing } from './pricing.js';
 import { supplyPricer } from './supply-price.js';
@@ -18,14 +19,32 @@ const BATCH = 100;                     // homes queued per statement-group
 
 const chunks = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, (i + 1) * n));
 
-// Queue homes for a rebuild of [from, now): one request per home, a batch of homes in one statement.
+// The earliest time a home has anything built or measured: its first built day or its first energy fact. A price change reaches no
+// further back (the rebuild queue itself never starts before the first data), and a home with neither has nothing to rebuild yet:
+// its first build prices from the start.
+async function homeFloor(siteId) {
+  const site = await db.prepare('SELECT timezone FROM site WHERE id = ?').get(siteId);
+  if (!site) return null;
+  const day = (await db.prepare('SELECT MIN(local_date) AS d FROM site_day WHERE site_id = ?').get(siteId))?.d;
+  const first = (await factSpan(siteId)).first;
+  const times = [day ? dayBounds(site.timezone, day)[0] : null, first].filter((t) => t != null);
+  return times.length ? Math.min(...times) : null;
+}
+
+// Queue homes for a rebuild of [from, now): one request per home, a batch of homes in one statement. A home's request starts no
+// earlier than its first data; a home with none is not queued.
 async function queueHomes(siteIds, from, now, reason, batch) {
   if (!(now > from)) return 0;
-  for (const part of chunks(siteIds, batch)) {
-    await db.prepare(`INSERT INTO rebuild_queue (site_id, from_ts, to_ts, reason, enqueued_at) VALUES ${part.map(() => '(?, ?, ?, ?, ?)').join(', ')}`)
-      .run(...part.flatMap((id) => [id, from, now, reason, now]));
+  const requests = [];
+  for (const id of siteIds) {
+    const floor = await homeFloor(id);
+    if (floor != null && now > Math.max(from, floor)) requests.push([id, Math.max(from, floor)]);
   }
-  return siteIds.length;
+  for (const part of chunks(requests, batch)) {
+    await db.prepare(`INSERT INTO rebuild_queue (site_id, from_ts, to_ts, reason, enqueued_at) VALUES ${part.map(() => '(?, ?, ?, ?, ?)').join(', ')}`)
+      .run(...part.flatMap(([id, f]) => [id, f, now, reason, now]));
+  }
+  return requests.length;
 }
 
 // The known future of a tariff for a home: its price slots from now to the horizon or to the last price the tariff knows, whichever

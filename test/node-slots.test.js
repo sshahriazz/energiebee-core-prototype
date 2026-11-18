@@ -73,3 +73,45 @@ await test('a home with a plug in the living room and a charger on the driveway:
   await buildNodeSlots(home.id, DAY, DAY);
   assert.deepEqual(await db.prepare('SELECT COUNT(*) AS n FROM node_slot WHERE thing_id = ?').get(home.id), before);
 });
+
+await test('the heating system: heat out, energy in, COP, flow temperature and degree-hours, slot by slot; the pure ratios', async () => {
+  const { heatingRatios } = await import('../src/core/node-slots.js');
+  assert.deepEqual(heatingRatios({ heatOut: 3, pumpIn: 1, outdoorC: 5.5, durS: 1800 }), { cop: 3, degreeHours: 5 });
+  assert.deepEqual(heatingRatios({ heatOut: 3, pumpIn: 0.0005, outdoorC: 20, durS: 1800 }), { cop: null, degreeHours: 0 }, 'below a watt-hour there is no COP; a warm day has no degree-hours');
+  assert.deepEqual(heatingRatios({ heatOut: null, pumpIn: 1, outdoorC: null, durS: 1800 }), { cop: null, degreeHours: null });
+  const home = await createSite({ name: 'Heating home', timezone: 'Europe/London', country: 'GB' });
+  const DAY2 = localDate('Europe/London', Math.floor(Date.now() / 1000) - 86400); const [E0] = dayBounds('Europe/London', DAY2);
+  const hp = await addDevice({ siteId: home.id, kind: 'heat_pump', provider: 'synthetic', externalRef: 'h-hp' });
+  const sys = await createThing({ siteId: home.id, type: 'heating', name: 'Heating' });
+  await relate({ siteId: home.id, from: hp.id, rel: 'part_of', to: sys.id });
+  const out = await seriesId('device', hp.id, 'heat_output_kwh', 'push_native'); const inn = await seriesId('device', hp.id, 'heatpump_elec_kwh', 'push_native');
+  const flow = await seriesId('device', hp.id, 'heatpump_flow_temp_c', 'push_native'); const outdoor = await seriesId('site', home.id, 'outdoor_temp_c', 'open_meteo');
+  await asWriter('push_native', async () => { await putIntervals(out, [{ start: E0, end: E0 + 1800, value: 3 }]); await putIntervals(inn, [{ start: E0, end: E0 + 1800, value: 1 }]); await putReadings(flow, [{ ts: E0, value: 38 }, { ts: E0 + 900, value: 42 }]); });
+  await asWriter('open_meteo', async () => { await putReadings(outdoor, [{ ts: E0, value: 5.5 }]); });
+  await buildHomePointSlots(home.id, DAY2, DAY2);
+  await buildNodeSlots(sys.id, DAY2, DAY2);
+  const rows = Object.fromEntries((await readNodeSlots(sys.id, E0, E0 + 1800)).map((r) => [r.metric, r.value]));
+  assert.deepEqual([rows.heat_output_kwh, rows.heat_pump_energy_kwh, rows.heating_energy_kwh, rows.cop], [3, 1, 1, 3]);
+  assert.ok(rows.flow_temp_c >= 38 && rows.flow_temp_c <= 42, `flow ${rows.flow_temp_c}`);
+  assert.equal(rows.degree_hours, 5, '(15.5 - 5.5) x 0.5 h');
+});
+
+await test('cost and carbon on each energy line: the slot\'s energy at the slot\'s import price and the grid\'s intensity', async () => {
+  const home = await createSite({ name: 'Cost home', timezone: 'Europe/London', country: 'GB' });
+  await db.prepare('UPDATE site SET carbon_region = 3 WHERE id = ?').run(home.id);
+  const DAY3 = localDate('Europe/London', Math.floor(Date.now() / 1000) - 86400); const [F0] = dayBounds('Europe/London', DAY3);
+  const room = await createThing({ siteId: home.id, type: 'room', name: 'Cost room' });
+  const plug = await addDevice({ siteId: home.id, kind: 'smart_plug', provider: 'test', externalRef: 'cost-plug' });
+  await relate({ siteId: home.id, from: plug.id, rel: 'located_in', to: room.id });
+  await relate({ siteId: home.id, from: room.id, rel: 'located_in', to: home.id });
+  const e = await seriesId('device', plug.id, 'plug_kwh', 'push_native'); const ci = await seriesId('region', 'carbon:3', 'carbon_intensity', 'carbon_regional');
+  await asWriter('push_native', async () => { await putIntervals(e, [{ start: F0, end: F0 + 1800, value: 2 }]); });
+  await asWriter('carbon_regional', async () => { await putIntervals(ci, [{ start: F0 - 1800, end: F0 + 900, value: 100 }, { start: F0 + 900, end: F0 + 3600, value: 300 }]); });
+  await db.prepare(`INSERT INTO supply_price_slot (site_id, point, slot_start, dur_s, unit_inc, fixed_inc, lineage, stamp, built_at) VALUES (?, 'meter_import', ?, 1800, 25, 0, '{}'::jsonb, 'x', 0)`).run(home.id, F0);
+  await buildHomePointSlots(home.id, DAY3, DAY3);
+  await buildHomeNodeSlots(home.id, DAY3, DAY3);
+  const get = async (thing, metric) => (await readNodeSlots(thing, F0, F0 + 1800, [metric]))[0];
+  assert.equal((await get(room.id, 'energy_kwh')).value, 2);
+  assert.equal((await get(room.id, 'energy_cost_minor')).value, 50, '2 kWh at 25 minor units');
+  assert.equal((await get(room.id, 'energy_carbon_g')).value, 400, '2 kWh at 200 g/kWh: the slot is 900 s at 100 and 900 s at 300');
+});

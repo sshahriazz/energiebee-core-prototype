@@ -36,7 +36,8 @@ const C = await import('../src/core/connectors.js');
 const { syncSite, syncAll } = await import('../src/jobs/sync.js');   // registers the steps
 const { createSite, setContractedCapacity } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, putWindows, addDevice, agreeTariff } = await import('../src/core/tariffs.js');
-const { loadPricing, priceAt, fixedPerDay } = await import('../src/core/pricing.js');
+const { loadPricing, fixedPerDay } = await import('../src/core/pricing.js');
+const { instantPrice } = await import('../src/core/slot-price.js');
 const { PLACEHOLDER_TAX_RULES } = await import('../src/core/tax.js');
 const { seedProviders, TOUNIFY: TOUNIFY_NOTE } = await import('../src/db/seed/providers.js');
 const { app } = await import('../src/server.js');
@@ -540,7 +541,7 @@ await test('taxes_in_price: a French home priced from tounify pays (energy + gri
   // 11 Nov, 10:00 Paris (peak on the meter's hours) and 02:00 (off-peak).
   const peak = at9(1440 + 600); const off = at9(1440 + 120);
   const p = await loadPricing(fr.id, D9, D9 + 3 * 86400);
-  const at = (ts) => priceAt(p, 'meter_import', ts);
+  const at = (ts) => instantPrice(p, 'meter_import', ts);
   const pk = at(peak);
   assert.deepEqual([pk.tariffCode, pk.supplyEx, pk.unitEx, pk.levy, pk.vat], ['TOUNIFY-FR-EDFTRVHPHC', 17.852, 17.852, 0, 0.2]);
   near(pk.unitEx * (1 + pk.vat), (0.0707 + 0.0772 + 0.03062) * 1.2 * 100, 'peak paid per kWh');
@@ -557,7 +558,7 @@ await test('taxes_in_price: a French home priced from tounify pays (energy + gri
   await putRateRows(t.id, [{ component: 'unit', validFrom: peak - 86400, price: 17.852 }]);
   const dev = await addDevice({ siteId: home.id, kind: 'meter_import', provider: 'manual', externalRef: 'CTRL' });
   await agreeTariff({ siteId: home.id, deviceId: dev.id, tariffId: t.id, validFrom: peak - 86400 });
-  const q = priceAt(await loadPricing(home.id, peak, peak + 3600), 'meter_import', peak);
+  const q = instantPrice(await loadPricing(home.id, peak, peak + 3600), 'meter_import', peak);
   assert.deepEqual([q.supplyEx, q.vat], [17.852, 0.2]);
   near(q.levy, 3.37, 'the placeholder accise');
   near(q.unitEx * (1 + q.vat), (17.852 + 3.37) * 1.2, 'ordinary tariff: accise then VAT');

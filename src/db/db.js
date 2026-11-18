@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client.ts';
 import { SOURCES, METRICS, VAT_RATES, GB_VAT_NOTE } from './registry.js';
+import { markPriceDirty } from './price-dirty.js';
 import { seedMarkets, seedBiddingZones, marketSeedPending } from './seed/markets.js';
 import { seedProviders, providerSeedPending } from './seed/providers.js';
 import { seedRegionsGb, regionSeedPending } from './seed/regions-gb.js';
@@ -109,6 +110,7 @@ export const EXCLUSION_MESSAGES = {
   member_no_overlap: 'overlapping current membership of this home in the group',
   relation_no_overlap: 'overlapping current relation between these two things',
   located_in_one_place: 'a thing is in one place at a time (overlapping located_in)',
+  price_run_no_overlap: 'overlapping price runs for this tariff',
 };
 function translateError(err, sql) {
   const cause = err?.meta?.driverAdapterError?.cause ?? err?.cause;
@@ -262,20 +264,31 @@ async function seedRegistry() {
   });
 }
 
+// A tax rule changed for a country: its homes are queued for a rebuild from the rule's date (src/core/price-queue.js), when it has
+// any. A rule with no date to start from (none given) reaches back to the beginning.
+async function markCountryChanged(country, from) {
+  if (!await db.prepare('SELECT 1 AS x FROM site WHERE country = ? LIMIT 1').get(country)) return;
+  await markPriceDirty(db, { country }, Number.isFinite(from) ? from : 0, 'tax rules changed');
+}
+
 // GB VAT has one source, VAT_RATES in registry.js, kept in tax_rule: when VAT_RATES changes, the current
 // GB VAT rules are superseded (kept, so an "as known at" rebuild still sees what was known then) and the
 // new set is recorded now. Returns true when it changed anything.
 export async function syncGbVat(rates = VAT_RATES) {
   const key = (r) => [r.fuel, r.direction, r.rate ?? r.value, r.validFrom ?? r.valid_from, r.validTo ?? r.valid_to ?? null].join('|');
   const want = rates.map(key).sort();
-  const have = (await db.prepare("SELECT fuel, direction, value, valid_from, valid_to FROM tax_rule WHERE country = 'GB' AND code = 'vat' AND superseded_at IS NULL").all()).map(key).sort();
+  const haveRows = await db.prepare("SELECT fuel, direction, value, valid_from, valid_to FROM tax_rule WHERE country = 'GB' AND code = 'vat' AND superseded_at IS NULL").all();
+  const have = haveRows.map(key).sort();
   if (JSON.stringify(want) === JSON.stringify(have)) return false;
+  // The homes are rebuilt from the first rule that differs (src/core/price-queue.js): a rule added, or one that went.
+  const changedFrom = [...rates.filter((v) => !have.includes(key(v))).map((v) => v.validFrom), ...haveRows.filter((v) => !want.includes(key(v))).map((v) => v.valid_from)];
   const now = Date.now();
   await tx(async () => {
     await db.prepare("UPDATE tax_rule SET superseded_at = ? WHERE country = 'GB' AND code = 'vat' AND superseded_at IS NULL").run(now);
     const ins = db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, currency, charge_period, seq, valid_from, valid_to, source, unverified, recorded_at, origin, origin_note)
       VALUES ('GB', 'vat', ?, ?, 'domestic', 'all', 'percent', ?, NULL, NULL, 100, ?, ?, 'vat_rate (registry.js VAT_RATES)', 0, ?, 'sourced', ?)`);
     for (const v of rates) await ins.run(v.fuel, v.direction, v.rate, v.validFrom, v.validTo ?? null, now, GB_VAT_NOTE);
+    await markCountryChanged('GB', Math.min(...changedFrom));
   });
   return true;
 }
@@ -303,6 +316,7 @@ export async function syncVatRules(rules = EU_VAT_RULES) {
       for (const r of list) await ins.run(r.country, r.code, r.fuel, r.direction, r.customer_class, r.applies_to, r.kind, r.value, r.seq, r.valid_from, r.valid_to ?? null, r.source, now, r.origin, r.origin_note);
     });
     changed.push(country);
+    await markCountryChanged(country, Math.min(...list.map((r) => r.valid_from), Infinity));
   }
   return changed;
 }

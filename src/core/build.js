@@ -5,10 +5,12 @@
 //   2 Reconcile  one value per node (meter beats CT); home use by energy balance. Interval facts
 //                are spread over slots by overlap: energy is split, a mean (carbon) is time-weighted
 //   3 Allocate   who fed whom (solar first to home, then battery, then grid)
-//   4 Price      rate over the slot (priceOver: time-weighted when it spans two prices), taxes of
-//                the home's country (tax_rule; GB VAT as before), cost per flow, fixed charges by the
-//                slot's share of its day (monthly / yearly ones by real seconds), battery stock first
-//                in, first out. Money is in minor units of the home's currency (site.currency).
+//   4 Price      the slot's price from the home's price slots (supply-price.js: the stored slot for a current
+//                build, the same maths computed in memory for a build as known at a moment; time-weighted
+//                when a slot spans two prices), taxes of the home's country (tax_rule; GB VAT as before),
+//                cost per flow, fixed charges by the slot's share of its day (monthly / yearly ones by real
+//                seconds), a sub-meter's own tariff (R11), battery stock first in, first out. Money is in
+//                minor units of the home's currency (site.currency).
 //   5 Check      balance, meter vs CT, counter fit, rate coverage; state per slot
 // Provenance: each slot's lineage records the weakest origin of the prices it used (tariff, rate
 // rows, tax rules, contracted capacity: `origin`) with every placeholder or synthetic input named
@@ -31,7 +33,9 @@ import { attributeAt } from './attributes.js';
 import { devicesAt } from './devices.js';
 import { bindingsFor, sourceAt, holdSOf, FILL_MAX_S } from './inputs.js';
 import { siteAt } from './versions.js';
-import { loadPricing, priceOver, fixedOver } from './pricing.js';
+import { loadPricing } from './pricing.js';
+import { supplyPricer, dropOtherLengths, dropStaleSlots, readSubMeterFacts } from './supply-price.js';
+import { unitInc } from './slot-price.js';
 import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
@@ -331,7 +335,13 @@ async function build(siteId, fromDate, toDate, opts) {
       (solarFcBySlot.get(s) || solarFcBySlot.set(s, []).get(s)).push(part);
     }
   }
-  const pricing = await loadPricing(siteId, winStart, winEnd, versioned ? site : null);
+  const pricing = await loadPricing(siteId, winStart, winEnd, versioned ? site : null, { rateRows: !!T });
+  // The home's price slots: the stored ones for a current build (computed and stored where missing; nothing is written in a dry
+  // run), the same maths in memory for a build as known at a moment and for the trace of one slot.
+  const pricer = await supplyPricer({ siteId, p: pricing, slotS, tz, materialise: asOf == null && !T, persist: !opts.dryRun });
+  if (asOf == null && !T && !opts.dryRun) { await dropOtherLengths(siteId, slotS); await dropStaleSlots(siteId, pricer.stamp); }
+  // Sub-meters with a tariff of their own (R11): their energy is priced with it and taken out of the main meter's priced energy.
+  const subMeters = await mapAsync(pricer.subMeters, async (m) => ({ ...m, facts: await readSubMeterFacts(m.deviceId, winStart, winEnd) }));
   const dataOrigin = dataOriginOf(site);
   if (T) Object.assign(T, { pricing, ids: { power: powerIds, daily: dailyIds, soc: socId }, hasInverter, hasImportMeter, expectMeter, gasM3: !!gasM3, gasLdz, approximations });
 
@@ -402,6 +412,7 @@ async function build(siteId, fromDate, toDate, opts) {
     const daySlots = slotsOfDay(tz, date, slotS);
     const slots = daySlots.filter((s) => s + slotS <= now);
     if (!slots.length) continue;
+    await pricer.load(slots);
     // Slots in this day by length (46, 48 or 50 half-hours): the standing charge is spread by
     // each slot's share of the day's real length, so 23 and 25-hour days are exact too.
     const [dayStart, dayEnd] = dayBounds(tz, date);
@@ -513,14 +524,31 @@ async function build(siteId, fromDate, toDate, opts) {
       if (TS) TS.allocate = { sToHome, sLeft, sToBatt, sToGrid, bToHome, bToGrid, gToHome, gToBatt, sToLoss, bToLoss, gToLoss };
 
       // ── 4 Price ──
-      const pi = priceOver(pricing, 'meter_import', slot, slotS);
-      const pe = priceOver(pricing, 'meter_export', slot, slotS);
-      const pg = gas != null ? priceOver(pricing, 'meter_gas', slot, slotS) : null;
-      const impInc = pi?.unitEx != null ? pi.unitEx * (1 + pi.vat) : null;
-      const expRate = pe?.unitEx != null ? pe.unitEx * (1 + pe.vat) : 0;
+      const { price: pi, fixedInc: piFixed } = pricer.get('meter_import', slot);
+      const { price: pe } = pricer.get('meter_export', slot);
+      const { price: pg, fixedInc: pgFixed } = gas != null ? pricer.get('meter_gas', slot) : { price: null, fixedInc: 0 };
+      const impInc = unitInc(pi);
+      const expRate = unitInc(pe) ?? 0;
       if (impInc != null) { day.rated++; } else q |= QUALITY.CHECK_FAILED;
+      // Sub-meters with a tariff of their own (R11): what a sub-meter measured is billed at its tariff and taken out of the main
+      // meter's priced energy. Bounded by what the home drew from the grid for itself, so energy the sun or the battery supplied is
+      // never counted as bought; a slot where the sub-meter's price is unknown keeps the main meter's price and says so.
+      const subs = [];
+      let subDelta = 0; let subFixed = 0;
+      for (const m of subMeters) {
+        const { price: sp, fixedInc } = pricer.get(m.key, slot);
+        if (!sp) continue;
+        subFixed += fixedInc;
+        const kwh = slotSum(m.facts, slot, slotS);
+        if (!(kwh > 0) || impInc == null) continue;
+        const moved = Math.min(kwh, gToHome);
+        if (sp.unitEx == null) { subs.push({ device: m.deviceId, tariff: sp.tariffCode, kwh: moved, unpriced: true }); continue; }
+        const subInc = unitInc(sp);
+        subDelta += moved * (subInc - impInc);
+        subs.push({ device: m.deviceId, tariff: sp.tariffCode, kwh: moved, unit_inc: subInc, main_unit_inc: impInc, delta: moved * (subInc - impInc) });
+      }
       // Where the prices came from (weakest input), and whether any was a cautious estimate.
-      const prov = inputsProvenance([pi, pe, pg].flatMap((x) => x?.inputs ?? []));
+      const prov = inputsProvenance([pi, pe, pg, ...subMeters.map((m) => pricer.get(m.key, slot).price)].flatMap((x) => x?.inputs ?? []));
       const priceEstimated = !!(pi?.estimated || pe?.estimated || pg?.estimated);
       if (priceEstimated) { q |= QUALITY.ESTIMATED; day.estimated++; }
       const capacityUnknown = !!(pi?.capacityUnknown || pg?.capacityUnknown);
@@ -557,9 +585,9 @@ async function build(siteId, fromDate, toDate, opts) {
       if (TS) TS.stock.after = stock.map((l) => ({ ...l }));
 
       // Fixed charges with their taxes (a credit such as the Dutch heffingskorting is negative).
-      const standing = pi ? fixedOver(pi, slot, slotS, nSlotsDay, tz) + (pg ? fixedOver(pg, slot, slotS, nSlotsDay, tz) : 0) : 0;
+      const standing = (pi ? piFixed + (pg ? pgFixed : 0) : 0) + subFixed;
       const gasCost = gas != null && pg?.unitEx != null ? gas * pg.unitEx * (1 + pg.vat) : (gas != null ? null : 0);
-      const gToHomeCost = impInc != null ? gToHome * impInc : null;
+      const gToHomeCost = impInc != null ? gToHome * impInc + subDelta : null;
       const gToBattCost = impInc != null ? gToBatt * impInc : null;
       const lossCost = impInc != null ? gToLoss * impInc : null;
       // Unknown when any of the energy drawn was stored before the data starts.
@@ -567,7 +595,7 @@ async function build(siteId, fromDate, toDate, opts) {
       const exportCredit = (sToGrid + bToGrid) * expRate;
       // The bill is every imported kWh at its price (including what the inverter lost), plus standing and gas, minus export.
       const totalCost = impInc != null ? gToHomeCost + gToBattCost + lossCost + standing + (gasCost || 0) - exportCredit : null;
-      const gridOnly = impInc != null ? home * impInc + standing + (gasCost || 0) : null;
+      const gridOnly = impInc != null ? home * impInc + subDelta + standing + (gasCost || 0) : null;
       const ci = slotAgg(carbonFacts, slot, slotS, AGGREGATION.get('carbon_intensity')).value ?? null;
       const carbonG = ci != null && imp != null ? imp * ci : null;
       const carbonSaved = ci != null ? home * ci - (carbonG || 0) : null;
@@ -607,7 +635,7 @@ async function build(siteId, fromDate, toDate, opts) {
         meter_vs_ct: meterVsCt, rate_found: impInc != null ? 1 : 0,
         lineage: JSON.stringify({ import: impSrc, export: expSrc, ...(controlCmds.some((c) => c.window_start < slot + slotS && c.window_end > slot) ? { control: controlCmds.filter((c) => c.window_start < slot + slotS && c.window_end > slot).map((c) => ({ id: c.id, action: c.action, verify: c.verify_status })) } : {}), ...(impSrc === 'meter' || expSrc === 'meter' ? { meter: meterSource(slot) } : {}), solar: hasInverter ? sourceAt(bound5, slot) : null, fit, tariff: pi?.tariffCode ?? null, register: pi?.register ?? null, ...(pi ? { tax: pi.tax.source, ...(pi.tax.unverified ? { taxUnverified: true } : {}), ...(pi.levy ? { levy: pi.levy } : {}) } : {}), carbon: ci != null ? sourceAt(carbonBound, slot) : null, coverage: Math.round(coverage * 100) / 100, ...(ct ? { ct } : {}), ...(gasM3 && gasRaw != null ? { gasM3: Math.round(gasRaw * 1000) / 1000, gasCv: cv, gasLdz, gasCvSource: cv != null ? sourceAt(cvBound, slot) : 'not published yet' } : {}),
           ...(prov ? { origin: prov.origin, placeholder_inputs: prov.placeholder_inputs } : {}), data_origin: dataOrigin,
-          ...(priceEstimated ? { estimated: true } : {}), ...(capacityUnknown ? { capacity_unknown: true } : {}) }),
+          ...(priceEstimated ? { estimated: true } : {}), ...(capacityUnknown ? { capacity_unknown: true } : {}), ...(subs.length ? { sub_meters: subs } : {}) }),
         method_version: METHOD_VERSION, built_at: now,
       };
       day.rows.push(row);

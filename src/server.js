@@ -4,16 +4,18 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, dataDir, optimizeDb, closeDb, vatRulesChanged } from './db/db.js';
+import { db, dataDir, optimizeDb, closeDb } from './db/db.js';
 import { carbonSubjectOf } from './core/carbon-series.js';
 import { buildSite, processQueue, queueStaleMethods, METHOD_VERSION } from './core/build.js';
+import { processPriceQueue } from './core/price-queue.js';
 import { forecastSite } from './core/forecast.js';
 import { solarExpected } from './core/solar-expected.js';
 import { insightsFor } from './core/insights.js';
 import { compareSite } from './core/compare.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength, slotPhase, slotFloor, slotsPerDay } from './core/time.js';
-import { seriesId, readReadings, markDirty, readRaw } from './core/facts.js';
-import { loadPricing, priceOver, fixedPerDay } from './core/pricing.js';
+import { seriesId, readReadings, readRaw } from './core/facts.js';
+import { loadPricing, fixedPerDay } from './core/pricing.js';
+import { slotPrice } from './core/slot-price.js';
 import { fixedChargeMicro } from './core/tariff-expand.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
 import { startControlScheduler, registeredDrivers } from './jobs/control.js';
@@ -305,7 +307,7 @@ app.get('/api/sites/:id/now', async (req, res) => {
   const slot = slotOf(s, now);
   const pricing = await loadPricing(s.id, slot - SLOT, slot + 4 * 3600);
   const priceRow = (t) => {
-    const i = priceOver(pricing, 'meter_import', t, SLOT); const e = priceOver(pricing, 'meter_export', t, SLOT);
+    const i = slotPrice(pricing, 'meter_import', t, SLOT); const e = slotPrice(pricing, 'meter_export', t, SLOT);
     const pv = inputsProvenance([...(i?.inputs ?? []), ...(e?.inputs ?? [])]);
     return { slot: t, import: i?.unitEx != null ? i.unitEx * (1 + i.vat) : null, export: e?.unitEx != null ? e.unitEx * (1 + e.vat) : null, tariff: i?.tariffCode ?? null,
       origin: pv?.origin ?? null, placeholder_inputs: pv?.placeholder_inputs ?? [], ...(i?.estimated ? { estimated: true } : {}) };
@@ -473,7 +475,7 @@ app.get('/api/sites/:id/tariffs', async (req, res) => {
       AND r.valid_from < ? AND COALESCE(r.valid_to, 9000000000) > ?`);
   res.json(await mapAsync(rows, async (r) => {
                 const live = r.valid_from <= now && (r.valid_to == null || r.valid_to > now);
-                const p = live ? priceOver(pricing, r.kind, slotOf(s, now), SLOT) : null;
+                const p = live ? slotPrice(pricing, r.kind, slotOf(s, now), SLOT) : null;
                 const rateInputs = (p?.inputs ?? []).filter((i) => i.what.startsWith('rate '));
                 const taxes = p ? (p.tax.rules.length ? p.tax.rules.map((t) => ({ code: t.code, kind: t.kind, value: t.value, currency: t.currency, charge_period: t.charge_period,
                   origin: t.origin, origin_note: t.origin_note, unverified: t.unverified === 1 || t.unverified === true }))
@@ -842,6 +844,7 @@ app.get('/api/connectors', async (req, res) => res.json(await connectors(db)));
 // they read data and where it lives here. No home needed; no credential and no home's data in it.
 app.get('/api/compatibility', async (req, res) => res.json(await compatibility(db)));
 app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
+app.use('/api', (await import('./routes/prices.js')).default);   // price slots: GET /api/tariffs/:id/slots, /api/sites/:id/prices (src/core/tariff-slots.js)
 
 // ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
 // What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,
@@ -948,14 +951,11 @@ export async function start() {
   if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
   // Retention: a dry-run report unless RETENTION=apply (counts only; src/core/maintenance.js).
   if (maintenance.retention) console.log(retentionSummary(maintenance.retention));
-  // VAT rules for a country changed (db.js syncVatRules): every home there is rebuilt from its first built day,
-  // so days built before the change are priced with the rules as they now stand.
-  if (vatRulesChanged.length) {
-    const homes = await db.prepare(`SELECT s.id, s.timezone, MIN(d.local_date) AS first FROM site s JOIN site_day d ON d.site_id = s.id
-      WHERE COALESCE(s.country, s.market_code) IN (${vatRulesChanged.map(() => '?').join(',')}) GROUP BY s.id`).all(...vatRulesChanged);
-    for (const h of homes) await markDirty(h.id, dayBounds(h.timezone, h.first)[0], nowSec(), `VAT rules changed for ${vatRulesChanged.join(', ')}`);
-    console.log(`VAT rules recorded for ${vatRulesChanged.join(', ')}; ${homes.length} home(s) queued for a rebuild`);
-  }
+  // Price changes marked while the server was off, and VAT rules recorded at start-up (db.js syncVatRules): each shared change is
+  // worked off once, and every home it reaches is queued for a rebuild from the change, so days built before it are priced as now.
+  const priced = await processPriceQueue().catch((err) => { console.error('price changes:', err.message); return { tariffs: [], countries: [], homes: [], queued: 0, failed: [] }; });
+  for (const f of priced.failed) console.error(`price changes: ${f.scope} mark ${f.id ?? ''} failed: ${f.error}`);
+  if (priced.queued) console.log(`price changes: ${priced.tariffs.length} tariff(s), ${priced.countries.length} tax change(s), ${priced.homes.length} home(s) marked; ${priced.queued} home rebuild(s) queued`);
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, async () => {
     startRawCheckSchedule(rawCheck);   // background: the first run does not hold up the first request

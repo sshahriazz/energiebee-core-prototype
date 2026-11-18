@@ -8,6 +8,7 @@ import { ingestObservations, setDeviceChannel } from '../core/channels.js';
 import { setDeviceAttrs, supersedeAgreements } from '../core/devices.js';
 import { isoUtc, nowSec, parseIso } from '../core/time.js';
 import { mapAsync } from "../core/async.js";
+import { markTariffDirty } from '../core/price-marks.js';
 
 const BASE = 'https://api.octopus.energy/v1';
 const GQL = 'https://api.octopus.energy/v1/graphql/';
@@ -95,6 +96,7 @@ const insRate = db.prepare(
 export async function putRates(tariffId, component, register, rows, siteId = null) {
   const now = Date.now();
   let changed = 0;
+  let firstChanged = Infinity;   // the mark reaches back to the earliest row that changed, not to the start of the window passed in
   const sorted = [...rows].sort((a, b) => a.validFrom - b.validFrom);
   await tx(async () => {
         for (const r of sorted) {
@@ -114,8 +116,9 @@ export async function putRates(tariffId, component, register, rows, siteId = nul
             if (r.validTo != null && (o.valid_to == null || o.valid_to > r.validTo)) await insRate.run(tariffId, siteId, component, register, pm, r.validTo, o.valid_to, o.price_ex_vat, now, o.raw_id);
           }
           await insRate.run(tariffId, siteId, component, register, pm, r.validFrom, r.validTo ?? null, r.priceExVat, now, r.rawId ?? null);
-          changed++;
+          changed++; firstChanged = Math.min(firstChanged, r.validFrom);
         }
+        if (changed) await markTariffDirty(tariffId, firstChanged, 'rates synced from Octopus');
       });
   return changed;
 }

@@ -7,6 +7,7 @@ import { db } from '../db/db.js';
 import { carbonSubjectOf } from '../core/carbon-series.js';
 import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
+import { processPriceQueue } from '../core/price-queue.js';
 import { FILL_MAX_S } from '../core/inputs.js';
 import { forecastSite } from '../core/forecast.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength } from '../core/time.js';
@@ -17,6 +18,8 @@ import { seedSiteAttributes } from '../core/maintenance.js';
 import { createSite } from '../core/sites.js';
 import { plan, newCycle, adapterFor, providersFor } from '../core/providers.js';
 import { INITIAL_DAYS, resumeDate } from './steps.js';
+
+const PRICE_MARKS_PER_SYNC = 20;   // marks of each scope one home's sync works off; the rest waits for the next sync or start
 
 export { resumeDate };
 const env = process.env;
@@ -234,6 +237,18 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
       if (span) await markDirty(siteId, span.first, Math.max(span.last, span.first + 1), 'facts changed');
       if (yShort < Infinity) await markDirty(siteId, yShort, yEnd, 'yesterday is short');
       if (allFrom < Infinity) await markDirty(siteId, allFrom, now, 'tariff agreements changed');
+    }
+    // Price changes marked by the write functions (rate rows, windows, tax rules, agreements): each shared change is worked off once and the
+    // homes it reaches are queued, so this home's rebuild below also covers what changed in its prices since its last sync.
+    // Bounded (the rest waits for the next sync or start) and guarded: a failing mark is counted on its row and shows here as a failed step, it
+    // never stops this home's build or another home's sync.
+    const tp = Date.now();
+    try {
+      const priced = await processPriceQueue({ maxMarks: PRICE_MARKS_PER_SYNC });
+      // Only a failure is a step of its own: a working price queue leaves the log as it was.
+      if (priced.failed.length) log.push({ step: 'prices', ok: false, ms: Date.now() - tp, error: priced.failed.map((f) => `${f.scope} ${f.id ?? ''}: ${f.error}`).join('; ') });
+    } catch (err) {
+      log.push({ step: 'prices', ok: false, ms: Date.now() - tp, error: err.message });
     }
     const t0 = Date.now();
     const rebuilt = await processQueue({ siteId });

@@ -83,10 +83,20 @@ export function addDays(dateStr, n) {
 }
 
 // [start, end) of a local calendar day, in UTC seconds: 23, 24 or 25 hours long.
+// Remembered per zone and date: pricing asks for the bounds of the slot's day once per slot and supply point, and each answer costs
+// four zone lookups. Pure in its arguments; emptied when large so a long-running process does not grow with every date it sees.
+const dayBoundsMemo = new Map();
 export function dayBounds(tz, dateStr) {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const next = addDays(dateStr, 1).split('-').map(Number);
-  return [localToUtc(tz, y, m, d), localToUtc(tz, next[0], next[1], next[2])];
+  const key = `${tz}|${dateStr}`;
+  let b = dayBoundsMemo.get(key);
+  if (!b) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const next = addDays(dateStr, 1).split('-').map(Number);
+    b = Object.freeze([localToUtc(tz, y, m, d), localToUtc(tz, next[0], next[1], next[2])]);
+    if (dayBoundsMemo.size >= 20000) dayBoundsMemo.clear();
+    dayBoundsMemo.set(key, b);
+  }
+  return b;
 }
 
 export function daysBetween(fromDate, toDate) {

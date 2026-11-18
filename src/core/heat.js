@@ -23,7 +23,7 @@
 //   radiator_temp_c             radiator water: time-weighted means, context only (a home without such a
 //                               sensor is not incomplete)
 //   cost_minor                  electricity × the import unit price including tax + gas × the gas
-//                               unit price including tax (pricing.js priceOver, the home's tariff
+//                               unit price including tax (slot-price.js slotPrice, the home's tariff
 //                               agreements and tax rules), minor units of site.currency. As if all
 //                               the electricity came from the grid: solar and battery supply are
 //                               allocated for the whole home in site_hh, not here. No standing charge.
@@ -45,7 +45,8 @@
 import { db, tx } from '../db/db.js';
 import { readReadings, readIntervals, QUALITY, withKnownAt, inForce } from './facts.js';
 import { bindingsFor } from './inputs.js';
-import { loadPricing, priceOver } from './pricing.js';
+import { loadPricing } from './pricing.js';
+import { slotPrice } from './slot-price.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, slotLength, slotFloor, todMinute, eachSlotOverlap } from './time.js';
 import { filterAsync } from './async.js';
@@ -240,8 +241,8 @@ async function build(siteId, fromDate, toDate, opts) {
       else if (val('heatpump_cop') != null) { cop = val('heatpump_cop'); copFrom = `reported (${sourcesOf('heatpump_cop').join(', ')})`; }
 
       // ── Price: the home's tariff agreements, taxes included ──
-      const pi = elec != null ? priceOver(pricing, 'meter_import', slot, slotS) : null;
-      const pg = gas != null ? priceOver(pricing, 'meter_gas', slot, slotS) : null;
+      const pi = elec != null ? slotPrice(pricing, 'meter_import', slot, slotS) : null;
+      const pg = gas != null ? slotPrice(pricing, 'meter_gas', slot, slotS) : null;
       const elecCost = elec != null && pi?.unitEx != null ? elec * pi.unitEx * (1 + pi.vat) : null;
       const gasCost = gas != null && pg?.unitEx != null ? gas * pg.unitEx * (1 + pg.vat) : null;
       if ((elec != null && elecCost == null && agreed('meter_import')) || (gas != null && gasCost == null && agreed('meter_gas'))) q |= QUALITY.CHECK_FAILED;

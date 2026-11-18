@@ -11,6 +11,7 @@ import { putSecret, hasSecret, secretsReady, deleteSecret } from './secrets.js';
 import { retireDevice } from './devices.js';
 import { withdrawAttribute } from './attributes.js';
 import { markDirty } from './facts.js';
+import { markHomeDirty } from './price-marks.js';
 import { processQueue } from './build.js';
 import { nowSec, dayBounds } from './time.js';
 import { giveHome } from './users.js';
@@ -218,7 +219,11 @@ export async function disconnectHome(user, site, provider) {
         }
         // Its meters' tariff agreements go too (superseded, kept in history): pricing reads only current ones,
         // so a retired meter would otherwise go on pricing the home with the old account's tariffs.
-        for (const id of devices) agreements += (await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, id)).changes;
+        for (const id of devices) {
+          const first = (await db.prepare('SELECT MIN(valid_from) AS first FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').get(id))?.first;
+          agreements += (await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, id)).changes;
+          if (first != null) await markHomeDirty(site.id, first, `tariff agreements ended with the ${provider} connection`);
+        }
         await deleteSecret(site.id, connection);
         await db.prepare('DELETE FROM connection WHERE site_id = ? AND provider = ?').run(site.id, connection);
       });

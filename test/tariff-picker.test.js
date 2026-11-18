@@ -25,7 +25,8 @@ const PK = await import('../src/core/tariff-picker.js');
 const { supplierCode, ensureSupplier, backfillSuppliers } = await import('../src/core/suppliers.js');
 const { createSite } = await import('../src/core/sites.js');
 const { createTariff, addDevice, agreeTariff, putRateRows } = await import('../src/core/tariffs.js');
-const { loadPricing, priceAt, meterRegister } = await import('../src/core/pricing.js');
+const { loadPricing, meterRegister } = await import('../src/core/pricing.js');
+const { instantPrice } = await import('../src/core/slot-price.js');
 const { app } = await import('../src/server.js');
 
 const FIX = path.join(import.meta.dirname, 'fixtures', 'tariffscanner');
@@ -52,7 +53,7 @@ const home = await createSite({ name: 'Cardiff', country: 'GB', postcode: 'CF10 
 const siteRow = async () => await db.prepare('SELECT * FROM site WHERE id = ?').get(home.id);
 const T = async (code) => await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(code);
 const at = (iso) => Date.parse(iso) / 1000;
-const price = async (ts, siteId = home.id) => priceAt(await loadPricing(siteId, ts - 86400, ts + 86400), 'meter_import', ts);
+const price = async (ts, siteId = home.id) => instantPrice(await loadPricing(siteId, ts - 86400, ts + 86400), 'meter_import', ts);
 
 const server = app.listen(0);
 server.unref();   // never keeps the test process alive (a top-level after() runs too early: helpers.js)

@@ -62,6 +62,7 @@ import { envCredentials, SERVICE_CREDENTIALS } from '../core/providers.js';
 import { assertOwner } from './contract.js';
 import { tariffKindOf, nativePeriodOf } from './octopus.js';
 import { linkSupplier, tariffscannerSupplierOf } from '../core/suppliers.js';
+import { markTariffDirty, markTariffColumnsDirty } from '../core/price-marks.js';
 
 export const PROVIDER = 'tariffscanner';
 export const DEFAULT_BASE_URL = 'https://api.tariffscan.futureenergy.associates';
@@ -460,6 +461,7 @@ async function upsertTariffRow(t) {
   const diff = TARIFF_FIELDS.filter(([col, key]) => (cur[col] ?? null) !== (t[key] ?? null));
   if (!diff.length) return { row: cur, created: 0, updated: 0 };
   await db.prepare(`UPDATE tariff SET ${diff.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...diff.map(([, k]) => t[k] ?? null), cur.id);
+  await markTariffColumnsDirty(cur.id, diff.map(([c]) => c));
   return { row: await db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
 }
 
@@ -477,6 +479,7 @@ const insRate = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, compo
 // rows written.
 export async function putCatalogueRates(tariffId, rows, { rawId = null, recordedAt = Date.now() } = {}) {
   let changed = 0;
+  let firstChanged = Infinity;   // the mark reaches back to the earliest row that changed, not to the earliest passed in
   await tx(async () => {
         for (const r of [...rows].sort((a, b) => a.validFrom - b.validFrom)) {
           const k = [tariffId, r.component, r.register, r.paymentMethod];
@@ -487,8 +490,9 @@ export async function putCatalogueRates(tariffId, rows, { rawId = null, recorded
             if (o.valid_from < r.validFrom) await insRate.run(tariffId, o.component, o.register, o.payment_method, o.valid_from, r.validFrom, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note);
           }
           await insRate.run(tariffId, r.component, r.register, r.paymentMethod, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null);
-          changed++;
+          changed++; firstChanged = Math.min(firstChanged, r.validFrom);
         }
+        if (changed) await markTariffDirty(tariffId, firstChanged, 'rates stored from Tariffscanner');
       });
   return changed;
 }

@@ -68,6 +68,7 @@ import { db, tx } from '../db/db.js';
 import { landRaw, quarantine, readRaw } from '../core/facts.js';
 import { createTariff, addDevice } from '../core/tariffs.js';
 import { supersedeAgreements } from '../core/devices.js';
+import { markTariffDirty, markTariffColumnsDirty } from '../core/price-marks.js';
 import { linkSupplier } from '../core/suppliers.js';
 import { CURRENCIES, toMinor } from '../core/money.js';
 import { rulesFor } from '../core/tax.js';
@@ -642,6 +643,7 @@ async function upsertTariff(t) {
   const diff = TARIFF_FIELDS.filter(([col, key]) => (cur[col] ?? null) !== (t[key] ?? null));
   if (!diff.length) return { row: cur, created: 0, updated: 0 };
   await db.prepare(`UPDATE tariff SET ${diff.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...diff.map(([, k]) => t[k] ?? null), cur.id);
+  await markTariffColumnsDirty(cur.id, diff.map(([c]) => c));
   return { row: await db.prepare('SELECT * FROM tariff WHERE id = ?').get(cur.id), created: 0, updated: 1 };
 }
 
@@ -661,6 +663,7 @@ export async function putRates(tariffId, siteId, rows, { component = 'unit', raw
   const ins = db.prepare(`INSERT INTO rate_interval (tariff_id, site_id, component, register, charge_period, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, raw_id, origin, origin_note, estimated)
     VALUES (?, ?, ?, ?, ?, 'ANY', ?, ?, ?, ?, ?, 'provider', ?, ?)`);
   let changed = 0;
+  let firstChanged = Infinity;   // the mark reaches back to the earliest row that changed, not to the earliest passed in
   await tx(async () => {
         for (const r of [...rows].sort((a, b) => a.validFrom - b.validFrom)) {
           const register = r.register ?? 'single';
@@ -675,8 +678,9 @@ export async function putRates(tariffId, siteId, rows, { component = 'unit', raw
             if (r.validTo != null && (o.valid_to ?? END) > r.validTo) await ins.run(tariffId, siteId, component, register, period, r.validTo, o.valid_to, o.price_ex_vat, recordedAt, o.raw_id, o.origin_note, o.estimated);
           }
           await ins.run(tariffId, siteId, component, register, period, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null, est);
-          changed++;
+          changed++; firstChanged = Math.min(firstChanged, r.validFrom);
         }
+        if (changed) await markTariffDirty(tariffId, firstChanged, `rates stored for home ${siteId}`);
       });
   return changed;
 }

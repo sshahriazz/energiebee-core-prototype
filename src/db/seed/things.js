@@ -65,7 +65,7 @@ export const THING_TYPES = Object.freeze([
   t('device', 'battery', 'Battery', { capabilities: ['battery_storage'], ports: [port('charge', 'in', 'dc'), port('discharge', 'out', 'dc')], std: 'brick:Battery' }),
   t('device', 'heat_pump', 'Heat pump', { capabilities: ['heat_source', 'on_off', 'power_meter', 'energy_meter'], ports: [ELEC.in, port('flow', 'out', 'heat')] }),
   t('device', 'boiler', 'Boiler', { capabilities: ['heat_source', 'on_off'], ports: [port('gas', 'in', 'gas'), port('flow', 'out', 'heat')], std: 'brick:Boiler' }),
-  t('device', 'emitter', 'Emitter', { ports: [port('flow', 'in', 'heat')], keys: ['emitter_type', 'emitter_output_w_at_dt50'], description: 'A radiator or underfloor loop.' }),
+  t('device', 'emitter', 'Emitter', { ports: [port('flow', 'in', 'heat'), port('heat', 'out', 'heat')], keys: ['emitter_type', 'emitter_output_w_at_dt50'], description: 'A radiator or underfloor loop.' }),
   t('device', 'trv', 'Radiator valve', { capabilities: ['valve', 'thermostat', 'temperature_sensor'] }),
   t('device', 'thermostat', 'Thermostat', { capabilities: ['thermostat', 'temperature_sensor'], std: 'brick:Thermostat' }),
   t('device', 'temperature_sensor', 'Temperature sensor', { capabilities: ['temperature_sensor'], std: 'brick:Temperature_Sensor' }),

@@ -27,7 +27,7 @@ import { ensureLink } from './links.js';
 export const HOME_WIDE = Object.freeze(['inverter', 'pv_array', 'battery', 'home_supply', 'grid_connection', 'hub']);
 const NAMES = Object.freeze({
   inverter: 'Inverter', pv_array: 'PV array', battery: 'Battery', grid_connection: 'Grid connection', home_supply: 'Home supply',
-  solar_battery: 'Solar and battery', outside_wall: 'Outside wall', driveway: 'Driveway',
+  solar_battery: 'Solar and battery', heating: 'Heating', outside_wall: 'Outside wall', driveway: 'Driveway',
 });
 const SPACE_TYPES = Object.freeze(['floor', 'room', 'garage', 'loft', 'outdoor', 'outside_wall', 'driveway']);
 const OUTSIDE = Object.freeze(['meter_import', 'meter_export', 'meter_gas']);       // mounted on an outside wall
@@ -86,6 +86,7 @@ export function planGraph(facts, declare = {}) {
   if (!everType('grid_connection') && (metered || node('inverter').length || declare.gridConnection)) make('grid_connection');
   if (!everType('home_supply') && (node('grid_connection').length || node('inverter').length)) make('home_supply');
   if (!everType('solar_battery') && (node('pv_array').length || node('battery').length)) make('solar_battery');
+  if (!everType('heating') && (node('heat_pump').length || node('boiler').length)) make('heating');
 
   // 2. spaces: a space exists only where something is placed in it
   if (!everType('outside_wall') && things.some((t) => OUTSIDE.includes(t.type) && !t.retired)) make('outside_wall');
@@ -135,11 +136,33 @@ export function planGraph(facts, declare = {}) {
   }
   for (const x of [...node('pv_array'), ...inverters, ...node('battery')]) link(x, null, 'part_of', sys, null);
 
+  // The heating graph (plan 5.1): a heat source feeds the emitters, each emitter heats the room it is in, a thermostat controls the source and a
+  // valve the emitter beside it, and all of it is part of the home's heating system. With several heat sources nothing is guessed about which
+  // feeds which emitter. A heating zone is a system the caller declares (declare.zones).
+  const heat = node('heating')[0] ?? null;
+  const sources = [...node('heat_pump'), ...node('boiler')];
+  const emitters = node('emitter');
+  const roomOfThing = (ref) => { const to = facts.relations.find((r) => r.rel === 'located_in' && r.from === ref)?.to ?? roomOf.get(ref); return to != null && to !== facts.home.id ? to : null; };
+  if (sources.length === 1) for (const e of emitters) link(sources[0], 'flow', 'feeds', e, 'flow');
+  for (const e of emitters) link(e, 'heat', 'feeds', roomOfThing(e), null);
+  for (const t of [...node('thermostat'), ...node('trv')]) {
+    if (sources.length === 1) link(t, null, 'controls', sources[0], null);
+    const here = roomOfThing(t);
+    const beside = here == null ? [] : emitters.filter((e) => roomOfThing(e) === here);
+    if (t !== undefined && node('trv').includes(t) && beside.length === 1) link(t, null, 'controls', beside[0], null);
+  }
+  for (const x of [...sources, ...emitters, ...node('thermostat'), ...node('trv'), ...node('hot_water_tank')]) link(x, null, 'part_of', heat, null);
+  for (const zone of declare.zones ?? []) {
+    const have = things.find((t) => t.type === 'heating_zone' && t.name === zone.name && !t.retired) ?? create.find((c) => c.type === 'heating_zone' && c.name === zone.name);
+    const z = have ? (have.key ?? have.id) : make('heating_zone', zone.name);
+    for (const id of zone.things ?? []) link(id, null, 'part_of', z, null);
+  }
+
   // 4. places: the home, or the space a rule or the caller names; never a room for a home-wide device
   const placed = new Set(facts.relations.filter((r) => r.rel === 'located_in').map((r) => r.from));
   const candidates = [
     ...things.filter((t) => !t.retired && (t.kind === 'device' || t.kind === 'space')).map((t) => ({ ref: t.id, type: t.type, kind: t.kind })),
-    ...create.filter((c) => c.type !== 'solar_battery').map((c) => ({ ref: c.key, type: c.type, kind: SPACE_TYPES.includes(c.type) ? 'space' : 'device' })),   // a system is not placed
+    ...create.filter((c) => c.type !== 'solar_battery' && c.type !== 'heating' && c.type !== 'heating_zone').map((c) => ({ ref: c.key, type: c.type, kind: SPACE_TYPES.includes(c.type) ? 'space' : 'device' })),   // a system is not placed
   ];
   for (const c of candidates) {
     if (typeof c.ref === 'number' && placed.has(c.ref)) continue;

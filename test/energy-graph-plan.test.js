@@ -23,7 +23,7 @@ const count = (plan, rel) => plan.relate.filter((r) => r.rel === rel).length;
 const after = (f, plan) => {
   const ids = new Map(plan.create.map((c, i) => [c.key, 100 + i]));
   const id = (r) => (typeof r === 'string' ? ids.get(r) : r);
-  const kind = (t) => (['floor', 'room', 'garage', 'loft', 'outdoor', 'outside_wall', 'driveway'].includes(t) ? 'space' : t === 'solar_battery' ? 'system' : 'device');
+  const kind = (t) => (['floor', 'room', 'garage', 'loft', 'outdoor', 'outside_wall', 'driveway'].includes(t) ? 'space' : ['solar_battery', 'heating', 'heating_zone'].includes(t) ? 'system' : 'device');
   return {
     ...f,
     things: [...f.things, ...plan.create.map((c) => ({ id: ids.get(c.key), kind: kind(c.type), type: c.type, name: c.name, valid_from: 0, retired: false }))],
@@ -99,7 +99,7 @@ await test('two inverters: only what is certain is written, and the plan says it
 await test('a declared topology: the synthetic home names its inverter and its rooms', () => {
   const f = facts([dev(2, 'smart_plug'), dev(3, 'heat_pump'), dev(4, 'ev_charger'), dev(5, 'battery'), dev(6, 'temperature_sensor')], { battery: true });
   const plan = planGraph(f, { inverter: 'Inverter (synthetic)', rooms: [{ name: 'Living room', things: [2, 6] }, { name: 'Utility room', things: [3] }] });
-  assert.deepEqual(types(plan), ['driveway', 'grid_connection', 'home_supply', 'inverter', 'room', 'room', 'solar_battery']);
+  assert.deepEqual(types(plan), ['driveway', 'grid_connection', 'heating', 'home_supply', 'inverter', 'room', 'room', 'solar_battery']);
   assert.equal(plan.create.find((c) => c.type === 'inverter').name, 'Inverter (synthetic)');
   const placed = new Map(plan.relate.filter((r) => r.rel === 'located_in').map((r) => [r.from, r.to]));
   const room = (name) => plan.create.find((c) => c.name === name).key;
@@ -120,4 +120,26 @@ await test('a car behind a charger is fed by the charger, not by the supply', ()
   const feeds = plan.relate.filter((r) => r.rel === 'feeds').map((r) => `${r.from}.${r.fromPort}>${r.to}.${r.toPort}`);
   assert.ok(feeds.includes('2.ev>3.charge'));
   assert.equal(feeds.filter((e) => e.endsWith('>3.charge')).length, 1);
+});
+
+await test('the heating graph: a heat source feeds the emitters, each emitter heats its room, controls follow, all part of the heating system', () => {
+  const space = (id, name) => ({ id, kind: 'space', type: 'room', name, valid_from: 0, retired: false });
+  const loc = (from, to) => ({ from, fromPort: null, rel: 'located_in', to, toPort: null });
+  const f = facts([dev(2, 'heat_pump'), dev(3, 'emitter'), dev(4, 'emitter'), dev(5, 'thermostat'), dev(6, 'trv'), space(10, 'Living room'), space(11, 'Bedroom')],
+    {}, [loc(3, 10), loc(4, 11), loc(5, 10), loc(6, 11), loc(2, HOME), loc(10, HOME), loc(11, HOME)]);
+  const plan = planGraph(f);
+  assert.deepEqual(types(plan), ['heating']);
+  const rel = (r) => `${r.from}${r.fromPort ? `.${r.fromPort}` : ''} ${r.rel} ${r.to}${r.toPort ? `.${r.toPort}` : ''}`;
+  const key = plan.create.find((c) => c.type === 'heating').key;
+  assert.deepEqual(plan.relate.map(rel).sort(), [
+    '2.flow feeds 3.flow', '2.flow feeds 4.flow', '3.heat feeds 10', '4.heat feeds 11',
+    '5 controls 2', '6 controls 2', '6 controls 4',
+    `2 part_of ${key}`, `3 part_of ${key}`, `4 part_of ${key}`, `5 part_of ${key}`, `6 part_of ${key}`,
+  ].sort());
+  assert.ok(isEmptyPlan(planGraph(after(f, plan))), 'idempotent');
+  assert.ok(isEmptyPlan(planGraph(facts([dev(3, 'emitter'), dev(5, 'thermostat')], {}, [loc(3, HOME), loc(5, HOME)]))), 'no heat source: no heating system, and nothing guessed');
+  const two = planGraph(facts([dev(2, 'heat_pump'), dev(7, 'boiler'), dev(3, 'emitter')], {}, [loc(2, HOME), loc(7, HOME), loc(3, HOME)]));
+  assert.equal(two.relate.filter((r) => r.rel === 'feeds').length, 0, 'two heat sources: which feeds the emitter is not guessed');
+  const zoned = planGraph(f, { zones: [{ name: 'Upstairs', things: [4, 6] }] });
+  assert.ok(zoned.create.some((c) => c.type === 'heating_zone' && c.name === 'Upstairs') && zoned.relate.filter((r) => r.rel === 'part_of' && typeof r.to === 'string' && r.to.includes('heating_zone')).length === 2);
 });

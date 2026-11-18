@@ -34,6 +34,7 @@ import { seedRegionsGb, regionSeedPending } from './seed/regions-gb.js';
 import { seedAttributeDefs, attributeSeedPending } from './seed/attributes.js';
 import { seedBindings, bindingSeedPending } from './seed/bindings.js';
 import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
+import { seedThings, thingSeedDiff } from './seed/things.js';
 import { resolveRegion } from '../core/regions.js';
 import { EU_VAT_RULES } from '../core/tax.js';
 import { resolveRawDir, rawFileIn } from './raw-dir.js';
@@ -106,6 +107,8 @@ export const EXCLUSION_MESSAGES = {
   rate_no_overlap: 'overlapping current rate interval',
   agreement_no_overlap: 'overlapping tariff agreement for this meter',
   member_no_overlap: 'overlapping current membership of this home in the group',
+  relation_no_overlap: 'overlapping current relation between these two things',
+  located_in_one_place: 'a thing is in one place at a time (overlapping located_in)',
 };
 function translateError(err, sql) {
   const cause = err?.meta?.driverAdapterError?.cause ?? err?.cause;
@@ -306,7 +309,7 @@ export async function syncVatRules(rules = EU_VAT_RULES) {
 
 // Start-up seeding: the code-owned registries, VAT, the reference rows of each market (markets, bidding
 // zones, the 14 GB regions with their aliases, the providers of each role), default bindings, the planner
-// registries, and a GB home's distribution region from its postcode lookup. Each step writes only what is
+// registries, the thing types and relation rules, and a GB home's distribution region from its postcode lookup. Each step writes only what is
 // missing or differs, so starting against an up-to-date database writes nothing.
 await seedRegistry();
 await syncGbVat();
@@ -316,6 +319,10 @@ if (await marketSeedPending(db) || await regionSeedPending(db) || await provider
 }
 if (await bindingSeedPending(db)) await tx(async () => await seedBindings(db));
 if (await attributeSeedPending(db) || await settingSeedPending(db)) await tx(async () => { await seedAttributeDefs(db); await seedSettingDefs(db); });
+{
+  const diff = await thingSeedDiff(db);
+  if (diff.types.length || diff.rules.length) await tx(async () => await seedThings(db, diff));
+}
 {
   // A row already there (an installer's correction) is never overwritten.
   const put = db.prepare("INSERT INTO site_region (site_id, scheme, code, source, recorded_at) VALUES (?, 'gb_dno', ?, 'postcode_lookup', ?) ON CONFLICT DO NOTHING");

@@ -47,6 +47,7 @@
    "a % relation takes no port on its from side",
    "a % relation takes no port on its to side",
    "a relation joins things of one home, or shared context",
+   "a relation starts and ends on a slot boundary of its home",
    "no % rule allows a % to a %",
    "port % of type % only receives",
    "port % of type % only sends",

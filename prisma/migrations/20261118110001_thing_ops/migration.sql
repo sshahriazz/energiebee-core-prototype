@@ -10,7 +10,7 @@ ALTER TABLE thing_attr_version ADD COLUMN life_from bigint, ADD COLUMN life_to b
 CREATE OR REPLACE FUNCTION trg_thing_attr_version_on_insert() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   INSERT INTO thing_attr_version (thing_id, site_id, name, attrs, valid_from, life_from, life_to, recorded_at)
-    VALUES (NEW.id, NEW.site_id, NEW.name, NEW.attrs, COALESCE(NEW.valid_from, NEW.recorded_at / 1000), NEW.valid_from, NEW.valid_to, NEW.recorded_at);
+    VALUES (NEW.id, NEW.site_id, NEW.name, NEW.attrs, NEW.recorded_at / 1000, NEW.valid_from, NEW.valid_to, NEW.recorded_at);
   RETURN NULL;
 END $$;
 

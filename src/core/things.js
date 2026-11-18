@@ -24,10 +24,18 @@
 //
 // Moving what points at a thing (merge, split) is found from the schema: every foreign key to thing(id) is discovered, so a
 // table added later (points, links) is covered without a change here. What a table's kind (src/db/table-kinds.js) says
-// decides how its rows move: versioned configuration is superseded and written again, working state is updated, and logs,
-// facts, registries and secrets are history and stay on the thing they were written for (append-only; resolveThing finds the
-// survivor from the dropped uid). A row that cannot move (a rule or a unique key refuses it) stops the merge.
-import { db, tx, columnsOf } from '../db/db.js';
+// decides how its rows move: versioned configuration is superseded and written again, registries, working state and secrets are
+// updated, and only the append-only kinds, facts and logs, stay on the thing they were written for (a reader of such a table
+// follows merged_into: resolveThing, or thingHistory for the whole family). A row that cannot move (a rule or a unique key
+// refuses it) stops the merge. A foreign key that is not a single column to thing(id) is not understood and stops it too.
+//
+// Who may change what. Every write takes the home it is for (`siteId`, null for shared context) and refuses a thing of another home
+// with the same 404 a read gives, so a route that forgets its own check cannot reach into another home.
+//
+// Errors. A rule the database refuses (a duplicate, an overlap, a cycle, a missing port) comes out with a status, 409 for a conflict
+// with what exists and 400 for a value that is not acceptable, so a route answers with it instead of a 500. An operation that is
+// called inside a transaction of the caller runs in a savepoint: it fails whole, the caller's earlier work stays.
+import { db, tx, inTx, columnsOf } from '../db/db.js';
 import { TABLE_KINDS } from '../db/table-kinds.js';
 import { THING_ONLY_KEYS } from '../db/seed/things.js';
 import { SLOT, SLOT_LENGTHS, dayBounds, localDate, nowSec, recordedNow, slotLength } from './time.js';
@@ -91,7 +99,12 @@ export function nextSlotBoundary(ts, { slotS = SLOT, timezone = 'UTC' } = {}) {
   if (!SLOT_LENGTHS.includes(slotS)) throw bad(`slot length ${slotS}: one of ${SLOT_LENGTHS.join(', ')}`);
   if (!Number.isFinite(ts)) throw bad(`not a time: ${ts}`);
   const t = Math.floor(ts);
-  const [a, b] = dayBounds(timezone, localDate(timezone, t));
+  const day = localDate(timezone, t);
+  const [a, b0] = dayBounds(timezone, day);
+  let b = b0;
+  // Where the clocks jump at local midnight (Cuba, Chile) time.js ends the day an hour early and the last hour falls outside it: the
+  // day really ends when the local date changes (zone offsets are whole quarter hours, so look at quarter hours).
+  if (b <= t) { b = Math.ceil((t + 1) / 900) * 900; while (localDate(timezone, b) === day) b += 900; }
   return Math.min(a + Math.ceil((t - a) / slotS) * slotS, b);   // a day whose length is not a whole number of slots ends on its own midnight
 }
 
@@ -105,11 +118,11 @@ export async function homeClock(siteId) {
   return { slotS: slotLength(site), timezone: site?.timezone ?? 'UTC' };
 }
 
-// The snapped time of a change at `at` in a home: { changedAt, boundary, grid }. Options slotS and timezone override the home's.
-async function snap(siteId, at, o = {}) {
-  const clock = await homeClock(siteId);
+// The snapped time of a change at `at` in a home: { changedAt, boundary, grid }. The grid is the home's own: the database checks every
+// relation of the home against the same grid, so a caller cannot choose another one.
+async function snap(siteId, at) {
+  const grid = await homeClock(siteId);
   const changedAt = Math.floor(sec(at ?? nowSec(), 'at'));
-  const grid = { slotS: o.slotS ?? clock.slotS, timezone: o.timezone ?? clock.timezone };
   return { changedAt, boundary: nextSlotBoundary(changedAt, grid), grid };
 }
 
@@ -128,6 +141,45 @@ async function siteOf(ref) {
   const row = k.id != null ? await db.prepare('SELECT site_id FROM thing WHERE id = ?').get(k.id) : await db.prepare('SELECT site_id FROM thing WHERE uid = ?::uuid').get(k.uid);
   if (!row) throw fail(404, `no thing ${k.id ?? k.uid}`);
   return row.site_id;
+}
+// The home a write is for: required (null is shared context), and the thing must be in it. A thing of another home is "not found".
+function homeArg(siteId) {
+  if (siteId === undefined) throw bad('give siteId: a change stays inside one home (null for shared context)');
+  if (siteId !== null && !(Number.isSafeInteger(Number(siteId)) && Number(siteId) > 0)) throw bad(`not a home: ${siteId}`);
+  return siteId === null ? null : Number(siteId);
+}
+const inside = (t, s) => { if (t.site_id !== s) throw fail(404, `no thing ${t.id} in ${s == null ? 'shared context' : `home ${s}`}`); return t; };
+async function homeOf(ref, siteId) {
+  const s = homeArg(siteId);
+  inside({ id: refKey(ref).id ?? refKey(ref).uid, site_id: await siteOf(ref) }, s);
+  return s;
+}
+
+// What the database refuses on a thing table is a conflict (a duplicate, an overlap, a cycle, a rule) or a value it cannot take.
+function withStatus(err) {
+  if (err == null || err.status != null || !err.code) return err;
+  const code = String(err.code);
+  if (['23P01', '23505', '23503', 'P0001'].includes(code)) err.status = 409;
+  else if (code === '23514' || code.startsWith('22')) err.status = 400;
+  return err;
+}
+// One operation: a transaction of its own, or a savepoint inside the caller's, so it fails whole either way.
+let savepoints = 0;
+async function operation(fn) {
+  try {
+    if (!inTx()) return await tx(fn);
+    const sp = `thing_op_${++savepoints}`;
+    await db.exec(`SAVEPOINT ${sp}`);
+    try {
+      const out = await fn();
+      await db.exec(`RELEASE SAVEPOINT ${sp}`);
+      return out;
+    } catch (err) {
+      await db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+      await db.exec(`RELEASE SAVEPOINT ${sp}`);
+      throw err;
+    }
+  } catch (err) { throw withStatus(err); }
 }
 
 // ───────────── value checks ─────────────
@@ -210,12 +262,23 @@ async function uncovered(a, b, r, win) {
   return subtractWindows(win, same);
 }
 
+// The end of a relation handed from one thing to another. A relation that stopped only because the old thing's own service ends there
+// (it was scheduled to retire, or it is the thing a merge drops) does not stop when the thing that takes it over carries on: it ends
+// where the new thing or the thing at its other end ends, or is open.
+async function handedEnd(r, fromThing, toThing, otherId, newEnd = toThing.valid_to) {
+  if (fromThing.valid_to == null || r.valid_to !== fromThing.valid_to) return r.valid_to;
+  const other = await db.prepare('SELECT valid_to FROM thing WHERE id = ?').get(otherId);
+  const ends = [newEnd, other?.valid_to].filter((x) => x != null);
+  return ends.length ? Math.min(...ends) : null;
+}
+
 // Hand some of a thing's current relations to another thing from a boundary on (replace, split). A relation that straddles the
 // boundary is cut there: the part before stays, the part from the boundary on moves. One that starts later moves whole. One that
 // ended before stays. With boundary null every given relation moves whole, from its own start. What the other thing already has
 // (the same edge in the same window) is not written twice. A refusal by the rules stops the whole operation.
-async function transferRelations(rows, fromId, toId, boundary, changedAt, stamp) {
+async function transferRelations(rows, fromThing, toThing, boundary, changedAt, stamp) {
   const moved = [];
+  const [fromId, toId] = [fromThing.id, toThing.id];
   const swap = (x) => (x === fromId ? toId : x);
   for (const r of rows) {
     if (boundary != null && r.valid_to != null && r.valid_to <= boundary) continue;
@@ -223,7 +286,8 @@ async function transferRelations(rows, fromId, toId, boundary, changedAt, stamp)
     await supersedeRelation(r.id, stamp);
     if (cut) await insertRelation({ ...r, valid_to: boundary }, stamp);
     const [a, b] = [swap(r.from_id), swap(r.to_id)];
-    for (const [vf, vt] of await uncovered(a, b, r, [cut ? boundary : r.valid_from, r.valid_to])) {
+    const end = await handedEnd(r, fromThing, toThing, r.from_id === fromId ? r.to_id : r.from_id);
+    for (const [vf, vt] of await uncovered(a, b, r, [cut ? boundary : r.valid_from, end])) {
       moved.push(await insertRelation({ ...r, from_id: a, to_id: b, valid_from: vf, valid_to: vt, changed_at: cut ? changedAt : r.changed_at }, stamp));
     }
   }
@@ -234,21 +298,29 @@ async function transferRelations(rows, fromId, toId, boundary, changedAt, stamp)
 // Tables the library handles itself.
 const OWN_TABLES = new Set(['thing', 'thing_attr_version', 'thing_relation', 'thing_op']);
 
-/** Every single-column foreign key to thing(id) outside the thing tables: [{ table, column, kind }]. */
+/**
+ * Every foreign key to thing outside the thing tables: [{ table, column, kind }]. Read from pg_constraint, which (unlike
+ * information_schema) lists a key whatever its owner. Only the plain shape is understood: one column that points at thing(id). A key
+ * on two columns, or one that points at thing(uid), would be skipped by a merge and leave rows on the dropped thing without a word, so
+ * it is an error here: the merge and the split stop until the library learns that shape.
+ */
 export async function thingReferences() {
-  const rows = await db.prepare(`SELECT cl.relname AS child, a.attname AS col
+  const rows = await db.prepare(`SELECT cl.relname AS child, c.conname AS name, cardinality(c.conkey) AS width, a.attname AS col,
+        c.confkey[1] = (SELECT attnum FROM pg_attribute WHERE attrelid = 'thing'::regclass AND attname = 'id') AS to_id
       FROM pg_constraint c
       JOIN pg_class cl ON cl.oid = c.conrelid
       JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
-     WHERE c.contype = 'f' AND c.confrelid = 'thing'::regclass AND cardinality(c.conkey) = 1
-       AND c.confkey[1] = (SELECT attnum FROM pg_attribute WHERE attrelid = 'thing'::regclass AND attname = 'id')
-       AND cl.relnamespace = current_schema()::regnamespace
-     ORDER BY 1, 2`).all();
-  return rows.filter((r) => !OWN_TABLES.has(r.child)).map((r) => ({ table: r.child, column: r.col, kind: TABLE_KINDS[r.child] ?? 'runtime' }));
+     WHERE c.contype = 'f' AND c.confrelid = 'thing'::regclass AND cl.relnamespace = current_schema()::regnamespace
+     ORDER BY 1, 4`).all();
+  const found = rows.filter((r) => !OWN_TABLES.has(r.child));
+  const odd = found.find((r) => Number(r.width) !== 1 || !r.to_id);
+  if (odd) throw new Error(`${odd.child} (${odd.name}) points at thing in a way merge and split do not understand: use one column that references thing(id)`);
+  return found.map((r) => ({ table: r.child, column: r.col, kind: TABLE_KINDS[r.child] ?? 'runtime' }));
 }
 
 const q = (name) => `"${String(name).replace(/"/g, '""')}"`;
-const HISTORY_KINDS = new Set(['log', 'fact', 'registry', 'secret']);
+// Append-only: their rows are never updated, so they stay on the thing they were written for.
+const HISTORY_KINDS = new Set(['log', 'fact']);
 
 // Point rows of one table that name `from` at `to`: all of them, or only the ids given. Versioned configuration (valid and record
 // time) is superseded and written again, so the earlier knowledge stays; anything else is updated. Returns the rows moved.
@@ -283,7 +355,7 @@ async function logOp(op, thing, other, effectiveAt, reason, detail, stamp) {
  * that made the identity itself.
  */
 export async function createThing(o) {
-  return await tx(async () => {
+  return await operation(async () => {
     const stamp = await begin(o.siteId ?? null);
     return await makeThing(o, stamp);
   });
@@ -295,6 +367,7 @@ async function makeThing({ siteId = null, type, name, attrs = {}, uid = null, va
   if (ty.kind !== 'context' && siteId == null) throw fail(400, `a ${type} belongs to a home: give siteId`);
   if (uid != null && !(typeof uid === 'string' && UUID_V7.test(uid))) throw bad(`uid ${uid} is not a UUIDv7`);
   if (typeof name !== 'string' || !name.trim()) throw bad('a thing needs a name (text)');
+  if (name.includes('\u0000')) throw bad('a name cannot hold a NUL character');
   if (validFrom != null) sec(validFrom, 'validFrom');
   const clean = await checkAttrs(ty, attrs);
   const id = Number((await db.prepare('INSERT INTO thing (uid, site_id, kind, type, name, attrs, std_ref, valid_from, recorded_at) VALUES (COALESCE(?::uuid, uuidv7()), ?, ?, ?, ?, ?::jsonb, ?, ?, ?)')
@@ -303,15 +376,16 @@ async function makeThing({ siteId = null, type, name, attrs = {}, uid = null, va
 }
 
 /** Rename a thing and/or change attributes: `attrs` is a patch (a key set to null is removed). One change is one version. */
-export async function updateThing(ref, { name, attrs } = {}) {
-  return await tx(async () => {
-    await begin(await siteOf(ref));
+export async function updateThing(ref, { siteId, name, attrs } = {}) {
+  return await operation(async () => {
+    await begin(await homeOf(ref, siteId));
     const t = await liveThing(ref);
     const ty = await typeRow(t.type);
     const next = attrs ? await checkAttrs(ty, { ...t.attrs, ...attrs }) : t.attrs;
     if (name != null && typeof name !== 'string') throw bad('a name is text');
     const nextName = name == null ? t.name : name.trim();
     if (!nextName) throw bad('a thing needs a name');
+    if (nextName.includes('\u0000')) throw bad('a name cannot hold a NUL character');
     if (nextName !== t.name || JSON.stringify(sortKeys(next)) !== JSON.stringify(sortKeys(t.attrs))) {
       await db.prepare('UPDATE thing SET name = ?, attrs = ?::jsonb WHERE id = ?').run(nextName, JSON.stringify(next), t.id);
     }
@@ -324,18 +398,23 @@ const sortKeys = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => 
  * The thing leaves service at the next slot boundary after `at`. Its relations end there. A space or system that still holds
  * things is not retired: move them first.
  */
-export async function retireThing(ref, { at = nowSec(), slotS, timezone } = {}) {
-  return await tx(async () => {
-    const stamp = await begin(await siteOf(ref));
+export async function retireThing(ref, { siteId, at = nowSec() } = {}) {
+  return await operation(async () => {
+    const stamp = await begin(await homeOf(ref, siteId));
     const t = await liveThing(ref);
-    const { changedAt, boundary } = await snap(t.site_id, at, { slotS, timezone });
+    const { changedAt, boundary } = await snap(t.site_id, at);
     if (t.valid_to != null && t.valid_to <= boundary) throw fail(409, `${t.name} was retired already (at ${t.valid_to})`);
     if (t.valid_from != null && boundary <= t.valid_from) throw fail(409, `${t.name} began at ${t.valid_from}: it cannot be retired before it began`);
     const holds = await db.prepare(`SELECT f.name FROM thing_relation r JOIN thing f ON f.id = r.from_id
       WHERE r.to_id = ? AND r.rel IN ('located_in', 'part_of') AND r.superseded_at IS NULL AND COALESCE(r.valid_to, ${HI}) > ? AND f.valid_to IS NULL ORDER BY f.name`).all(t.id, boundary);
     if (holds.length) throw fail(409, `${t.name} still holds ${holds.map((h) => h.name).join(', ')}: move them first`);
+    const current = await currentRelationsOf(t.id);
+    // a date before everything the thing was ever put in would cancel all of it: that is a typo, not a retirement
+    if (current.length && current.every((r) => r.valid_from != null && r.valid_from >= boundary)) {
+      throw fail(409, `retiring ${t.name} at ${boundary} would cancel every relation it has (the first starts at ${Math.min(...current.map((r) => r.valid_from))}): give a later time`);
+    }
     const ended = [];
-    for (const r of await currentRelationsOf(t.id)) {
+    for (const r of current) {
       const what = await endRelation(r, boundary, stamp);
       if (what !== 'unchanged') ended.push({ id: r.id, rel: r.rel, what });
     }
@@ -353,20 +432,24 @@ function assertAlive(t, start) {
 
 /**
  * A relation from `from` to `to` (rel and ports as the rules of relation_rule allow), taking effect at the next slot boundary after
- * `at`; the exact moment is kept as changed_at. `validTo` ends it, at the next slot boundary at or after it (the database does not
- * know the home's grid, so it cannot check the alignment: this is the one place that makes it); left open it ends where a retired
- * thing's service ends. Returns the relation row.
+ * `at`; the exact moment is kept as changed_at. `validTo` ends it, at the next slot boundary at or after it (the database refuses an
+ * end or a start that is off the home's grid, trg_thing_relation_checks); left open it ends where a retired thing's service ends.
+ * Returns the relation row.
  */
-export async function relate({ from, rel, to, fromPort = null, toPort = null, at = nowSec(), validTo = null, required = 1, slotS, timezone }) {
-  return await tx(async () => {
+export async function relate({ siteId, from, rel, to, fromPort = null, toPort = null, at = nowSec(), validTo = null, required = 1 }) {
+  return await operation(async () => {
     const req = flag(required, 'required');
+    const home = homeArg(siteId);
     const stamp = await begin((await siteOf(from)) ?? (await siteOf(to)));
     const a = await getThing(from);
     const b = await getThing(to);
-    const { changedAt, boundary, grid } = await snap(a.site_id ?? b.site_id, at, { slotS, timezone });
+    for (const t of [a, b]) if (t.site_id != null) inside(t, home);   // (shared context may join a home's things)
+    if (home == null && (a.site_id != null || b.site_id != null)) throw fail(404, 'no such relation in shared context');
+    const { changedAt, boundary, grid } = await snap(a.site_id ?? b.site_id, at);
     assertAlive(a, boundary);
     assertAlive(b, boundary);
     const chosen = validTo == null ? null : nextSlotBoundary(sec(validTo, 'validTo'), grid);
+    if (chosen != null && chosen <= boundary) throw bad(`validTo (${chosen}) must be after the start of the relation (${boundary})`);
     if (chosen != null && [a.valid_to, b.valid_to].some((e) => e != null && e < chosen)) throw fail(409, 'a relation cannot outlast a thing it joins');
     const ends = [chosen, a.valid_to, b.valid_to].filter((x) => x != null);
     const end = ends.length ? Math.min(...ends) : null;
@@ -376,14 +459,15 @@ export async function relate({ from, rel, to, fromPort = null, toPort = null, at
 }
 
 /** A relation stops holding at the next slot boundary after `at`. Returns { what: 'ended' | 'cancelled' | 'unchanged', boundary }. */
-export async function unrelate(relationId, { at = nowSec(), slotS, timezone } = {}) {
-  return await tx(async () => {
+export async function unrelate(relationId, { siteId, at = nowSec() } = {}) {
+  return await operation(async () => {
+    const home = homeArg(siteId);
     const found = await db.prepare('SELECT site_id FROM thing_relation WHERE id = ?').get(relationId);
-    if (!found) throw fail(404, `no relation ${relationId}`);
+    if (!found || found.site_id !== home) throw fail(404, `no relation ${relationId}`);
     const stamp = await begin(found.site_id);
     const r = await db.prepare(`SELECT ${REL_COLS} FROM thing_relation WHERE id = ? AND superseded_at IS NULL`).get(relationId);
     if (!r) throw fail(404, `no current relation ${relationId}`);
-    const { boundary } = await snap(r.site_id, at, { slotS, timezone });
+    const { boundary } = await snap(r.site_id, at);
     return { what: await endRelation(r, boundary, stamp), boundary };
   });
 }
@@ -393,12 +477,13 @@ export async function unrelate(relationId, { at = nowSec(), slotS, timezone } = 
  * new one starts there, so no slot is split between two places. A plug moved at 14:10 on a half-hour grid counts in the old room for
  * the 14:00 slot and in the new room from 14:30. Returns { changedAt, boundary, from, relation } (relation null when it is already there).
  */
-export async function moveThing(ref, to, { at = nowSec(), slotS, timezone } = {}) {
-  return await tx(async () => {
-    const stamp = await begin(await siteOf(ref));
+export async function moveThing(ref, to, { siteId, at = nowSec() } = {}) {
+  return await operation(async () => {
+    const home = await homeOf(ref, siteId);
+    const stamp = await begin(home);
     const t = await liveThing(ref);
-    const dest = await getThing(to);
-    const { changedAt, boundary } = await snap(t.site_id, at, { slotS, timezone });
+    const dest = inside(await getThing(to), home);
+    const { changedAt, boundary } = await snap(t.site_id, at);
     const placed = await db.prepare(`SELECT ${REL_COLS} FROM thing_relation WHERE from_id = ? AND rel = 'located_in' AND superseded_at IS NULL
       AND COALESCE(valid_to, ${HI}) > ? ORDER BY COALESCE(valid_from, ${LO})`).all(t.id, boundary);
     const now = placed.find((r) => (r.valid_from ?? LO) <= boundary);
@@ -423,18 +508,20 @@ export async function moveThing(ref, to, { at = nowSec(), slotS, timezone } = {}
  *             replace another device. Without it the new thing is made here, with
  *   attrs     the new device's own details; `inherit` lists keys to copy from the old one (nothing is guessed)
  *   uid       for a hub that made the new identity itself
+ * An old device that was scheduled to retire later than the swap (valid_to after the boundary) is retired at the boundary instead;
+ * relations of it that ended only with that scheduled retirement carry on for the new device, which has its own end (or none).
  * Returns { old, thing, boundary, relations, op }.
  */
-export async function replaceThing(ref, { to = null, name, attrs = {}, inherit = [], uid = null, at = nowSec(), reason, slotS, timezone } = {}) {
-  return await tx(async () => {
-    const stamp = await begin(await siteOf(ref));
+export async function replaceThing(ref, { siteId, to = null, name, attrs = {}, inherit = [], uid = null, at = nowSec(), reason } = {}) {
+  return await operation(async () => {
+    const stamp = await begin(await homeOf(ref, siteId));
     const old = await liveThing(ref);
     if (old.kind !== 'device') throw fail(400, `only a device is replaced (a ${old.kind} is changed, retired or split)`);
     if (!String(reason ?? '').trim()) throw fail(400, 'a replace needs a reason');
     if (await db.prepare("SELECT 1 AS x FROM thing_relation WHERE rel = 'replaces' AND to_id = ? AND superseded_at IS NULL").get(old.id)) {
       throw fail(409, `${old.name} was replaced already: replace the newer device`);
     }
-    const { changedAt, boundary } = await snap(old.site_id, at, { slotS, timezone });
+    const { changedAt, boundary } = await snap(old.site_id, at);
     if (old.valid_to != null && old.valid_to <= boundary) throw fail(409, `${old.name} was retired at ${old.valid_to}: it cannot be replaced at ${boundary}`);
     if (old.valid_from != null && boundary <= old.valid_from) throw fail(409, `${old.name} began at ${old.valid_from}: it cannot be replaced before that`);
     let made;
@@ -452,7 +539,7 @@ export async function replaceThing(ref, { to = null, name, attrs = {}, inherit =
       made = await makeThing({ siteId: old.site_id, type: old.type, name: name ?? `${old.name} (replacement)`, attrs: { ...kept, ...attrs }, uid, validFrom: boundary }, stamp);
     }
     const rows = (await currentRelationsOf(old.id)).filter((r) => r.rel !== 'replaces');
-    const moved = await transferRelations(rows, old.id, made.id, boundary, changedAt, stamp);
+    const moved = await transferRelations(rows, old, made, boundary, changedAt, stamp);
     await db.prepare('UPDATE thing SET valid_to = ? WHERE id = ?').run(boundary, old.id);
     await insertRelation({ from_id: made.id, rel: 'replaces', to_id: old.id, valid_from: boundary, changed_at: changedAt }, stamp);
     const op = await logOp('replace', old, made, boundary, reason, { relations: moved.length, existing: to != null }, stamp);
@@ -466,21 +553,22 @@ export async function replaceThing(ref, { to = null, name, attrs = {}, inherit =
  * `keep` survives, `drop` is superseded and points at it (its uid keeps resolving, `resolveThing`). Nothing is deleted.
  *   - both have one type, because a thing never changes type; a generic device found twice is merged into the typed thing (keep the
  *     typed one), and its uid keeps resolving
- *   - the survivor takes the details the dropped thing had and it lacked, and the earlier start of the two
+ *   - the survivor takes the details the dropped thing had and it lacked, and the earlier start of the two (no start is earliest)
  *   - the dropped thing's current relations are written again for the survivor with their own windows; the part of a window the
  *     survivor already has the same edge for is not written twice (each kWh counted once), and a placement is not written over a place
  *     the survivor already had at the time. Both are reported.
  *   - rows of other tables that name the dropped thing (found through the foreign keys) move to the survivor by their table's kind;
- *     a log, fact, registry or secret table is history and stays (reported)
+ *     a log or fact table is append-only and stays (reported): its readers follow merged_into
  * Anything the database refuses (a rule on a relation, a unique key of another table) stops the merge: nothing is changed, and the
  * message says what could not move.
  * Returns { thing, dropped, relations: { moved, alreadyThere, overridden, between }, tables, attrs, op }.
  */
-export async function mergeThings(keepRef, dropRef, { reason } = {}) {
-  return await tx(async () => {
-    const stamp = await begin(await siteOf(keepRef));
+export async function mergeThings(keepRef, dropRef, { siteId, reason } = {}) {
+  return await operation(async () => {
+    const home = await homeOf(keepRef, siteId);
+    const stamp = await begin(home);
     const keep = await liveThing(keepRef);
-    const drop = await liveThing(dropRef);
+    const drop = inside(await liveThing(dropRef), home);
     if (keep.id === drop.id) throw fail(400, 'a thing cannot be merged into itself');
     if (keep.site_id !== drop.site_id || keep.kind !== drop.kind) throw fail(400, 'only two things of one home and kind are merged');
     if (!String(reason ?? '').trim()) throw fail(400, 'a merge needs a reason');
@@ -492,7 +580,8 @@ export async function mergeThings(keepRef, dropRef, { reason } = {}) {
     const ty = await typeRow(keep.type);
     const gained = {};
     for (const [k, v] of Object.entries(drop.attrs)) if (!(k in keep.attrs) && ty.attribute_keys.includes(k)) gained[k] = v;
-    const from = keep.valid_from == null || drop.valid_from == null ? (keep.valid_from ?? drop.valid_from) : Math.min(keep.valid_from, drop.valid_from);
+    // null is "in service since the start of history": the earliest there is, not a missing value
+    const from = keep.valid_from == null || drop.valid_from == null ? null : Math.min(keep.valid_from, drop.valid_from);
     const to = keep.valid_to == null || drop.valid_to == null ? null : Math.max(keep.valid_to, drop.valid_to);
     await db.prepare('UPDATE thing SET attrs = ?::jsonb, valid_from = ?, valid_to = ? WHERE id = ?').run(JSON.stringify({ ...keep.attrs, ...gained }), from, to, keep.id);
 
@@ -504,8 +593,9 @@ export async function mergeThings(keepRef, dropRef, { reason } = {}) {
       const a = r.from_id === drop.id ? keep.id : r.from_id;
       const b = r.to_id === drop.id ? keep.id : r.to_id;
       if (a === b) { report.between++; continue; }   // an edge between the two things themselves: it has no meaning on one thing
-      let pieces = await uncovered(a, b, r, [r.valid_from, r.valid_to]);
-      if (pieces.length !== 1 || pieces[0][0] !== r.valid_from || pieces[0][1] !== r.valid_to) report.alreadyThere++;
+      const end = await handedEnd(r, drop, { valid_to: to }, r.from_id === drop.id ? r.to_id : r.from_id);   // the survivor's own end, if the dropped thing was scheduled to retire
+      let pieces = await uncovered(a, b, r, [r.valid_from, end]);
+      if (pieces.length !== 1 || pieces[0][0] !== r.valid_from || pieces[0][1] !== end) report.alreadyThere++;
       if (r.rel === 'located_in' && r.from_id === drop.id) {
         const elsewhere = (await db.prepare("SELECT valid_from, valid_to FROM thing_relation WHERE from_id = ? AND rel = 'located_in' AND superseded_at IS NULL").all(keep.id)).map((x) => [x.valid_from, x.valid_to]);
         const left = pieces.flatMap((p) => subtractWindows(p, elsewhere));
@@ -524,7 +614,7 @@ export async function mergeThings(keepRef, dropRef, { reason } = {}) {
     for (const ref of await thingReferences()) {
       const key = `${ref.table}.${ref.column}`;
       if (HISTORY_KINDS.has(ref.kind)) {
-        tables[key] = { kept: Number((await db.prepare(`SELECT COUNT(*) AS n FROM ${q(ref.table)} WHERE ${q(ref.column)} = ?`).get(drop.id)).n), why: `${ref.kind}: history stays on the thing it was written for` };
+        tables[key] = { kept: Number((await db.prepare(`SELECT COUNT(*) AS n FROM ${q(ref.table)} WHERE ${q(ref.column)} = ?`).get(drop.id)).n), why: `${ref.kind}: append-only, stays on the thing it was written for (follow merged_into)` };
         continue;
       }
       try { tables[key] = { moved: await moveRows(ref, drop.id, keep.id, stamp) }; }
@@ -541,16 +631,16 @@ export async function mergeThings(keepRef, dropRef, { reason } = {}) {
 /**
  * One thing was two (discovery joined two devices): a new thing of the same kind is made and takes what belongs to it. The caller names
  * what moves: `relations` (ids of current relations of the thing) and `rows` ({ table: [ids] } of other tables that name the thing; a
- * log, fact, registry or secret table is history and is refused). With `at` a relation that straddles the next slot boundary is cut
+ * log or fact table is append-only and is refused). With `at` a relation that straddles the next slot boundary is cut
  * there (before stays, after moves), and the new thing begins at the boundary; without it a named relation moves whole.
  * The thing as known before the split stays readable: the moved rows are superseded, not erased. Returns { thing, from, boundary, moved, op }.
  */
-export async function splitThing(ref, { name, type = null, attrs = null, uid = null, relations = [], rows = {}, at = null, reason, slotS, timezone } = {}) {
-  return await tx(async () => {
-    const stamp = await begin(await siteOf(ref));
+export async function splitThing(ref, { siteId, name, type = null, attrs = null, uid = null, relations = [], rows = {}, at = null, reason } = {}) {
+  return await operation(async () => {
+    const stamp = await begin(await homeOf(ref, siteId));
     const src = await liveThing(ref);
     if (!String(reason ?? '').trim()) throw fail(400, 'a split needs a reason');
-    const snapped = at == null ? null : await snap(src.site_id, at, { slotS, timezone });
+    const snapped = at == null ? null : await snap(src.site_id, at);
     const boundary = snapped?.boundary ?? null;
     const theirs = await currentRelationsOf(src.id);
     const chosen = relations.map((id) => {
@@ -562,12 +652,12 @@ export async function splitThing(ref, { name, type = null, attrs = null, uid = n
     for (const t of Object.keys(rows)) {
       const found = refs.filter((r) => r.table === t);
       if (!found.length) throw fail(400, `table ${t} has no foreign key to thing`);
-      if (HISTORY_KINDS.has(found[0].kind)) throw fail(400, `table ${t} is a ${found[0].kind}: history stays on the thing it was written for`);
+      if (HISTORY_KINDS.has(found[0].kind)) throw fail(400, `table ${t} is a ${found[0].kind}: append-only, its rows stay on the thing they were written for`);
     }
     const ty = await typeRow(type ?? src.type);
     if (ty.kind !== src.kind) throw fail(400, `a ${src.kind} cannot be split into a ${ty.kind}`);
     const made = await makeThing({ siteId: src.site_id, type: ty.type, name: name ?? `${src.name} (split)`, attrs: attrs ?? src.attrs, uid, validFrom: boundary }, stamp);
-    const moved = await transferRelations(chosen, src.id, made.id, boundary, snapped?.changedAt ?? null, stamp);
+    const moved = await transferRelations(chosen, src, made, boundary, snapped?.changedAt ?? null, stamp);
     const tables = {};
     for (const [t, ids] of Object.entries(rows)) {
       tables[t] = 0;
@@ -718,7 +808,7 @@ export async function graph(siteId, { rels = null, ...o } = {}) {
     for (const c of ctx) have.add(c.id);
   }
   // An edge to a thing that is not in the graph at that time (a `replaces` that outlives the thing it replaced) is a relation, not a graph edge.
-  return { nodes, edges: found.filter((e) => nodes.some((n) => n.id === e.from_id) && nodes.some((n) => n.id === e.to_id)) };
+  return { nodes, edges: found.filter((e) => have.has(e.from_id) && have.has(e.to_id)) };
 }
 
 /**

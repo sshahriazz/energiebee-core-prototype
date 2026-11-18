@@ -12,6 +12,8 @@ const { THING_TYPES, RELATION_RULES, THING_ONLY_KEYS, thingSeedDiff, seedThings 
 const { DEVICE_KINDS, ATTRIBUTE_DEFS } = await import('../src/db/seed/attributes.js');
 
 const NOW = 1_800_000_000;   // seconds; a fixed moment keeps every case independent of the clock
+const D0 = NOW - 8 * 3600;   // local midnight of that day in London (winter, on UTC): the homes below are on a 30-minute grid from it
+const SLOT = 1800;
 const site = (name) => ins("INSERT INTO site (name, created_at, timezone, currency, country, market_code) VALUES (?, ?, 'Europe/London', 'GBP', 'GB', 'GB')", name, NOW);
 const A = await site('A');
 const B = await site('B');
@@ -213,23 +215,52 @@ await test('placement: a thing is in one place at a time, a move keeps the old p
   // Only relations that overlap in time can form a loop: the floor may sit in the room it contained, once that was over.
   const s1 = await thing(A, 'space', 'loft', 'Loft 1');
   const s2 = await thing(A, 'space', 'loft', 'Loft 2');
-  await relId(s1, 'located_in', s2, { vf: 100, vt: 200 });
-  await relId(s2, 'located_in', s1, { vf: 300, vt: 400 });
-  await refused('thing_relation_checks', "INSERT INTO thing_relation (from_id, rel, to_id, valid_from, valid_to) VALUES (?, 'located_in', ?, 150, 250)", s2, s1);   // overlaps the first
+  await relId(s1, 'located_in', s2, { vf: D0, vt: D0 + 2 * SLOT });
+  await relId(s2, 'located_in', s1, { vf: D0 + 4 * SLOT, vt: D0 + 6 * SLOT });
+  await refused('thing_relation_checks', "INSERT INTO thing_relation (from_id, rel, to_id, valid_from, valid_to) VALUES (?, 'located_in', ?, ?, ?)", s2, s1, D0 + SLOT, D0 + 5 * SLOT);   // overlaps the first
 });
 
-await test('relations: the same edge never overlaps itself in time, and a window is snapped forward from the exact change', async () => {
+await test('relations: the same edge never overlaps itself in time, a window is snapped forward from the exact change and lies on the home\'s grid', async () => {
   const feed = (vf, vt) => ['INSERT INTO thing_relation (from_id, from_port, rel, to_id, to_port, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?)', pv, 'dc', 'feeds', inverter, 'pv', vf, vt];
-  await excluded('relation_no_overlap', ...feed(0, 10_000));    // the open feeds edge from above is current
+  await excluded('relation_no_overlap', ...feed(D0, D0 + 6 * SLOT));    // the open feeds edge from above is current
   const open = await get("SELECT id FROM thing_relation WHERE from_id = ? AND rel = 'feeds'", pv);
   await run('UPDATE thing_relation SET superseded_at = recorded_at WHERE id = ?', open.id);
-  await run(...feed(0, 100));
-  await run(...feed(100, 200));                                   // adjacent windows do not overlap
-  await excluded('relation_no_overlap', ...feed(150, 250));
+  await run(...feed(D0, D0 + SLOT));
+  await run(...feed(D0 + SLOT, D0 + 2 * SLOT));                   // adjacent windows do not overlap
+  await excluded('relation_no_overlap', ...feed(D0 + SLOT, D0 + 3 * SLOT));
   // changed_at is the exact moment, valid_from the slot boundary after it: never earlier
-  await assert.rejects(() => run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from, changed_at) VALUES (?, 'located_in', ?, 1800, 2000)", meter, floor), /thing_relation_snapped/);
-  await assert.rejects(() => run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from, valid_to) VALUES (?, 'located_in', ?, 20, 10)", meter, floor), /thing_relation_valid_window/);
-  await run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from, changed_at) VALUES (?, 'located_in', ?, 1800, 1510)", meter, floor);
+  await assert.rejects(() => run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from, changed_at) VALUES (?, 'located_in', ?, ?, ?)", meter, floor, D0 + SLOT, D0 + SLOT + 200), /thing_relation_snapped/);
+  await assert.rejects(() => run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from, valid_to) VALUES (?, 'located_in', ?, ?, ?)", meter, floor, D0 + 2 * SLOT, D0 + SLOT), /thing_relation_valid_window/);
+  const ok = await relId(meter, 'located_in', floor, { vf: D0 + SLOT });   // (and it is the placement used by the next case)
+  await run('UPDATE thing_relation SET superseded_at = recorded_at WHERE id = ?', ok);
+  await run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from, changed_at) VALUES (?, 'located_in', ?, ?, ?)", meter, floor, D0 + SLOT, D0 + SLOT - 290);
+  // a start or an end off the grid of the home is refused, whoever writes it (the slot grid starts at local midnight)
+  const off = (vf, vt) => ['INSERT INTO thing_relation (from_id, rel, to_id, valid_from, valid_to) VALUES (?, ?, ?, ?, ?)', battery, 'part_of', supply, vf, vt];
+  await refused('thing_relation_checks', ...off(D0 + 1234, null));
+  await refused('thing_relation_checks', ...off(D0 + 7 * SLOT, D0 + 8 * SLOT + 1));
+  await refused('thing_relation_checks', ...off(NOW - 8 * 3600 + 17, D0 + 9 * SLOT));
+  await run(...off(D0 + 7 * SLOT, D0 + 8 * SLOT));   // on the grid
+  // the 25-hour day of 2027-10-31 in London: the grid counts elapsed time from local midnight, and the next midnight is on it
+  const autumn = Date.UTC(2027, 9, 30, 23) / 1000;
+  await run(...off(autumn + 24 * 3600 + SLOT, autumn + 25 * 3600));
+  await refused('thing_relation_checks', ...off(autumn + 25 * 3600 + 900, null));
+});
+
+await test('no loop even when two writers each add half of one at the same moment', async () => {
+  const { tx } = await import('../src/db/db.js');
+  const r1 = await thing(A, 'space', 'loft', 'Race loft 1');
+  const r2 = await thing(A, 'space', 'loft', 'Race loft 2');
+  const edge = (a, b) => run("INSERT INTO thing_relation (from_id, rel, to_id, valid_from) VALUES (?, 'located_in', ?, ?)", a, b, D0);
+  let inserted; const firstIn = new Promise((resolve) => { inserted = resolve; });
+  const first = tx(async () => {
+    await edge(r1, r2);
+    inserted();
+    await new Promise((resolve) => setTimeout(resolve, 400));   // still open while the second writer inserts the other half
+  });
+  const second = firstIn.then(() => tx(async () => { await edge(r2, r1); }));
+  const settled = await Promise.allSettled([first, second]);
+  assert.deepEqual(settled.map((x) => x.status), ['fulfilled', 'rejected'], 'the second writer waited for the first and saw its half');
+  assert.match(settled[1].reason.message, /cannot form a cycle/);
 });
 
 await test('replacement: a new device replaces an old one of the same type, never in a loop', async () => {

@@ -23,8 +23,10 @@ await test('the home is a labelled demo home with five synthetic devices on synt
   assert.equal(created, true);
   assert.equal(site.is_demo, 1);
   assert.match(site.name, /Synthetic/);
-  const devices = await db.prepare('SELECT * FROM device WHERE site_id = ?').all(site.id);
+  const devices = await db.prepare("SELECT * FROM device WHERE site_id = ? AND provider <> 'thing'").all(site.id);
   assert.equal(devices.length, 5);
+  // the energy graph the home declares (an inverter, its connection and supply) is graph-only: things with no integration behind them
+  assert.deepEqual((await db.prepare("SELECT kind FROM device WHERE site_id = ? AND provider = 'thing' ORDER BY kind").all(site.id)).map((d) => d.kind), ['grid_connection', 'home_supply', 'inverter']);
   assert.ok(devices.every((d) => d.provider === 'synthetic' && /synthetic/i.test(d.label) && G.isSyntheticDevice(d)));
   const sources = await db.prepare("SELECT code, name, contract FROM source WHERE code LIKE 'synthetic_%'").all();
   assert.equal(sources.length, 5);

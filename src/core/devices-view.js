@@ -128,7 +128,7 @@ async function inverterPseudo(site, now) {
 export async function listDevices(siteId, { now = nowSec() } = {}) {
   const site = await siteOf(siteId);
   const out = [];
-  for (const d of await db.prepare('SELECT * FROM device WHERE site_id = ? AND retired_at IS NULL AND provider <> 'thing' ORDER BY id').all(site.id)) {
+  for (const d of await db.prepare('SELECT * FROM device WHERE site_id = ? AND retired_at IS NULL AND provider <> \'thing\' ORDER BY id').all(site.id)) {
     const chans = await mapAsync(await channelsOfDevice(site, d), async (c) => ({ ...c, last: await lastOf('device', d.id, c), rejected: await rejectCount(site.id, c.source, c.point) }));
     const newest = Math.max(0, ...chans.map((c) => c.last.ts ?? 0)) || null;
     const attrs = (() => { try { return JSON.parse(d.attrs || '{}'); } catch { return {}; } })();

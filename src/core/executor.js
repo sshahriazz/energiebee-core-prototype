@@ -12,7 +12,8 @@
 // where source is the source code the device's channels belong to. createSimulatedDriver is a device in memory for tests.
 import { db } from '../db/db.js';
 import { ingestObservations } from './channels.js';
-import { expireStale, markSent, markSkipped, markAcked, markFailed, markAppliedLate, recordAckRef, setVerify, getCommand, diffState, logObserved } from './commands.js';
+import { expireStale, markSent, markSentUnverified, markSkipped, markAcked, markFailed, markAppliedLate, recordAckRef, setVerify, getCommand, diffState, logObserved } from './commands.js';
+import { verificationOf } from './plans.js';
 import { readReported, checkEffect, STANDARD_POINTS, DEFAULT_MODES } from './control.js';
 
 const LATE_WINDOW_MS = 24 * 3600 * 1000;   // how long after expiry a sent command is still checked for having been applied
@@ -31,7 +32,7 @@ export async function runControlCycle(siteId, { driver, now = Date.now(), maxAtt
   const candidates = await db.prepare(`SELECT DISTINCT d.* FROM device d JOIN command c ON c.device_id = d.id
     WHERE d.site_id = ? AND (c.status IN ('pending', 'sent')
       OR (c.status = 'expired' AND c.sent_at IS NOT NULL AND c.applied_late_at IS NULL AND c.valid_until * 1000 > ?)
-      OR (c.status = 'acked' AND c.verify_status IS NULL))`).all(siteId, now - LATE_WINDOW_MS);
+      OR (c.status IN ('acked', 'sent_unverified') AND c.verify_status IS NULL))`).all(siteId, now - LATE_WINDOW_MS);
   const devices = candidates.filter((d) => (only ? only.includes(d.id) : true) && (driver.handles ? driver.handles(d) : true));
 
   for (const device of devices) {
@@ -50,8 +51,26 @@ export async function runControlCycle(siteId, { driver, now = Date.now(), maxAtt
     const open = await db.prepare("SELECT id FROM command WHERE device_id = ? AND status IN ('pending', 'sent')").get(device.id);
     if (open) {
       const c = await getCommand(open.id);
-      const rb = await reportedFor(device, c.desired, now);
-      if (!rb.compared.length) {
+      const unverified = await verificationOf(device.id, c.action) !== 'reported';
+      const rb = unverified ? null : await reportedFor(device, c.desired, now);
+      if (unverified) {
+        // The device cannot say what it did (R23): write once, never read back, never retry on a mismatch; the command ends sent_unverified.
+        if (c.status === 'pending') {
+          if (now > c.valid_until * 1000) { await expireStale({ now }); step.did.push(`expired ${c.id}`); }
+          else {
+            const res = await driver.send(device, c.desired, { now });
+            if (!res?.accepted) {
+              const r = await markFailed(c.id, res?.error ?? 'the device did not accept the write', { retry: true, maxAttempts, now });
+              step.did.push(`send_refused ${c.id} -> ${r.status}`);
+            } else {
+              await markSent(c.id, { now, registerWrites: res.registerWrites ?? null });
+              if (res.ackRef != null) await recordAckRef(c.id, res.ackRef, { now });
+              await markSentUnverified(c.id, { now });
+              step.did.push(`sent_unverified ${c.id}`);
+            }
+          }
+        } else { await markSentUnverified(c.id, { now }); step.did.push(`sent_unverified ${c.id}`); }
+      } else if (!rb.compared.length) {
         await markFailed(c.id, 'the device has no state point that reports this command, so it cannot be read back', { now });
         step.did.push(`failed ${c.id} (no read-back)`);
       } else if (c.status === 'pending') {
@@ -97,7 +116,7 @@ export async function runControlCycle(siteId, { driver, now = Date.now(), maxAtt
     }
 
     // 4. Effect check of acked commands.
-    for (const a of await db.prepare("SELECT id FROM command WHERE device_id = ? AND status = 'acked' AND verify_status IS NULL").all(device.id)) {
+    for (const a of await db.prepare("SELECT id FROM command WHERE device_id = ? AND status IN ('acked', 'sent_unverified') AND verify_status IS NULL").all(device.id)) {
       const c = await getCommand(a.id);
       const e = await checkEffect(c, now);
       if (e.status === 'verified' || e.status === 'not_verified') { await setVerify(c.id, e.status, e.evidence, { now }); step.did.push(`${e.status} ${c.id}`); }

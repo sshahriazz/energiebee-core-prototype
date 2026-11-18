@@ -15,7 +15,7 @@ Written 18 November 2026. `test/cases.test.js` holds the 22 cases of `docs/thing
 | 9 | A clamp is installed the wrong way round | passes: one binding change flips the sign |
 | 10 | AC-coupled battery or two inverters | passes: supported plants build, an unwired one is refused with a reason |
 | 11 | An EV that powers the home | passes: both ways through the charger's and the car's ports; untracked is never negative |
-| 12 | A device accepts writes but reports nothing | **todo**: verification `effect` or `none` (R23) is not built |
+| 12 | A device accepts writes but reports nothing | its action is declared `verification: none`: the command ends `sent_unverified`, never acked, and a safety action is refused (gate `unverifiable`) |
 | 13 | The house is sold | **todo**: occupancy (R21) |
 | 14 | The owner asks for their data to be erased | **todo**: erasing a person apart from a home (R14 with R21); a home is erased whole |
 | 15 | A block of flats with communal heating | **todo**: shared things with shares (R20) |

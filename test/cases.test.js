@@ -171,7 +171,18 @@ await test('case 11: an EV that powers the home: the charger and the car both wa
   assert.equal(untracked(1.0, 1.003), 0);
 });
 
-await test('case 12: a device accepts writes but reports nothing: its commands end sent_unverified and no safety action is sent', { todo: 'verification "effect" or "none" (R23) is not built: such a command stays sent until it expires' }, () => { assert.fail('not built'); });
+await test('case 12: a device accepts writes but reports nothing: its commands end sent_unverified and no safety action is sent', async () => {
+  const h = await home('Mute'); const b = await device(h, 'boiler', 'ir-12');
+  const plansM = await import('../src/core/plans.js'); const cmd = await import('../src/core/commands.js'); const { runControlCycle } = await import('../src/core/executor.js');
+  for (const a of ['heat_on', 'heat_off']) await plansM.setCapability(b.id, a, true, { source: 'installer', verification: 'none' });
+  const now = Date.now(); const from = Math.ceil(now / 1000) + 3600; const writes = [];
+  const driver = { source: 'push_native', read: async () => [], send: async (_d, desired) => { writes.push(desired.action); return { accepted: true }; } };
+  const comfort = await cmd.enqueueIfChanged({ deviceId: b.id, desired: { action: 'heat_on' }, validFrom: from, validUntil: from + 3600, now });
+  await runControlCycle(h, { driver, now: (from + 60) * 1000, devices: [b.id] });
+  assert.deepEqual([(await cmd.getCommand(comfort.command.id)).status, writes], ['sent_unverified', ['heat_on']], 'written once, never acked');
+  const safety = await cmd.enqueueIfChanged({ deviceId: b.id, desired: { action: 'heat_off' }, validFrom: from, validUntil: from + 3600, now });
+  assert.deepEqual([safety.written, safety.blocks.map((x) => x.gate)], [false, ['unverifiable']], 'no safety action is sent to a device that cannot confirm it');
+});
 await test('case 13: the house is sold: the new owner sees device history from the handover only', { todo: 'occupancy (R21) is not built' }, () => { assert.fail('not built'); });
 await test('case 14: the owner asks for their data to be erased: the person\'s data and personal raw payloads go, the home\'s device history stays', { todo: 'erasure of a person apart from a home (R14 with R21) is not built: a home is erased whole' }, () => { assert.fail('not built'); });
 await test('case 15: a block of flats with communal heating: each flat\'s heating cost is its share, labelled allocated', { todo: 'shared things with shares (R20) are not built' }, () => { assert.fail('not built'); });

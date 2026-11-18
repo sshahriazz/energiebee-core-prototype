@@ -1,43 +1,12 @@
-// Every rule the database enforces with a trigger or an exclusion constraint, broken on purpose and refused (fix list D1,
-// plan rule 7). Each case names the trigger it proves and records the message it was refused with. The last test reads
-// the triggers from the database: a trigger with no case here, or a message of one that no case produced, fails it, so a
-// new rule cannot land without its test. Maintenance triggers (versions, default bindings, fact spans) are proved by
-// what they write.
+// The rules of the core schema (homes, devices, tariffs, regions, groups, plans, commands, facts, limits), broken on purpose and
+// refused (fix list D1, plan rule 7): see test/rules/lib.js for how an area proves its rules and declares them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { useDb } from './helpers.js';
+import { harness } from './rules/lib.js';
 
-await useDb();
-const { db, EXCLUSION_MESSAGES } = await import('../src/db/db.js');
+const { db, run, get, ins, refused, maintained, excluded, checkDeclared } = await harness('core');
 const { seriesId } = await import('../src/core/facts.js');
 const { erase } = await import('../src/core/erasure.js');
-
-const proved = new Map();        // trigger name -> messages it was seen refusing with ('' for a maintenance trigger)
-const seenExclusions = new Set();
-const run = async (sql, ...p) => await db.prepare(sql).run(...p);
-const get = async (sql, ...p) => await db.prepare(sql).get(...p);
-const ins = async (sql, ...p) => Number((await run(sql, ...p)).lastInsertRowid);
-const triggerMessages = new Map((await db.prepare(`SELECT t.tgname AS name, p.prosrc AS src FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
-  JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relnamespace = current_schema()::regnamespace AND NOT t.tgisinternal`).all())
-  .map((r) => [r.name, [...r.src.matchAll(/RAISE EXCEPTION '((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"))]));
-
-// The statement is refused by `trigger`, with one of that trigger's own messages.
-async function refused(trigger, sql, ...params) {
-  const own = triggerMessages.get(trigger);
-  assert.ok(own, `no trigger ${trigger}`);
-  let err = null;
-  try { await run(sql, ...params); } catch (e) { err = e; }
-  assert.ok(err, `${trigger}: the statement was accepted`);
-  // A message with a % placeholder (RAISE ... '%', value) matches with any text in its place.
-  const msg = own.find((m) => m.split('%').every((part) => err.message.includes(part)));
-  assert.ok(msg, `${trigger}: refused with another message: ${err.message}`);
-  (proved.get(trigger) ?? proved.set(trigger, new Set()).get(trigger)).add(msg);
-}
-const maintained = (trigger) => { assert.ok(triggerMessages.has(trigger), `no trigger ${trigger}`); proved.set(trigger, new Set(['']) ); };
-async function excluded(constraint, sql, ...params) {
-  await assert.rejects(async () => await run(sql, ...params), (e) => e.message.includes(EXCLUSION_MESSAGES[constraint]));
-  seenExclusions.add(constraint);
-}
 
 const NOW = 1_800_000_000;   // seconds; a fixed moment keeps every case independent of the clock
 const site = (name, cur, country, market) => ins('INSERT INTO site (name, created_at, timezone, currency, country, market_code) VALUES (?, ?, ?, ?, ?, ?)', name, NOW, 'Europe/London', cur, country, market);
@@ -242,14 +211,4 @@ await test('facts and raw receipts are append-only: superseded once, never chang
   await refused('reading_append_only', 'DELETE FROM reading WHERE series_id = ?', sR);                   // the erasure is closed again
 });
 
-await test('every trigger has a case, every message of each was produced, and every exclusion constraint was hit', async () => {
-  const missing = [];
-  for (const [name, msgs] of triggerMessages) {
-    const seen = proved.get(name);
-    if (!seen) { missing.push(`${name}: no case`); continue; }
-    for (const m of msgs) if (!seen.has(m)) missing.push(`${name}: never refused with "${m}"`);
-  }
-  assert.deepEqual(missing, []);
-  const exclusions = (await db.prepare("SELECT conname FROM pg_constraint WHERE contype = 'x' AND connamespace = current_schema()::regnamespace").all()).map((r) => r.conname).sort();
-  assert.deepEqual([...seenExclusions].sort(), exclusions);
-});
+await test('what the cases above proved is what test/rules/core.json declares (test/rules-all.test.js checks every area against the database)', () => { checkDeclared(); });

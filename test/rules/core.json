@@ -1,0 +1,165 @@
+{
+ "triggers": {
+  "agreement_currency_implied_insert": [
+   "tariff currency differs from the home currency"
+  ],
+  "agreement_currency_implied_update": [
+   "tariff currency differs from the home currency"
+  ],
+  "agreement_device_same_site_insert": [
+   "tariff agreement home differs from its meter home"
+  ],
+  "agreement_device_same_site_update": [
+   "tariff agreement home differs from its meter home"
+  ],
+  "command_checks": [
+   "command: a new command starts pending",
+   "command: already expired when requested (valid_until passed)",
+   "command: the device cannot deliver this action (no device_capability row with supported = 1)",
+   "command: the plan run belongs to another home"
+  ],
+  "command_desired_fixed": [
+   "command: the desired state is fixed (a changed state is a new command)"
+  ],
+  "command_export_window": [
+   "command: export_end must be after export_start"
+  ],
+  "command_log_no_delete": [
+   "command_log: append-only"
+  ],
+  "command_log_no_update": [
+   "command_log: append-only"
+  ],
+  "command_never_late": [
+   "command: past valid_until, dropped (a late command is never sent)"
+  ],
+  "command_status_flow": [
+   "command: status change not allowed (acked, failed, expired, cancelled and skipped_unchanged are final)"
+  ],
+  "connection_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ],
+  "control_limit_ranked": [
+   "control_limit: a lower source can only tighten a higher one (physical > legal > installer > owner > optimiser)"
+  ],
+  "device_capability_known_action": [
+   "device_capability: action not defined in device_action for this device kind"
+  ],
+  "device_capability_known_action_update": [
+   "device_capability: action not defined in device_action for this device kind"
+  ],
+  "device_kind_known_insert": [
+   "unknown device kind: not in device_kind (add a registry row to extend)"
+  ],
+  "device_kind_known_update": [
+   "unknown device kind: not in device_kind (add a registry row to extend)"
+  ],
+  "device_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ],
+  "forecast_fact_append_only": [
+   "append-only: % rows never change and are never deleted (only by a logged erasure)"
+  ],
+  "forecast_fact_home": [
+   "fact home differs from the home of its series"
+  ],
+  "forecast_fact_span_insert": [],
+  "forecast_fact_span_update": [],
+  "interval_fact_append_only": [
+   "append-only: a fact changes only by being superseded once (a new value is a new version)",
+   "append-only: a fact is never deleted (only by a logged erasure)"
+  ],
+  "interval_fact_home": [
+   "fact home differs from the home of its series"
+  ],
+  "interval_fact_span_insert": [],
+  "interval_fact_span_update": [],
+  "plan_run_append_only": [
+   "plan_run: append-only (only status and superseded_at change, when superseded)"
+  ],
+  "plan_run_device_same_site": [
+   "plan_run_device: the device belongs to another home"
+  ],
+  "plan_run_status_flow": [
+   "plan_run: only a current run (ok or stale_inputs) can become superseded"
+  ],
+  "plan_run_unchanged": [
+   "plan_run: unchanged plan (same plan_hash and status as the current run of this scenario)"
+  ],
+  "plan_slot_append_only": [
+   "plan_slot: append-only (a changed plan is a new plan_run)"
+  ],
+  "plan_slot_checks": [
+   "plan_slot: action not defined in device_action for this device kind",
+   "plan_slot: device not planned by this run (plan_run_device role controlled or aggregate)",
+   "plan_slot: slot_start is not on the run's slot grid or is outside its horizon",
+   "plan_slot: start_offset_min must be less than the slot",
+   "plan_slot: the device cannot deliver this action (device_capability supported = 0)"
+  ],
+  "raw_payload_append_only": [
+   "append-only: % rows never change and are never deleted (only by a logged erasure)"
+  ],
+  "reading_append_only": [
+   "append-only: a fact changes only by being superseded once (a new value is a new version)",
+   "append-only: a fact is never deleted (only by a logged erasure)"
+  ],
+  "reading_home": [
+   "fact home differs from the home of its series"
+  ],
+  "region_alias_not_a_partition": [
+   "alias scheme is a region scheme of its own: partitions are never aliased"
+  ],
+  "region_alias_not_a_partition_update": [
+   "alias scheme is a region scheme of its own: partitions are never aliased"
+  ],
+  "region_scheme_not_an_alias": [
+   "region scheme is already used as an alias scheme"
+  ],
+  "register_window_no_overlap_insert": [
+   "overlapping register windows: two registers at the same minute"
+  ],
+  "register_window_no_overlap_update": [
+   "overlapping register windows: two registers at the same minute"
+  ],
+  "series_home": [
+   "series home differs from the home of its subject"
+  ],
+  "site_country_matches_market_insert": [
+   "home country differs from its market country"
+  ],
+  "site_country_matches_market_update": [
+   "home country differs from its market country"
+  ],
+  "site_currency_implied_matches_agreements": [
+   "tariff currency differs from the home currency"
+  ],
+  "site_currency_matches_market_insert": [
+   "home currency differs from its market currency"
+  ],
+  "site_currency_matches_market_update": [
+   "home currency differs from its market currency"
+  ],
+  "site_default_bindings": [],
+  "site_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ],
+  "site_version_on_insert": [],
+  "site_version_on_update": [],
+  "tariff_currency_implied_matches_agreements": [
+   "tariff currency differs from the home currency"
+  ],
+  "tariff_version_on_insert": [],
+  "tariff_version_on_update": [],
+  "tax_rule_no_overlap": [
+   "overlapping current tax rule"
+  ],
+  "tax_rule_no_overlap_update": [
+   "overlapping current tax rule"
+  ]
+ },
+ "exclusions": [
+  "agreement_no_overlap",
+  "member_no_overlap",
+  "rate_no_overlap"
+ ]
+}

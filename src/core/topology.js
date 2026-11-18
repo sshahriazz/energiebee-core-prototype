@@ -60,7 +60,8 @@ export async function homeTopology(siteId) {
   const things = (await db.prepare(`SELECT id, type, valid_to FROM thing WHERE home_id = ? AND kind = 'device' AND superseded_at IS NULL AND merged_into IS NULL`).all(siteId)).map((t) => ({ id: Number(t.id), type: t.type, valid_to: t.valid_to }));
   const relations = (await db.prepare(`SELECT from_id, to_id, rel, valid_to FROM thing_relation WHERE home_id = ? AND superseded_at IS NULL AND rel = 'feeds'`).all(siteId))
     .map((r) => ({ from: Number(r.from_id), to: Number(r.to_id), rel: r.rel, valid_to: r.valid_to }));
-  const measured = async (codes) => Boolean(await db.prepare(`SELECT 1 AS x FROM series s JOIN metric m ON m.id = s.metric_id WHERE s.site_id = ? AND m.code = ANY(?::text[])
+  // the flows measured at home level (a device's own series are the device's: a battery with its own readings is not a plant flow)
+  const measured = async (codes) => Boolean(await db.prepare(`SELECT 1 AS x FROM series s JOIN metric m ON m.id = s.metric_id WHERE s.site_id = ? AND s.subject_kind = 'site' AND m.code = ANY(?::text[])
     AND EXISTS (SELECT 1 FROM reading r WHERE r.series_id = s.id) LIMIT 1`).get(siteId, `{${codes.join(',')}}`));
   return topologyOf({ things, relations, evidence: { flows: { solar: await measured(['solar_w']), battery: await measured(['battery_charge_w', 'battery_discharge_w', 'battery_soc_pct']), grid: await measured(['grid_import_w']) } } });
 }

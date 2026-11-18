@@ -48,7 +48,8 @@ await test('a period is reported at its end; a forecast is not a report', async 
 });
 
 await test('what is asked of a point is kept beside what it reports; a read-only point cannot be asked', async () => {
-  await assert.rejects(() => setDesired(Number((await shadow('battery_soc_pct')).id), 80), /read only/);
+  const soc = Number((await shadow('battery_soc_pct')).id);
+  await assert.rejects(() => setDesired(soc, 80), /read only/);
   const reserve = await pointOf(bat.id, 'ctl_reserve_pct');
   await setDesired(reserve, 30, { by: 'manual', commandId: 7, at: NOW });
   const d = (await shadow('ctl_reserve_pct')).desired;

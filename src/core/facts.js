@@ -8,6 +8,7 @@ import path from 'node:path';
 import { db, tx, sourceId, metricId, rawDir, rawFilePath } from '../db/db.js';
 import { nowSec } from './time.js';
 import { subjectThing, pointOf } from './points.js';
+import { touchReported } from './point-state.js';
 
 // ───────────── Raw landing ─────────────
 
@@ -193,6 +194,7 @@ export async function putReadings(series, rows, rawId) {
   await checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
+  let latest = null;   // the newest reading stored: the point's reported state
   await tx(async () => {
         for (const r of lastPerKey(rows, (x) => x.ts)) {
           const value = r.value === undefined ? null : r.value;
@@ -204,7 +206,9 @@ export async function putReadings(series, rows, rawId) {
           if (cur) await supReading.run(at, series, r.ts);
           await insReading.run(series, r.ts, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
           changed++;
+          if (latest == null || r.ts > latest.ts || (r.ts === latest.ts && at >= latest.at)) latest = { ts: r.ts, value, at };
         }
+        if (latest) await touchReported(series, latest);
       });
   return changed;
 }
@@ -220,6 +224,7 @@ export async function putIntervals(series, rows, rawId) {
   await checkWriter(series);
   const recordedAt = Date.now();
   let changed = 0;
+  let latest = null;   // the period that ended last: the point's reported state
   await tx(async () => {
         for (const r of lastPerKey(rows, (x) => `${x.start}|${x.end}`)) {
           const value = r.value === undefined ? null : r.value;
@@ -229,7 +234,9 @@ export async function putIntervals(series, rows, rawId) {
           if (cur) await supInterval.run(at, series, r.start, r.end);
           await insInterval.run(series, r.start, r.end, value, r.quality ?? QUALITY.MEASURED, at, r.rawId ?? rawId ?? null);
           changed++;
+          if (latest == null || r.end > latest.ts || (r.end === latest.ts && at >= latest.at)) latest = { ts: r.end, value, at };
         }
+        if (latest) await touchReported(series, latest);
       });
   return changed;
 }

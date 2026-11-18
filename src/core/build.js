@@ -41,6 +41,7 @@ import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floo
 import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { buildHeat, hasHeatingSeries, HEAT_METHOD_VERSION } from './heat.js';
 import { reduceAsync, flatMapAsync, mapAsync, someAsync } from "./async.js";
+import { homeTopology } from './topology.js';
 
 export const METHOD_VERSION = 'v4-gaps-filled';
 
@@ -128,6 +129,9 @@ const slotSum = (intervals, slot, slotS) => slotAgg(intervals, slot, slotS, 'sum
 const meterSum = (intervals, slot, slotS, shape = null) => { const r = slotAgg(intervals, slot, slotS, 'sum', shape); return r.cover >= slotS ? r.value : null; };
 
 export async function buildSite(siteId, fromDate, toDate, opts = {}) {
+  // A plant the energy graph does not explain, with flows measured that it cannot account for, is refused rather than built into numbers that look right (R1, src/core/topology.js).
+  const topology = await homeTopology(siteId);
+  if (!topology.supported) throw Object.assign(new Error(`home ${siteId}: its plant is not covered by the build's allocation (${topology.reasons.join('; ')})`), { code: 'topology_not_covered', reasons: topology.reasons });
   return opts.asOf != null ? withKnownAt(opts.asOf * 1000, async () => await build(siteId, fromDate, toDate, opts)) : await build(siteId, fromDate, toDate, opts);
 }
 

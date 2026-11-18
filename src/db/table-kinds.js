@@ -28,16 +28,16 @@ export const TABLE_KINDS = {
   reading: 'fact', interval_fact: 'fact', forecast_fact: 'fact', raw_payload: 'fact',
   // serving
   site_hh: 'serving', site_day: 'serving', site_heat_slot: 'serving', check_result: 'serving',
-  tariff_price_run: 'serving', supply_price_slot: 'serving', tariff_price_state: 'serving', plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
+  tariff_price_run: 'serving', point_slot: 'serving', node_slot: 'serving', supply_price_slot: 'serving', tariff_price_state: 'serving', plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
   // logs
   sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log', erasure_log: 'log', raw_check_run: 'log', thing_op: 'log',
   // registries
   attribute_def: 'registry', setting_def: 'registry', binding_default: 'registry', column_class: 'registry', currency: 'registry',
   device_kind: 'registry', device_action: 'registry', market: 'registry', market_provider: 'registry', market_question: 'registry',
-  metric: 'registry', capability: 'registry', region: 'registry', source: 'registry', series: 'registry', thing_type: 'registry', relation_rule: 'registry',
+  metric: 'registry', capability: 'registry', derived_def: 'registry', region: 'registry', source: 'registry', series: 'registry', thing_type: 'registry', relation_rule: 'registry',
   // runtime
   home_key: 'secret',
-  rebuild_queue: 'runtime', raw_payload_check: 'runtime', price_dirty: 'runtime', provider_state: 'runtime', user_session: 'runtime', command_block: 'runtime',
+  rebuild_queue: 'runtime', point_state: 'runtime', raw_payload_check: 'runtime', price_dirty: 'runtime', provider_state: 'runtime', user_session: 'runtime', command_block: 'runtime',
 };
 
 // Configuration tables from before the rule: the record time they have today, and what replaces them.

@@ -50,3 +50,23 @@ export async function stateOf(thingId) {
     };
   });
 }
+
+/**
+ * Give every point of a home that has facts and no reported state the state its latest fact implies (state is rebuilt from the facts, so
+ * a home that had data before state was kept, or whose state was lost, gets it back). Cheap when nothing is missing. Returns the points set.
+ */
+export async function refreshPointState(homeId) {
+  let n = 0;
+  const rows = await db.prepare(`SELECT s.id, s.point_id FROM series s LEFT JOIN point_state st ON st.point_id = s.point_id WHERE s.site_id = ? AND st.reported_ts IS NULL ORDER BY s.id`).all(homeId);
+  const seen = new Set();
+  for (const s of rows) {
+    if (seen.has(Number(s.point_id))) continue;
+    const r = await db.prepare('SELECT ts, value, recorded_at FROM reading WHERE series_id = ? AND superseded_at IS NULL ORDER BY ts DESC LIMIT 1').get(s.id);
+    const i = r ? null : await db.prepare('SELECT end_ts AS ts, value, recorded_at FROM interval_fact WHERE series_id = ? AND superseded_at IS NULL ORDER BY end_ts DESC LIMIT 1').get(s.id);
+    const f = r ?? i;
+    if (!f) continue;
+    await touchReported(Number(s.id), { ts: Number(f.ts), value: f.value, at: Number(f.recorded_at) });
+    seen.add(Number(s.point_id)); n++;
+  }
+  return n;
+}

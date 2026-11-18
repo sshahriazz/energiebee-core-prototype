@@ -20,6 +20,7 @@
 import { db, tx, inTx } from '../db/db.js';
 import { createThing, relate, lockHome } from './things.js';
 import { placePlantPoints } from './points.js';
+import { refreshPointState } from './point-state.js';
 import { ensureLink } from './links.js';
 
 // Home-wide devices sit at home level and need no room: no rule here places one in a room, even when asked.
@@ -180,6 +181,7 @@ export async function applyPlan(homeId, plan, facts) {
 // provider's plant (a Sunsynk plant id) so a second look at the plant is the same inverter.
 async function settle(homeId) {
   await placePlantPoints(homeId);
+  await refreshPointState(homeId);   // points that have facts and no state yet
   const inverter = await db.prepare(`SELECT t.id FROM thing t JOIN device d ON d.id = t.id AND d.provider = 'thing' WHERE t.home_id = ? AND t.type = 'inverter' AND t.superseded_at IS NULL AND t.valid_to IS NULL`).all(homeId);
   if (inverter.length !== 1) return;
   const conn = await db.prepare(`SELECT c.id, c.provider, c.external_ref FROM connection c WHERE c.site_id = ? AND c.external_ref IS NOT NULL AND c.external_ref <> ''

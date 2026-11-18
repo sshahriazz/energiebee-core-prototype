@@ -11,6 +11,7 @@ const { db } = await import('../src/db/db.js');
 const H = await import('../src/core/health.js');
 const { bind } = await import('../src/core/inputs.js');
 const { seriesId, putReadings, putIntervals, putForecasts } = await import('../src/core/facts.js');
+const { pointOf } = await import('../src/core/points.js');
 const { app } = await import('../src/server.js');
 
 let server; let base;
@@ -69,7 +70,7 @@ await test('cadence by kind when the source declares none: a forecast 3600 s, a 
   // a counter on a plug
   const dev = Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'smart_plug', 'push', 'h-plug', 'p', '{}', 0)").run(SITE)).lastInsertRowid);
   await mk('plug_vendor'); await bind(SITE, 'plug_energy', 'plug_vendor', { from: null, reason: 'test', deviceId: dev });
-  await db.prepare("INSERT INTO point_binding (site_id, source_id, device_id, point, metric_id, kind, recorded_at) VALUES (?, (SELECT id FROM source WHERE code = 'plug_vendor'), ?, 'total', (SELECT id FROM metric WHERE code = 'plug_counter_kwh'), 'counter', 0)").run(SITE, dev);
+  await db.prepare("INSERT INTO point_binding (point_id, site_id, source_id, device_id, point, metric_id, kind, recorded_at) VALUES (?, ?, (SELECT id FROM source WHERE code = 'plug_vendor'), ?, 'total', (SELECT id FROM metric WHERE code = 'plug_counter_kwh'), 'counter', 0)").run(await pointOf(dev, 'plug_counter_kwh'), SITE, dev);
   const cs = await seriesId('device', dev, 'plug_counter_kwh', 'plug_vendor');
   await putReadings(cs, [{ ts: now - 200, value: 5 }]); await stamp('reading', cs, now - 200);
   const c = roleHealth(await H.health(SITE, { now }), 'plug_energy').bindings[0];

@@ -21,6 +21,7 @@
     "reset": "echo \"Drop and recreate the database named in DATABASE_URL, then: npm run db:migrate\"",
     "history:reconstruct": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/reconstruct-history.js",
     "retention": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/retention.js",
+    "raw:verify": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/verify-raw.js",
     "demo:users": "node --disable-warning=ExperimentalWarning scripts/demo-users.js",
     "demo:start": "node --disable-warning=ExperimentalWarning scripts/demo-start.js",
     "user:pin": "node --env-file=.env --disable-warning=ExperimentalWarning scripts/set-pin.js",

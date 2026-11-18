@@ -15,8 +15,7 @@
 // One transaction, foreign keys checked at commit (defer_foreign_keys), so a schema change that would leave a dangling
 // row fails the delete instead of half-doing it.
 import fs from 'node:fs';
-import path from 'node:path';
-import { db, dataDir, tableNames, columnsOf } from '../db/db.js';
+import { db, rawFilePath, tableNames, columnsOf } from '../db/db.js';
 import { erase } from './erasure.js';
 import { isSyncing } from '../jobs/sync.js';
 
@@ -167,7 +166,7 @@ export async function deleteHome(user, site, { confirm } = {}) {
   // The raw files, after the commit: a file whose row is gone is only a leftover.
   let files = 0;
   for (const r of f.raw.deleted) {
-    try { fs.unlinkSync(path.join(dataDir, r.file)); files++; } catch { /* already gone */ }
+    try { fs.unlinkSync(rawFilePath(r.file)); files++; } catch { /* already gone */ }
   }
   return { deleted: { id: site.id, name: site.name }, rows: removed, raw: { deleted: f.raw.deleted.length, kept: f.raw.kept.length }, files };
 }

@@ -3,7 +3,8 @@
 // Retention (runRetention, below): what is kept and for how long; a dry-run report unless asked.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, dataDir } from '../db/db.js';
+import { db, tx, rawDir, rawFilePath } from '../db/db.js';
+import { rawName } from '../db/raw-dir.js';
 import { seriesId } from './facts.js';
 import { nowSec } from './time.js';
 import { bindingsFor } from './inputs.js';
@@ -12,6 +13,7 @@ import { replayableSources } from './replay.js';
 import { seedDeviceHistory } from './devices.js';
 import { filterAsync } from "./async.js";
 import { erase } from "./erasure.js";
+import { runRawCheck } from './raw-integrity.js';
 
 // Earlier code (before 16 Oct 2026) converted this home's gas readings from m³ to kWh with a
 // fixed calorific value as it stored them, and saved the result as Octopus 'gas_kwh' facts.
@@ -58,14 +60,16 @@ export async function seedSiteAttributes(siteId) {
 
 // The start-up hook (server.js start). Per home: { gasKwhWithdrawn }. Then retention, in the mode
 // RETENTION sets: 'report' (the default: a dry run, nothing deleted), 'apply', or 'off'; its report
-// is returned under `retention` (null when off).
-export async function runMaintenance({ retention = retentionSettings().mode } = {}) {
+// is returned under `retention` (null when off). Before it, the raw-file check (src/core/raw-integrity.js, RAW_VERIFY):
+// today's slice of the receipts is opened and hashed; its report is returned under `rawCheck` (null when off). Reading only.
+export async function runMaintenance({ retention = retentionSettings().mode, rawCheck = true } = {}) {
   const out = {};
   for (const { id } of await db.prepare('SELECT id FROM site').all()) {
     await seedSiteAttributes(id);
     await seedDeviceHistory(id);
     out[id] = { gasKwhWithdrawn: await withdrawDerivedGas(id) };
   }
+  Object.defineProperty(out, 'rawCheck', { value: rawCheck ? await runRawCheck() : null, enumerable: false });
   Object.defineProperty(out, 'retention', { value: retention === 'off' ? null : await runRetention({ dryRun: retention !== 'apply' }), enumerable: false });
   return out;
 }
@@ -181,7 +185,7 @@ async function rawRefs() {
 const notReferenced = (refs, alias) => refs.map(([t, c]) => `NOT EXISTS (SELECT 1 FROM "${t}" WHERE "${c}" = ${alias}.id)`).join(' AND ') || 'TRUE';
 
 function fileSize(rel) {
-  try { return fs.statSync(path.join(dataDir, rel)).size; } catch { return null; }
+  try { return fs.statSync(rawFilePath(rel)).size; } catch { return null; }
 }
 
 async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
@@ -219,16 +223,17 @@ async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) 
     });
     out.deleted += gone.length;
     for (const r of gone) {
-      try { fs.unlinkSync(path.join(dataDir, r.file)); out.filesDeleted++; } catch (err) { if (err.code !== 'ENOENT') throw err; }
+      const file = rawFilePath(r.file);   // null: the name is not in the raw store, nothing to remove
+      if (!file) continue;
+      try { fs.unlinkSync(file); out.filesDeleted++; } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
   }
   return out;
 }
 
-// Files under data/raw that no raw_payload row names, last written before the cutoff.
+// Files under the raw store (RAW_DIR, default data/raw) that no raw_payload row names, last written before the cutoff.
 async function orphanFiles(cutoff, dryRun) {
   const out = { found: 0, bytes: 0, deleted: 0 };
-  const rawDir = path.join(dataDir, 'raw');
   if (!fs.existsSync(rawDir)) return out;
   const known = new Set((await db.prepare('SELECT file FROM raw_payload').all()).map((r) => path.normalize(r.file)));
   const walk = (dir) => {
@@ -236,7 +241,7 @@ async function orphanFiles(cutoff, dryRun) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) { walk(full); continue; }
       if (!e.isFile()) continue;
-      const rel = path.normalize(path.relative(dataDir, full));
+      const rel = rawName(rawDir, full);
       if (known.has(rel)) continue;
       const st = fs.statSync(full);
       if (st.mtimeMs >= cutoff * 1000) continue;

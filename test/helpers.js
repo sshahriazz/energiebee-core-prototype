@@ -79,6 +79,7 @@ export async function useDb({ snapshot = false } = {}) {
   process.env.DATABASE_URL = url;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-test-'));
   process.env.DATA_DIR = dir;
+  delete process.env.RAW_DIR;   // a test's raw files go to its own DATA_DIR/raw, never to a real raw store
   // Sign-in is required on the main app; tests that read homes without a user turn it off (test/signup.test.js turns it on).
   process.env.REQUIRE_LOGIN ??= '0';
   // TEST_SLOT_S=900|3600 runs a snapshot test at another slot length (npm run test:slots). Stored slot rows stay as they are; dry-run builds follow the new length.

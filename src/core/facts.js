@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, sourceId, metricId, dataDir } from '../db/db.js';
+import { db, tx, sourceId, metricId, rawFilePath } from '../db/db.js';
 import { nowSec } from './time.js';
 
 // ───────────── Raw landing ─────────────
@@ -40,21 +40,47 @@ export async function seal(siteId, text) {
   const body = Buffer.concat([c.update(text, 'utf8'), c.final()]);
   return Buffer.concat([MAGIC, iv, c.getAuthTag(), body]);
 }
-// The text of a raw receipt ({ file, site_id }), or null when the file is gone, or its home's key is (an erased home).
-export async function readRaw(row) {
+// Open a raw receipt ({ file, site_id }): { state: 'ok', text, bytes } or the reason there is no text:
+//   missing      the file is not in the raw store (retention, a copied database, a store that is not mounted)
+//   unreadable   the file is there and cannot be read (permissions, a failing disk)
+//   key_gone     a sealed file whose home's key is gone (an erased home: its files are meant to stay unreadable)
+//   corrupt      a sealed file that does not decrypt: it was changed or cut short
+export async function openRaw(row) {
+  const file = rawFilePath(row.file);
+  if (!file) return { state: 'missing' };
   let buf;
-  try { buf = fs.readFileSync(path.join(dataDir, row.file)); } catch { return null; }
-  if (!isSealed(buf)) return buf.toString('utf8');
+  try { buf = fs.readFileSync(file); } catch (err) { return { state: err.code === 'ENOENT' ? 'missing' : 'unreadable', error: err }; }
+  if (!isSealed(buf)) return { state: 'ok', text: buf.toString('utf8'), bytes: buf.length, sealed: false };
   const key = row.site_id == null ? null : await homeKey(row.site_id);
-  if (!key) return null;
-  const iv = buf.subarray(MAGIC.length, MAGIC.length + 12);
-  const tag = buf.subarray(MAGIC.length + 12, MAGIC.length + 28);
-  const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  d.setAuthTag(tag);
-  return Buffer.concat([d.update(buf.subarray(MAGIC.length + 28)), d.final()]).toString('utf8');
+  if (!key) return { state: 'key_gone', bytes: buf.length };
+  try {
+    const iv = buf.subarray(MAGIC.length, MAGIC.length + 12);
+    const tag = buf.subarray(MAGIC.length + 12, MAGIC.length + 28);
+    const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    d.setAuthTag(tag);
+    return { state: 'ok', text: Buffer.concat([d.update(buf.subarray(MAGIC.length + 28)), d.final()]).toString('utf8'), bytes: buf.length, sealed: true };
+  } catch (err) { return { state: 'corrupt', error: err, bytes: buf.length }; }
 }
+// The text of a raw receipt, or null when the file or its home's key is gone (an erased home). A sealed file that was
+// changed throws: that is damage, not absence.
+export async function readRaw(row) {
+  const r = await openRaw(row);
+  if (r.state === 'corrupt') throw r.error;
+  return r.state === 'ok' ? r.text : null;
+}
+// The hash a receipt is stored under (raw_payload.hash): its source, status and text.
+export const rawHash = (source, status, text) => crypto.createHash('sha256').update(`${source}\n${status}\n${text}`).digest('hex');
 // Does this receipt's file have to be sealed? (a home's, and not public data)
 export async function sealsRaw(source, siteId) { return siteId != null && !await isPublic(source); }
+
+// The whole file or none of it, on disk before the row that names it exists (a crash or a power cut cannot leave a row
+// pointing at half a file). The temporary name is an orphan if the process dies in between; retention clears it.
+function writeFileDurably(file, data) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } catch (err) { try { fs.unlinkSync(tmp); } catch { /* not created */ } throw err; } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, file);
+}
 
 // Identity is the source and the body, not the request: requests carry the current
 // time (period_to=now, nonces), so the same data fetched again would otherwise be
@@ -63,21 +89,22 @@ export async function sealsRaw(source, siteId) { return siteId != null && !await
 export async function landRaw({ source, siteId, request, body, status = 'accepted', reason = null }) {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
   const reqText = JSON.stringify(request ?? {});
-  const hash = crypto.createHash('sha256').update(`${source}\n${status}\n${text}`).digest('hex');
+  const hash = rawHash(source, status, text);
   const existing = await findRaw.get(hash);
   if (existing) return { rawId: existing.id, duplicate: true };
   const fetchedAt = nowSec();
   const day = new Date(fetchedAt * 1000).toISOString().slice(0, 10);
   const rel = path.join('raw', source, day, `${hash.slice(0, 16)}.json`);
-  fs.mkdirSync(path.join(dataDir, path.dirname(rel)), { recursive: true });
-  fs.writeFileSync(path.join(dataDir, rel), await sealsRaw(source, siteId) ? await seal(siteId, text) : text);
+  const file = rawFilePath(rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileDurably(file, await sealsRaw(source, siteId) ? await seal(siteId, text) : text);
   try {
     const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
     return { rawId: Number(r.lastInsertRowid), duplicate: false };
   } catch (err) {
     const raced = await findRaw.get(hash).catch(() => null);   // the same body landed at the same moment: its file is this one
     if (raced) return { rawId: raced.id, duplicate: true };
-    try { fs.unlinkSync(path.join(dataDir, rel)); } catch { /* already gone */ }
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
     throw err;
   }
 }

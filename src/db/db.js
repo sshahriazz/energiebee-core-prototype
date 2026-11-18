@@ -36,6 +36,7 @@ import { seedBindings, bindingSeedPending } from './seed/bindings.js';
 import { seedSettingDefs, settingSeedPending } from './seed/settings.js';
 import { resolveRegion } from '../core/regions.js';
 import { EU_VAT_RULES } from '../core/tax.js';
+import { resolveRawDir, rawFileIn } from './raw-dir.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..');
@@ -45,6 +46,13 @@ if (!databaseUrl) throw new Error('DATABASE_URL is not set (see .env.example)');
 // Raw payload files, logs and demo data: DATA_DIR, default data/ in the project.
 export const dataDir = path.resolve(root, process.env.DATA_DIR || 'data');
 fs.mkdirSync(dataDir, { recursive: true });
+// Raw receipt files: DATA_DIR/raw unless RAW_DIR names another place (separate storage; src/db/raw-dir.js).
+export const rawDir = resolveRawDir(process.env, root);
+// A RAW_DIR that is not there is a refusal, not a folder to create: an unmounted volume would otherwise be replaced by an empty
+// folder on the system disk and the files would land in the wrong place without a sign.
+if (process.env.RAW_DIR) { if (!fs.statSync(rawDir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`RAW_DIR ${rawDir} is not an existing directory (is the volume mounted?)`); }
+else fs.mkdirSync(rawDir, { recursive: true });
+export const rawFilePath = (file) => rawFileIn(rawDir, file);
 
 export const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
 

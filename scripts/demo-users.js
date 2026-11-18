@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { urlFor } from './lib/databases.js';
+import { resolveRawDir } from '../src/db/raw-dir.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides DATABASE_URL */ }
@@ -21,12 +22,13 @@ const dataDir = path.join(root, 'data', 'demo');
 
 // The homes: demo-ui.js copies the app's database into the demo one and adds the synthetic French and Dutch homes.
 execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts', 'demo-ui.js'), name], { stdio: 'inherit', env: { ...process.env, DEMO_DATA_DIR: dataDir } });
-const rawFrom = path.join(root, process.env.DATA_DIR || 'data', 'raw'); const rawTo = path.join(dataDir, 'raw');
+const rawFrom = resolveRawDir(process.env, root);   // the app's raw store, wherever RAW_DIR puts it const rawTo = path.join(dataDir, 'raw');
 fs.rmSync(rawTo, { recursive: true, force: true });
 if (fs.existsSync(rawFrom)) fs.cpSync(rawFrom, rawTo, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
 
 process.env.DATABASE_URL = urlFor(name, process.env.DATABASE_URL);
 process.env.DATA_DIR = dataDir;
+delete process.env.RAW_DIR;   // the demo reads its own copy (data/demo/raw)
 const { db, closeDb } = await import('../src/db/db.js');
 const { createUser, giveHome, listUsers } = await import('../src/core/users.js');
 

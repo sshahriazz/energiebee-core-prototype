@@ -4,8 +4,8 @@
 // missing row is inserted and a row that differs is brought back in line at start-up; a row the code does not list (an
 // operator's own type or rule) is left alone. A type or rule removed from the code stays until a migration removes it.
 //
-// Types: the first set of thing-model 3.1, the 18 device kinds of device_kind (so every device row has a type to become a thing
-// of), and four the energy graph needs (grid_connection, home_supply, appliance, generic_device). `hot_water` is both a device
+// Types: the first set of thing-model 3.1, the device kinds of device_kind (every device row has a thing, and every device thing has a device row: the
+// energy graph's own devices such as grid_connection and pv_array are device kinds too). `hot_water` is both a device
 // kind and a system type of the model: a type name is unique, so it is the system; the device row becomes a system thing.
 import { isDeepStrictEqual } from 'node:util';
 import { ATTRIBUTE_DEFS, DEVICE_KINDS } from './attributes.js';

@@ -10,11 +10,12 @@
    "attribute % is not carried by type %"
   ],
   "thing_home_clock": [
-   "the slot length of a home thing is the slot length of its site until the site is folded into it",
-   "the time zone of a home thing is the time zone of its site until the site is folded into it"
+   "the slot length of a home thing is the slot length of its site (change it on the site)",
+   "the time zone of a home thing is the time zone of its site (change it on the site)"
   ],
-  "thing_home_exists": [
-   "a home needs its home thing before anything else is put in it"
+  "thing_home_rules": [
+   "a home thing is its own home: home_id equals its id",
+   "a thing belongs to a live home thing: home_id must name a thing of kind home"
   ],
   "thing_identity_fixed": [
    "a thing keeps its kind, its type and its home"

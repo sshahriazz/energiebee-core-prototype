@@ -73,6 +73,7 @@ export async function homeFootprint(siteId) {
   // Seeds.
   const id = Number(siteId);
   await take('site', 'id', [id]);
+  await take('thing', 'id', [id]);   // the home thing (its id is the site's): its things, relations and versions, and the devices that are their detail rows, follow by foreign key
   const devices = (await db.prepare('SELECT id FROM device WHERE site_id = ?').all(id)).map((r) => r.id);
   await take('device', 'id', devices);
   for (const t of tables) {

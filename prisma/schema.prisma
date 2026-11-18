@@ -966,22 +966,22 @@ model setting_def {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model site {
-  id                               BigInt              @id @default(autoincrement())
+  id                               BigInt               @id @default(autoincrement())
   name                             String
   postcode                         String?
   outcode                          String?
   lat                              Float?
   lon                              Float?
-  timezone                         String              @default("Europe/London")
+  timezone                         String               @default("Europe/London")
   gsp_region                       String?
   carbon_region                    BigInt?
   pv_kwp                           Float?
   pv_tilt                          Float?
   pv_orientation                   Float?
   battery_kwh                      Float?
-  slot_s                           BigInt              @default(1800)
-  is_demo                          BigInt              @default(0)
-  env_key                          String?             @unique
+  slot_s                           BigInt               @default(1800)
+  is_demo                          BigInt               @default(0)
+  env_key                          String?              @unique
   created_at                       BigInt
   currency                         String?
   country                          String?
@@ -989,7 +989,7 @@ model site {
   contracted_kva                   Float?
   contracted_kva_origin            String?
   contracted_kva_note              String?
-  uid                              String              @unique @default(dbgenerated("uuidv7()")) @db.Uuid
+  uid                              String               @unique @default(dbgenerated("uuidv7()")) @db.Uuid
   attribute_value                  attribute_value[]
   binding                          binding[]
   channel                          channel[]
@@ -1008,8 +1008,8 @@ model site {
   rebuild_queue                    rebuild_queue[]
   replay_log                       replay_log[]
   series                           series[]
-  currency_site_currencyTocurrency currency?           @relation("site_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
-  market                           market?             @relation(fields: [market_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  currency_site_currencyTocurrency currency?            @relation("site_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  market                           market?              @relation(fields: [market_code], references: [code], onDelete: NoAction, onUpdate: NoAction)
   site_attribute                   site_attribute[]
   site_day                         site_day[]
   site_day_revision                site_day_revision[]
@@ -1023,6 +1023,9 @@ model site {
   sync_run                         sync_run[]
   tariff_agreement                 tariff_agreement[]
   tenant_site                      tenant_site?
+  thing                            thing?
+  thing_attr_version               thing_attr_version[]
+  thing_relation                   thing_relation[]
   user_site                        user_site[]
 
   @@index([market_code], map: "site_market")
@@ -1571,4 +1574,110 @@ model home_key {
   key        Bytes
   created_at BigInt
   site       site   @relation(fields: [site_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model relation_rule {
+  id                                                       BigInt      @id @default(autoincrement())
+  rel                                                      String
+  from_kind                                                String
+  from_type                                                String?
+  to_kind                                                  String
+  to_type                                                  String?
+  from_ports                                               String      @default("none")
+  to_ports                                                 String      @default("none")
+  flow                                                     BigInt      @default(0)
+  same_type                                                BigInt      @default(0)
+  acyclic                                                  BigInt      @default(0)
+  description                                              String?
+  thing_type_relation_rule_from_type_from_kindTothing_type thing_type? @relation("relation_rule_from_type_from_kindTothing_type", fields: [from_type, from_kind], references: [type, kind], onDelete: NoAction, onUpdate: NoAction, map: "relation_rule_from_type_fk")
+  thing_type_relation_rule_to_type_to_kindTothing_type     thing_type? @relation("relation_rule_to_type_to_kindTothing_type", fields: [to_type, to_kind], references: [type, kind], onDelete: NoAction, onUpdate: NoAction, map: "relation_rule_to_type_fk")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model thing {
+  id                                           BigInt              @id @default(autoincrement())
+  uid                                          String              @unique @default(dbgenerated("uuidv7()")) @db.Uuid
+  site_id                                      BigInt?             @unique(map: "thing_one_home", where: raw("((kind = 'home'::text) AND (superseded_at IS NULL))"))
+  kind                                         String
+  type                                         String
+  name                                         String
+  attrs                                        Json                @default("{}")
+  std_ref                                      String?
+  valid_from                                   BigInt?
+  valid_to                                     BigInt?
+  recorded_at                                  BigInt              @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
+  superseded_at                                BigInt?
+  site                                         site?               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  thing_type                                   thing_type          @relation(fields: [type, kind], references: [type, kind], onDelete: NoAction, onUpdate: NoAction, map: "thing_type_fk")
+  thing_attr_version                           thing_attr_version?
+  thing_relation_thing_relation_from_idTothing thing_relation[]    @relation("thing_relation_from_idTothing")
+  thing_relation_thing_relation_to_idTothing   thing_relation[]    @relation("thing_relation_to_idTothing")
+
+  @@index([site_id, kind], map: "thing_site", where: raw("(site_id IS NOT NULL)"))
+  @@index([type])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model thing_attr_version {
+  id            BigInt  @id @default(autoincrement())
+  thing_id      BigInt  @unique(map: "thing_attr_version_current", where: raw("(superseded_at IS NULL)"))
+  site_id       BigInt?
+  name          String
+  attrs         Json
+  valid_from    BigInt?
+  valid_to      BigInt?
+  recorded_at   BigInt
+  superseded_at BigInt?
+  site          site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  thing         thing   @relation(fields: [thing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([thing_id, recorded_at], map: "thing_attr_version_at")
+  @@index([site_id], map: "thing_attr_version_site", where: raw("(site_id IS NOT NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This table contains exclusion constraints and requires additional setup for migrations. Visit https://pris.ly/d/exclusion-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model thing_relation {
+  id                                  BigInt  @id @default(autoincrement())
+  site_id                             BigInt?
+  from_id                             BigInt
+  from_port                           String?
+  rel                                 String
+  to_id                               BigInt
+  to_port                             String?
+  required                            BigInt  @default(1)
+  valid_from                          BigInt?
+  valid_to                            BigInt?
+  changed_at                          BigInt?
+  recorded_at                         BigInt  @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
+  superseded_at                       BigInt?
+  thing_thing_relation_from_idTothing thing   @relation("thing_relation_from_idTothing", fields: [from_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  site                                site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  thing_thing_relation_to_idTothing   thing   @relation("thing_relation_to_idTothing", fields: [to_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([from_id, rel], map: "thing_relation_from", where: raw("(superseded_at IS NULL)"))
+  @@index([site_id], map: "thing_relation_site", where: raw("(site_id IS NOT NULL)"))
+  @@index([to_id, rel], map: "thing_relation_to", where: raw("(superseded_at IS NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model thing_type {
+  type                                                        String          @id
+  kind                                                        String
+  label                                                       String
+  capabilities                                                Json            @default("[]")
+  ports                                                       Json            @default("[]")
+  attribute_keys                                              Json            @default("[]")
+  std_ref                                                     String?
+  description                                                 String?
+  relation_rule_relation_rule_from_type_from_kindTothing_type relation_rule[] @relation("relation_rule_from_type_from_kindTothing_type")
+  relation_rule_relation_rule_to_type_to_kindTothing_type     relation_rule[] @relation("relation_rule_to_type_to_kindTothing_type")
+  thing                                                       thing[]
+
+  @@unique([type, kind], map: "thing_type_kind_key")
 }

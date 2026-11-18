@@ -1,0 +1,38 @@
+{
+ "triggers": {
+  "thing_attr_version_append_only": [
+   "append-only: a thing version changes only by being superseded once (a new value is a new version)",
+   "append-only: a thing version is never deleted (only by a logged erasure)"
+  ],
+  "thing_attr_version_on_insert": [],
+  "thing_attr_version_on_update": [],
+  "thing_attrs_allowed": [
+   "attribute % is not carried by type %"
+  ],
+  "thing_identity_fixed": [
+   "a thing keeps its kind and its home"
+  ],
+  "thing_relation_checks": [
+   "a % relation cannot form a cycle",
+   "a % relation joins things of the same type",
+   "a % relation needs a port on its from side",
+   "a % relation needs a port on its to side",
+   "a % relation takes no port on its from side",
+   "a % relation takes no port on its to side",
+   "a relation joins things of one home, or shared context",
+   "no % rule allows a % to a %",
+   "port % of type % only receives",
+   "port % of type % only sends",
+   "ports % and % carry different media (% and %)",
+   "relation home differs from the home of its things",
+   "type % has no port %"
+  ],
+  "thing_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ]
+ },
+ "exclusions": [
+  "located_in_one_place",
+  "relation_no_overlap"
+ ]
+}

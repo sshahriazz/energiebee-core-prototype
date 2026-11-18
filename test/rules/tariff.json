@@ -1,0 +1,6 @@
+{
+ "triggers": {},
+ "exclusions": [
+  "price_run_no_overlap"
+ ]
+}

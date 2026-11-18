@@ -12,35 +12,51 @@ import { touchReported } from './point-state.js';
 
 // ───────────── Raw landing ─────────────
 
-const findRaw = db.prepare('SELECT id, file, site_id FROM raw_payload WHERE hash = ?');
+const findRaw = db.prepare('SELECT id, file, site_id, occupancy_id FROM raw_payload WHERE hash = ?');
 const insertRaw = db.prepare(
-  `INSERT INTO raw_payload (source_id, site_id, request, fetched_at, hash, file, status, reason)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  `INSERT INTO raw_payload (source_id, site_id, request, fetched_at, hash, file, status, reason, occupancy_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
 // A home's raw files are encrypted with the home's own key (AES-256-GCM; home_key, fix list R14): deleting the home
 // deletes the key, so its files cannot be read again, in backups too. Public data (a source with traits.public: price
 // lists, grid data) and receipts with no home are stored as sent. A sealed file starts with MAGIC, then the 12-byte IV and
-// the 16-byte tag.
+// the 16-byte tag. A source of personal answers (traits.personal: the supplier account) is sealed with the key of the occupancy
+// it was fetched in (R21, EBRAW2: MAGIC, the occupancy id as 8 bytes, IV, tag), so erasing the person or handing the home over
+// destroys that key and the files with it, while the home's other files stay readable.
 const MAGIC = Buffer.from('EBRAW1');
-const publicSource = new Map();
-async function isPublic(source) {
-  if (!publicSource.has(source)) {
+const MAGIC_OCC = Buffer.from('EBRAW2');
+const sourceTraits = new Map();
+async function traitsOf(source) {
+  if (!sourceTraits.has(source)) {
     let t = {}; try { t = JSON.parse((await db.prepare('SELECT traits FROM source WHERE code = ?').get(source))?.traits || '{}'); } catch { /* none */ }
-    publicSource.set(source, Boolean(t.public));
+    sourceTraits.set(source, t);
   }
-  return publicSource.get(source);
+  return sourceTraits.get(source);
 }
+const isPublic = async (source) => Boolean((await traitsOf(source)).public);
+export const isPersonal = async (source) => Boolean((await traitsOf(source)).personal);
 async function homeKey(siteId, { create = false } = {}) {
   if (create) await db.prepare('INSERT INTO home_key (site_id, key, created_at) VALUES (?, ?, ?) ON CONFLICT (site_id) DO NOTHING').run(siteId, crypto.randomBytes(32), Date.now());
   return (await db.prepare('SELECT key FROM home_key WHERE site_id = ?').get(siteId))?.key ?? null;
 }
-export const isSealed = (buf) => buf.length >= MAGIC.length && buf.subarray(0, MAGIC.length).equals(MAGIC);
-export async function seal(siteId, text) {
-  const key = await homeKey(siteId, { create: true });
+async function occupancyKey(occupancyId, { create = false } = {}) {
+  if (create) await db.prepare('INSERT INTO occupancy_key (occupancy_id, key, created_at) VALUES (?, ?, ?) ON CONFLICT (occupancy_id) DO NOTHING').run(occupancyId, crypto.randomBytes(32), Date.now());
+  return (await db.prepare('SELECT key FROM occupancy_key WHERE occupancy_id = ?').get(occupancyId))?.key ?? null;
+}
+// The occupancy a personal receipt of this home belongs to now: the open owner occupancy (null when none: the home key seals it).
+async function currentOccupancy(siteId) {
+  const r = await db.prepare("SELECT id FROM occupancy WHERE home_id = ? AND valid_to IS NULL AND user_id IS NOT NULL AND role = 'owner' ORDER BY id DESC LIMIT 1").get(siteId);
+  return r ? Number(r.id) : null;
+}
+export const isSealed = (buf) => buf.length >= MAGIC.length && (buf.subarray(0, MAGIC.length).equals(MAGIC) || buf.subarray(0, MAGIC.length).equals(MAGIC_OCC));
+export async function seal(siteId, text, occupancyId = null) {
+  const key = occupancyId == null ? await homeKey(siteId, { create: true }) : await occupancyKey(occupancyId, { create: true });
   const iv = crypto.randomBytes(12);
   const c = crypto.createCipheriv('aes-256-gcm', key, iv);
   const body = Buffer.concat([c.update(text, 'utf8'), c.final()]);
-  return Buffer.concat([MAGIC, iv, c.getAuthTag(), body]);
+  if (occupancyId == null) return Buffer.concat([MAGIC, iv, c.getAuthTag(), body]);
+  const id = Buffer.alloc(8); id.writeBigUInt64BE(BigInt(occupancyId));
+  return Buffer.concat([MAGIC_OCC, id, iv, c.getAuthTag(), body]);
 }
 // Open a raw receipt ({ file, site_id }): { state: 'ok', text, bytes } or the reason there is no text:
 //   missing      the file is not in the raw store (retention, a copied database, a store that is not mounted)
@@ -53,14 +69,16 @@ export async function openRaw(row) {
   let buf;
   try { buf = fs.readFileSync(file); } catch (err) { return { state: err.code === 'ENOENT' ? 'missing' : 'unreadable', error: err }; }
   if (!isSealed(buf)) return { state: 'ok', text: buf.toString('utf8'), bytes: buf.length, sealed: false };
-  const key = row.site_id == null ? null : await homeKey(row.site_id);
+  const personal = buf.subarray(0, MAGIC.length).equals(MAGIC_OCC);
+  const head = MAGIC.length + (personal ? 8 : 0);
+  const key = personal ? await occupancyKey(Number(buf.readBigUInt64BE(MAGIC.length))) : row.site_id == null ? null : await homeKey(row.site_id);
   if (!key) return { state: 'key_gone', bytes: buf.length };
   try {
-    const iv = buf.subarray(MAGIC.length, MAGIC.length + 12);
-    const tag = buf.subarray(MAGIC.length + 12, MAGIC.length + 28);
+    const iv = buf.subarray(head, head + 12);
+    const tag = buf.subarray(head + 12, head + 28);
     const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
     d.setAuthTag(tag);
-    return { state: 'ok', text: Buffer.concat([d.update(buf.subarray(MAGIC.length + 28)), d.final()]).toString('utf8'), bytes: buf.length, sealed: true };
+    return { state: 'ok', text: Buffer.concat([d.update(buf.subarray(head + 28)), d.final()]).toString('utf8'), bytes: buf.length, sealed: true };
   } catch (err) { return { state: 'corrupt', error: err, bytes: buf.length }; }
 }
 // The text of a raw receipt, or null when the file or its home's key is gone (an erased home). A sealed file that was
@@ -101,7 +119,7 @@ async function restoreRaw(existing, source, text) {
   const file = rawFilePath(existing.file);
   if (!file || fs.existsSync(file)) return;
   folderFor(file);
-  writeFileDurably(file, await sealsRaw(source, existing.site_id) ? await seal(existing.site_id, text) : text);
+  writeFileDurably(file, await sealsRaw(source, existing.site_id) ? await seal(existing.site_id, text, existing.occupancy_id == null ? null : Number(existing.occupancy_id)) : text);
 }
 
 // Identity is the source and the body, not the request: requests carry the current
@@ -119,9 +137,10 @@ export async function landRaw({ source, siteId, request, body, status = 'accepte
   const rel = path.join('raw', source, day, `${hash.slice(0, 16)}.json`);
   const file = rawFilePath(rel);
   folderFor(file);
-  writeFileDurably(file, await sealsRaw(source, siteId) ? await seal(siteId, text) : text);
+  const occupancyId = siteId != null && await isPersonal(source) ? await currentOccupancy(siteId) : null;
+  writeFileDurably(file, await sealsRaw(source, siteId) ? await seal(siteId, text, occupancyId) : text);
   try {
-    const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);
+    const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason, occupancyId);
     return { rawId: Number(r.lastInsertRowid), duplicate: false };
   } catch (err) {
     const raced = await findRaw.get(hash).catch(() => null);   // the same body landed at the same moment: its file is this one

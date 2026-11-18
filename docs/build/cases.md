@@ -16,8 +16,8 @@ Written 18 November 2026. `test/cases.test.js` holds the 22 cases of `docs/thing
 | 10 | AC-coupled battery or two inverters | passes: supported plants build, an unwired one is refused with a reason |
 | 11 | An EV that powers the home | passes: both ways through the charger's and the car's ports; untracked is never negative |
 | 12 | A device accepts writes but reports nothing | its action is declared `verification: none`: the command ends `sent_unverified`, never acked, and a safety action is refused (gate `unverifiable`) |
-| 13 | The house is sold | **todo**: occupancy (R21) |
-| 14 | The owner asks for their data to be erased | **todo**: erasing a person apart from a home (R14 with R21); a home is erased whole |
+| 13 | The house is sold | occupancy: `handOver` ends the old one, removes its logins, requests and personal answers, and the new owner reads from the handover (`readableFrom`) |
+| 14 | The owner asks for their data to be erased | `erasePerson`: the account, their occupancies' personal answers (sealed with the occupancy's key, destroyed) and their groups go; the home keeps its history |
 | 15 | A block of flats with communal heating | **todo**: shared things with shares (R20) |
 | 16 | An EV moves with its owner to a new home | **todo**: the dated home of a thing (R24) |
 | 17 | A detached garage on a second hub | passes for the graph (devices of both hubs in one home); marking only one hub's devices offline is not built |

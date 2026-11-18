@@ -183,8 +183,31 @@ await test('case 12: a device accepts writes but reports nothing: its commands e
   const safety = await cmd.enqueueIfChanged({ deviceId: b.id, desired: { action: 'heat_off' }, validFrom: from, validUntil: from + 3600, now });
   assert.deepEqual([safety.written, safety.blocks.map((x) => x.gate)], [false, ['unverifiable']], 'no safety action is sent to a device that cannot confirm it');
 });
-await test('case 13: the house is sold: the new owner sees device history from the handover only', { todo: 'occupancy (R21) is not built' }, () => { assert.fail('not built'); });
-await test('case 14: the owner asks for their data to be erased: the person\'s data and personal raw payloads go, the home\'s device history stays', { todo: 'erasure of a person apart from a home (R14 with R21) is not built: a home is erased whole' }, () => { assert.fail('not built'); });
+await test('case 13: the house is sold: the new owner sees device history from the handover only', async () => {
+  const O = await import('../src/core/occupancy.js');
+  const h = await home('Sold'); const old = await createUser({ name: 'Seller', username: 'seller13' }); const next = await createUser({ name: 'Buyer', username: 'buyer13' }); await giveHome(old.id, h);
+  const m = await device(h, 'meter_import', 'm-13'); const sid = await series('device', m.id, 'grid_import_w', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sid, Array.from({ length: 40 }, (_, i) => ({ ts: D0 + i * 1800, value: 400 }))); });
+  await db.prepare("INSERT INTO connection (site_id, provider, status) VALUES (?, 'octopus', 'ok')").run(h);
+  await db.prepare("INSERT INTO connection_secret (site_id, provider, iv, tag, ciphertext, recorded_at) VALUES (?, 'octopus', ?, ?, ?, ?)").run(h, Buffer.alloc(12), Buffer.alloc(16), Buffer.from('x'), T0);
+  const at = D0 + 12 * 3600;
+  const r = await O.handOver({ homeId: h, fromUserId: old.id, toUserId: next.id, at });
+  assert.deepEqual([await O.readableFrom(next.id, h), r.removed.handover.logins], [at, 1], 'the buyer reads from the handover; the seller\'s login is gone');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 40, 'the home\'s history is all still there');
+  assert.equal(await db.prepare('SELECT 1 FROM user_site WHERE user_id = ? AND site_id = ?').get(old.id, h), undefined, 'the seller no longer sees the home');
+});
+await test('case 14: the owner asks for their data to be erased: the person\'s data and personal raw payloads go, the home\'s device history stays', async () => {
+  const O = await import('../src/core/occupancy.js');
+  const h = await home('Erase'); const p = await createUser({ name: 'Leaver', username: 'leaver14' }); await giveHome(p.id, h);
+  const m = await device(h, 'meter_import', 'm-14'); const sid = await series('device', m.id, 'grid_import_w', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sid, Array.from({ length: 10 }, (_, i) => ({ ts: D0 + i * 1800, value: 400 }))); });
+  await db.exec("INSERT INTO source (code, name, contract, traits) VALUES ('octopus_kraken', 'Kraken', '{}', '{\"personal\":true}') ON CONFLICT (code) DO UPDATE SET traits = excluded.traits");
+  const answer = await F.landRaw({ source: 'octopus_kraken', siteId: h, request: {}, body: { name: 'Leaver', address: '14 Case Street' } });
+  const r = await O.erasePerson(p.id, { reason: 'case 14' });
+  assert.deepEqual([r.removed.person.account, r.removed.person.receipts], [1, 1]);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM raw_payload WHERE id = ?').get(answer.rawId)).n, 0, 'the personal raw answer is gone');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 10, 'the home\'s device history stays');
+});
 await test('case 15: a block of flats with communal heating: each flat\'s heating cost is its share, labelled allocated', { todo: 'shared things with shares (R20) are not built' }, () => { assert.fail('not built'); });
 await test('case 16: an EV moves with its owner to a new home: the old home keeps its history, the new one starts empty', { todo: 'the dated home of a thing (R24) is not built' }, () => { assert.fail('not built'); });
 

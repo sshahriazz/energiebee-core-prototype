@@ -8,6 +8,7 @@
 import express from 'express';
 import { db, tx } from '../db/db.js';
 import { canSee, visibleSiteIds } from '../core/users.js';
+import { readableFrom } from '../core/occupancy.js';
 import * as T from '../core/things.js';
 import { stateOf } from '../core/point-state.js';
 import { readPointSlots } from '../core/point-slots.js';
@@ -195,10 +196,13 @@ router.get('/things/:uid/timeline', route(async (req) => {
     throw bad('from and to are epoch seconds or local dates (YYYY-MM-DD)');
   };
   const today = dayBounds(tz, localDate(tz, Math.floor(Date.now() / 1000)));
-  const from = stamp(req.query.from, 0) ?? today[0];
+  let from = stamp(req.query.from, 0) ?? today[0];
   const to = stamp(req.query.to, 1) ?? today[1];
   if (!(to > from)) throw bad('to is after from');
   if (to - from > 31 * 86400 + 3600) throw bad('at most 31 days at a time');
+  // An owner who took the home over reads its history from the handover only, unless the previous owner shared more (R21).
+  const floor = thing.home_id == null || req.user?.role === 'admin' ? null : await readableFrom(req.user?.id, thing.home_id);
+  if (floor != null) from = Math.max(from, floor);
   const res = req.query.res ?? 'slot';
   if (!['slot', 'day'].includes(res)) throw bad('res is slot or day');
   const day = (rows, pick) => {
@@ -237,10 +241,12 @@ router.get('/things/:uid/events', route(async (req) => {
     throw bad('from and to are epoch seconds or local dates (YYYY-MM-DD)');
   };
   const today = dayBounds(tz, localDate(tz, Math.floor(Date.now() / 1000)));
-  const from = stamp(req.query.from, 0) ?? today[0];
+  let from = stamp(req.query.from, 0) ?? today[0];
   const to = stamp(req.query.to, 1) ?? today[1];
   if (!(to > from)) throw bad('to is after from');
   if (to - from > 31 * 86400 + 3600) throw bad('at most 31 days at a time');
+  const floor = req.user?.role === 'admin' ? null : await readableFrom(req.user?.id, thing.home_id);
+  if (floor != null) from = Math.max(from, floor);
   const limit = req.query.limit == null ? 500 : Number(req.query.limit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw bad('limit is 1 to 500');
   const events = await eventsOf(thing.id, from, to, { limit });

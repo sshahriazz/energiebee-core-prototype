@@ -7,9 +7,11 @@
 //   retention   history past its retention period (src/core/maintenance.js)
 //   anonymise   a throwaway copy made identifier-free (scripts/make-fixture.js)
 //   synthetic   a demo home's generated data replaced (scripts/demo-ui.js)
+//   person      a person erased on request, apart from any home: their account and the personal answers of their occupancies (src/core/occupancy.js, R21)
+//   handover    a home changed hands: the old occupancy's logins, requests and personal answers removed (src/core/occupancy.js)
 import { db, tx } from '../db/db.js';
 
-export const ERASURE_KINDS = ['home', 'retention', 'anonymise', 'synthetic'];
+export const ERASURE_KINDS = ['home', 'retention', 'anonymise', 'synthetic', 'person', 'handover'];
 
 // Run fn inside an open erasure. fn may return { removed: { table: rows, ... } } to be logged; its result is returned.
 export async function erase({ kind, siteId = null, siteUid = null, reason }, fn) {

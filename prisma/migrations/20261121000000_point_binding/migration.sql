@@ -38,11 +38,11 @@ CREATE INDEX point_binding_point ON point_binding (point_id);
 
 -- A binding is in the home of its point and for its metric.
 CREATE FUNCTION trg_point_binding_point() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE p point%ROWTYPE;
+DECLARE ph bigint; pm bigint;   -- (not point%ROWTYPE: `point` is also a built-in geometric type)
 BEGIN
-  SELECT * INTO p FROM point WHERE id = NEW.point_id;
-  IF NEW.site_id IS DISTINCT FROM p.home_id THEN RAISE EXCEPTION 'a point binding is in the home of its point'; END IF;
-  IF NEW.metric_id IS DISTINCT FROM p.metric_id THEN RAISE EXCEPTION 'a point binding is for the metric of its point'; END IF;
+  SELECT p.home_id, p.metric_id INTO ph, pm FROM point p WHERE p.id = NEW.point_id;
+  IF NEW.site_id IS DISTINCT FROM ph THEN RAISE EXCEPTION 'a point binding is in the home of its point'; END IF;
+  IF NEW.metric_id IS DISTINCT FROM pm THEN RAISE EXCEPTION 'a point binding is for the metric of its point'; END IF;
   RETURN NEW;
 END $$;
 CREATE TRIGGER point_binding_matches_point BEFORE INSERT OR UPDATE OF point_id, site_id, metric_id ON point_binding FOR EACH ROW EXECUTE FUNCTION trg_point_binding_point();

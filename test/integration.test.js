@@ -20,7 +20,7 @@ await test('the contract: a good report passes, every way it can be wrong is nam
   assert.ok(errs.some((e) => /externalRef is the provider/.test(e)) && errs.some((e) => /kind is a device kind/.test(e)) && errs.some((e) => /part is one of/.test(e))
     && errs.some((e) => /scale is a number/.test(e)) && errs.some((e) => /appears twice/.test(e)), errs.join('\n'));
   assert.deepEqual(checkObservations([{ externalRef: 'a', point: 'p', ts: NOW, value: 1 }, { externalRef: 'a', point: 'p', start: NOW, end: NOW + 300, value: 2 }, { externalRef: 'a', kind: 'ack' }]), []);
-  assert.equal(checkObservations([{ externalRef: 'a', point: 'p', ts: NOW * 1000, value: 1 }, { point: 'p' }, { externalRef: 'a', point: 'p', ts: NOW, value: 'hot' }]).length, 3);
+  assert.equal(checkObservations([{ externalRef: 'a', point: 'p', ts: NOW * 1000, value: 1 }, { point: 'p' }, { externalRef: 'a', point: 'p', ts: NOW, value: 'hot' }]).length, 4, 'milliseconds; no device name and no time; a value that is not a number');
 });
 
 await test('discovery makes a device, its link and its points once; twice makes nothing new', async () => {

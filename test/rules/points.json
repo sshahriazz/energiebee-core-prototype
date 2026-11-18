@@ -1,5 +1,11 @@
 {
  "triggers": {
+  "device_end_link": [],
+  "device_make_link": [],
+  "point_binding_matches_point": [
+   "a point binding is for the metric of its point",
+   "a point binding is in the home of its point"
+  ],
   "point_home_matches": [
    "point home differs from the home of its thing"
   ],
@@ -7,6 +13,12 @@
    "a point's thing, key and metric never change: make another point"
   ],
   "point_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ],
+  "thing_link_home_matches": [
+   "a link is in the home of its thing"
+  ],
+  "thing_link_uid_fixed": [
    "uid never changes (it is the identity outside this database)"
   ],
   "thing_type_capabilities_exist": [

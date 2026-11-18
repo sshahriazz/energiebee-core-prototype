@@ -72,7 +72,8 @@ export async function manifestProblems(d = db) {
   const registry = new Set((await d.prepare('SELECT code FROM source').all()).map((s) => s.code));
   const owner = new Map();
   for (const e of INTEGRATIONS) for (const s of e.sources) {
-    if (!registry.has(s) && !['tariffscanner', 'tounify'].includes(s)) out.push(`${e.code}: source ${s} is not in the source registry`);
+    // the sources of generated data, and two that are made when their adapter first runs, are not in the registry at start
+    if (!registry.has(s) && e.access !== 'generated' && !['tariffscanner', 'tounify'].includes(s)) out.push(`${e.code}: source ${s} is not in the source registry`);
     if (owner.has(s)) out.push(`source ${s} is in both ${owner.get(s)} and ${e.code}`);
     owner.set(s, e.code);
   }

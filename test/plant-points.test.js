@@ -14,8 +14,9 @@ const { plantThing } = await import('../src/core/points.js');
 const { createThing } = await import('../src/core/things.js');
 const { createSite } = await import('../src/core/sites.js');
 
+// the home's own series of a metric (a meter's own are the device's: they stay with it)
 const where = async (metric, home = 1) => (await db.prepare(`SELECT DISTINCT t.type, s.subject_kind, s.subject_id FROM series s JOIN point p ON p.id = s.point_id JOIN thing t ON t.id = p.thing_id
-  JOIN metric m ON m.id = s.metric_id WHERE s.site_id = ? AND m.code = ? ORDER BY 1`).all(home, metric));
+  JOIN metric m ON m.id = s.metric_id WHERE s.site_id = ? AND m.code = ? AND s.subject_kind = 'site' ORDER BY 1`).all(home, metric));
 
 await test('before the graph a home\'s series are on its home thing; after it, on the plant things, with their facts and ids', { skip }, async () => {
   assert.deepEqual((await where('solar_w')).map((r) => r.type), ['house']);
@@ -39,6 +40,7 @@ await test('running again moves nothing; a series made afterwards lands on the p
   const before = (await db.prepare('SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM point').get());
   await ensureEnergyGraph(1);
   assert.deepEqual(await db.prepare('SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM point').get(), before);
+  await db.prepare("INSERT INTO source (code, name, contract) VALUES ('a_new_source', 'A new source (test)', '{}')").run();
   const id = await seriesId('site', 1, 'solar_w', 'a_new_source');
   assert.equal((await db.prepare('SELECT t.type FROM series s JOIN point p ON p.id = s.point_id JOIN thing t ON t.id = p.thing_id WHERE s.id = ?').get(id)).type, 'pv_array');
   const orphans = await db.prepare(`SELECT COUNT(*) AS n FROM point_binding b JOIN point p ON p.id = b.point_id WHERE b.site_id = 1 AND b.device_id IS NULL AND p.thing_id = 1 AND p.superseded_at IS NULL

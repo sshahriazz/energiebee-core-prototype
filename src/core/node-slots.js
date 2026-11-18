@@ -54,9 +54,23 @@ export function untracked(homeKwh, trackedKwh, tolerance = METER_TOLERANCE_KWH) 
 // Every placement and membership of the home, ended ones too, with the time each held (null: unbounded): a slot is rolled up from the places things
 // were in then, not from where they are now.
 async function homeEdges(homeId) {
-  return (await db.prepare(`SELECT from_id, to_id, required, valid_from, valid_to FROM thing_relation WHERE home_id = ? AND rel IN ('located_in', 'part_of') AND superseded_at IS NULL`).all(homeId))
-    .map((r) => ({ from: Number(r.from_id), to: Number(r.to_id), required: Number(r.required), vf: r.valid_from == null ? null : Number(r.valid_from), vt: r.valid_to == null ? null : Number(r.valid_to) }));
+  return firstHoldsBack((await db.prepare(`SELECT from_id, to_id, rel, required, valid_from, valid_to FROM thing_relation WHERE home_id = ? AND rel IN ('located_in', 'part_of') AND superseded_at IS NULL`).all(homeId))
+    .map((r) => ({ from: Number(r.from_id), to: Number(r.to_id), rel: r.rel, required: Number(r.required), vf: r.valid_from == null ? null : Number(r.valid_from), vt: r.valid_to == null ? null : Number(r.valid_to) })));
 }
+/**
+ * A thing is where it was first put until it moved: the earliest placement of a thing (and the earliest membership of a thing in a system) holds back
+ * to the start of time, because it was written when the core first looked (the seeder, a hub's first announcement), not when the thing was installed.
+ * Later placements keep their own start. PURE.
+ */
+export function firstHoldsBack(edges) {
+  const first = new Map();
+  for (const e of edges) {
+    const k = e.rel === 'located_in' ? `${e.rel}|${e.from}` : `${e.rel}|${e.from}|${e.to}`;
+    if (!first.has(k) || (e.vf ?? -Infinity) < (first.get(k).vf ?? -Infinity)) first.set(k, e);
+  }
+  return edges.map((e) => (first.get(e.rel === 'located_in' ? `${e.rel}|${e.from}` : `${e.rel}|${e.from}|${e.to}`) === e ? { ...e, vf: null } : e));
+}
+
 /** The things in a place over a window, as segments: [{ from, members: Map(id -> required) }] that change where a placement starts or ends. PURE. */
 export function membershipOver(rootId, edges, winFrom, winTo) {
   const cuts = [winFrom, ...[...new Set(edges.flatMap((e) => [e.vf, e.vt]).filter((x) => x != null && x > winFrom && x < winTo))].sort((a, b) => a - b)];

@@ -11,7 +11,7 @@ Written 18 November 2026. `test/cases.test.js` holds the 22 cases of `docs/thing
 | 5 | Intelligent Octopus charges the car | passes for the controller (no schedule or optimiser request is taken); its off-peak pricing is in the price-run tests |
 | 6 | The home switches tariff mid-month | passes |
 | 7 | The clocks go back | passes: 50 half-hours in the point layer |
-| 8 | The meter and the clamp disagree by 38 % | **todo**: fusion with a tolerance (R6) is not built |
+| 8 | The meter and the clamp disagree by 38 % | fusion (R6): `series.fusion_role` shape/total, `setFusion`; the day adds up to the meter, the slots keep the clamp's shape, flagged beyond 5 % |
 | 9 | A clamp is installed the wrong way round | passes: one binding change flips the sign |
 | 10 | AC-coupled battery or two inverters | passes: supported plants build, an unwired one is refused with a reason |
 | 11 | An EV that powers the home | passes: both ways through the charger's and the car's ports; untracked is never negative |

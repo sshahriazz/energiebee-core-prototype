@@ -137,7 +137,22 @@ await test('case 7: the clocks go back: a 25-hour day has 50 half-hours in every
   assert.equal((await buildPointSlots(await pointOf(t.id, 'indoor_temp_c'), '2026-10-25', '2026-10-25')).slots, 50);
 });
 
-await test('case 8: the meter and the inverter clamp disagree by 38 %: the meter total wins, the shape comes from the clamp', { todo: 'fusion with a tolerance (R6) is not built: a slot takes the source that covers it best, it does not combine two' }, () => { assert.fail('not built'); });
+await test('case 8: the meter and the inverter clamp disagree by 38 %: the meter total wins, the shape comes from the clamp', async () => {
+  const { setFusion, buildPointSlots: build } = await import('../src/core/point-slots.js');
+  const h = await home('Fusion'); const m = await device(h, 'meter_import', 'm-8');
+  const meterS = await series('device', m.id, 'grid_import_kwh', 'octopus_meter'); const clampS = await series('device', m.id, 'grid_import_kwh', 'sunsynk_5min');
+  const half = (i) => ({ start: D0 + i * 1800, end: D0 + (i + 1) * 1800 });
+  await write('octopus_meter', async () => { await F.putIntervals(meterS, Array.from({ length: 48 }, (_, i) => ({ ...half(i), value: 0.3625 }))); });          // 17.4 kWh: the meter
+  await write('sunsynk_5min', async () => { await F.putIntervals(clampS, Array.from({ length: 48 }, (_, i) => ({ ...half(i), value: i < 24 ? 0.2 : 0.8 }))); });   // 24 kWh: the clamp, 38 % high
+  const p = await pointOf(m.id, 'grid_import_kwh');
+  await setFusion(p, { shape: 'sunsynk_5min', total: 'octopus_meter' });
+  const r = await build(p, DAY, DAY);
+  assert.deepEqual([r.fusion.length, r.fusion[0].flagged, Math.round(r.fusion[0].disagreement * 100)], [1, true, 38], 'the disagreement is found and reported');
+  const slots = await inSlot(m.id, 'grid_import_kwh');
+  assert.ok(Math.abs(slots.reduce((t, x) => t + x.delta, 0) - 17.4) < 1e-6, 'the day adds up to the meter');
+  assert.ok(Math.abs(slots[40].delta / slots[10].delta - 4) < 1e-6, 'the shape is the clamp\'s: the evening is four times the night');
+  assert.equal(slots[0].lineage.fusion.flagged, true, 'and each slot says it was fused and flagged');
+});
 
 await test('case 9: a clamp is installed the wrong way round: one binding change flips the sign', async () => {
   const h = await home('Clamp'); const m = await device(h, 'meter_import', 'clamp-9');

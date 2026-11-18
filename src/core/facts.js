@@ -74,12 +74,16 @@ export const rawHash = (source, status, text) => crypto.createHash('sha256').upd
 export async function sealsRaw(source, siteId) { return siteId != null && !await isPublic(source); }
 
 // The whole file or none of it, on disk before the row that names it exists (a crash or a power cut cannot leave a row
-// pointing at half a file). The temporary name is an orphan if the process dies in between; retention clears it.
+// pointing at half a file, or at a file whose rename was lost). The calls are synchronous: on a slow or network volume each
+// landing blocks the event loop for the length of the write. The temporary name is an orphan if the process dies in between;
+// retention clears it.
 function writeFileDurably(file, data) {
   const tmp = `${file}.${process.pid}.tmp`;
   const fd = fs.openSync(tmp, 'w');
   try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } catch (err) { try { fs.unlinkSync(tmp); } catch { /* not created */ } throw err; } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
+  const dir = fs.openSync(path.dirname(file), 'r');   // the rename itself is only durable once the folder is on disk
+  try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
 }
 
 // Identity is the source and the body, not the request: requests carry the current

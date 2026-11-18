@@ -13,7 +13,8 @@ const { db, rawDir, rawFilePath } = await import('../src/db/db.js');
 const { resolveRawDir, rawFileIn, rawName } = await import('../src/db/raw-dir.js');
 const { createSite } = await import('../src/core/sites.js');
 const { landRaw, quarantine, readRaw, openRaw, rawHash, seriesId, putReadings } = await import('../src/core/facts.js');
-const { verifyRaw, runRawCheck, rawVerifySettings, sliceFor, lastRawCheck, rawCheckSummary } = await import('../src/core/raw-integrity.js');
+const { verifyRaw, runRawCheck, rawVerifySettings, rawCheckOfHome, rawCheckSummary } = await import('../src/core/raw-integrity.js');
+const { app } = await import('../src/server.js');
 const { runRetention, runMaintenance } = await import('../src/core/maintenance.js');
 const { erase } = await import('../src/core/erasure.js');
 
@@ -24,7 +25,10 @@ const homeA = await createSite({ name: 'Raw A' });
 const homeB = await createSite({ name: 'Raw B' });
 let n = 0;
 const land = async (siteId, source = 'sunsynk_5min') => (await landRaw({ source, siteId, request: { url: `https://api.example/v1/${source}?n=${++n}` }, body: { n, v: `value-${n}` } })).rawId;
+let base;
 const row = async (id) => await db.prepare('SELECT p.*, src.code AS source FROM raw_payload p JOIN source src ON src.id = p.source_id WHERE p.id = ?').get(id);
+const server = await new Promise((r) => { const sv = app.listen(0, '127.0.0.1', () => r(sv)); sv.unref(); });
+base = `http://127.0.0.1:${server.address().port}`;
 const fileOf = async (id) => rawFilePath((await row(id)).file);
 
 await test('the raw folder: DATA_DIR/raw by default, RAW_DIR when set, and a file name that leaves it is refused', () => {
@@ -38,23 +42,67 @@ await test('the raw folder: DATA_DIR/raw by default, RAW_DIR when set, and a fil
   assert.equal(rawDir, path.join(process.env.DATA_DIR, 'raw'), 'the tests run with the default');
 });
 
-await test('RAW_DIR: receipts land in that folder, read back, verify, and the app refuses a folder that is not there', () => {
+await test('RAW_DIR outside DATA_DIR: files are written, read, sealed, retained and erased there, and the app refuses a folder that is not there', () => {
   const store = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-rawstore-'));
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-rawdata-'));
+  const day = 86400;
   const script = `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { spawnSync } from 'node:child_process';
     const { landRaw, readRaw } = await import(${JSON.stringify(path.join(root, 'src/core/facts.js'))});
     const { verifyRaw } = await import(${JSON.stringify(path.join(root, 'src/core/raw-integrity.js'))});
-    const { db, closeDb } = await import(${JSON.stringify(path.join(root, 'src/db/db.js'))});
-    const site = Number((await db.prepare("INSERT INTO site (name, created_at) VALUES ('Elsewhere', 1)").run()).lastInsertRowid);
-    const mine = await landRaw({ source: 'sunsynk_5min', siteId: site, request: {}, body: { secret: 'home' } });
-    const pub = await landRaw({ source: 'octopus_rates', siteId: site, request: {}, body: { rates: 1 } });
-    const files = await db.prepare('SELECT id, file, site_id FROM raw_payload ORDER BY id').all();
-    const text = await readRaw(files[0]);
-    const report = await verifyRaw();
-    console.log(JSON.stringify({ files, text, checked: report.checked, ok: report.ok, problems: report.problems }));
-    // the test database is shared with the rest of this file: take this child's receipts out again (a logged erasure)
+    const { runRetention } = await import(${JSON.stringify(path.join(root, 'src/core/maintenance.js'))});
+    const { deleteHome } = await import(${JSON.stringify(path.join(root, 'src/core/delete-home.js'))});
+    const { createSite } = await import(${JSON.stringify(path.join(root, 'src/core/sites.js'))});
     const { erase } = await import(${JSON.stringify(path.join(root, 'src/core/erasure.js'))});
-    await erase({ kind: 'synthetic', reason: 'test: receipts of a child process in another raw store' }, async () => await db.prepare('DELETE FROM raw_payload WHERE site_id = ?').run(site));
+    const { db, closeDb, rawFilePath } = await import(${JSON.stringify(path.join(root, 'src/db/db.js'))});
+    const store = process.env.RAW_DIR;
+    const magic = (f) => fs.readFileSync(f).subarray(0, 6).toString();
+    const made = await createSite({ name: 'Elsewhere' });
+    const site = await db.prepare('SELECT * FROM site WHERE id = ?').get(made.id);
+    // written
+    const mine = await landRaw({ source: 'sunsynk_5min', siteId: site.id, request: {}, body: { secret: 'home' } });
+    const pub = await landRaw({ source: 'octopus_rates', siteId: site.id, request: {}, body: { rates: 1 } });
+    const files = await db.prepare('SELECT id, file, site_id FROM raw_payload ORDER BY id').all();
+    // read, sealed, checked
+    const text = await readRaw(files[0]);
+    const sealedMagic = magic(rawFilePath(files[0].file));
+    const report = await verifyRaw();
+    // a file written before sealing existed: the seal script finds it in RAW_DIR, a dry run leaves it, apply seals it
+    const old = await landRaw({ source: 'sunsynk_5min', siteId: site.id, request: {}, body: { old: 1 } });
+    const oldFile = rawFilePath((await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(old.rawId)).file);
+    fs.writeFileSync(oldFile, JSON.stringify({ old: 1 }));
+    const seal = (...args) => JSON.parse(spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ${JSON.stringify(path.join(root, 'scripts/seal-raw.js'))}, ...args], { env: process.env, encoding: 'utf8', cwd: ${JSON.stringify(root)} }).stdout);
+    const dry = seal();
+    const dryMagic = magic(oldFile);
+    const applied = seal('--apply');
+    const appliedMagic = magic(oldFile);
+    // retained: an old receipt (the newest of its endpoint stays), an orphan in the store's layout, and files that are not the store's
+    const first = await landRaw({ source: 'open_meteo', siteId: null, request: {}, body: { a: 1 } });
+    const second = await landRaw({ source: 'open_meteo', siteId: null, request: {}, body: { b: 1 } });
+    const firstFile = rawFilePath((await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(first.rawId)).file);
+    const old40 = Math.floor(Date.now() / 1000) - 40 * ${day};
+    await erase({ kind: 'synthetic', reason: 'test: a receipt aged' }, async () => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(old40, first.rawId));
+    const age = (f) => fs.utimesSync(f, old40, old40);
+    const orphan = path.join(store, 'open_meteo', '2020-01-01', 'orphan.json');
+    const notes = path.join(store, 'notes-from-ops.txt');
+    const lost = path.join(store, 'lost+found', 'x');
+    for (const f of [orphan, notes, lost]) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); age(f); }
+    const dryRetention = await runRetention({ dryRun: true });
+    const afterDry = [firstFile, orphan, notes, lost].map((f) => fs.existsSync(f));
+    const retention = await runRetention({ dryRun: false });
+    const afterRetention = { first: fs.existsSync(firstFile), orphan: fs.existsSync(orphan), notes: fs.existsSync(notes), lost: fs.existsSync(lost), second: fs.existsSync(rawFilePath((await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(second.rawId)).file)) };
+    // erased with the home
+    const homeFiles = (await db.prepare('SELECT file FROM raw_payload WHERE site_id = ?').all(site.id)).map((r) => rawFilePath(r.file));
+    const before = homeFiles.map((f) => fs.existsSync(f));
+    const own = () => db.prepare('SELECT (SELECT COUNT(*) FROM raw_check_run WHERE site_id = ?) + (SELECT COUNT(*) FROM raw_payload_check WHERE site_id = ?) AS n').get(site.id, site.id).then((x) => Number(x.n));
+    const recordsBefore = await own();
+    const deleted = await deleteHome({ role: 'admin', id: 1 }, site, { confirm: site.name });
+    const afterDelete = homeFiles.map((f) => fs.existsSync(f));
+    const recordsAfter = await own();
+    console.log(JSON.stringify({ files, text, sealedMagic, checked: report.checked, ok: report.ok, problems: report.problems, dry, dryMagic, applied, appliedMagic, dryRetention: { raw: dryRetention.raw.candidates, orphanFiles: dryRetention.orphanFiles }, afterDry, retention: { raw: retention.raw, orphanFiles: retention.orphanFiles }, afterRetention, before, afterDelete, deleted: deleted.files, recordsBefore, recordsAfter }));
+    await erase({ kind: 'synthetic', reason: 'test: receipts of a child process in another raw store' }, async () => await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(second.rawId));
     await closeDb();`;
   const env = { ...process.env, DATA_DIR: data, RAW_DIR: store };
   const run = (e) => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], { env: e, encoding: 'utf8', cwd: root });
@@ -62,12 +110,17 @@ await test('RAW_DIR: receipts land in that folder, read back, verify, and the ap
   assert.equal(out.status, 0, out.stderr);
   const r = JSON.parse(out.stdout.trim().split('\n').pop());
   assert.equal(r.files.length, 2);
-  for (const f of r.files) {
-    assert.ok(f.file.startsWith('raw/'), 'the stored name keeps its raw/ prefix');
-    assert.ok(fs.existsSync(path.join(store, f.file.slice(4))), `${f.file} is under RAW_DIR`);
-  }
+  for (const f of r.files) assert.ok(f.file.startsWith('raw/'), 'the stored name keeps its raw/ prefix');
   assert.ok(!fs.existsSync(path.join(data, 'raw')), 'nothing was written under DATA_DIR/raw');
-  assert.deepEqual([r.text, r.checked, r.ok, r.problems.length], ['{"secret":"home"}', 2, 2, 0]);
+  assert.deepEqual([r.text, r.sealedMagic, r.checked, r.ok, r.problems.length], ['{"secret":"home"}', 'EBRAW1', 2, 2, 0], 'written there, read back, sealed on disk, every file matches its hash');
+  assert.deepEqual([r.dry.sealed, r.dry.apply, r.dryMagic], [1, false, '{"old"'], 'the seal script found the plain file in RAW_DIR and a dry run left it');
+  assert.deepEqual([r.applied.sealed, r.applied.apply, r.appliedMagic], [1, true, 'EBRAW1'], 'apply sealed it where it is');
+  assert.deepEqual(r.dryRetention, { raw: 1, orphanFiles: { found: 1, bytes: 1, deleted: 0 } }, 'a dry run counts the old receipt and the orphan in the store layout, not the foreign files');
+  assert.deepEqual(r.afterDry, [true, true, true, true], 'and removes nothing');
+  assert.deepEqual([r.retention.raw.deleted, r.retention.raw.filesDeleted, r.retention.orphanFiles.deleted], [1, 1, 1]);
+  assert.deepEqual(r.afterRetention, { first: false, orphan: false, notes: true, lost: true, second: true }, 'the old receipt and the orphan left RAW_DIR; files that are not the store\'s, and the newest answer, stayed');
+  assert.deepEqual([r.before.every(Boolean), r.afterDelete.some(Boolean), r.deleted], [true, false, 3], 'deleting the home removed its three files from RAW_DIR');
+  assert.ok(r.recordsBefore >= 3 && r.recordsAfter === 0, 'the home\'s check records (raw_check_run, raw_payload_check) left with it');
   const gone = run({ ...env, RAW_DIR: path.join(store, 'not-mounted') });
   assert.notEqual(gone.status, 0);
   assert.match(gone.stderr, /RAW_DIR .* is not an existing directory/);
@@ -82,11 +135,11 @@ await test('verifyRaw: untouched files all match; a plain file, a sealed file an
   const noHome = await land(null, 'open_meteo');
   assert.ok((await fs.promises.readFile(await fileOf(sealed))).subarray(0, 6).toString() === 'EBRAW1');
   const r = await verifyRaw({ batch: 2 });   // pages of 2: the keyset paging reaches every row
-  assert.deepEqual([r.checked, r.ok, r.problems.length, r.unsealed, r.unverifiable], [4, 4, 0, 0, 0]);
-  assert.ok(r.bytes > 0 && Number.isFinite(r.ms));
+  assert.deepEqual([r.checked, r.ok, r.problems.length, r.unsealed, r.erased], [4, 4, 0, 0, 0]);
+  const sizes = await Promise.all([sealed, pub, q, noHome].map(async (id) => fs.statSync(await fileOf(id)).size));
+  assert.equal(r.bytes, sizes.reduce((a, b) => a + b, 0), 'the bytes read are the four files');
   assert.equal((await openRaw(await row(sealed))).state, 'ok');
   assert.equal(rawHash('sunsynk_5min', 'quarantined', '{"bad":1}'), (await row(q)).hash, 'the hash covers source, status and text');
-  assert.ok(pub && noHome);
   assert.match(rawCheckSummary(r), /4 receipts.*4 match their hash; no problems/);
 });
 
@@ -120,9 +173,10 @@ await test('verifyRaw finds a file that changed, was cut short, vanished, is unr
   assert.equal(stateOf(before, cutShort), 'corrupt');
   assert.equal(stateOf(before, vanished), 'missing');
   if (canLock) assert.equal(stateOf(before, locked), 'unreadable');
-  assert.equal(before.keyLost, 0);
-  assert.equal(stateOf(r, keyLost), 'keyLost');
-  assert.ok(r.keyLost >= 3, 'every sealed file of home A, none of home B');
+  assert.equal(before.erased, 0);
+  assert.equal(stateOf(r, keyLost), undefined, 'a sealed file whose home key is gone is erased, not a problem');
+  assert.equal((await db.prepare('SELECT state FROM raw_payload_check WHERE payload_id = ?').get(keyLost)).state, 'erased');
+  assert.ok(r.erased >= 3, 'every sealed file of home A, none of home B');
   assert.deepEqual(r.problemsBySite[homeB.id], before.problemsBySite[homeB.id], 'home B has the same problems with or without home A key');
   // only one home
   const onlyB = await verifyRaw({ siteId: homeB.id });
@@ -142,7 +196,8 @@ await test('verifyRaw finds a file that changed, was cut short, vanished, is unr
   assert.ok(after.unsealed >= 1 && after.ok >= 1);
 });
 
-await test('a sealed file of an erased home cannot be checked, and that is not a problem', async () => {
+await test('a sealed file whose home key is gone is erased: it cannot be checked, and that is not a problem', async () => {
+  const erasedBefore = (await verifyRaw()).erased;   // home A's key was destroyed in the test above
   const id = await land(homeB.id);
   const p = await row(id);
   // the shape delete-home leaves for a receipt kept as shared evidence: no home, a file sealed with a key that no longer exists
@@ -152,36 +207,110 @@ await test('a sealed file of an erased home cannot be checked, and that is not a
   const sourceId = p.source_id;
   await db.prepare('INSERT INTO raw_payload (source_id, site_id, request, fetched_at, hash, file, status) VALUES (?, NULL, ?, ?, ?, ?, ?)').run(sourceId, '{}', NOW, 'erased-home-hash', copy, 'accepted');
   const r = await verifyRaw();
-  assert.equal(r.unverifiable, 1);
+  assert.equal(r.erased - erasedBefore, 1);
   assert.ok(!r.problems.some((x) => x.file === copy));
-  assert.match(rawCheckSummary(r), /1 sealed files of erased homes cannot be checked/);
+  assert.equal((await db.prepare('SELECT state FROM raw_payload_check WHERE payload_id = (SELECT id FROM raw_payload WHERE file = ?)').get(copy)).state, 'erased');
+  assert.match(rawCheckSummary(r), new RegExp(`${r.erased} sealed files of erased homes cannot be checked`));
   assert.equal(await readRaw({ file: copy, site_id: null }), null);
 });
 
-await test('slices: the days of a cycle together cover every receipt once', async () => {
-  const all = await verifyRaw();
-  const parts = [];
-  for (let i = 0; i < 3; i++) parts.push(await verifyRaw({ slice: { index: i, of: 3 } }));
-  assert.equal(parts.reduce((a, p) => a + p.checked, 0), all.checked);
-  assert.ok(parts.every((p) => p.checked > 0), 'ids spread over the slices');
-  assert.deepEqual(sliceFor(0, 7), { index: 0, of: 7 });
-  assert.deepEqual(sliceFor(3 * 86400000 + 5, 7), { index: 3, of: 7 });
-  assert.deepEqual(sliceFor(10 * 86400000, 7), { index: 3, of: 7 });
-  await assert.rejects(async () => await verifyRaw({ slice: { index: 3, of: 3 } }), /slice is/);
+const checkedSince = async (t) => (await db.prepare('SELECT payload_id FROM raw_payload_check WHERE checked_at >= ? ORDER BY payload_id').all(t)).map((x) => x.payload_id);
+
+await test('the rolling check takes the N least recently checked receipts, never-checked first, and records each run', async () => {
+  const ids = (await db.prepare('SELECT id FROM raw_payload ORDER BY id').all()).map((x) => x.id);
+  assert.ok(ids.length >= 8);
+  await verifyRaw();   // everything has a state now
+  await db.prepare('UPDATE raw_payload_check SET checked_at = 1000 + payload_id').run();   // the order they were last checked in: by id
+  const env = { RAW_VERIFY_BATCH: '3' };
+  const runs = async () => Number((await db.prepare('SELECT COUNT(*) AS n FROM raw_check_run').get()).n);
+  const before = await runs();
+  const homeRowsBefore = (await db.prepare('SELECT COUNT(*) AS n FROM raw_check_run WHERE site_id IS NOT NULL').get()).n;
+  const one = await runRawCheck({ env, trigger: 'timer' });
+  assert.deepEqual([one.checked, one.scope.limit], [3, 3]);
+  assert.deepEqual(await checkedSince(1_000_000_000), ids.slice(0, 3), 'the three checked longest ago');
+  await runRawCheck({ env });
+  assert.deepEqual(await checkedSince(1_000_000_000), ids.slice(0, 6), 'the next run takes the next three, not the same ones');
+  // a receipt that landed after the last run has never been checked: it goes first, whatever the others' age
+  const fresh = await land(homeA.id, 'open_meteo');
+  await runRawCheck({ env: { RAW_VERIFY_BATCH: '1' } });
+  assert.ok((await checkedSince(1_000_000_000)).includes(fresh), 'never-checked first');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM raw_payload_check WHERE checked_at >= 1000000000').get()).n, 7);
+  // the log: a row per run for the store, a row per home in it
+  assert.equal(await runs() - before, 3 + (await db.prepare('SELECT COUNT(*) AS n FROM raw_check_run WHERE site_id IS NOT NULL').get()).n - homeRowsBefore, 'a store row per run, a home row per home in it');
+  const last = await db.prepare("SELECT * FROM raw_check_run WHERE site_id IS NULL ORDER BY id DESC LIMIT 1").get();
+  assert.deepEqual([last.checked, last.trigger], [1, 'timer']);
+  const homeRow = await db.prepare('SELECT * FROM raw_check_run WHERE site_id IS NOT NULL ORDER BY id DESC LIMIT 1').get();
+  assert.deepEqual([homeRow.site_id, homeRow.checked, homeRow.ran_at], [homeA.id, 1, last.ran_at], 'the home that had the receipt');
+  // a run that overlaps one still going is skipped
+  const [a, b] = await Promise.all([runRawCheck({ env }), runRawCheck({ env })]);
+  assert.deepEqual([a == null, b == null].sort(), [false, true]);
+  // one home only
+  const onlyB = await verifyRaw({ siteId: homeB.id, limit: 2 });
+  assert.equal(onlyB.checked, 2);
+  assert.ok((await db.prepare('SELECT COUNT(*) AS n FROM raw_payload_check c WHERE c.site_id = ? AND c.checked_at >= 1000000000').get(homeB.id)).n >= 2);
+  await assert.rejects(async () => await verifyRaw({ limit: 0 }), /limit is/);
 });
 
-await test('settings and the start-up hook', async () => {
-  assert.deepEqual(rawVerifySettings({}), { mode: 'report', days: 7 });
-  assert.deepEqual(rawVerifySettings({ RAW_VERIFY: 'off', RAW_VERIFY_DAYS: '30' }), { mode: 'off', days: 30 });
+await test('a receipt\'s recorded state is one of the known states', async () => {
+  await assert.rejects(async () => await db.prepare("UPDATE raw_payload_check SET state = 'fine' WHERE payload_id = (SELECT MIN(payload_id) FROM raw_payload_check)").run(), /CHECK constraint failed: raw_payload_check_state_check/);
+  await assert.rejects(async () => await db.prepare("INSERT INTO raw_check_run (ran_at, trigger, checked, ok, mismatch, corrupt, missing, unreadable, erased, unsealed, bytes, ms) VALUES (1, 'whim', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)").run(), /CHECK constraint failed/);
+});
+
+await test('health shows the latest known state of a home\'s files, which stays until a later check finds them fine', async () => {
+  const solo = await createSite({ name: 'Raw health' });
+  const good = await land(solo.id);
+  const bad = await land(solo.id);
+  const get = async () => await (await fetch(`${base}/api/sites/${solo.id}/health`)).json();
+  assert.equal((await get()).rawCheck, null, 'no check has covered this home yet');
+  await verifyRaw({ siteId: solo.id });
+  let h = (await get()).rawCheck;
+  assert.deepEqual([h.problems, h.receipts, h.covered, h.checkedInRun, h.trigger], [0, 2, 2, 2, 'cli']);
+  // damage a file: the check finds it, and later runs that take other receipts do not make the problem disappear
+  const copy = fs.readFileSync(await fileOf(bad));
+  fs.truncateSync(await fileOf(bad), 20);
+  await verifyRaw({ siteId: solo.id });
+  h = (await get()).rawCheck;
+  assert.equal(h.problems, 1);
+  assert.deepEqual(h.problemList.map((p) => [p.id, p.source, p.state]), [[bad, 'sunsynk_5min', 'corrupt']]);
+  await verifyRaw({ siteId: homeB.id, limit: 3 });   // another home's run
+  await verifyRaw({ siteId: solo.id, limit: 1 });     // a run of this home that takes one other receipt (the damaged one was checked last)
+  h = (await get()).rawCheck;
+  assert.deepEqual([h.problems, h.problemList.map((p) => p.id), h.checkedInRun], [1, [bad], 1], 'the problem stays until a later check finds the file fine');
+  fs.writeFileSync(await fileOf(bad), copy);
+  await verifyRaw({ siteId: solo.id });
+  h = (await get()).rawCheck;
+  assert.deepEqual([h.problems, h.problemList.length, await row(good).then((x) => !!x)], [0, 0, true]);
+  assert.equal((await fetch(`${base}/api/sites/999999/health`)).status, 404);
+});
+
+await test('npm run raw:verify: validates its arguments, records the run, exits 1 on a problem', async () => {
+  const cli = (...args) => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts/verify-raw.js'), ...args], { env: process.env, encoding: 'utf8', cwd: root });
+  for (const bad of [['--limit', 'abc'], ['--limit', '0'], ['--site', 'x']]) {
+    const r = cli(...bad);
+    assert.equal(r.status, 2, bad.join(' '));
+    assert.match(r.stderr, /takes a whole number/);
+    assert.equal(r.stdout, '', 'nothing was checked');
+  }
+  const home = await createSite({ name: 'Raw cli' });
+  const id = await land(home.id);
+  const clean = cli('--site', String(home.id));
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /1 receipts.*no problems/);
+  assert.equal((await db.prepare('SELECT trigger FROM raw_check_run WHERE site_id = ?').get(home.id)).trigger, 'cli');
+  fs.truncateSync(await fileOf(id), 20);
+  const bad = cli('--site', String(home.id), '--limit', '5');
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /PROBLEMS 1: 0 changed, 1 corrupt/);
+});
+
+await test('settings', async () => {
+  assert.deepEqual(rawVerifySettings({}), { mode: 'report', batch: 500, hours: 6 });
+  assert.deepEqual(rawVerifySettings({ RAW_VERIFY: 'off', RAW_VERIFY_BATCH: '20', RAW_VERIFY_HOURS: '1' }), { mode: 'off', batch: 20, hours: 1 });
   assert.throws(() => rawVerifySettings({ RAW_VERIFY: 'yes' }), /RAW_VERIFY must be one of off, report/);
-  assert.throws(() => rawVerifySettings({ RAW_VERIFY_DAYS: '0' }), /RAW_VERIFY_DAYS/);
-  assert.throws(() => rawVerifySettings({ RAW_VERIFY_DAYS: '1.5' }), /RAW_VERIFY_DAYS/);
+  for (const bad of ['0', '1.5', 'x']) { assert.throws(() => rawVerifySettings({ RAW_VERIFY_BATCH: bad }), /RAW_VERIFY_BATCH/); assert.throws(() => rawVerifySettings({ RAW_VERIFY_HOURS: bad }), /RAW_VERIFY_HOURS/); }
   assert.equal(await runRawCheck({ env: { RAW_VERIFY: 'off' } }), null);
-  const m = await runMaintenance({ retention: 'off' });
-  assert.ok(m.rawCheck.checked > 0 && m.rawCheck === lastRawCheck(), 'the hook runs the day\'s slice and keeps it for the health page');
-  assert.deepEqual(Object.keys(m), Object.keys(m).filter((k) => /^\d+$/.test(k)), 'the per-home results keep their shape');
-  assert.equal((await runMaintenance({ retention: 'off', rawCheck: false })).rawCheck, null);
-  assert.equal(rawCheckSummary(null), 'raw file check: off');
+  assert.equal(rawCheckSummary(null), 'raw file check: off or already running');
+  assert.deepEqual(Object.keys(await runMaintenance({ retention: 'off' })).filter((k) => !/^\d+$/.test(k)), [], 'maintenance no longer runs the check: the server starts it after it listens');
 });
 
 // ───────────── retention against the append-only and erasure rules ─────────────
@@ -209,8 +338,10 @@ await test('retention: the dry run changes nothing and logs nothing; apply is on
   await age(fresh, 1);
   // a row whose name is not in the raw store at all (an anonymised copy): retention must neither fail on it nor touch anything else
   await erase({ kind: 'synthetic', reason: 'test: a receipt outside the store' }, async () => await db.prepare("UPDATE raw_payload SET file = 'redacted-1' WHERE id = ?").run(free[2]));
-  fs.writeFileSync(path.join(rawDir, 'sunsynk_5min', 'half-written.json.1234.tmp'), 'partial');
-  fs.utimesSync(path.join(rawDir, 'sunsynk_5min', 'half-written.json.1234.tmp'), NOW - 30 * DAY, NOW - 30 * DAY);
+  const half = path.join(rawDir, 'sunsynk_5min', '2026-11-18', 'half-written.json.1234.tmp');
+  fs.mkdirSync(path.dirname(half), { recursive: true });
+  fs.writeFileSync(half, 'partial');
+  fs.utimesSync(half, NOW - 30 * DAY, NOW - 30 * DAY);
 
   const before = { raws: await rawCount(), facts: await factCount(), log: await logCount(), files: tmpFiles().sort() };
   const problemsBefore = new Set((await verifyRaw()).problems.map((p) => p.id));   // the files damaged by the tests above stay damaged
@@ -230,7 +361,7 @@ await test('retention: the dry run changes nothing and logs nothing; apply is on
   for (const id of [fed, quarantined, fresh]) assert.ok(await row(id), `payload ${id} kept`);
   for (const id of [free[0], free[1], freeSealed]) assert.equal(await row(id), undefined);
   assert.equal(await row(free[2]), undefined, 'a row outside the store goes too, without an error');
-  assert.equal(fs.existsSync(path.join(rawDir, 'sunsynk_5min', 'half-written.json.1234.tmp')), false, 'a half-written temporary file is an orphan');
+  assert.equal(fs.existsSync(half), false, 'a half-written temporary file is an orphan');
   // the erasure is closed: the append-only rule is back
   await assert.rejects(async () => await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(fed), /append-only/);
   // what is left verifies, and a second run does nothing
@@ -242,15 +373,24 @@ await test('retention: the dry run changes nothing and logs nothing; apply is on
 });
 
 await test('retention that fails inside its erasure removes nothing: rows stay, files stay, the log row rolls back', async () => {
-  const id = await land(homeA.id, 'open_meteo');
-  await erase({ kind: 'synthetic', reason: 'test: a receipt aged' }, async () => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(NOW - 30 * DAY, id));
+  const ids = [await land(homeA.id, 'open_meteo'), await land(homeA.id, 'open_meteo'), await land(homeA.id, 'open_meteo')];   // the newest of the endpoint stays
+  for (const id of ids) await erase({ kind: 'synthetic', reason: 'test: a receipt aged' }, async () => await db.prepare('UPDATE raw_payload SET fetched_at = ? WHERE id = ?').run(NOW - 30 * DAY, id));
+  const files = await Promise.all(ids.map(fileOf));
   const log = await logCount();
-  const file = await fileOf(id);
-  await assert.rejects(async () => await erase({ kind: 'retention', reason: 'test: fails half way' }, async () => {
-    await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(id);
-    throw new Error('boom');
-  }), /boom/);
-  assert.ok(await row(id) && fs.existsSync(file));
-  assert.equal(await logCount(), log, 'no log row without its deletes, no deletes without their log row');
-  assert.equal(await db.prepare("SELECT current_setting('energiebee.erasure', true) AS v").get().then((x) => x.v || ''), '', 'the erasure is not left open');
+  // the second delete of the run fails (a trigger that only this test creates)
+  await db.exec(`CREATE FUNCTION test_fail_retention() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'boom'; END $$;
+    CREATE TRIGGER test_fail_retention BEFORE DELETE ON raw_payload FOR EACH ROW WHEN (OLD.id = ${ids[1]}) EXECUTE FUNCTION test_fail_retention()`);
+  try {
+    const dry = await runRetention({ now: NOW });
+    assert.ok(dry.raw.candidates >= 2, 'the aged receipts are candidates');
+    await assert.rejects(async () => await runRetention({ now: NOW, dryRun: false }), /boom/);
+    for (const id of ids) assert.ok(await row(id), `payload ${id} stays`);
+    assert.ok(files.every((f) => fs.existsSync(f)), 'no file was removed');
+    assert.equal(await logCount(), log, 'no log row without its deletes, no deletes without their log row');
+    assert.equal(await db.prepare("SELECT current_setting('energiebee.erasure', true) AS v").get().then((x) => x.v || ''), '', 'the erasure is not left open');
+  } finally {
+    await db.exec('DROP TRIGGER test_fail_retention ON raw_payload; DROP FUNCTION test_fail_retention()');
+  }
+  assert.ok((await runRetention({ now: NOW, dryRun: false })).raw.deleted >= 2, 'without the failure the same run goes through');
+  assert.equal(await row(ids[1]), undefined);
 });

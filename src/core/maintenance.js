@@ -13,7 +13,6 @@ import { replayableSources } from './replay.js';
 import { seedDeviceHistory } from './devices.js';
 import { filterAsync } from "./async.js";
 import { erase } from "./erasure.js";
-import { runRawCheck } from './raw-integrity.js';
 
 // Earlier code (before 16 Oct 2026) converted this home's gas readings from m³ to kWh with a
 // fixed calorific value as it stored them, and saved the result as Octopus 'gas_kwh' facts.
@@ -60,16 +59,15 @@ export async function seedSiteAttributes(siteId) {
 
 // The start-up hook (server.js start). Per home: { gasKwhWithdrawn }. Then retention, in the mode
 // RETENTION sets: 'report' (the default: a dry run, nothing deleted), 'apply', or 'off'; its report
-// is returned under `retention` (null when off). Before it, the raw-file check (src/core/raw-integrity.js, RAW_VERIFY):
-// today's slice of the receipts is opened and hashed; its report is returned under `rawCheck` (null when off). Reading only.
-export async function runMaintenance({ retention = retentionSettings().mode, rawCheck = true } = {}) {
+// is returned under `retention` (null when off). The raw-file check is not here: it runs in the background after the server
+// listens (src/core/raw-integrity.js).
+export async function runMaintenance({ retention = retentionSettings().mode } = {}) {
   const out = {};
   for (const { id } of await db.prepare('SELECT id FROM site').all()) {
     await seedSiteAttributes(id);
     await seedDeviceHistory(id);
     out[id] = { gasKwhWithdrawn: await withdrawDerivedGas(id) };
   }
-  Object.defineProperty(out, 'rawCheck', { value: rawCheck ? await runRawCheck() : null, enumerable: false });
   Object.defineProperty(out, 'retention', { value: retention === 'off' ? null : await runRetention({ dryRun: retention !== 'apply' }), enumerable: false });
   return out;
 }
@@ -173,13 +171,14 @@ export function endpointOf(requestText) {
 }
 
 // Every column with a foreign key to raw_payload (reading, interval_fact, forecast_fact,
-// rate_interval.raw_id today), read from the schema so a table added later is respected too.
+// rate_interval.raw_id today), read from the schema so a table added later is respected too. A row that goes with its
+// receipt (ON DELETE CASCADE: raw_payload_check, the file check's record) is not a use of it.
 async function rawRefs() {
   const out = [];
   for (const fk of await db.prepare(`SELECT kcu.table_name AS t, kcu.column_name AS col FROM information_schema.referential_constraints rc
       JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
       JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name AND ccu.constraint_schema = rc.unique_constraint_schema
-      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
+      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' AND rc.delete_rule <> 'CASCADE' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
   return out;
 }
 const notReferenced = (refs, alias) => refs.map(([t, c]) => `NOT EXISTS (SELECT 1 FROM "${t}" WHERE "${c}" = ${alias}.id)`).join(' AND ') || 'TRUE';
@@ -231,6 +230,10 @@ async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) 
   return out;
 }
 
+// Only a file in the layout the store writes can be an orphan: <source>/<day>/<name>.json, or its half-written .<pid>.tmp /
+// .sealing form. RAW_DIR can be a volume that holds other things (a mount's lost+found, notes); those are never touched.
+const STORE_FILE = /^[a-z0-9_-]+\/\d{4}-\d{2}-\d{2}\/[A-Za-z0-9_-]+\.json(\.\d+\.tmp|\.sealing)?$/;
+
 // Files under the raw store (RAW_DIR, default data/raw) that no raw_payload row names, last written before the cutoff.
 async function orphanFiles(cutoff, dryRun) {
   const out = { found: 0, bytes: 0, deleted: 0 };
@@ -242,7 +245,7 @@ async function orphanFiles(cutoff, dryRun) {
       if (e.isDirectory()) { walk(full); continue; }
       if (!e.isFile()) continue;
       const rel = rawName(rawDir, full);
-      if (known.has(rel)) continue;
+      if (known.has(rel) || !STORE_FILE.test(path.relative(rawDir, full).split(path.sep).join('/'))) continue;
       const st = fs.statSync(full);
       if (st.mtimeMs >= cutoff * 1000) continue;
       out.found++; out.bytes += st.size;

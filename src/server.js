@@ -24,7 +24,7 @@ import { compatibility } from './core/compatibility.js';
 import { connectTounify, tounifyAllowance } from './adapters/tounify.js';
 import { deleteHome, homeFootprint } from './core/delete-home.js';
 import { runMaintenance, retentionSummary } from './core/maintenance.js';
-import { rawCheckSummary, lastRawCheck, startRawCheckSchedule } from './core/raw-integrity.js';
+import { rawCheckOfHome, startRawCheckSchedule } from './core/raw-integrity.js';
 import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
@@ -739,12 +739,6 @@ app.get('/api/raw/:rawId', async (req, res) => {
   res.json({ ...r, size, body });
 });
 
-// The latest raw-file check of this process, for one home: when, how much was opened, and this home's problems (ids and states only).
-function rawCheckOf(siteId) {
-  const c = lastRawCheck();
-  if (!c) return null;
-  return { at: c.at, slice: c.scope.slice, checked: c.checked, problems: c.problemsBySite[siteId] ?? 0, problemList: c.problems.filter((p) => p.siteId === siteId).map(({ id, source, state }) => ({ id, source, state })) };
-}
 app.get('/api/sites/:id/health', async (req, res) => {
   const s = await site(req);
   const today = localDate(s.timezone, nowSec());
@@ -767,7 +761,7 @@ app.get('/api/sites/:id/health', async (req, res) => {
       rates: await count('SELECT COUNT(*) AS n FROM rate_interval'),
       halfHours: await count('SELECT COUNT(*) AS n FROM site_hh WHERE site_id = ?', s.id),
     },
-    rawCheck: rawCheckOf(s.id),
+    rawCheck: await rawCheckOfHome(s.id),   // the latest raw-file check of this home (src/core/raw-integrity.js)
     method: METHOD_VERSION,
   });
 });
@@ -953,8 +947,6 @@ export async function start() {
   if (Object.values(maintenance).some((m) => m.gasKwhWithdrawn)) console.log('maintenance:', JSON.stringify(maintenance));
   // Retention: a dry-run report unless RETENTION=apply (counts only; src/core/maintenance.js).
   if (maintenance.retention) console.log(retentionSummary(maintenance.retention));
-  console.log(rawCheckSummary(maintenance.rawCheck));
-  startRawCheckSchedule();
   // VAT rules for a country changed (db.js syncVatRules): every home there is rebuilt from its first built day,
   // so days built before the change are priced with the rules as they now stand.
   if (vatRulesChanged.length) {
@@ -965,6 +957,7 @@ export async function start() {
   }
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, async () => {
+    startRawCheckSchedule();   // background: the first run does not hold up the first request
     const minutes = startScheduler();
     // Control cycles run only for registered vendor drivers (jobs/control.js); none ship yet, so this is idle.
     if (registeredDrivers().length) startControlScheduler(Number(process.env.CONTROL_EVERY_SECONDS) || 30);

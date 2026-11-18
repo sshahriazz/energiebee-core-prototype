@@ -22,7 +22,8 @@ const dataDir = path.join(root, 'data', 'demo');
 
 // The homes: demo-ui.js copies the app's database into the demo one and adds the synthetic French and Dutch homes.
 execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts', 'demo-ui.js'), name], { stdio: 'inherit', env: { ...process.env, DEMO_DATA_DIR: dataDir } });
-const rawFrom = resolveRawDir(process.env, root);   // the app's raw store, wherever RAW_DIR puts it const rawTo = path.join(dataDir, 'raw');
+const rawFrom = resolveRawDir(process.env, root);   // the app's raw store, wherever RAW_DIR puts it
+const rawTo = path.join(dataDir, 'raw');
 fs.rmSync(rawTo, { recursive: true, force: true });
 if (fs.existsSync(rawFrom)) fs.cpSync(rawFrom, rawTo, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
 

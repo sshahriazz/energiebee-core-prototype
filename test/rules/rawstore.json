@@ -1,0 +1,8 @@
+{
+ "triggers": {
+  "raw_check_run_fixed": [
+   "a raw check run is a log row and never changes"
+  ]
+ },
+ "exclusions": []
+}

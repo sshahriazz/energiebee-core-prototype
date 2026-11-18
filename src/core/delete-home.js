@@ -166,7 +166,9 @@ export async function deleteHome(user, site, { confirm } = {}) {
   // The raw files, after the commit: a file whose row is gone is only a leftover.
   let files = 0;
   for (const r of f.raw.deleted) {
-    try { fs.unlinkSync(rawFilePath(r.file)); files++; } catch { /* already gone */ }
+    const file = rawFilePath(r.file);   // null: the name is not in the raw store, there is no file
+    if (!file) continue;
+    try { fs.unlinkSync(file); files++; } catch { /* already gone */ }
   }
   return { deleted: { id: site.id, name: site.name }, rows: removed, raw: { deleted: f.raw.deleted.length, kept: f.raw.kept.length }, files };
 }

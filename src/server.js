@@ -42,6 +42,7 @@ import { createSyntheticIotHome } from './core/synthetic-iot.js';
 import * as pushIngest from './core/push-ingest.js';
 import { mapAsync } from "./core/async.js";
 import { ensureAllHomes } from './core/energy-graph.js';
+import { integrationManifest } from './core/manifest.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
@@ -839,6 +840,7 @@ app.get('/api/catalog', async (req, res) => {
 // the market provider rows of every market merged per adapter code, whether an implementation is
 // registered, and what the homes' latest syncs recorded. No home needed; nothing is called or stored.
 app.get('/api/connectors', async (req, res) => res.json(await connectors(db)));
+app.get('/api/integrations', async (req, res) => res.json({ integrations: await integrationManifest(db) }));   // what each integration is, reaches, discovers and reads (src/core/manifest.js)
 
 // How and why the database is compatible with Predbat and PredHeat (src/core/compatibility.js): the
 // coverage matrix's 481 items, each target checked to exist in this database now (cached 60 s), how

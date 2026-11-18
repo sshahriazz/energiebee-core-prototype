@@ -6,12 +6,21 @@
 import { rawCheckSummary, verifyRaw } from '../src/core/raw-integrity.js';
 import { closeDb } from '../src/db/db.js';
 
-const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : null; };
+// --name value or --name=value; anything else is refused (a mistyped scope would otherwise check the whole store).
+const fail = (msg) => { console.error(`${msg}\nusage: npm run raw:verify [-- --site <id>] [-- --limit <n>]`); process.exit(2); };
+const given = {};
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+  const m = /^--([a-z]+)(?:=(.*))?$/.exec(argv[i]);
+  if (!m || !['site', 'limit'].includes(m[1])) fail(`unknown argument ${JSON.stringify(argv[i])}`);
+  if (m[1] in given) fail(`--${m[1]} given twice`);
+  given[m[1]] = m[2] ?? argv[++i];
+}
 const whole = (name) => {
-  const v = arg(name);
-  if (v == null) return null;
+  const v = given[name];
+  if (v == null) return name in given ? fail(`--${name} needs a value`) : null;
   const n = Number(v);
-  if (!Number.isInteger(n) || n < 1) { console.error(`--${name} takes a whole number >= 1, not ${JSON.stringify(v)}`); process.exit(2); }
+  if (!/^\d+$/.test(v) || n < 1) fail(`--${name} takes a whole number >= 1, not ${JSON.stringify(v)}`);
   return n;
 };
 const report = await verifyRaw({ siteId: whole('site'), limit: whole('limit'), trigger: 'cli' });

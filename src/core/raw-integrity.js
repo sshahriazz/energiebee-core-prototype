@@ -16,6 +16,9 @@
 //              scripts/seal-raw.js seals it
 // Everything except ok and erased is a problem and is listed.
 //
+// Not checked at all: a row whose name is 'redacted-<id>' (scripts/make-fixture.js anonymises the file names of a fixture, so
+// no file exists for it by design). Any other name that is not in the raw store is 'missing'.
+//
 // Which receipts: a run takes the N checked longest ago (never-checked first), N = RAW_VERIFY_BATCH, so a store is covered in
 // turn however often the server restarts or is down, and the work of one run does not grow with the store. A by-hand run
 // (npm run raw:verify) takes everything unless it is given a limit.
@@ -28,28 +31,34 @@ const PROBLEM_STATES = ['mismatch', 'corrupt', 'missing', 'unreadable', 'unseale
 
 // RAW_VERIFY (off | report, default report): the check after start-up and then every RAW_VERIFY_HOURS (default 6).
 // RAW_VERIFY_BATCH (default 500): how many receipts one run opens, the least recently checked first.
+// RAW_VERIFY_HOURS is at most 596: a timer longer than 2^31-1 ms (596.5 h) does not fit Node's 32-bit timer, which then fires
+// every millisecond. A longer interval is a job of cron: npm run raw:verify.
+const MAX_HOURS = 596;
 export function rawVerifySettings(env = process.env) {
   const mode = env.RAW_VERIFY == null || env.RAW_VERIFY === '' ? 'report' : String(env.RAW_VERIFY);
   if (!MODES.includes(mode)) throw new RangeError(`RAW_VERIFY must be one of ${MODES.join(', ')}, not ${JSON.stringify(mode)}`);
-  const whole = (name, dflt) => {
+  const whole = (name, dflt, max = Infinity) => {
     const v = env[name];
     const n = v == null || v === '' ? dflt : Number(v);
-    if (!Number.isInteger(n) || n < 1) throw new RangeError(`${name} must be a whole number >= 1, not ${JSON.stringify(v)}`);
+    if (!Number.isInteger(n) || n < 1 || n > max) throw new RangeError(`${name} must be a whole number from 1${max < Infinity ? ` to ${max}` : ''}, not ${JSON.stringify(v)}`);
     return n;
   };
-  return { mode, batch: whole('RAW_VERIFY_BATCH', 500), hours: whole('RAW_VERIFY_HOURS', 6) };
+  return { mode, batch: whole('RAW_VERIFY_BATCH', 500), hours: whole('RAW_VERIFY_HOURS', 6, MAX_HOURS) };
 }
 
 const emptyCounts = () => ({ checked: 0, ok: 0, mismatch: 0, corrupt: 0, missing: 0, unreadable: 0, erased: 0, unsealed: 0, bytes: 0 });
+
+// The receipts the check covers (see the header: names the fixture redacted are not).
+const CHECKED = "p.file NOT LIKE 'redacted-%'";
 
 // The receipts a run takes: ids never checked, then the ones checked longest ago.
 async function pickIds(siteId, limit) {
   const site = siteId != null ? ' AND p.site_id = ?::bigint' : '';
   const args = siteId != null ? [siteId] : [];
-  const fresh = (await db.prepare(`SELECT p.id FROM raw_payload p WHERE NOT EXISTS (SELECT 1 FROM raw_payload_check c WHERE c.payload_id = p.id)${site} ORDER BY p.id LIMIT ?::bigint`)
+  const fresh = (await db.prepare(`SELECT p.id FROM raw_payload p WHERE ${CHECKED} AND NOT EXISTS (SELECT 1 FROM raw_payload_check c WHERE c.payload_id = p.id)${site} ORDER BY p.id LIMIT ?::bigint`)
     .all(...args, limit)).map((r) => r.id);
   if (fresh.length >= limit) return fresh;
-  const old = (await db.prepare(`SELECT c.payload_id AS id FROM raw_payload_check c JOIN raw_payload p ON p.id = c.payload_id WHERE TRUE${site} ORDER BY c.checked_at, c.payload_id LIMIT ?::bigint`)
+  const old = (await db.prepare(`SELECT c.payload_id AS id FROM raw_payload_check c JOIN raw_payload p ON p.id = c.payload_id WHERE ${CHECKED}${site} ORDER BY c.checked_at, c.payload_id LIMIT ?::bigint`)
     .all(...args, limit - fresh.length)).map((r) => r.id);
   return [...fresh, ...old];
 }
@@ -91,21 +100,23 @@ export async function verifyRaw({ siteId = null, limit = null, trigger = 'cli', 
       if (!ids.length) break;
       rows = await db.prepare(`${ROW} WHERE p.id IN (SELECT value::bigint FROM jsonb_array_elements_text(?::jsonb)) ORDER BY p.id`).all(JSON.stringify(ids));
     } else {
-      rows = await db.prepare(`${ROW} WHERE p.id > ?::bigint${siteId != null ? ' AND p.site_id = ?::bigint' : ''} ORDER BY p.id LIMIT ?::bigint`)
+      rows = await db.prepare(`${ROW} WHERE ${CHECKED} AND p.id > ?::bigint${siteId != null ? ' AND p.site_id = ?::bigint' : ''} ORDER BY p.id LIMIT ?::bigint`)
         .all(after, ...(siteId != null ? [siteId] : []), batch);
       if (!rows.length) break;
       after = rows[rows.length - 1].id;
     }
     const results = [];
     for (const r of rows) {
-      const state = await stateOf(r);
+      let state = await stateOf(r);
+      // A file that is gone because retention or an erasure just deleted its receipt is not a finding.
+      if (state === 'missing' && !await db.prepare('SELECT 1 AS x FROM raw_payload WHERE id = ?').get(r.id)) continue;
       out.checked++; out[state]++;
       const home = bySite.get(r.site_id);
       home.checked++; home[state]++;
       if (PROBLEM_STATES.includes(state)) flag(r, state);
       results.push({ id: r.id, site: r.site_id, state });
     }
-    // A receipt or home erased while the run was reading is simply not recorded.
+    // A receipt or home erased while the run was reading is not recorded.
     await db.prepare(`INSERT INTO raw_payload_check (payload_id, site_id, checked_at, state)
       SELECT (e->>'id')::bigint, (e->>'site')::bigint, ?::bigint, e->>'state' FROM jsonb_array_elements(?::jsonb) e
        WHERE EXISTS (SELECT 1 FROM raw_payload WHERE id = (e->>'id')::bigint)
@@ -125,7 +136,7 @@ async function logRun(out, bySite, trigger) {
     SELECT ?::bigint, ?::bigint, ?::text, ?::int, ?::int, ?::int, ?::int, ?::int, ?::int, ?::int, ?::int, ?::bigint, ?::int WHERE ?::bigint IS NULL OR EXISTS (SELECT 1 FROM site WHERE id = ?::bigint)`);
   const row = async (siteId, c, ms) => await insert.run(siteId, out.at, trigger, c.checked, c.ok, c.mismatch, c.corrupt, c.missing, c.unreadable, c.erased, c.unsealed, c.bytes, ms, siteId, siteId);
   await row(null, out, out.ms);
-  for (const [siteId, c] of bySite) if (siteId != null) await row(siteId, c, out.ms);
+  for (const [siteId, c] of bySite) if (siteId != null) await row(siteId, c, null);   // the time of a run is not split by home
 }
 
 // The latest result for one home: its last run, and the state each of its receipts was last found in (so a damaged file stays
@@ -136,7 +147,7 @@ export async function rawCheckOfHome(siteId) {
   const n = async (sql) => Number((await db.prepare(sql).get(siteId)).n);
   return {
     at: last.ran_at, trigger: last.trigger, checkedInRun: last.checked,
-    receipts: await n('SELECT COUNT(*) AS n FROM raw_payload WHERE site_id = ?'),
+    receipts: await n("SELECT COUNT(*) AS n FROM raw_payload WHERE site_id = ? AND file NOT LIKE 'redacted-%'"),
     covered: await n('SELECT COUNT(*) AS n FROM raw_payload_check WHERE site_id = ?'),
     problems: await n(`SELECT COUNT(*) AS n FROM raw_payload_check WHERE site_id = ? AND state IN (${PROBLEM_STATES.map((s) => `'${s}'`).join(', ')})`),
     problemList: (await db.prepare(`SELECT c.payload_id AS id, src.code AS source, c.state, c.checked_at AS "checkedAt" FROM raw_payload_check c
@@ -155,10 +166,9 @@ export async function runRawCheck({ env = process.env, trigger = 'timer' } = {})
   try { return await verifyRaw({ limit: s.batch, trigger }); } finally { running = false; }
 }
 
-// A first run just after the server listens, then one every RAW_VERIFY_HOURS. Background work on purpose: nothing awaits it, a
+// The settings are read (and refused when wrong) by the caller before the port opens. A first run just after the server listens, then one every RAW_VERIFY_HOURS. Background work on purpose: nothing awaits it, a
 // failure is logged and never thrown, and the timer does not keep the process alive.
-export function startRawCheckSchedule() {
-  const s = rawVerifySettings();
+export function startRawCheckSchedule(s = rawVerifySettings()) {
   if (s.mode === 'off') { console.log(rawCheckSummary(null)); return; }
   const go = async (trigger) => {
     try { console.log(rawCheckSummary(await runRawCheck({ trigger }))); } catch (err) { console.error('raw check:', err.message); }

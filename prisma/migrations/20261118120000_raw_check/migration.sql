@@ -18,7 +18,7 @@ CREATE TABLE raw_check_run (
   erased integer NOT NULL CHECK (erased >= 0),
   unsealed integer NOT NULL CHECK (unsealed >= 0),
   bytes bigint NOT NULL CHECK (bytes >= 0),
-  ms integer NOT NULL CHECK (ms >= 0)
+  ms integer CHECK (ms >= 0)                              -- the run's time; NULL on a home's row (a run is not timed per home)
 );
 CREATE INDEX raw_check_run_site ON raw_check_run (site_id, id DESC);
 

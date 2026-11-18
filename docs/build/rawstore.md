@@ -6,7 +6,8 @@ retention dry run is checked against the append-only and erasure rules.
 
 State: all three are done and tested. One migration (`20261118120000_raw_check`: two tables, one trigger), no new HTTP route
 (the health route has a new field). Round 1 of the review changed (b) from a fixed daily slice to a rolling check of the least
-recently checked receipts with its results stored; the sections below describe the result.
+recently checked receipts with its results stored; round 2 (review findings) fixed the timer overflow, start-up validation, the
+runtime loss of RAW_DIR, healing of a lost file, strict CLI arguments and fixture names. The sections below describe the result.
 
 ## What was built
 
@@ -23,6 +24,9 @@ recently checked receipts with its results stored; the sections below describe t
   mount-point folder behind, and that passes. A missing folder is caught; an empty mount point is not, and `landRaw` would then
   write to the system disk (the check reports those files as missing once the volume is back). A marker file written at set-up
   would close this; it is not built (see What is left). RAW_DIR must be dedicated to the app (see the orphan walk below).
+  The same refusal now holds while the server runs: `landRaw` makes folders only below an existing raw store (`folderFor` in
+  facts.js) and throws `the raw store ... is not there (is the volume mounted?)` when the store itself is gone, instead of
+  recreating it on the system disk. Ingest then fails loudly until the volume is back.
 - `raw_payload.file` is unchanged: it stays `raw/<source>/<day>/<hash16>.json`. The name is the receipt's identity;
   the folder is a deployment choice. The `raw/` in the name is the raw folder itself, so with `RAW_DIR=/mnt/raw` the file
   `raw/sunsynk_5min/2026-11-18/ab12.json` is `/mnt/raw/sunsynk_5min/2026-11-18/ab12.json`. No data migration, no change
@@ -46,6 +50,10 @@ landing blocks the event loop for the length of the write (the push ingest path 
 machine, a local disk only: 0.9 ms per 13 KB file without fsync, 4.3 ms with the file fsync (1000 files each); the folder fsync
 was added afterwards and not measured separately.
 
+When the same body lands again and the file of its existing receipt is gone, `landRaw` writes it back (same hash, so the same
+text; sealed with the home's key when it is a home's) and still returns `duplicate: true`. Before, a lost file stayed lost even
+when the provider delivered the identical payload. Cost: one `stat` per duplicate landing.
+
 The orphan walk (retention) removes only files in the layout the store writes: `<source>/<day>/<name>.json` and its
 `.<pid>.tmp` / `.sealing` forms. With `RAW_DIR` a volume that holds other things (a mount's `lost+found`, an operator's notes) is
 never touched. Before this change it deleted any unreferenced file older than the window under `data/raw`.
@@ -66,7 +74,7 @@ never touched. Before this change it deleted any unreferenced file older than th
   | ok | text hashes to the stored hash | no |
   | mismatch | file opens, text is not what landed (edited, replaced) | yes |
   | corrupt | sealed file does not decrypt (changed or cut short; the GCM tag fails) | yes |
-  | missing | no file in the raw store (store not mounted, file lost, or the row names something outside the store) | yes |
+  | missing | no file in the raw store (store not mounted, file lost, or the row names something outside the store other than a fixture's `redacted-` name) | yes |
   | unreadable | file exists, the disk refuses it (permissions, I/O error) | yes |
   | erased | sealed file whose home key is gone (the home was deleted, its key with it): nobody can open it, by design | no (counted) |
   | unsealed | the hash matches but a home's non-public file is stored as clear text; `scripts/seal-raw.js --apply` fixes it | yes |
@@ -75,6 +83,12 @@ never touched. Before this change it deleted any unreferenced file older than th
   `keyLost` (key gone, home still there, a problem). Deliberate consequence: a key row lost by accident from a live home is now
   also reported as `erased`, not as a problem. Nothing in the code deletes a key except deleting its home, so I judged the
   accidental case not worth a state of its own; if it matters, count `erased` receipts of homes that still exist.
+- Not checked at all: rows whose file name starts with `redacted-` (`scripts/make-fixture.js` anonymises the names, so a database
+  made from the fixture has no files for them by design). They are left out of the picks and of `receipts` in the health field,
+  and appear in no count. Before, every fixture or demo database showed permanent `missing` problems and the CLI exited 1. A
+  name outside the store that is not `redacted-...` is still `missing`.
+- A receipt whose file is gone because retention or an erasure deleted the receipt while the run was reading is not counted
+  (the run re-reads the row before counting a `missing`). Before, it showed as a false problem in that run's report.
 - The report: `{ at, scope, checked, ok, mismatch, corrupt, missing, unreadable, erased, unsealed, bytes, problems: [{ id,
   siteId, source, file, state }], problemsBySite, truncated, ms }`. The problem list is capped (`maxProblems`, default 200,
   `truncated` says so); the counts are not. `ok` no longer includes `unsealed` (they are separate counts).
@@ -84,35 +98,47 @@ never touched. Before this change it deleted any unreferenced file older than th
 - **Tables (migration `20261118120000_raw_check`)**:
   - `raw_check_run` (kind `log`): one row per run for the whole store (`site_id` NULL) and one per home that had receipts in the
     run. Columns: `ran_at` (unix seconds), `trigger` (`start`, `timer`, `cli`), `checked`, `ok`, `mismatch`, `corrupt`, `missing`,
-    `unreadable`, `erased`, `unsealed`, `bytes`, `ms`. `site_id` has a foreign key to `site` ON DELETE CASCADE, so a deleted
-    home's rows leave with it (the generic delete-home follows the key). Trigger `raw_check_run_fixed`: a row is never updated.
+    `unreadable`, `erased`, `unsealed`, `bytes`, `ms` (the run's time; NULL on a home's row, because the time of a run is not split
+    by home). `site_id` has a foreign key to `site` ON DELETE CASCADE, so a deleted
+    home's rows leave with it (the generic delete-home follows the key). Trigger `raw_check_run_fixed`: a row is never updated. DELETE is open on purpose: a home's rows leave with the home
+    by the foreign key, and the rules test deletes one. The history is therefore weaker than `command_log`'s; refusing a delete
+    outside an erasure is a possible later step.
   - `raw_payload_check` (kind `runtime`): one row per receipt, the latest result: `payload_id` (primary key, foreign key to
     `raw_payload` ON DELETE CASCADE), `site_id` (the receipt's home when checked, foreign key to `site` ON DELETE CASCADE),
     `checked_at`, `state` (CHECK on the list above). It exists because `raw_payload` is append-only and cannot hold a check
-    time. Retention's "is this receipt used" test ignores foreign keys with ON DELETE CASCADE (`rawRefs` in maintenance.js);
-    without that, every checked receipt would have looked referenced and retention would have deleted nothing.
+    time. Retention's "is this receipt used" test (`rawRefs` in maintenance.js) leaves out this table by name;
+    without that, every checked receipt would have looked referenced and retention would have deleted nothing. (First built as
+    "ignore every cascading key"; changed so that a fact table which later references a receipt with a cascade still protects it.)
   - Both are classified in `src/db/table-kinds.js`. The trigger is broken on purpose in `test/rules-rawstore.test.js`,
     recorded in `test/rules/rawstore.json`.
-- **The job** (settings: `RAW_VERIFY=report|off`, default `report`; `RAW_VERIFY_BATCH`, default 500; `RAW_VERIFY_HOURS`, default 6):
+- **The job** (settings: `RAW_VERIFY=report|off`, default `report`; `RAW_VERIFY_BATCH`, default 500; `RAW_VERIFY_HOURS`, default 6, at most 596):
   - A run takes the `RAW_VERIFY_BATCH` receipts checked longest ago: never-checked receipts first (by id), then the oldest
-    `checked_at`. Both picks use an index, so a run costs the same on a large store. Each page of 500 is recorded as it is
+    `checked_at`. The oldest-first pick uses an index. The never-checked pick is an anti-join: once everything has been checked it
+    has to walk `raw_payload` to find that nothing is left, so its cost grows with the store (measured below). Each page of 500 is recorded as it is
     read (upsert into `raw_payload_check`), then one log row per run and per home is written. A server that was down, a
     restart, or a timer that drifts changes nothing: the next run takes whatever is oldest. A new receipt is checked at the next
     run, before older ones.
-  - `startRawCheckSchedule()` (called when the server starts listening, so it no longer delays start-up): a first run on the
+  - `RAW_VERIFY_HOURS` is capped at 596: a timer of more than 2^31-1 ms (596.5 h) overflows Node's 32-bit timer, which then fires
+    every millisecond (seen: 942 `raw_check_run` rows in 3 s with 720). A longer interval is a cron job of `npm run raw:verify`.
+    `start()` in server.js reads the three settings (`rawVerifySettings()`) before anything else, so a wrong value refuses the
+    start before the port opens, like `RETENTION`; the parsed settings go to `startRawCheckSchedule(settings)`.
+  - `startRawCheckSchedule(settings)` (called when the server starts listening, so it no longer delays start-up): a first run on the
     next tick, then one every `RAW_VERIFY_HOURS`, `setInterval(...).unref()`. It is a deliberate background task (nothing awaits
     it; a failure is logged). A run that would overlap one still going is skipped. `runMaintenance` no longer runs the check.
     The earlier id-modulo slice (`RAW_VERIFY_DAYS`, `sliceFor`, `--slice`) is gone.
   - **By hand**: `npm run raw:verify [-- --site <id>] [-- --limit <n>]` checks every receipt (or the `n` least recently checked),
     records the run with trigger `cli`, prints the JSON report and the summary line, exits 1 on a problem, 2 on a bad argument.
+    Arguments are `--site 5` or `--site=5`; an unknown argument (`--limt`, `--site5`, a bare word), a repeated one or a missing
+    value is refused with exit 2 and a usage line, so a mistyped scope never turns into a whole-store run.
   - **Health**: `GET /api/sites/:id/health` has the field `rawCheck` (null until a run has covered the home), from
     `rawCheckOfHome(siteId)`: `{ at, trigger, checkedInRun, receipts, covered, problems, problemList: [{ id, source, state,
     checkedAt }] }`. `problems` and `problemList` are the latest known state of each of the home's receipts (not only the last
     run), so a damaged file stays listed until a later check finds it fine; the list shows at most 50. Access is the existing home
     access of that route; no new route.
 - Measured (this machine, a scratch database, 2000 receipts of about 13 KB, half sealed, local disk): the first 500 (never
-  checked) took 413 ms, the next 500 (oldest first) 367 ms, all 2000 2.5 s (26 MB). So a default run is about 0.4 s, whatever the
-  store size, and a 1M-receipt store is covered in 2000 runs (500 days at the default, 6 hourly): operators of large stores
+  checked) took 413 ms, the next 500 (oldest first) 367 ms, all 2000 2.5 s (26 MB). So a default run reads about 0.4 s of
+  files whatever the store size. The never-checked pick adds a cost that grows with the store: on a scratch database with 500000
+  receipts, all checked, it took 170-190 ms per run (the oldest-first pick 4-5 ms). A 1M-receipt store is covered in 2000 runs (500 days at the default, 6 hourly): operators of large stores
   raise `RAW_VERIFY_BATCH` or run `npm run raw:verify` from cron. The earlier landing measurement (7.3 ms per receipt including
   the insert) was not repeated.
 
@@ -137,7 +163,8 @@ the log row; files are unlinked after the commit. What was missing was a test th
   - every surviving file verifies as it did before retention ran;
   - a failure inside the real retention run (a trigger that raises on one of its deletes, created only by the test) leaves every
     row and file, adds no `erasure_log` row and does not leave the erasure open; without the failure the same run goes through;
-  - after apply the files of the deleted receipts are gone from disk (also under a `RAW_DIR` outside `DATA_DIR`).
+  - after apply the files of the deleted receipts are gone from disk (`test/raw-store.test.js` retention test, captured before
+    apply; also under a `RAW_DIR` outside `DATA_DIR` in the child-process test).
 
 ## Tests
 
@@ -146,7 +173,7 @@ export PATH=~/.nvm/versions/node/v22.22.0/bin:$PATH
 TEST_DB_PREFIX=<prefix> node --test --disable-warning=ExperimentalWarning test/raw-store.test.js test/rules-rawstore.test.js
 ```
 
-`test/raw-store.test.js` (13 tests, about 30 s) covers: the path resolution and its refusals; one child process with `RAW_DIR`
+`test/raw-store.test.js` (16 tests, about 50 s) covers: the path resolution and its refusals; one child process with `RAW_DIR`
 outside `DATA_DIR`: files land there and nothing under `DATA_DIR/raw`, read back, sealed on disk (magic bytes `EBRAW1`),
 verified, `scripts/seal-raw.js` finds and seals a plain file there (dry run leaves it), retention (dry run removes nothing,
 apply removes the old receipt's file and the orphan in the store layout and leaves foreign files and the newest answer), delete-home
@@ -154,22 +181,33 @@ removes the home's files from `RAW_DIR` and its check records, and a `RAW_DIR` t
 plain, sealed, quarantined and home-less receipts with page size 2 and exact byte totals; each damage state (changed plain file, bit
 flip in a sealed file, truncated sealed file, deleted file, chmod 000 file, deleted home key = erased, clear-text file of a home)
 and the state stored per receipt; the rolling selection (least recently checked first, never-checked first, no repeats, a log row per
-run and per home, overlap skipped, one home only); the CLI (bad arguments exit 2, a problem exits 1, the run is logged); health
-for a home (null before a check, then the counts, a damaged file stays listed across other runs, clears after a good check, 404 for
-an unknown home); settings; and the retention cases above. `test/rules-rawstore.test.js` breaks `raw_check_run_fixed` on purpose.
+run and per home, overlap skipped, one home only); the CLI (bad, unknown, repeated and valueless arguments exit 2, the `=` form
+works, a problem exits 1, the run is logged); health for a home (null before a check, then the counts, a damaged file stays listed
+across other runs, clears after a good check, 404 for an unknown home); settings, including the 596 hour cap; a child process that
+calls `start()` with a bad RAW_VERIFY, RAW_VERIFY_BATCH or RAW_VERIFY_HOURS and is refused before it listens; landing the same
+body again writes a lost file back (home and home-less) and a detached raw store is not recreated; `redacted-` names are skipped
+and other outside names are `missing`; and the retention cases above. The `RAW_DIR` child process also reads a receipt through
+the explorer (`rawOne`). The tests no longer depend on each other's damage for what they assert; they still share one database,
+so run the file whole, not with `--test-name-pattern`. `test/rules-rawstore.test.js` breaks `raw_check_run_fixed` on purpose.
 
-Run and passing in this checkout, after the round 1 changes: raw-store (13), rules-rawstore (2), rules-all (2), table-kinds (4),
-retention (6), delete-home (5), erasure (3), explorer (12), replay-sunsynk (10), tounify (33). The whole suite was not run (the
-integrator does that). Not covered by a test: the start-up call (`startRawCheckSchedule` is a timer), the explorer reading under
-`RAW_DIR` (it uses the same `rawFilePath` as `readRaw`, which is covered), `scripts/make-fixture.js` and `scripts/demo-users.js`
+Run and passing in this checkout, after the round 2 changes: raw-store (16), rules-rawstore (2), rules-all (2), table-kinds (4),
+retention (6), delete-home (5), erasure (3), ingest-durability (3), explorer (12), replay-sunsynk (10), tounify (33). The whole suite was not run (the
+integrator does that). Not covered by a test: the timer itself (`startRawCheckSchedule`; only its settings and the refusal at start are), `scripts/make-fixture.js` and `scripts/demo-users.js`
 under `RAW_DIR` (they need the app's database; `node --check` passes and the `rawTo` declaration swallowed into a comment by an
 earlier edit in demo-users.js is restored, but I did not run `npm run demo:users`, because it copies the app's database).
 
 ## Decisions and deviations
 
 - **A log table and a state table were built** after the review (the first version stored nothing: that was a miss against the
-  brief, not a choice). `schema.prisma` was not regenerated (`scripts/refresh-prisma.js` writes it from the migrations; the
-  integrator can run it once for all packages).
+  brief, not a choice). `schema.prisma` was not regenerated, on purpose: every package would change the same generated file and
+  conflict on merge; the integrator runs `scripts/refresh-prisma.js` once (it uses a scratch database).
+- **The states differ from the brief's words.** `mismatch` is the brief's "hash differs"; `corrupt` means a sealed file that does
+  not decrypt; `unsealed` is an addition. Every brief case is covered.
+- **The check runs from a timer, not from `runMaintenance`**, so it never delays start-up. The last result is visible in the health
+  route, not in the maintenance summary (kept: a maintenance summary line would only repeat a run that has not happened yet at
+  that point).
+- **The migration was edited in place** in round 2 (`ms` nullable): the branch is unmerged and test databases are templated by a
+  hash of the migrations.
 - **No exclusion constraint**, so no `EXCLUSION_MESSAGES` entry.
 - **Rolling check instead of id slices.** N least recently checked, N = `RAW_VERIFY_BATCH` (default 500). The unit of the
   interval is hours (`RAW_VERIFY_HOURS`, default 6), not days. The first run is not awaited at start-up.
@@ -195,7 +233,7 @@ earlier edit in demo-users.js is restored, but I did not run `npm run demo:users
 ## What is left
 
 - A marker file in `RAW_DIR` (written at set-up, checked at start and before a write) so an unmounted volume with its mount
-  point left in place is detected. Not built.
+  point left in place is detected. Not built (a store that disappears entirely, at start or while running, is refused).
 - `RAW_DIR` on a network or object store: only a local path works; the code uses synchronous file calls. A real object store
   is a different `openRaw`/`landRaw` pair.
 - Production key handling (the per-home keys are still rows in `home_key`; the plan says a key management service).

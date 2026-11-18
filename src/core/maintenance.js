@@ -171,14 +171,15 @@ export function endpointOf(requestText) {
 }
 
 // Every column with a foreign key to raw_payload (reading, interval_fact, forecast_fact,
-// rate_interval.raw_id today), read from the schema so a table added later is respected too. A row that goes with its
-// receipt (ON DELETE CASCADE: raw_payload_check, the file check's record) is not a use of it.
+// rate_interval.raw_id today), read from the schema so a table added later is respected too. raw_payload_check (the file
+// check's record) is not a use: its row goes with the receipt. It is named, not matched by ON DELETE CASCADE, so a fact table
+// that later references a receipt with a cascade still protects it.
 async function rawRefs() {
   const out = [];
   for (const fk of await db.prepare(`SELECT kcu.table_name AS t, kcu.column_name AS col FROM information_schema.referential_constraints rc
       JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
       JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name AND ccu.constraint_schema = rc.unique_constraint_schema
-      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' AND rc.delete_rule <> 'CASCADE' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
+      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' AND kcu.table_name <> 'raw_payload_check' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
   return out;
 }
 const notReferenced = (refs, alias) => refs.map(([t, c]) => `NOT EXISTS (SELECT 1 FROM "${t}" WHERE "${c}" = ${alias}.id)`).join(' AND ') || 'TRUE';

@@ -5,12 +5,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, sourceId, metricId, rawFilePath } from '../db/db.js';
+import { db, tx, sourceId, metricId, rawDir, rawFilePath } from '../db/db.js';
 import { nowSec } from './time.js';
 
 // ───────────── Raw landing ─────────────
 
-const findRaw = db.prepare('SELECT id FROM raw_payload WHERE hash = ?');
+const findRaw = db.prepare('SELECT id, file, site_id FROM raw_payload WHERE hash = ?');
 const insertRaw = db.prepare(
   `INSERT INTO raw_payload (source_id, site_id, request, fetched_at, hash, file, status, reason)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -86,6 +86,22 @@ function writeFileDurably(file, data) {
   try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
 }
 
+// Make the folder of a receipt's file. Only below the raw store: if the store itself is gone (a volume detached while the
+// server runs) it is not recreated, because the files would silently go to the system disk (db.js refuses that at start-up).
+function folderFor(file) {
+  if (!fs.statSync(rawDir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`the raw store ${rawDir} is not there (is the volume mounted?)`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+}
+
+// The same body again: nothing new to store, but a file that was lost is written back (same hash, so the same text; sealed
+// with the key of the row's home when it is one).
+async function restoreRaw(existing, source, text) {
+  const file = rawFilePath(existing.file);
+  if (!file || fs.existsSync(file)) return;
+  folderFor(file);
+  writeFileDurably(file, await sealsRaw(source, existing.site_id) ? await seal(existing.site_id, text) : text);
+}
+
 // Identity is the source and the body, not the request: requests carry the current
 // time (period_to=now, nonces), so the same data fetched again would otherwise be
 // stored again. The file is written first and the row after (raw rows are append-only);
@@ -95,12 +111,12 @@ export async function landRaw({ source, siteId, request, body, status = 'accepte
   const reqText = JSON.stringify(request ?? {});
   const hash = rawHash(source, status, text);
   const existing = await findRaw.get(hash);
-  if (existing) return { rawId: existing.id, duplicate: true };
+  if (existing) { await restoreRaw(existing, source, text); return { rawId: existing.id, duplicate: true }; }
   const fetchedAt = nowSec();
   const day = new Date(fetchedAt * 1000).toISOString().slice(0, 10);
   const rel = path.join('raw', source, day, `${hash.slice(0, 16)}.json`);
   const file = rawFilePath(rel);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  folderFor(file);
   writeFileDurably(file, await sealsRaw(source, siteId) ? await seal(siteId, text) : text);
   try {
     const r = await insertRaw.run(await sourceId(source), siteId ?? null, reqText, fetchedAt, hash, rel, status, reason);

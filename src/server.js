@@ -24,7 +24,7 @@ import { compatibility } from './core/compatibility.js';
 import { connectTounify, tounifyAllowance } from './adapters/tounify.js';
 import { deleteHome, homeFootprint } from './core/delete-home.js';
 import { runMaintenance, retentionSummary } from './core/maintenance.js';
-import { rawCheckOfHome, startRawCheckSchedule } from './core/raw-integrity.js';
+import { rawCheckOfHome, rawVerifySettings, startRawCheckSchedule } from './core/raw-integrity.js';
 import { trustFor } from './core/trust.js';
 import { attributeHistory, attributeAt } from './core/attributes.js';
 import { siteOrigin, periodProvenance, inputsProvenance, weakest, isUnverified, labelOf } from './core/provenance.js';
@@ -938,6 +938,7 @@ app.use((err, req, res, next) => {
 // ───────────── Start ─────────────
 
 export async function start() {
+  const rawCheck = rawVerifySettings();   // a wrong RAW_VERIFY* setting refuses the start, before anything runs or listens
   await closeInterruptedRuns();
   const envSite = await ensureEnvSite();
   const maintenance = await runMaintenance();
@@ -957,7 +958,7 @@ export async function start() {
   }
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, async () => {
-    startRawCheckSchedule();   // background: the first run does not hold up the first request
+    startRawCheckSchedule(rawCheck);   // background: the first run does not hold up the first request
     const minutes = startScheduler();
     // Control cycles run only for registered vendor drivers (jobs/control.js); none ship yet, so this is idle.
     if (registeredDrivers().length) startControlScheduler(Number(process.env.CONTROL_EVERY_SECONDS) || 30);

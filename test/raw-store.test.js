@@ -69,6 +69,8 @@ await test('RAW_DIR outside DATA_DIR: files are written, read, sealed, retained 
     const text = await readRaw(files[0]);
     const sealedMagic = magic(rawFilePath(files[0].file));
     const report = await verifyRaw();
+    const { rawOne } = await import(${JSON.stringify(path.join(root, 'src/core/explorer.js'))});
+    const viewed = await rawOne(mine.rawId, {});
     // a file written before sealing existed: the seal script finds it in RAW_DIR, a dry run leaves it, apply seals it
     const old = await landRaw({ source: 'sunsynk_5min', siteId: site.id, request: {}, body: { old: 1 } });
     const oldFile = rawFilePath((await db.prepare('SELECT file FROM raw_payload WHERE id = ?').get(old.rawId)).file);
@@ -101,7 +103,7 @@ await test('RAW_DIR outside DATA_DIR: files are written, read, sealed, retained 
     const deleted = await deleteHome({ role: 'admin', id: 1 }, site, { confirm: site.name });
     const afterDelete = homeFiles.map((f) => fs.existsSync(f));
     const recordsAfter = await own();
-    console.log(JSON.stringify({ files, text, sealedMagic, checked: report.checked, ok: report.ok, problems: report.problems, dry, dryMagic, applied, appliedMagic, dryRetention: { raw: dryRetention.raw.candidates, orphanFiles: dryRetention.orphanFiles }, afterDry, retention: { raw: retention.raw, orphanFiles: retention.orphanFiles }, afterRetention, before, afterDelete, deleted: deleted.files, recordsBefore, recordsAfter }));
+    console.log(JSON.stringify({ files, text, viewed: [viewed.meta.file_found, viewed.body], sealedMagic, checked: report.checked, ok: report.ok, problems: report.problems, dry, dryMagic, applied, appliedMagic, dryRetention: { raw: dryRetention.raw.candidates, orphanFiles: dryRetention.orphanFiles }, afterDry, retention: { raw: retention.raw, orphanFiles: retention.orphanFiles }, afterRetention, before, afterDelete, deleted: deleted.files, recordsBefore, recordsAfter }));
     await erase({ kind: 'synthetic', reason: 'test: receipts of a child process in another raw store' }, async () => await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(second.rawId));
     await closeDb();`;
   const env = { ...process.env, DATA_DIR: data, RAW_DIR: store };
@@ -113,6 +115,7 @@ await test('RAW_DIR outside DATA_DIR: files are written, read, sealed, retained 
   for (const f of r.files) assert.ok(f.file.startsWith('raw/'), 'the stored name keeps its raw/ prefix');
   assert.ok(!fs.existsSync(path.join(data, 'raw')), 'nothing was written under DATA_DIR/raw');
   assert.deepEqual([r.text, r.sealedMagic, r.checked, r.ok, r.problems.length], ['{"secret":"home"}', 'EBRAW1', 2, 2, 0], 'written there, read back, sealed on disk, every file matches its hash');
+  assert.deepEqual(r.viewed, [true, '{"secret":"[redacted]"}'], 'the explorer found and read the receipt in RAW_DIR (its secrets scrubbed)');
   assert.deepEqual([r.dry.sealed, r.dry.apply, r.dryMagic], [1, false, '{"old"'], 'the seal script found the plain file in RAW_DIR and a dry run left it');
   assert.deepEqual([r.applied.sealed, r.applied.apply, r.appliedMagic], [1, true, 'EBRAW1'], 'apply sealed it where it is');
   assert.deepEqual(r.dryRetention, { raw: 1, orphanFiles: { found: 1, bytes: 1, deleted: 0 } }, 'a dry run counts the old receipt and the orphan in the store layout, not the foreign files');
@@ -197,7 +200,7 @@ await test('verifyRaw finds a file that changed, was cut short, vanished, is unr
 });
 
 await test('a sealed file whose home key is gone is erased: it cannot be checked, and that is not a problem', async () => {
-  const erasedBefore = (await verifyRaw()).erased;   // home A's key was destroyed in the test above
+  const erasedBefore = (await verifyRaw()).erased;
   const id = await land(homeB.id);
   const p = await row(id);
   // the shape delete-home leaves for a receipt kept as shared evidence: no home, a file sealed with a key that no longer exists
@@ -285,15 +288,21 @@ await test('health shows the latest known state of a home\'s files, which stays 
 
 await test('npm run raw:verify: validates its arguments, records the run, exits 1 on a problem', async () => {
   const cli = (...args) => spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(root, 'scripts/verify-raw.js'), ...args], { env: process.env, encoding: 'utf8', cwd: root });
-  for (const bad of [['--limit', 'abc'], ['--limit', '0'], ['--site', 'x']]) {
+  for (const bad of [['--limit', 'abc'], ['--limit', '0'], ['--site', 'x'], ['--site=x'], ['--limit=1.5'], ['--limit=']]) {
     const r = cli(...bad);
     assert.equal(r.status, 2, bad.join(' '));
     assert.match(r.stderr, /takes a whole number/);
     assert.equal(r.stdout, '', 'nothing was checked');
   }
+  for (const bad of [['--limt', '10'], ['--site5'], ['5'], ['--site', '1', '--site', '2'], ['--limit']]) {
+    const r = cli(...bad);
+    assert.equal(r.status, 2, bad.join(' '));
+    assert.match(r.stderr, /unknown argument|given twice|needs a value/);
+    assert.equal(r.stdout, '', 'a mistyped scope checks nothing instead of the whole store');
+  }
   const home = await createSite({ name: 'Raw cli' });
   const id = await land(home.id);
-  const clean = cli('--site', String(home.id));
+  const clean = cli(`--site=${home.id}`);
   assert.equal(clean.status, 0, clean.stderr);
   assert.match(clean.stdout, /1 receipts.*no problems/);
   assert.equal((await db.prepare('SELECT trigger FROM raw_check_run WHERE site_id = ?').get(home.id)).trigger, 'cli');
@@ -306,11 +315,62 @@ await test('npm run raw:verify: validates its arguments, records the run, exits 
 await test('settings', async () => {
   assert.deepEqual(rawVerifySettings({}), { mode: 'report', batch: 500, hours: 6 });
   assert.deepEqual(rawVerifySettings({ RAW_VERIFY: 'off', RAW_VERIFY_BATCH: '20', RAW_VERIFY_HOURS: '1' }), { mode: 'off', batch: 20, hours: 1 });
+  assert.equal(rawVerifySettings({ RAW_VERIFY_HOURS: '596' }).hours, 596);
+  assert.throws(() => rawVerifySettings({ RAW_VERIFY_HOURS: '597' }), /RAW_VERIFY_HOURS must be a whole number from 1 to 596/, 'a longer interval overflows the 32-bit timer and would re-run every millisecond');
   assert.throws(() => rawVerifySettings({ RAW_VERIFY: 'yes' }), /RAW_VERIFY must be one of off, report/);
   for (const bad of ['0', '1.5', 'x']) { assert.throws(() => rawVerifySettings({ RAW_VERIFY_BATCH: bad }), /RAW_VERIFY_BATCH/); assert.throws(() => rawVerifySettings({ RAW_VERIFY_HOURS: bad }), /RAW_VERIFY_HOURS/); }
   assert.equal(await runRawCheck({ env: { RAW_VERIFY: 'off' } }), null);
   assert.equal(rawCheckSummary(null), 'raw file check: off or already running');
   assert.deepEqual(Object.keys(await runMaintenance({ retention: 'off' })).filter((k) => !/^\d+$/.test(k)), [], 'maintenance no longer runs the check: the server starts it after it listens');
+});
+
+await test('a wrong RAW_VERIFY setting refuses the start before the server listens', () => {
+  const script = `
+    const { start } = await import(${JSON.stringify(path.join(root, 'src/server.js'))});
+    try { await start(); console.log('STARTED'); } catch (err) { console.log('REFUSED ' + err.message); }
+    process.exit(0);`;
+  for (const [name, value] of [['RAW_VERIFY', 'yes'], ['RAW_VERIFY_BATCH', '0'], ['RAW_VERIFY_HOURS', '720']]) {
+    const out = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], { env: { ...process.env, [name]: value, PORT: '48123' }, encoding: 'utf8', cwd: root });
+    assert.equal(out.status, 0, out.stderr);
+    assert.match(out.stdout.trim().split('\n').pop(), new RegExp(`^REFUSED ${name} must be`), `${name}=${value}`);
+    assert.doesNotMatch(out.stdout, /EnergieBee core prototype on/, 'the port was never opened');
+  }
+});
+
+await test('landing: a lost file is written back when the same body lands again; a raw store that is gone is not recreated', async () => {
+  const body = { lost: 'and found' };
+  for (const [siteId, source] of [[homeA.id, 'sunsynk_5min'], [null, 'open_meteo']]) {
+    const first = await landRaw({ source, siteId, request: {}, body });
+    const file = rawFilePath((await row(first.rawId)).file);
+    const hashBefore = rawHash(source, 'accepted', await readRaw(await row(first.rawId)));
+    fs.rmSync(file);
+    assert.equal((await verifyRaw({ limit: 1000 })).problems.find((p) => p.id === first.rawId)?.state, 'missing');
+    const again = await landRaw({ source, siteId, request: {}, body });
+    assert.deepEqual([again.rawId, again.duplicate, fs.existsSync(file)], [first.rawId, true, true], 'same receipt, file back');
+    assert.equal(rawHash(source, 'accepted', await readRaw(await row(first.rawId))), hashBefore, 'with the same text');
+    assert.equal(fs.readFileSync(file).subarray(0, 6).toString() === 'EBRAW1', siteId != null, 'sealed when it is a home\'s');
+    assert.ok(!(await verifyRaw({ limit: 1000 })).problems.some((p) => p.id === first.rawId), 'and the next check finds it fine');
+  }
+  // the store itself vanishes while the process runs: landing fails and creates nothing
+  const gone = `${rawDir}.detached`;
+  fs.renameSync(rawDir, gone);
+  try {
+    await assert.rejects(async () => await landRaw({ source: 'open_meteo', siteId: null, request: {}, body: { while: 'detached' } }), /the raw store .* is not there/);
+    assert.ok(!fs.existsSync(rawDir), 'RAW_DIR was not created again');
+  } finally { fs.renameSync(gone, rawDir); }
+});
+
+await test('the check skips the names a fixture redacted, and counts them nowhere', async () => {
+  const solo = await createSite({ name: 'Raw redacted' });
+  const id = await land(solo.id);
+  await erase({ kind: 'synthetic', reason: 'test: a fixture-style file name' }, async () => await db.prepare("UPDATE raw_payload SET file = 'redacted-' || id WHERE id = ?").run(id));
+  const r = await verifyRaw({ siteId: solo.id });
+  assert.deepEqual([r.checked, r.missing, r.problems.length], [0, 0, 0]);
+  assert.equal((await verifyRaw({ siteId: solo.id, limit: 5 })).checked, 0);
+  assert.equal(await db.prepare('SELECT 1 FROM raw_payload_check WHERE payload_id = ?').get(id), undefined);
+  // a name outside the store that is not the fixture's is a finding
+  await erase({ kind: 'synthetic', reason: 'test: a name outside the store' }, async () => await db.prepare("UPDATE raw_payload SET file = '../escape.json' WHERE id = ?").run(id));
+  assert.equal((await verifyRaw({ siteId: solo.id })).problems[0]?.state, 'missing');
 });
 
 // ───────────── retention against the append-only and erasure rules ─────────────
@@ -343,6 +403,8 @@ await test('retention: the dry run changes nothing and logs nothing; apply is on
   fs.writeFileSync(half, 'partial');
   fs.utimesSync(half, NOW - 30 * DAY, NOW - 30 * DAY);
 
+  const doomedFiles = [await fileOf(free[0]), await fileOf(free[1]), await fileOf(freeSealed)];
+  assert.ok(doomedFiles.every((f) => fs.existsSync(f)));
   const before = { raws: await rawCount(), facts: await factCount(), log: await logCount(), files: tmpFiles().sort() };
   const problemsBefore = new Set((await verifyRaw()).problems.map((p) => p.id));   // the files damaged by the tests above stay damaged
   const dry = await runRetention({ now: NOW });
@@ -361,6 +423,7 @@ await test('retention: the dry run changes nothing and logs nothing; apply is on
   for (const id of [fed, quarantined, fresh]) assert.ok(await row(id), `payload ${id} kept`);
   for (const id of [free[0], free[1], freeSealed]) assert.equal(await row(id), undefined);
   assert.equal(await row(free[2]), undefined, 'a row outside the store goes too, without an error');
+  assert.deepEqual(doomedFiles.map((f) => fs.existsSync(f)), [false, false, false], 'the files of the deleted receipts are gone from disk');
   assert.equal(fs.existsSync(half), false, 'a half-written temporary file is an orphan');
   // the erasure is closed: the append-only rule is back
   await assert.rejects(async () => await db.prepare('DELETE FROM raw_payload WHERE id = ?').run(fed), /append-only/);

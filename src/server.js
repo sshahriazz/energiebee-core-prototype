@@ -842,6 +842,7 @@ app.get('/api/connectors', async (req, res) => res.json(await connectors(db)));
 // they read data and where it lives here. No home needed; no credential and no home's data in it.
 app.get('/api/compatibility', async (req, res) => res.json(await compatibility(db)));
 app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
+app.use('/api', (await import('./routes/prices.js')).default);   // price slots: GET /api/tariffs/:id/slots, /api/sites/:id/prices (src/core/tariff-slots.js)
 
 // ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
 // What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,

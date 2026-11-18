@@ -156,7 +156,7 @@ export async function homePriceTimeline(site, { from, to, points = null }) {
   const pricer = await supplyPricer({ siteId: site.id, p, slotS, tz, materialise: true, persist: false });
   const wanted = points ? pricer.points.filter((k) => points.includes(k)) : pricer.points;
   const slots = slotStarts(tz, from, to, slotS);
-  await pricer.load(slots);
+  await pricer.load(slots, wanted);
   const subs = new Map(supplyPoints(p).map((pt) => [pt.key, pt]));
   const out = wanted.map((key) => {
     const view = slots.map((s) => { const { price, fixedInc } = pricer.get(key, s); return slotView(s, slotS, price, fixedInc); });

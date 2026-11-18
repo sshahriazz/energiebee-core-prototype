@@ -107,7 +107,7 @@ async function storeRows(rows) {
 //   materialise  read the stored slots and make and store the missing ones (a current build); false computes every slot in memory (a
 //                build "as known at" a moment, the trace of one slot)
 //   persist      store what was made (not in a dry run, which writes nothing)
-// load(slots) prepares the slots; get(point, slot) returns { price, fixedInc }: price is null with no agreement, else the slot's price
+// load(slots, only?) prepares the slots (of the points named in `only`, else of every point); get(point, slot) returns { price, fixedInc }: price is null with no agreement, else the slot's price
 // object (the full one when computed, the stored fields when read: both carry what a build uses), fixedInc the fixed charges of the
 // slot with taxes.
 export async function supplyPricer({ siteId, p, slotS, tz, materialise = false, persist = true }) {
@@ -124,9 +124,10 @@ export async function supplyPricer({ siteId, p, slotS, tz, materialise = false, 
     points: points.map((pt) => pt.key),
     subMeters: points.filter((pt) => pt.deviceId != null).map(({ key, deviceId, kind }) => ({ key, deviceId, kind })),
     stats,
-    async load(slots) {
+    async load(slots, only = null) {
       if (!slots.length) return;
       for (const pt of points) {
+        if (only && !only.includes(pt.key)) continue;
         const m = memo.get(pt.key);
         const want = slots.filter((s) => !m.has(s));
         if (!want.length) continue;

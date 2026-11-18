@@ -42,6 +42,35 @@ npm start                  # open http://localhost:4100
 - **Raw-file check:** a background check hashes the raw files again and compares them with the stored hash: `RAW_VERIFY=report` (default) or `off`, `RAW_VERIFY_BATCH` (receipts per run, default 500, the least recently checked first) and `RAW_VERIFY_HOURS` (hours between runs, default 6, at most 596). A wrong value refuses the start. The latest result of a home is in `GET /api/sites/:id/health` (`rawCheck`). See `docs/build/rawstore.md`.
 - **To stop:** Ctrl+C in the terminal running it.
 
+### Try the pages without real credentials (demo)
+
+The demo is its own database (`energiebee_demo`, rebuilt from your app database plus synthetic French and Dutch homes and six users) on its own port. It never syncs a real provider and needs nothing in `.env`.
+
+```bash
+npm run demo:users         # rebuild energiebee_demo (a few seconds; run it again any time to reset)
+npm run demo:start         # http://localhost:4101
+```
+
+Use the **Viewing as** switch in the top bar: Alice Morgan (the real GB home), Pierre (a French home), Sanne (a Dutch home), Ivan (an installer), Nora (no home) and Admin (sees every home). The demo users have no PIN; `DATABASE_URL=postgresql://localhost:5432/energiebee_demo node scripts/set-pin.js admin 1234` gives one. On the real app (`npm start`, port 4100) you sign up at `/signup` with a username and a 4-digit PIN.
+
+### Test the new pages
+
+| Page | What to try |
+|---|---|
+| **Places** (`/places`) | The home as a tree (Home, floors, rooms, devices). Click a room or a device: its timeline chart for the day (pick another day), the events lane (what happened, who asked), the points with their reported and desired state. A device with controls shows buttons: send one and it appears as a request and then a command. "Devices without a room" lists what is not placed yet: choose a room (or add one) to place it, and the room's timeline then adds that device up. |
+| **Integrations** (`/integrations`) | Every connection of the home (Sunsynk, Octopus, push devices, ...): status, last success, what it feeds, and the devices found through it. |
+| **Devices** (`/devices`) | The device cards, with a link to Places for each device's timeline. |
+
+Checks from a terminal while the server runs (demo as admin, `x-user-id: 6`):
+
+```bash
+curl -s localhost:4101/api/things/<home-uid>/timeline?from=2026-11-17\&to=2026-11-18 -H 'x-user-id: 6' | head -c 600
+curl -s localhost:4101/api/homes/<home-uid>/integrations -H 'x-user-id: 6'
+curl -s localhost:4101/api/integrations | head -c 400     # the manifest of the 19 integrations
+```
+
+The home uid is in the list of `/api/sites`. These pages are covered by API tests (`test/pages.test.js`, `test/things-api.test.js`, `test/controls-api.test.js`) but have not been clicked through in a browser by their author: report anything that looks wrong.
+
 ### Running it unattended
 
 | Command | What it does |
@@ -131,6 +160,8 @@ number comes from, how learned values are detected, and what each one affects.
 | **Battery** | Charge level (with forecast), energy in and out by source, stored-energy cost (first in, first out), battery saving, one half-hour costed in full |
 | **Grid** | Imports and exports, average price paid against average price, tariffs in force, upcoming prices, smart meter against inverter clamp |
 | **EV** | Charging sessions, cost, solar share, smart-charging benefit, planned dispatches |
+| **Places** | The home as a tree of floors, rooms and devices; each with its timeline, events, points and controls; devices without a room can be placed |
+| **Integrations** | Every provider connection of the home, its status and the devices found through it |
 | **Data & trust** | Why the numbers can be trusted: final share, cross-checks and tracing; how each source arrived for every half-hour; independent measurements compared each day; every kWh accounted for; how each day changed and any day as it was known at an earlier moment; the path of one half-hour from provider response to bill; system details with every version; corrections; connections, syncs, rebuild and source contracts. Every other page links here with a one-line note of what its figures rest on. |
 
 Click any half-hour bar on a chart to open its evidence.

@@ -28,11 +28,11 @@ export async function actionsOf(thingId) {
   const t = await db.prepare('SELECT t.id, t.kind, t.type, ty.capabilities FROM thing t JOIN thing_type ty ON ty.type = t.type WHERE t.id = ?').get(thingId);
   if (!t) throw fail(404, 'no such thing');
   const caps = await db.prepare('SELECT code, label, actions FROM capability WHERE code = ANY(?::text[]) ORDER BY code').all(`{${t.capabilities.join(',')}}`);
-  const confirmed = new Map((await db.prepare('SELECT action, supported, source FROM device_capability WHERE device_id = ?').all(thingId)).map((r) => [r.action, r]));
+  const confirmed = new Map((await db.prepare('SELECT action, supported, source, verification FROM device_capability WHERE device_id = ?').all(thingId)).map((r) => [r.action, r]));
   const out = [];
   for (const c of caps) for (const action of c.actions) {
     const row = confirmed.get(action);
-    out.push({ capability: c.code, action, confirmed: row?.supported === 1 && row.source !== 'placeholder', source: row?.source ?? null });
+    out.push({ capability: c.code, action, confirmed: row?.supported === 1 && row.source !== 'placeholder', source: row?.source ?? null, verification: row?.verification ?? 'reported' });
   }
   return out;
 }

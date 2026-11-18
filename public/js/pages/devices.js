@@ -75,7 +75,7 @@ function drawPage() {
     ${isSynth ? V.bannerHtml() : ''}
     ${demoCard()}
     <div class="ob-top"><span class="muted">${list.length} device${list.length === 1 ? '' : 's'} in <b>${esc(ctx.site?.name ?? 'this home')}</b>${isSynth ? ' (synthetic)' : unsyn ? ' (real)' : ''}.</span><span class="spacer"></span><button class="btn" id="dv-reload">↻ Refresh</button></div>
-    ${list.length ? `<div class="dv-grid" role="list">${list.map((d) => `<div role="listitem">${V.cardHtml(d, tz, String(d.id) === String(selected))}</div>`).join('')}</div>` : '<section class="card empty"><h2>No devices in this home</h2><p>The home has no devices yet. Create the synthetic demo home above to see how devices look.</p></section>'}
+    ${list.length ? `<p class="dv-places">Each device has a timeline, a room and controls on <a href="/places">Places</a>: put it in a room there, and the room adds up what is in it.</p><div class="dv-grid" role="list">${list.map((d) => `<div role="listitem">${V.cardHtml(d, tz, String(d.id) === String(selected))}</div>`).join('')}</div>` : '<section class="card empty"><h2>No devices in this home</h2><p>The home has no devices yet. Create the synthetic demo home above to see how devices look.</p></section>'}
     ${connectCard(tz)}
     <div id="dv-detail">${detailHtml(tz)}</div>`;
   wire();

@@ -92,10 +92,18 @@ export const defaultAction = async (kind) => (await db.prepare('SELECT action FR
 
 // Record what one device can do. supported false = known not to (plans refuse it); true = known to
 // (the only state a command accepts). source: adapter, vendor_doc, probe, installer, user, placeholder.
-export async function setCapability(deviceId, action, supported, { source = 'adapter', note = null, now = Date.now() } = {}) {
-  await db.prepare(`INSERT INTO device_capability (device_id, action, supported, source, note, recorded_at) VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT (device_id, action) DO UPDATE SET supported = excluded.supported, source = excluded.source, note = excluded.note, recorded_at = excluded.recorded_at`)
-        .run(deviceId, action, supported ? 1 : 0, source, note, now);
+// verification (R23): how the effect of a command is confirmed: 'reported' (the device reports what it runs), 'effect' (only a measured effect
+// tells) or 'none'; a command on an action that is not 'reported' ends sent_unverified.
+export const VERIFICATIONS = Object.freeze(['reported', 'effect', 'none']);
+export async function setCapability(deviceId, action, supported, { source = 'adapter', note = null, verification = 'reported', now = Date.now() } = {}) {
+  if (!VERIFICATIONS.includes(verification)) throw new RangeError(`verification ${verification}: one of ${VERIFICATIONS.join(', ')}`);
+  await db.prepare(`INSERT INTO device_capability (device_id, action, supported, source, note, verification, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (device_id, action) DO UPDATE SET supported = excluded.supported, source = excluded.source, note = excluded.note, verification = excluded.verification, recorded_at = excluded.recorded_at`)
+        .run(deviceId, action, supported ? 1 : 0, source, note, verification, now);
+}
+// How an action's effect is confirmed on a device ('reported' when nothing says otherwise).
+export async function verificationOf(deviceId, action) {
+  return (await db.prepare('SELECT verification FROM device_capability WHERE device_id = ? AND action = ?').get(deviceId, action))?.verification ?? 'reported';
 }
 // true (known yes), false (known no) or null (not known).
 export async function capability(deviceId, action) {

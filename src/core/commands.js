@@ -13,7 +13,7 @@ import { canonical, hashOf, capability } from './plans.js';
 import { checkGates, recordBlocks } from './control.js';
 import { canControl } from './access.js';
 
-export const COMMAND_STATUSES = ['pending', 'sent', 'acked', 'failed', 'expired', 'cancelled', 'skipped_unchanged'];
+export const COMMAND_STATUSES = ['pending', 'sent', 'sent_unverified', 'acked', 'failed', 'expired', 'cancelled', 'skipped_unchanged'];
 const OPEN = "('pending', 'sent')";
 // Typed copies of the desired state (camelCase accepted) -> command columns. windowStart / windowEnd:
 // the charge window (or the one window of the action); exportStart / exportEnd: the export window
@@ -135,6 +135,18 @@ export async function markSent(id, { now = Date.now(), registerWrites = null } =
     });
 }
 
+// The action's device cannot report what it did (device_capability.verification is effect or none, R23): the command ends here,
+// written and never acked, so it never counts as the state the device was confirmed to run. Only its effect check may follow.
+export async function markSentUnverified(id, { now = Date.now() } = {}) {
+  return await tx(async () => {
+      const c = await byId(id);
+      mustBe(c, id, ['sent']);
+      await db.prepare("UPDATE command SET status = 'sent_unverified' WHERE id = ?").run(id);
+      await log(id, now, 'sent_unverified', { attempt: c.attempts });
+      return { status: 'sent_unverified' };
+    });
+}
+
 // The device's read-back. Acked only when it matches the desired state; otherwise the difference is
 // kept (diff, reported, the raw payload) and the command stays sent.
 export async function markAcked(id, { reported, rawId = null, tolerance = 1e-6, now = Date.now(), compare = null } = {}) {
@@ -234,7 +246,7 @@ export async function setVerify(id, status, evidence, { now = Date.now() } = {})
   return await tx(async () => {
       const c = await byId(id);
       if (!c) throw new Error(`no command ${id}`);
-      if (!['acked'].includes(c.status)) throw new Error(`command ${id} is ${c.status}: only an acked command is checked for its effect`);
+      if (!['acked', 'sent_unverified'].includes(c.status)) throw new Error(`command ${id} is ${c.status}: only an acked or sent_unverified command is checked for its effect`);
       await db.prepare('UPDATE command SET verify_status = ?, verified_at = ? WHERE id = ?').run(status, now, id);
       await log(id, now, 'observed', { state: status, evidence });
       return { status };

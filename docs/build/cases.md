@@ -11,16 +11,16 @@ Written 18 November 2026. `test/cases.test.js` holds the 22 cases of `docs/thing
 | 5 | Intelligent Octopus charges the car | passes for the controller (no schedule or optimiser request is taken); its off-peak pricing is in the price-run tests |
 | 6 | The home switches tariff mid-month | passes |
 | 7 | The clocks go back | passes: 50 half-hours in the point layer |
-| 8 | The meter and the clamp disagree by 38 % | **todo**: fusion with a tolerance (R6) is not built |
+| 8 | The meter and the clamp disagree by 38 % | fusion (R6): `series.fusion_role` shape/total, `setFusion`; the day adds up to the meter, the slots keep the clamp's shape, flagged beyond 5 % |
 | 9 | A clamp is installed the wrong way round | passes: one binding change flips the sign |
 | 10 | AC-coupled battery or two inverters | passes: supported plants build, an unwired one is refused with a reason |
 | 11 | An EV that powers the home | passes: both ways through the charger's and the car's ports; untracked is never negative |
-| 12 | A device accepts writes but reports nothing | **todo**: verification `effect` or `none` (R23) is not built |
-| 13 | The house is sold | **todo**: occupancy (R21) |
-| 14 | The owner asks for their data to be erased | **todo**: erasing a person apart from a home (R14 with R21); a home is erased whole |
-| 15 | A block of flats with communal heating | **todo**: shared things with shares (R20) |
-| 16 | An EV moves with its owner to a new home | **todo**: the dated home of a thing (R24) |
-| 17 | A detached garage on a second hub | passes for the graph (devices of both hubs in one home); marking only one hub's devices offline is not built |
+| 12 | A device accepts writes but reports nothing | its action is declared `verification: none`: the command ends `sent_unverified`, never acked, and a safety action is refused (gate `unverifiable`) |
+| 13 | The house is sold | occupancy: `handOver` ends the old one, removes its logins, requests and personal answers, and the new owner reads from the handover (`readableFrom`) |
+| 14 | The owner asks for their data to be erased | `erasePerson`: the account, their occupancies' personal answers (sealed with the occupancy's key, destroyed) and their groups go; the home keeps its history |
+| 15 | A block of flats with communal heating | `thing_share` (dated shares that never add up to more than 1) and `allocateShared`: each flat's timeline gets `shared_*` rows labelled allocated |
+| 16 | An EV moves with its owner to a new home | `rehomeThing`: the old thing ends in the old home with its history, a successor begins in the new one empty, `thing_rehome` ties them |
+| 17 | A detached garage on a second hub | passes: both hubs in one home graph; `hubStatus` marks the devices of a silent hub offline, the other hub's stay online |
 | 18 | One broken temperature sensor in the bedroom | passes: the bedroom is final at half coverage, the dead optional sensor named |
 | 19 | Tomorrow's prices are not published yet | passes: the slot has no price, none is estimated |
 | 20 | A home with no hub and only cloud devices | passes: cloud links, everything works, no action is offered as confirmed |

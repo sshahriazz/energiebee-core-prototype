@@ -137,7 +137,22 @@ await test('case 7: the clocks go back: a 25-hour day has 50 half-hours in every
   assert.equal((await buildPointSlots(await pointOf(t.id, 'indoor_temp_c'), '2026-10-25', '2026-10-25')).slots, 50);
 });
 
-await test('case 8: the meter and the inverter clamp disagree by 38 %: the meter total wins, the shape comes from the clamp', { todo: 'fusion with a tolerance (R6) is not built: a slot takes the source that covers it best, it does not combine two' }, () => { assert.fail('not built'); });
+await test('case 8: the meter and the inverter clamp disagree by 38 %: the meter total wins, the shape comes from the clamp', async () => {
+  const { setFusion, buildPointSlots: build } = await import('../src/core/point-slots.js');
+  const h = await home('Fusion'); const m = await device(h, 'meter_import', 'm-8');
+  const meterS = await series('device', m.id, 'grid_import_kwh', 'octopus_meter'); const clampS = await series('device', m.id, 'grid_import_kwh', 'sunsynk_5min');
+  const half = (i) => ({ start: D0 + i * 1800, end: D0 + (i + 1) * 1800 });
+  await write('octopus_meter', async () => { await F.putIntervals(meterS, Array.from({ length: 48 }, (_, i) => ({ ...half(i), value: 0.3625 }))); });          // 17.4 kWh: the meter
+  await write('sunsynk_5min', async () => { await F.putIntervals(clampS, Array.from({ length: 48 }, (_, i) => ({ ...half(i), value: i < 24 ? 0.2 : 0.8 }))); });   // 24 kWh: the clamp, 38 % high
+  const p = await pointOf(m.id, 'grid_import_kwh');
+  await setFusion(p, { shape: 'sunsynk_5min', total: 'octopus_meter' });
+  const r = await build(p, DAY, DAY);
+  assert.deepEqual([r.fusion.length, r.fusion[0].flagged, Math.round(r.fusion[0].disagreement * 100)], [1, true, 38], 'the disagreement is found and reported');
+  const slots = await inSlot(m.id, 'grid_import_kwh');
+  assert.ok(Math.abs(slots.reduce((t, x) => t + x.delta, 0) - 17.4) < 1e-6, 'the day adds up to the meter');
+  assert.ok(Math.abs(slots[40].delta / slots[10].delta - 4) < 1e-6, 'the shape is the clamp\'s: the evening is four times the night');
+  assert.equal(slots[0].lineage.fusion.flagged, true, 'and each slot says it was fused and flagged');
+});
 
 await test('case 9: a clamp is installed the wrong way round: one binding change flips the sign', async () => {
   const h = await home('Clamp'); const m = await device(h, 'meter_import', 'clamp-9');
@@ -171,18 +186,89 @@ await test('case 11: an EV that powers the home: the charger and the car both wa
   assert.equal(untracked(1.0, 1.003), 0);
 });
 
-await test('case 12: a device accepts writes but reports nothing: its commands end sent_unverified and no safety action is sent', { todo: 'verification "effect" or "none" (R23) is not built: such a command stays sent until it expires' }, () => { assert.fail('not built'); });
-await test('case 13: the house is sold: the new owner sees device history from the handover only', { todo: 'occupancy (R21) is not built' }, () => { assert.fail('not built'); });
-await test('case 14: the owner asks for their data to be erased: the person\'s data and personal raw payloads go, the home\'s device history stays', { todo: 'erasure of a person apart from a home (R14 with R21) is not built: a home is erased whole' }, () => { assert.fail('not built'); });
-await test('case 15: a block of flats with communal heating: each flat\'s heating cost is its share, labelled allocated', { todo: 'shared things with shares (R20) are not built' }, () => { assert.fail('not built'); });
-await test('case 16: an EV moves with its owner to a new home: the old home keeps its history, the new one starts empty', { todo: 'the dated home of a thing (R24) is not built' }, () => { assert.fail('not built'); });
+await test('case 12: a device accepts writes but reports nothing: its commands end sent_unverified and no safety action is sent', async () => {
+  const h = await home('Mute'); const b = await device(h, 'boiler', 'ir-12');
+  const plansM = await import('../src/core/plans.js'); const cmd = await import('../src/core/commands.js'); const { runControlCycle } = await import('../src/core/executor.js');
+  for (const a of ['heat_on', 'heat_off']) await plansM.setCapability(b.id, a, true, { source: 'installer', verification: 'none' });
+  const now = Date.now(); const from = Math.ceil(now / 1000) + 3600; const writes = [];
+  const driver = { source: 'push_native', read: async () => [], send: async (_d, desired) => { writes.push(desired.action); return { accepted: true }; } };
+  const comfort = await cmd.enqueueIfChanged({ deviceId: b.id, desired: { action: 'heat_on' }, validFrom: from, validUntil: from + 3600, now });
+  await runControlCycle(h, { driver, now: (from + 60) * 1000, devices: [b.id] });
+  assert.deepEqual([(await cmd.getCommand(comfort.command.id)).status, writes], ['sent_unverified', ['heat_on']], 'written once, never acked');
+  const safety = await cmd.enqueueIfChanged({ deviceId: b.id, desired: { action: 'heat_off' }, validFrom: from, validUntil: from + 3600, now });
+  assert.deepEqual([safety.written, safety.blocks.map((x) => x.gate)], [false, ['unverifiable']], 'no safety action is sent to a device that cannot confirm it');
+});
+await test('case 13: the house is sold: the new owner sees device history from the handover only', async () => {
+  const O = await import('../src/core/occupancy.js');
+  const h = await home('Sold'); const old = await createUser({ name: 'Seller', username: 'seller13' }); const next = await createUser({ name: 'Buyer', username: 'buyer13' }); await giveHome(old.id, h);
+  const m = await device(h, 'meter_import', 'm-13'); const sid = await series('device', m.id, 'grid_import_w', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sid, Array.from({ length: 40 }, (_, i) => ({ ts: D0 + i * 1800, value: 400 }))); });
+  await db.prepare("INSERT INTO connection (site_id, provider, status) VALUES (?, 'octopus', 'ok')").run(h);
+  await db.prepare("INSERT INTO connection_secret (site_id, provider, iv, tag, ciphertext, recorded_at) VALUES (?, 'octopus', ?, ?, ?, ?)").run(h, Buffer.alloc(12), Buffer.alloc(16), Buffer.from('x'), T0);
+  const at = D0 + 12 * 3600;
+  const r = await O.handOver({ homeId: h, fromUserId: old.id, toUserId: next.id, at });
+  assert.deepEqual([await O.readableFrom(next.id, h), r.removed.handover.logins], [at, 1], 'the buyer reads from the handover; the seller\'s login is gone');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 40, 'the home\'s history is all still there');
+  assert.equal(await db.prepare('SELECT 1 FROM user_site WHERE user_id = ? AND site_id = ?').get(old.id, h), undefined, 'the seller no longer sees the home');
+});
+await test('case 14: the owner asks for their data to be erased: the person\'s data and personal raw payloads go, the home\'s device history stays', async () => {
+  const O = await import('../src/core/occupancy.js');
+  const h = await home('Erase'); const p = await createUser({ name: 'Leaver', username: 'leaver14' }); await giveHome(p.id, h);
+  const m = await device(h, 'meter_import', 'm-14'); const sid = await series('device', m.id, 'grid_import_w', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sid, Array.from({ length: 10 }, (_, i) => ({ ts: D0 + i * 1800, value: 400 }))); });
+  await db.exec("INSERT INTO source (code, name, contract, traits) VALUES ('octopus_kraken', 'Kraken', '{}', '{\"personal\":true}') ON CONFLICT (code) DO UPDATE SET traits = excluded.traits");
+  const answer = await F.landRaw({ source: 'octopus_kraken', siteId: h, request: {}, body: { name: 'Leaver', address: '14 Case Street' } });
+  const r = await O.erasePerson(p.id, { reason: 'case 14' });
+  assert.deepEqual([r.removed.person.account, r.removed.person.receipts], [1, 1]);
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM raw_payload WHERE id = ?').get(answer.rawId)).n, 0, 'the personal raw answer is gone');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 10, 'the home\'s device history stays');
+});
+await test('case 15: a block of flats with communal heating: each flat\'s heating cost is its share, labelled allocated', async () => {
+  const S = await import('../src/core/shared.js');
+  const block = await home('Block'); const flatA = await home('Flat A'); const flatB = await home('Flat B');
+  const heat = await device(block, 'meter_heat', 'plant-15'); const sid = await series('device', heat.id, 'heat_output_kwh', 'push_native');
+  const half = (i) => ({ start: D0 + i * 1800, end: D0 + (i + 1) * 1800 });
+  await write('push_native', async () => { await F.putIntervals(sid, Array.from({ length: 48 }, (_, i) => ({ ...half(i), value: 10 }))); });   // 480 kWh in the day
+  await buildPointSlots(await pointOf(heat.id, 'heat_output_kwh'), DAY, DAY);
+  await S.shareThing({ thingId: heat.id, homeId: flatA, share: 0.25, from: T0 });
+  await S.shareThing({ thingId: heat.id, homeId: flatB, share: 0.6, from: T0, basis: 'submeter' });
+  await assert.rejects(S.shareThing({ thingId: heat.id, homeId: flatB, share: 0.2, from: T0 }), /at most 1/, 'the shares of a thing never add up to more than all of it');
+  const r = await S.allocateShared(heat.id, DAY, DAY, { unitPrice: 0.08 });
+  assert.equal(r.rows, 48 * 2 * 2);
+  const a = (await readNodeSlots(flatA, D0, D0 + 86400, ['shared_heat_output_cost'])); const b = (await readNodeSlots(flatB, D0, D0 + 86400, ['shared_heat_output_kwh']));
+  assert.ok(Math.abs(a.reduce((t, x) => t + x.value, 0) - 480 * 0.25 * 0.08) < 1e-6, 'flat A pays a quarter of the day\'s heat');
+  assert.ok(Math.abs(b.reduce((t, x) => t + x.value, 0) - 480 * 0.6) < 1e-6, 'flat B gets its 60 %');
+  assert.deepEqual([a[0].lineage.allocated, a[0].lineage.share, b[0].lineage.basis], [true, 0.25, 'submeter'], 'labelled allocated, with the share and its basis');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM thing_share WHERE thing_id = ?').get(heat.id)).n, 2, 'the shares are the shared thing\'s record, not the flats\'');
+});
+await test('case 16: an EV moves with its owner to a new home: the old home keeps its history, the new one starts empty', async () => {
+  const S = await import('../src/core/shared.js');
+  const oldHome = await home('Old home'); const newHome = await home('New home'); const ev = await device(oldHome, 'ev', 'car-16');
+  const sid = await series('device', ev.id, 'ev_soc_pct', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sid, Array.from({ length: 20 }, (_, i) => ({ ts: D0 + i * 1800, value: 50 + i }))); });
+  const at = D0 + 12 * 3600;
+  const r = await S.rehomeThing(ev.id, { toHomeId: newHome, at, reason: 'case 16: the owner moved' });
+  assert.equal(r.old.valid_to, r.boundary, 'in the old home the car\'s life ends at the move');
+  assert.deepEqual([r.thing.home_id, r.thing.valid_from], [newHome, r.boundary], 'in the new home it begins there');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading WHERE series_id = ?').get(sid)).n, 20, 'the old home keeps its history');
+  assert.equal((await db.prepare('SELECT COUNT(*) n FROM reading r JOIN series s ON s.id = r.series_id JOIN point p ON p.id = s.point_id WHERE p.thing_id = ?').get(r.thing.id)).n, 0, 'the new home starts empty');
+  assert.deepEqual((await S.movesOf(r.thing.id)).map((m) => [Number(m.from_home), Number(m.to_home)]), [[oldHome, newHome]]);
+  await assert.rejects(S.rehomeThing(r.thing.id, { toHomeId: newHome, reason: 'x' }), /already/);
+});
 
-await test('case 17: a detached garage on a second hub: devices of both hubs in one home graph (the offline marking per hub is not built)', async () => {
+await test('case 17: a detached garage on a second hub: devices of both hubs in one home graph, and a silent hub marks only its own devices offline', async () => {
+  const { hubStatus } = await import('../src/core/hubs.js');
   const h = await home('Hubs'); const hub1 = await T.createThing({ siteId: h, type: 'hub', name: 'House hub', validFrom: T0 + 3600 }); const hub2 = await T.createThing({ siteId: h, type: 'hub', name: 'Garage hub', validFrom: T0 + 3600 });
   const a = await device(h, 'smart_plug', 'p-house'); const b = await device(h, 'smart_plug', 'p-garage');
   await T.relate({ siteId: h, from: a.id, rel: 'served_by', to: hub1.id, at: T0 + 86400 }); await T.relate({ siteId: h, from: b.id, rel: 'served_by', to: hub2.id, at: T0 + 86400 });
   const served = await T.relationsAt(h, { rels: ['served_by'], at: null });
   assert.deepEqual(served.map((r) => Number(r.to_id)).sort(), [hub1.id, hub2.id].sort(), 'both hubs in one home graph');
+  const now = Math.floor(Date.now() / 1000);
+  const sa = await series('device', a.id, 'plug_w', 'push_native'); const sb = await series('device', b.id, 'plug_w', 'push_native');
+  await write('push_native', async () => { await F.putReadings(sa, [{ ts: now - 60, value: 5 }]); await F.putReadings(sb, [{ ts: now - 7200, value: 5 }]); });
+  const st = await hubStatus(h, { now });
+  assert.deepEqual(st.map((x) => [x.name, x.state]), [['House hub', 'online'], ['Garage hub', 'offline']], 'only the silent hub is offline');
+  assert.deepEqual(st.flatMap((x) => x.devices.map((d) => [d.name, d.offline])).map(([, o]) => o), [false, true], 'and only its devices are marked');
 });
 
 await test('case 18: one broken temperature sensor in the bedroom: the home stays final, the bedroom shows lower coverage', async () => {

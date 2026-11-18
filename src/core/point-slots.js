@@ -7,6 +7,9 @@ import { db, tx } from '../db/db.js';
 import { readReadings, readIntervals } from './facts.js';
 import { holdSOf } from './inputs.js';
 import { aggregateSlot } from './slot-agg.js';
+import { buildDerivedSlots } from './derived-slots.js';
+
+export const FUSION_TOLERANCE = 0.05;   // a shape that is more than this far from its total is flagged (R6)
 import { dayBounds, slotsOfDay, slotLength, nowSec, daysBetween } from './time.js';
 
 export const POINT_SLOT_VERSION = 1;
@@ -24,19 +27,20 @@ async function sourceRank(homeId) {
  * transaction. Returns { slots (rows written), days }. A point with no series, or a day with no data, writes nothing for it.
  */
 export async function buildPointSlots(pointId, fromDate, toDate, { builtAt = nowSec() } = {}) {
-  const p = await db.prepare(`SELECT p.id, p.home_id, p.class, m.time_role, m.aggregation FROM point p JOIN metric m ON m.id = p.metric_id WHERE p.id = ?`).get(pointId);
+  const p = await db.prepare(`SELECT p.id, p.home_id, p.class, p.fusion_tolerance, m.time_role, m.aggregation FROM point p JOIN metric m ON m.id = p.metric_id WHERE p.id = ?`).get(pointId);
   if (!p) throw Object.assign(new Error('no such point'), { status: 404 });
   const home = p.home_id == null ? null : await db.prepare('SELECT timezone, slot_s FROM site WHERE id = ?').get(p.home_id);
   const tz = home?.timezone ?? 'UTC';
   const slotS = home ? slotLength(home) : 1800;
-  const series = (await db.prepare(`SELECT s.id, so.code AS source, so.traits FROM series s JOIN source so ON so.id = s.source_id WHERE (s.point_id = ? OR s.point_id IN (SELECT m.id FROM point m WHERE m.merged_into = ?)) ORDER BY s.id`).all(pointId, pointId))
+  const series = (await db.prepare(`SELECT s.id, s.fusion_role, so.code AS source, so.traits FROM series s JOIN source so ON so.id = s.source_id WHERE (s.point_id = ? OR s.point_id IN (SELECT m.id FROM point m WHERE m.merged_into = ?)) ORDER BY s.id`).all(pointId, pointId))
     .filter((s) => !JSON.parse(s.traits || '{}').forecastOnly);
   const rank = await sourceRank(p.home_id);
   const [winFrom] = dayBounds(tz, fromDate); const winTo = dayBounds(tz, toDate)[1];
   const rows = [];
+  const facts_ = new Map();
   if (series.length) {
     const instant = p.time_role === 'instant';
-    const facts = new Map();
+    const facts = facts_;
     for (const s of series) {
       const hold = await holdSOf(s.source);
       if (instant) facts.set(s.id, { hold, rows: await readReadings([s.id], winFrom - Math.max(hold, 3600), winTo + 3600) });
@@ -59,6 +63,7 @@ export async function buildPointSlots(pointId, fromDate, toDate, { builtAt = now
       }
     }
   }
+  const fused = p.class === 'total' ? await fuse(p, series, rows, tz, fromDate, toDate, winFrom, winTo, facts_, slotS) : [];
   await tx(async () => {
     await db.prepare('DELETE FROM point_slot WHERE point_id = ? AND slot_start >= ? AND slot_start < ?').run(pointId, winFrom, winTo);
     for (const r of rows) {
@@ -67,15 +72,58 @@ export async function buildPointSlots(pointId, fromDate, toDate, { builtAt = now
         r.state_shares == null ? null : JSON.stringify(r.state_shares), r.state == null ? null : String(r.state), r.coverage, JSON.stringify(r.lineage), POINT_SLOT_VERSION, builtAt);
     }
   });
-  return { slots: rows.length, days: daysBetween(fromDate, toDate).length };
+  return { slots: rows.length, days: daysBetween(fromDate, toDate).length, fusion: fused };
+}
+
+// Fusion (R6): a total point fed by a 'shape' source and a 'total' source takes the shape's slots scaled, day by day, so that they add up to the
+// total. The total wins; a day whose shape is further from it than the tolerance is flagged in each slot's lineage and returned (the check).
+async function fuse(p, series, rows, tz, fromDate, toDate, _unused, _unused2, facts, slotS) {
+  const shape = series.find((s) => s.fusion_role === 'shape'); const total = series.find((s) => s.fusion_role === 'total');
+  if (!shape || !total || !facts.has(shape.id) || !facts.has(total.id)) return [];
+  const tol = p.fusion_tolerance ?? FUSION_TOLERANCE;
+  const slotsOf = (sr, start, end) => {
+    const { hold, rows: fr } = facts.get(sr.id);
+    const periodic = fr.length && fr[0].start_ts != null;
+    return aggregateSlot('total', periodic ? { periods: fr.map((r) => ({ start: r.start_ts, end: r.end_ts, value: r.value })) } : { samples: fr.map((r) => ({ ts: r.ts, value: r.value })), readings: fr.map((r) => ({ ts: r.ts, value: r.value })) }, start, end, { holdS: hold });
+  };
+  const out = [];
+  for (const date of daysBetween(fromDate, toDate)) {
+    const starts = slotsOfDay(tz, date, slotS);
+    const a = []; let shapeSum = 0; let totalSum = 0;
+    for (const start of starts) {
+      const sh = slotsOf(shape, start, start + slotS); const to = slotsOf(total, start, start + slotS);
+      if (sh.coverage > 0 && sh.delta != null && to.coverage > 0 && to.delta != null) { a.push({ start, sh }); shapeSum += sh.delta; totalSum += to.delta; }
+    }
+    if (!a.length || !(shapeSum > 0) || !(totalSum > 0)) continue;
+    const scale = totalSum / shapeSum; const disagreement = Math.abs(shapeSum - totalSum) / totalSum; const flagged = disagreement > tol;
+    for (const { start, sh } of a) {
+      const row = { slot_start: start, dur_s: slotS, ...sh, delta: Math.round(sh.delta * scale * 1e9) / 1e9,
+        lineage: { fusion: { shape: shape.source, total: total.source, scale: Math.round(scale * 1e6) / 1e6, disagreement: Math.round(disagreement * 1e6) / 1e6, flagged }, sources: series.length } };
+      const at = rows.findIndex((r) => r.slot_start === start);
+      if (at >= 0) rows[at] = row; else rows.push(row);
+    }
+    out.push({ date, shape: shape.source, total: total.source, scale, disagreement, flagged });
+  }
+  rows.sort((x, y) => x.slot_start - y.slot_start);
+  return out;
+}
+
+/** Declare how the feeds of a total point combine (R6): 'shape' says where in the day the energy went, 'total' how much there was. */
+export async function setFusion(pointId, { shape, total, tolerance = null }) {
+  for (const [role, source] of [['shape', shape], ['total', total]]) {
+    const r = await db.prepare("UPDATE series SET fusion_role = ? WHERE point_id = ? AND source_id = (SELECT id FROM source WHERE code = ?)").run(role, pointId, source);
+    if (!Number(r.changes)) throw Object.assign(new Error(`the point has no feed from ${source}`), { status: 404 });
+  }
+  await db.prepare('UPDATE point SET fusion_tolerance = ? WHERE id = ?').run(tolerance, pointId);
 }
 
 /** Every current point of a home, for the days fromDate..toDate. Returns { points, slots }. */
 export async function buildHomePointSlots(siteId, fromDate, toDate, opts = {}) {
-  const points = await db.prepare('SELECT id FROM point WHERE home_id = ? AND superseded_at IS NULL ORDER BY id').all(siteId);
+  const points = await db.prepare("SELECT id FROM point WHERE home_id = ? AND superseded_at IS NULL AND key NOT LIKE 'derived\\_%' ORDER BY id").all(siteId);
   let slots = 0;
   for (const { id } of points) slots += (await buildPointSlots(Number(id), fromDate, toDate, opts)).slots;
-  return { points: points.length, slots };
+  const derived = await buildDerivedSlots(siteId, fromDate, toDate, opts);   // after the measured slots they are worked out of
+  return { points: points.length, slots, derived: derived.slots };
 }
 
 /** The slots of a point in [from, to): rows as stored. */

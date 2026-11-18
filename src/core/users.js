@@ -8,6 +8,7 @@
 // sees only the homes NO user owns: the .env home and every home of a database without users, exactly
 // as before users existed (scripts and tests that name no user see what they always did), but never a
 // home someone signed up for.
+import { openOccupancy } from './occupancy.js';
 import crypto from 'node:crypto';
 import { db } from '../db/db.js';
 
@@ -36,8 +37,10 @@ export async function createUser({ name, username = null, email = null, role = '
   return await userById(Number(r.lastInsertRowid));
 }
 
+// A person gets a home: they see it, and an occupancy opens (R21; a handover is occupancy.js handOver). Idempotent.
 export async function giveHome(userId, siteId) {
   await db.prepare('INSERT INTO user_site (user_id, site_id, recorded_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(userId, siteId, Date.now());
+  await openOccupancy({ homeId: siteId, userId });
 }
 
 // ───────────── PINs and sessions ─────────────

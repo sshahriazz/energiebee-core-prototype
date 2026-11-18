@@ -431,7 +431,7 @@ const DEVICE_KEYED = ['attribute_value.device_id:config', 'binding.device_id:con
 
 await test('every table that points at a thing is found, with the kind that decides how its rows move', async () => {
   const refs = await T.thingReferences();
-  assert.deepEqual(refs.map((r) => `${r.table}.${r.column}:${r.kind}`).sort(), [...DEVICE_KEYED, 'thing_event.thing_id:log', 'thing_label.thing_id:registry', 'thing_link.home_id:config', 'thing_link.thing_id:config', 'thing_note.thing_id:runtime', 'thing_reading.thing_id:fact', 'thing_tag.thing_id:config']);
+  assert.deepEqual(refs.map((r) => `${r.table}.${r.column}:${r.kind}`).sort(), [...DEVICE_KEYED, 'thing_event.thing_id:log', 'thing_label.thing_id:registry', 'thing_link.home_id:config', 'thing_link.thing_id:config', 'thing_note.thing_id:runtime', 'thing_reading.thing_id:fact', 'thing_rehome.from_thing:log', 'thing_rehome.to_thing:log', 'thing_share.thing_id:config', 'thing_tag.thing_id:config']);
 });
 
 await test('the operations are atomic: a refusal after the work was done leaves the graph as it was', async () => {
@@ -664,7 +664,7 @@ await test('every table that points at a thing is understood: one column to thin
   assert.equal((await T.getThing(twinB.id)).merged_into, null, 'nothing was merged');
   await refused(() => T.splitThing(twinA.id, { reason: 'r' }), /do not understand/);
   await db.exec('DROP TABLE thing_by_pair; ALTER TABLE thing DROP CONSTRAINT thing_id_kind_tmp');
-  assert.equal((await T.thingReferences()).length, DEVICE_KEYED.length + 7);
+  assert.equal((await T.thingReferences()).length, DEVICE_KEYED.length + 10);
 });
 
 await test('merge: no start is the earliest start, and a relation that ended with the dropped thing\'s scheduled retirement carries on for the survivor', async () => {

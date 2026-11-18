@@ -13,7 +13,7 @@ const ALIAS = { charge_limit_pct: 'limit_pct', export_limit_pct: 'limit_pct', po
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 
 export async function capabilityRow(deviceId, action) {
-  return await db.prepare('SELECT supported, source FROM device_capability WHERE device_id = ? AND action = ?').get(deviceId, action) ?? null;
+  return await db.prepare('SELECT supported, source, verification FROM device_capability WHERE device_id = ? AND action = ?').get(deviceId, action) ?? null;
 }
 
 // The limits that bind a device: its own and those of every place it is in (a room's comfort range, the home's export limit), each member held
@@ -62,6 +62,7 @@ export async function effectiveLimit(deviceId, action, param, nowMs = Date.now()
  *  limit                   a value outside the tightest current limit of all sources (control_limit, effectiveLimit),
  *                          or limits that leave no value at all (conflict)
  *  params                  a value outside the range the action itself allows (device_action.params_schema)
+ *  unverifiable            a safety action for a device that cannot report or show what it did (verification effect or none, R23)
  */
 export async function checkGates({ deviceId, desired, planRunId = null, now = Date.now(), freshnessLimits = null }) {
   const blocks = [];
@@ -69,6 +70,7 @@ export async function checkGates({ deviceId, desired, planRunId = null, now = Da
   const cap = await capabilityRow(deviceId, desired.action);
   if (cap?.source === 'placeholder') blocks.push({ gate: 'placeholder_capability', detail: { action: desired.action, note: 'the capability was stated without a source (placeholder); confirm it (adapter, vendor_doc, probe, installer or user) before a command can be sent' } });
   const act = await db.prepare('SELECT params_schema, side_effect_class FROM device_action WHERE device_kind = ? AND action = ?').get(dev.kind, desired.action);
+  if (act?.side_effect_class === 'safety' && cap && cap.verification !== 'reported') blocks.push({ gate: 'unverifiable', detail: { action: desired.action, verification: cap.verification, note: 'a safety action is never sent to a device that cannot confirm it' } });
   if (act && act.side_effect_class !== 'none') {
     const run = planRunId == null ? null : await db.prepare('SELECT status, error FROM plan_run WHERE id = ?').get(planRunId);
     if (run?.status === 'stale_inputs') blocks.push({ gate: 'stale_inputs', detail: { planRunId, reason: run.error ?? 'the plan ran on stale inputs' } });

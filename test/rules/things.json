@@ -12,6 +12,15 @@
   "thing_identity_fixed": [
    "a thing keeps its kind and its home"
   ],
+  "thing_merge_checks": [
+   "a merged thing stays merged",
+   "a thing is merged by updating a live thing, not created merged",
+   "a thing merges into a live thing",
+   "a thing merges into a thing of its own home and kind"
+  ],
+  "thing_relation_alive": [
+   "a merged thing takes no new relation (use the thing it was merged into)"
+  ],
   "thing_relation_checks": [
    "a % relation cannot form a cycle",
    "a % relation joins things of the same type",

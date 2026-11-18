@@ -1025,6 +1025,7 @@ model site {
   tenant_site                      tenant_site?
   thing                            thing?
   thing_attr_version               thing_attr_version[]
+  thing_op                         thing_op[]
   thing_relation                   thing_relation[]
   user_site                        user_site[]
 
@@ -1610,14 +1611,20 @@ model thing {
   valid_to                                     BigInt?
   recorded_at                                  BigInt              @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
   superseded_at                                BigInt?
+  merged_into                                  BigInt?
+  thing                                        thing?              @relation("thingTothing", fields: [merged_into], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_thing                                  thing[]             @relation("thingTothing")
   site                                         site?               @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   thing_type                                   thing_type          @relation(fields: [type, kind], references: [type, kind], onDelete: NoAction, onUpdate: NoAction, map: "thing_type_fk")
   thing_attr_version                           thing_attr_version?
+  thing_op_thing_op_other_idTothing            thing_op[]          @relation("thing_op_other_idTothing")
+  thing_op_thing_op_thing_idTothing            thing_op[]          @relation("thing_op_thing_idTothing")
   thing_relation_thing_relation_from_idTothing thing_relation[]    @relation("thing_relation_from_idTothing")
   thing_relation_thing_relation_to_idTothing   thing_relation[]    @relation("thing_relation_to_idTothing")
 
   @@index([site_id, kind], map: "thing_site", where: raw("(site_id IS NOT NULL)"))
   @@index([type])
+  @@index([merged_into], where: raw("(merged_into IS NOT NULL)"))
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -1632,6 +1639,8 @@ model thing_attr_version {
   valid_to      BigInt?
   recorded_at   BigInt
   superseded_at BigInt?
+  life_from     BigInt?
+  life_to       BigInt?
   site          site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   thing         thing   @relation(fields: [thing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -1680,4 +1689,25 @@ model thing_type {
   thing                                                       thing[]
 
   @@unique([type, kind], map: "thing_type_kind_key")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model thing_op {
+  id                             BigInt  @id @default(autoincrement())
+  site_id                        BigInt?
+  op                             String
+  thing_id                       BigInt
+  other_id                       BigInt
+  effective_at                   BigInt?
+  reason                         String
+  detail                         Json    @default("{}")
+  recorded_at                    BigInt  @default(dbgenerated("((EXTRACT(epoch FROM clock_timestamp()) * (1000)::numeric))::bigint"))
+  thing_thing_op_other_idTothing thing   @relation("thing_op_other_idTothing", fields: [other_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  site                           site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  thing_thing_op_thing_idTothing thing   @relation("thing_op_thing_idTothing", fields: [thing_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([other_id], map: "thing_op_other")
+  @@index([site_id], map: "thing_op_site", where: raw("(site_id IS NOT NULL)"))
+  @@index([thing_id], map: "thing_op_thing")
 }

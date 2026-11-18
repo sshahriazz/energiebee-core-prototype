@@ -29,7 +29,7 @@ export const TABLE_KINDS = {
   site_hh: 'serving', site_day: 'serving', site_heat_slot: 'serving', check_result: 'serving',
   plan_run: 'serving', plan_slot: 'serving', plan_score: 'serving', plan_input_ref: 'serving', plan_run_device: 'serving',
   // logs
-  sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log', erasure_log: 'log',
+  sync_run: 'log', command: 'log', command_log: 'log', site_day_revision: 'log', channel_reject: 'log', push_log: 'log', replay_log: 'log', fact_correction: 'log', erasure_log: 'log', thing_op: 'log',
   // registries
   attribute_def: 'registry', setting_def: 'registry', binding_default: 'registry', column_class: 'registry', currency: 'registry',
   device_kind: 'registry', device_action: 'registry', market: 'registry', market_provider: 'registry', market_question: 'registry',

@@ -225,4 +225,30 @@ await test('erasure: a home\'s things, versions and relations go with it inside 
   assert.ok(await get('SELECT 1 AS x FROM thing WHERE id = ?', tariff), 'shared context stays');
 });
 
+await test('merge: a thing is merged once, into a live thing of its own home and kind, and a merged thing takes no new relation', async () => {
+  const a = await thing(A, 'device', 'smart_plug', 'Plug a');
+  const b = await thing(A, 'device', 'smart_plug', 'Plug b');
+  const c = await thing(A, 'device', 'smart_plug', 'Plug c');
+  const space = await thing(A, 'space', 'room', 'Room m');
+  const other = await thing(B, 'device', 'smart_plug', 'Plug of B');
+  await assert.rejects(() => run("UPDATE thing SET merged_into = ? WHERE id = ?", b, a), /thing_merged_is_superseded/);   // merged and superseded together
+  await refused('thing_merge_checks', 'UPDATE thing SET merged_into = ?, superseded_at = recorded_at WHERE id = ?', space, a);   // another kind
+  await refused('thing_merge_checks', 'UPDATE thing SET merged_into = ?, superseded_at = recorded_at WHERE id = ?', other, a);   // another home
+  await refused('thing_merge_checks', "INSERT INTO thing (site_id, kind, type, name, merged_into, superseded_at, recorded_at) VALUES (?, 'device', 'smart_plug', 'Born merged', ?, 5, 1)", A, b);
+  await run('UPDATE thing SET merged_into = ?, superseded_at = recorded_at WHERE id = ?', b, a);
+  await refused('thing_merge_checks', 'UPDATE thing SET merged_into = ?, superseded_at = recorded_at WHERE id = ?', c, a);          // merged once
+  await refused('thing_merge_checks', 'UPDATE thing SET merged_into = ?, superseded_at = recorded_at WHERE id = ?', a, c);          // into a live thing: a is merged away
+  await assert.rejects(() => run('UPDATE thing SET merged_into = id WHERE id = ?', c), /thing_merged_is_superseded|thing_merge_checks|merges into/);
+  await refused('thing_relation_alive', "INSERT INTO thing_relation (from_id, rel, to_id) VALUES (?, 'located_in', ?)", a, space);
+  await refused('thing_relation_alive', "INSERT INTO thing_relation (from_id, rel, to_id) VALUES (?, 'meters', ?)", c, a);
+  await run("INSERT INTO thing_relation (from_id, rel, to_id) VALUES (?, 'located_in', ?)", b, space);                                // the survivor takes it
+  const old = await run("INSERT INTO thing_relation (from_id, rel, to_id, superseded_at, recorded_at) VALUES (?, 'located_in', ?, 20, 10)", a, space);   // history rows of the merged thing stay writable
+  assert.ok(old.lastInsertRowid);
+  const op = (n, x, y) => run("INSERT INTO thing_op (site_id, op, thing_id, other_id, reason) VALUES (?, ?, ?, ?, ?)", A, n, x, y, 'because');
+  await assert.rejects(() => op('shuffle', a, b), /CHECK constraint failed/);
+  await assert.rejects(() => op('merge', a, a), /thing_op_two_things/);
+  await assert.rejects(() => run("INSERT INTO thing_op (site_id, op, thing_id, other_id, reason) VALUES (?, 'merge', ?, ?, ' ')", A, a, b), /CHECK constraint failed/);
+  await op('merge', a, b);
+});
+
 await test('what the cases above proved is what test/rules/things.json declares (test/rules-all.test.js checks every area against the database)', () => { checkDeclared(); });

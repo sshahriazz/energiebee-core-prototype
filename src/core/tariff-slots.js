@@ -7,6 +7,7 @@
 //   candidatePricer    the slots of a candidate, in memory (the table holds the home's own tariffs only; a candidate is expanded on
 //                      demand from its price runs, which are shared and kept for the tariffs in use)
 //   slotMoney          the money of one slot: energy x slot price, and the slot's share of the fixed charges
+//   dayPrices          a tariff's supplier prices over a local day in 15-minute slots (the tariff picker's preview)
 //   tariffSlots        a tariff's slots over a span, priced for a home or for the tariff's own market (no home)
 //   homePriceTimeline  a home's price slots over a span, past and future: the stored ones where there are some, else computed
 // A current read takes the runs from tariff_price_run; a read "as known at" a past moment makes them in memory from the rate rows
@@ -21,7 +22,7 @@ import { unitInc } from './slot-price.js';
 import { inputsProvenance } from './provenance.js';
 import { MARKETS } from '../db/seed/markets.js';
 import { SLOT_LENGTHS_S } from './markets.js';
-import { daysBetween, slotsOfDay, localDate, slotLength } from './time.js';
+import { daysBetween, slotsOfDay, localDate, slotLength, dayBounds } from './time.js';
 
 const HORIZON_MAX_S = 62 * 86400;   // the longest span one read covers (62 days)
 
@@ -52,17 +53,31 @@ export async function candidatePricing(base, candidates, siteId, from, to, runs 
   return { ...base, agreements: candidates.map((c) => standIn(c.tariff, c.deviceId ?? null)), rates: [], payment: new Map(), runs: runs ?? await candidateRuns(candidates.map((c) => c.tariff), siteId, from, to), shapes: new Map() };
 }
 
-// What a tariff is priced by when no home is named: its own market (zone), the country's taxes, no meter windows, no dispatches, no
-// contracted capacity (a capacity charge then says capacityUnknown), only the shared runs.
+// A pricing context with no agreements: the inputs a tariff is priced by when no home's own are involved (no meter windows, no
+// dispatches, no contracted capacity: a capacity charge then says capacityUnknown). Taxes are those given (none: ex-tax prices only).
+const emptyContext = ({ tz, country, currency, taxRules = [], vat = [] }) => ({
+  agreements: [], rates: [], runs: indexRuns([]), vat, taxRules, country, currency, dispatches: [], tz, payment: new Map(), meterWindows: new Map(),
+  capacityKva: null, capacityOrigin: null, shapes: new Map(), iogWindow: null, dispatchAllowed: new Set(),
+});
+
+// What a tariff is priced by when no home is named: its own market (zone) and the country's taxes.
 async function bareContext(tariff) {
   const market = MARKETS.find((m) => m.country === tariff.country);
   if (!market) throw Object.assign(new Error(`tariff ${tariff.tariff_code} has no market with a known zone: name a home (site=)`), { status: 400 });
-  const taxRules = await db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND ${inForce()}`).all(tariff.country);
-  return {
-    agreements: [], rates: [], runs: indexRuns([]), vat: await db.prepare('SELECT * FROM vat_rate').all(), taxRules, country: tariff.country, currency: tariff.currency ?? market.currency,
-    dispatches: [], tz: market.timezone, payment: new Map(), meterWindows: new Map(), capacityKva: null, capacityOrigin: null, shapes: new Map(),
-    iogWindow: await learnIogWindow(null, market.timezone), dispatchAllowed: new Set(),
-  };
+  return emptyContext({ tz: market.timezone, country: tariff.country, currency: tariff.currency ?? market.currency, vat: await db.prepare('SELECT * FROM vat_rate').all(),
+    taxRules: await db.prepare(`SELECT * FROM tax_rule WHERE country = ? AND ${inForce()}`).all(tariff.country) });
+}
+
+// The supplier's price per kWh before any tax, in each 15-minute slot of the local day `date` in the home's zone, for a tariff the
+// home holds prices for (the tariff picker's preview shows these): the home's own runs and the shared ones, the same slot code as
+// every other price. A slot with no price is { supply_ex: null }.
+export async function dayPrices(site, tariff, date) {
+  const tz = site.timezone || 'Europe/London';
+  const [a, b] = dayBounds(tz, date);
+  const pricing = await candidatePricing(emptyContext({ tz, country: site.country ?? null, currency: tariff.currency ?? site.currency ?? null }), [{ tariff }], site.id, a, b);
+  const pricer = await candidatePricer({ siteId: site.id, pricing, slotS: 900, tz });
+  const point = pointOf(tariff);
+  return slotsOfDay(tz, date, 900).map((s) => ({ slot_start: s, supply_ex: pricer.get(point, s).price?.supplyEx ?? null }));
 }
 
 // The priced slots of candidates in memory: get(key, slot) gives { price, fixedInc } as supplyPricer does for the home's own

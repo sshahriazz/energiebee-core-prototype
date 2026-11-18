@@ -24,6 +24,7 @@ import { supersedeAgreements, retireDevice } from './devices.js';
 import { putWindows } from './tariffs.js';
 import { markDirty } from './facts.js';
 import { dayBounds, localDate, nowSec } from './time.js';
+import { dayPrices } from './tariff-slots.js';
 import { connectable } from './providers.js';
 import { setContractedCapacity } from './sites.js';
 import { rulesFor } from './tax.js';
@@ -239,25 +240,22 @@ async function vatRateNow(country, ts) {
 }
 export async function priceSummary(site, tariffCode, now = nowSec()) {
   const tz = site.timezone || 'Europe/London';
-  const q = db.prepare(`SELECT r.valid_from, COALESCE(r.valid_to, ?) AS valid_to, r.price_ex_vat AS p FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
-    WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from < ? AND COALESCE(r.valid_to, 9000000000) > ? ORDER BY r.valid_from`);
-  // Today; else the latest day the home holds (a tariff previewed or read some days ago), named in `day`.
-  let day = localDate(tz, now);
-  let [a, b] = dayBounds(tz, day);
-  let rows = await q.all(b, tariffCode, site.id, b, a);
-  if (!rows.length) {
-    const last = (await db.prepare(`SELECT MAX(r.valid_from) AS t FROM rate_interval r JOIN tariff t ON t.id = r.tariff_id
-      WHERE t.tariff_code = ? AND r.site_id = ? AND r.component = 'unit' AND r.superseded_at IS NULL AND r.valid_from <= ?`).get(tariffCode, site.id, now)).t;
-    if (last != null) { day = localDate(tz, last); [a, b] = dayBounds(tz, day); rows = await q.all(b, tariffCode, site.id, b, a); }
-  }
+  const tariff = await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get(tariffCode);
   const vat = await vatRateNow(site.country ?? site.market_code, now);
-  if (!rows.length) return { unit: [], range: null, vat_rate: vat, day: null };
-  const prices = [...new Set(rows.map((r) => r.p))].sort((x, y) => y - x);
+  const none = { unit: [], range: null, vat_rate: vat, day: null };
+  if (!tariff) return none;
+  // The slots of today; else of the latest day the home holds prices for (a tariff previewed or read some days ago), named in `day`.
+  let day = localDate(tz, now);
+  let slots = (await dayPrices(site, tariff, day)).filter((s) => s.supply_ex != null);
+  if (!slots.length) {
+    const last = (await db.prepare(`SELECT MAX(valid_from) AS t FROM tariff_price_run WHERE tariff_id = ? AND site_id = ? AND component = 'unit' AND valid_from <= ?`).get(tariff.id, site.id, now)).t;
+    if (last != null) { day = localDate(tz, last); slots = (await dayPrices(site, tariff, day)).filter((s) => s.supply_ex != null); }
+  }
+  if (!slots.length) return none;
+  const prices = [...new Set(slots.map((s) => s.supply_ex))].sort((x, y) => y - x);
   if (prices.length === 1) return { unit: [{ register: 'single', label: 'Price', price: prices[0] }], range: null, vat_rate: vat, day };
   if (prices.length === 2) return { unit: [{ register: 'peak', label: 'Peak', price: prices[0] }, { register: 'off_peak', label: 'Off-peak', price: prices[1] }], range: null, vat_rate: vat, day };
-  let w = 0; let sum = 0;
-  for (const r of rows) { const d = Math.min(r.valid_to, b) - Math.max(r.valid_from, a); if (d > 0) { w += d; sum += r.p * d; } }
-  return { unit: [], range: { min: prices.at(-1), max: prices[0], avg: w ? sum / w : null }, vat_rate: vat, day };
+  return { unit: [], range: { min: prices.at(-1), max: prices[0], avg: slots.reduce((t, s) => t + s.supply_ex, 0) / slots.length }, vat_rate: vat, day };
 }
 
 // ───────────── Writing a choice on the home's own meter (any source with shared prices) ─────────────

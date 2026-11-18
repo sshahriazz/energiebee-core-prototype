@@ -38,6 +38,8 @@ npm start                  # open http://localhost:4100
 - **Starting from scratch:** drop and recreate the database named in `DATABASE_URL`, run `npm run db:migrate`, and empty `data/raw`.
 - **Moving an old SQLite `data/core.db` across:** open it once with the last SQLite version (commit `f014fce`) so every delta is applied, then `npm run db:copy-sqlite -- data/core.db` copies every row; `node scripts/verify-sqlite-copy.js data/core.db` checks the copy row by row, and `node scripts/verify-rebuild.js` rebuilds the stored slots and compares them.
 - **Port, database and files:** `PORT` (default 4100), `DATABASE_URL` and `DATA_DIR` (default `data`) in `.env`.
+- **Raw files elsewhere:** `RAW_DIR` puts the raw provider answers in another folder (default `DATA_DIR/raw`; for example a separate volume). The folder must already exist, otherwise the server refuses to start (so an unmounted volume is not replaced by an empty folder on the system disk). To move a store, stop the app, copy `data/raw` there, set `RAW_DIR`, start, and run `npm run raw:verify`.
+- **Raw-file check:** a background check hashes the raw files again and compares them with the stored hash: `RAW_VERIFY=report` (default) or `off`, `RAW_VERIFY_BATCH` (receipts per run, default 500, the least recently checked first) and `RAW_VERIFY_HOURS` (hours between runs, default 6, at most 596). A wrong value refuses the start. The latest result of a home is in `GET /api/sites/:id/health` (`rawCheck`). See `docs/build/rawstore.md`.
 - **To stop:** Ctrl+C in the terminal running it.
 
 ### Running it unattended
@@ -49,6 +51,7 @@ npm start                  # open http://localhost:4100
 | `npm run service:status` / `service:uninstall` | Shows whether the service is loaded, with the last log lines / removes it. |
 | `npm run history:reconstruct` | One-off: fills the revision log for the time before it was kept by rebuilding each completed day as known at every earlier sync. Writes only to `site_day_revision`; `-- --force` redoes it. |
 | `npm run retention` | Shows what retention would delete (raw payloads that feed no fact, old sync runs, superseded old forecast issues, finished queue rows), in counts and bytes; `-- --apply` deletes it. The server runs the same check at every start: a report unless `RETENTION=apply` (`.env.example`; `docs/database.md` section 10.5). Best run with the server stopped. |
+| `npm run raw:verify` | Checks every raw file against its stored hash (`-- --site <id>` for one home, `-- --limit <n>` for the n least recently checked). Prints a report and exits 1 on a problem, 2 on a bad argument. Reads only. |
 
 What happens when something fails:
 - **A provider is down or slow:** each request is retried twice (after 1 s and 4 s, or as long as the provider's Retry-After asks). Only network errors, timeouts, 429 and 5xx are retried; a 401 (bad key) fails at once. A step that still fails is recorded, and the other providers carry on.
@@ -61,7 +64,7 @@ What happens when something fails:
 npm test
 ```
 
-About 660 tests, about 3.5 minutes on a laptop, using Node's built-in test runner (`npm run test:slots` repeats 111 of them at 15- and 60-minute slots). Each test file uses its own throwaway Postgres database (cloned from a migrated template on the server in `TEST_DATABASE_URL`, default the local one), so the app's database is never changed. Tests never read `.env`.
+About 864 tests (4 skipped), about 10 minutes on a laptop at four test files at a time (`--test-concurrency=4`; more can overload a weak machine), using Node's built-in test runner (`npm run test:slots` repeats 112 of them at 15- and 60-minute slots). Each test file uses its own throwaway Postgres database (cloned from a migrated template on the server in `TEST_DATABASE_URL`, default the local one), so the app's database is never changed. Tests never read `.env`.
 - **Unit tests:** HTTP retry rules (against a local server), clock changes, Sunsynk's repeated and missing hour, and resuming after an outage.
 - **Integration tests** (on a copy of the frozen, identifier-free GB home in `test/fixtures/gb-home.json.gz`):
   - a partial rebuild matches a full rebuild exactly;
@@ -190,11 +193,12 @@ src/
   server.js            Express API and static pages
   db/                  db.js (Prisma, statements, transactions), registry (sources + contracts, metrics, VAT), seed/
 prisma/                schema.prisma (models pulled from the database), migrations/ (the schema as SQL)
-  core/                time, facts, pricing, build, forecast, insights
+  core/                time, facts, pricing, build, forecast, insights; price runs and slots (price-runs, price-run-store, slot-price, supply-price, price-marks, price-queue, tariff-slots), things (things.js), raw-integrity
   adapters/            geo, octopus, sunsynk, carbon, openmeteo, quartz
   jobs/sync.js         per-home sync order and scheduler
 public/                six pages, app.css, js/ (api, layout, charts, timeline, pages/)
 data/                  raw/ and logs/ (git-ignored; DATA_DIR)
+docs/build/            build notes of the thing-platform work (docs/thing-platform-plan.md): tariff.md (price runs and slots), things.md (thing graph), rawstore.md (RAW_DIR, raw-file check), sunsynk-writes.md (research on control writes, no code), fold-design.md (design of the next wave)
 ```
 
 ## API
@@ -202,7 +206,7 @@ data/                  raw/ and logs/ (git-ignored; DATA_DIR)
 `GET /api/sites` · `POST /api/sites/:id/sync` · `POST /api/sites/:id/rebuild`
 `GET /api/sites/:id/` + `now`, `timeline?period=today|yesterday|7d|30d`, `summary?period=`, `forecast`, `solar-expected?period=`,
 `insights`, `ev`, `tariffs`, `evidence?slot=<epoch>`, `health`, `system`,
-`trust?period=` (coverage, cross-checks, balance, revisions, corrections), `revisions?date=|period=`, `asof?date=YYYY-MM-DD&at=<epoch>` (a day rebuilt as known then; nothing written) · `GET /api/status` · `GET /api/raw/:id` · `GET /api/catalog` · `GET /api/connectors` (every adapter the core has or needs, with a status word each; the Connectors page)
+`trust?period=` (coverage, cross-checks, balance, revisions, corrections), `revisions?date=|period=`, `asof?date=YYYY-MM-DD&at=<epoch>` (a day rebuilt as known then; nothing written) · `GET /api/tariffs/:id/slots?from&to&slot_s&site` (a tariff's price in slots, ex tax and with tax; `:id` is the id or the code) · `GET /api/sites/:id/prices?from&to&point` (the home's price timeline per supply point, default today and seven days ahead, at most 62 days; a slot with no price is `known: false`) · `GET /api/status` · `GET /api/raw/:id` · `GET /api/catalog` · `GET /api/connectors` (every adapter the core has or needs, with a status word each; the Connectors page)
 
 ## Known limits (prototype)
 

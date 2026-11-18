@@ -13,6 +13,7 @@ import { getCommand, recordAckRef } from './commands.js';
 import { nowSec } from './time.js';
 import { FORMATS, PushError, parsePush } from './push-formats.js';
 import { mapAsync } from "./async.js";
+import { linkFor } from './links.js';
 
 export const MAX_BODY_BYTES = 1024 * 1024;       // enforced by the route (413 too_large)
 export const MAX_OBSERVATIONS = 5000;            // enforced here (400 too_many_observations)
@@ -83,7 +84,10 @@ async function resolveSite(given) {
 // ───────────── 5 The device ─────────────
 async function findDevice(site, ref) {
   const s = String(ref);
-  return await db.prepare('SELECT * FROM device WHERE site_id = ? AND retired_at IS NULL AND external_ref = ? ORDER BY id LIMIT 1').get(site.id, s)
+  // the pusher's own name for the device is its link; any other device of the home answering to the name (a meter, a synthetic device) is found as before
+  const link = await linkFor(site.id, 'push', s);
+  const linked = link ? await db.prepare('SELECT * FROM device WHERE id = ? AND retired_at IS NULL').get(link.thing_id) : null;
+  return linked ?? await db.prepare('SELECT * FROM device WHERE site_id = ? AND retired_at IS NULL AND external_ref = ? ORDER BY id LIMIT 1').get(site.id, s)
     ?? (/^\d+$/.test(s) ? await db.prepare('SELECT * FROM device WHERE site_id = ? AND retired_at IS NULL AND id = ?').get(site.id, Number(s)) : undefined);
 }
 

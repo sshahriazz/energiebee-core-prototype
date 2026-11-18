@@ -107,3 +107,44 @@ if (process.env.UPDATE_COMPARE_REF === '1') {
     });
   }
 }
+
+// ───────────── one code path, two ways to read it ─────────────
+const { withKnownAt } = await import('../src/core/facts.js');
+const { tariffSlots, slotMoney } = await import('../src/core/tariff-slots.js');
+
+await test('the comparison reads the home\'s stored slots and writes nothing', { skip }, async () => {
+  const count = async () => (await db.prepare('SELECT COUNT(*) n FROM supply_price_slot').get()).n;
+  await compareSite(1, '2026-10-12', '2026-10-26');   // makes sure the first read has happened
+  const before = await count();
+  const c = await compareSite(1, '2026-10-12', '2026-10-26');
+  assert.equal(c.ready, true);
+  assert.equal(await count(), before, 'a comparison stores no slot');
+  // What it shows for the home's own tariff is what the table holds: change one stored price (same stamp) and the comparison shows it.
+  const { buildSite } = await import('../src/core/build.js');
+  await buildSite(1, '2026-10-14', '2026-10-14');
+  const row = await db.prepare("SELECT slot_start, unit_ex, vat FROM supply_price_slot WHERE site_id = 1 AND point = 'meter_import' AND slot_start IN (SELECT slot_start FROM site_hh WHERE site_id = 1 AND state != 'missing') ORDER BY slot_start LIMIT 1").get();
+  assert.ok(row, 'the build stored a slot');
+  const was = c.slots.find((s) => s.slot_start === row.slot_start).current;
+  assert.equal(was, row.unit_ex * (1 + row.vat));
+  await db.prepare("UPDATE supply_price_slot SET unit_ex = unit_ex + 1 WHERE site_id = 1 AND point = 'meter_import' AND slot_start = ?").run(row.slot_start);
+  const changed = (await compareSite(1, '2026-10-12', '2026-10-26')).slots.find((s) => s.slot_start === row.slot_start).current;
+  await db.prepare("UPDATE supply_price_slot SET unit_ex = unit_ex - 1 WHERE site_id = 1 AND point = 'meter_import' AND slot_start = ?").run(row.slot_start);
+  assert.equal(changed, (row.unit_ex + 1) * (1 + row.vat));
+});
+
+await test('a candidate\'s slots made in memory from the rate rows of a moment equal the ones made from the stored runs', { skip }, async () => {
+  const tariff = await db.prepare('SELECT * FROM tariff WHERE tariff_code = ?').get('E-1R-AGILE-24-10-01-G');
+  const site = await db.prepare('SELECT * FROM site WHERE id = 1').get();
+  const from = Date.parse('2026-10-24T00:00:00Z') / 1000;
+  const now = await tariffSlots(tariff, { site, from, to: from + 3 * 86400, slotS: 3600 });
+  const asOf = await withKnownAt(Date.now(), async () => await tariffSlots(tariff, { site, from, to: from + 3 * 86400, slotS: 3600 }));
+  assert.ok(now.known > 60 && now.slots.some((s) => s.weighted));
+  assert.deepEqual(asOf, now);
+});
+
+await test('the money of a slot is the energy times the slot\'s prices, its share of the fixed charges added; no price is no money', () => {
+  const slot = (unitEx, vat, fixedInc) => ({ price: { unitEx, vat }, fixedInc });
+  assert.deepEqual(slotMoney(2, 0.5, slot(10, 0.2, 3), slot(4, 0, 0)), { importCost: 24, exportCredit: 2, fixed: 3 });
+  assert.deepEqual(slotMoney(2, 0.5, slot(null, 0.2, 3), slot(4, 0, 0)), { importCost: null, exportCredit: 2, fixed: 3 });
+  assert.deepEqual(slotMoney(2, 0.5, { price: null, fixedInc: 0 }, { price: null, fixedInc: 0 }), { importCost: null, exportCredit: null, fixed: 0 });
+});

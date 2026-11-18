@@ -1426,7 +1426,7 @@ The first version is the meter's number stored as kWh. In the next sync, 42.7 se
 
 ### 5.2 One price, from `rate_interval` to a cost
 
-The same half-hour, priced by `loadPricing` and `priceAt` (`src/core/pricing.js`). How the day/night band is chosen is in [section 5.4 of the timeline document](timeline-forecast-and-data-states.md#54-intelligent-octopus-go-off-peak-window).
+The same half-hour, priced by `loadPricing` (`src/core/pricing.js`) and `slotPrice` (`src/core/slot-price.js`). How the day/night band is chosen is in [section 5.4 of the timeline document](timeline-forecast-and-data-states.md#54-intelligent-octopus-go-off-peak-window).
 
 1. **Agreement.** The `tariff_agreement` row for device 3 (import meter) covering the half-hour: tariff 8, `E-1R-IOG-SMB-FIX-12M-26-06-13-G`, from 31 Aug 2026 23:00 to 15 Aug 2027 23:00 UTC. At the copy its id was 521; ids change on every sync, because agreements are re-inserted.
 2. **Band.** 19:30 BST is outside the learned off-peak window, so `register = 'day'`.

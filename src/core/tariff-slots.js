@@ -14,7 +14,7 @@
 // of that moment (the same two ways loadPricing reads them).
 import { db } from '../db/db.js';
 import { knownAtMs, inForce } from './facts.js';
-import { currentRuns } from './price-run-store.js';
+import { ensureRuns, readRuns } from './price-run-store.js';
 import { runsFromRates, indexRuns } from './price-runs.js';
 import { supplyPricer, supplyPoints } from './supply-price.js';
 import { loadPricing } from './pricing.js';
@@ -39,7 +39,19 @@ export const standIn = (t, deviceId = null) => ({
 // read of rates takes, so a slot sees the same neighbours.
 async function runsOf(tariffIds, siteId, from, to) {
   if (!tariffIds.length) return indexRuns([]);
-  if (knownAtMs() == null) return await currentRuns(tariffIds, siteId, from, to);
+  const ids = [...new Set(tariffIds)];
+  if (knownAtMs() == null) {
+    // The table holds the runs of tariffs somebody is on (builds keep them fresh). A tariff nobody is on is made in memory from its rate rows, the
+    // same runs, so a read stores nothing for a candidate.
+    const used = new Set((await db.prepare(`SELECT DISTINCT tariff_id FROM tariff_agreement WHERE tariff_id IN (${ids.map(() => '?').join(',')}) AND superseded_at IS NULL`).all(...ids)).map((r) => r.tariff_id));
+    const kept = ids.filter((id) => used.has(id));
+    const loose = ids.filter((id) => !used.has(id));
+    await ensureRuns(kept);
+    const stored = kept.length ? await readRuns(kept, siteId, from - 86400 * 2, to) : [];
+    const made = loose.length ? runsFromRates(await db.prepare(`SELECT * FROM rate_interval WHERE tariff_id IN (${loose.map(() => '?').join(',')}) AND superseded_at IS NULL
+      AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ? AND (site_id IS NULL OR site_id = ?) ORDER BY valid_from, id`).all(...loose, to, from - 86400 * 2, siteId)) : [];
+    return indexRuns([...stored, ...made]);
+  }
   const rates = await db.prepare(`SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')}) AND ${inForce()}
     AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ? AND (site_id IS NULL OR site_id = ?) ORDER BY valid_from, id`).all(...tariffIds, to, from - 86400 * 2, siteId);
   return indexRuns(runsFromRates(rates));

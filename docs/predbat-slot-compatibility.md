@@ -11,7 +11,7 @@ How the core's time model lines up with Predbat's step, slot, window and horizon
 | Slots keyed by UTC epoch start | Same: `slot_start` is epoch seconds, aligned to the slot length | Compatible |
 | 46 / 50 slots on clock-change days | Tested for London, Paris and Amsterdam at 15, 30 and 60 min | Compatible |
 | Local tariff windows resolved to UTC per date | `localToUtc` and the window expander, clock-change safe | Compatible |
-| Price array per slot | `rate_interval` rows with `priceOver` (time-weighted when a slot spans prices) | Compatible |
+| Price array per slot | `tariff_price_run` rows read by `slotPrice` (`src/core/slot-price.js`; time-weighted when a slot spans prices), stored per slot in `supply_price_slot` | Compatible |
 | Dispatch slots (Intelligent Octopus) | Counted against the daily allowance; slots starting at :15 or :45 are covered | Compatible |
 | 48-hour **horizon** | Forecast for 48 hours exists; no plan over it | Partial |
 | **Windows** (merged slots) | Tariff windows only; plan windows not built | Missing |

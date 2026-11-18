@@ -83,6 +83,17 @@ await test('home timeline: seven days ahead are priced (an open-ended tariff is 
   assert.deepEqual(over.body.points.map((p) => [p.point, p.slots.length]).sort(), [['meter_export', 50], ['meter_import', 50]]);
 });
 
+await test('reading a tariff nobody is on stores nothing: its runs are made in memory, the prices are its rate rows', { skip }, async () => {
+  const cand = await createTariff({ provider: 'synthetic', tariffCode: 'SYN-CANDIDATE', country: 'GB', currency: 'GBP', structure: 'flat', kind: 'flat', name: 'Candidate', origin: 'synthetic' });
+  await putRateRows(cand.id, [{ component: 'unit', validFrom: 0, validTo: null, price: 30 }]);
+  const r = await get(`/api/tariffs/${cand.id}/slots?from=2026-10-14&to=2026-10-15`);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.slots.length === 48 && r.body.slots.every((s) => s.supply_ex === 30), 'priced from its rate rows');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM tariff_price_run WHERE tariff_id = ?').get(cand.id)).n, 0, 'no runs stored');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM tariff_price_state WHERE tariff_id = ?').get(cand.id)).n, 0, 'no state stored');
+  assert.equal((await get(`/api/tariffs/${cand.id}/slots?from=2026-10-14&to=2026-10-15`)).body.slots.length, 48, 'and again');
+});
+
 await test('a tariff\'s slots without a home: its market\'s zone and taxes, 50 half-hours on the 25-hour day, 46 on the 23-hour day, the shared runs only', { skip }, async () => {
   const day = await get(`/api/tariffs/${AGILE}/slots?from=2026-10-25&to=2026-10-26`);
   assert.equal(day.status, 200);

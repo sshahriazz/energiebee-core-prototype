@@ -12,8 +12,10 @@
 // lineage, so one dead sensor does not hold the home provisional.
 import { db, tx } from '../db/db.js';
 import { dayBounds, daysBetween, nowSec } from './time.js';
+import { readIntervals } from './facts.js';
+import { aggregatePeriodMeans } from './slot-agg.js';
 
-export const NODE_SLOT_VERSION = 1;
+export const NODE_SLOT_VERSION = 2;
 export const METER_TOLERANCE_KWH = 0.005;
 // the consumption point of each type of device: the amount it used in the slot
 const CONSUMES = Object.freeze({ smart_plug: 'plug_kwh', ev_charger: 'ev_delivered_kwh', heat_pump: 'heatpump_elec_kwh', immersion: 'immersion_kwh' });
@@ -55,11 +57,37 @@ async function homeEdges(homeId) {
 }
 
 /**
+ * What a place rolls up from its members' points (the lines of a place): the node metric, which point of a member it comes from, which
+ * field of the point's slot, how the members combine, and which places have the line. A member's point is found by metric code, so a
+ * heat pump and a boiler both give their heat to the heating system through the same line.
+ */
+export const LINES = Object.freeze([
+  { metric: 'energy_kwh', of: (type) => CONSUMES[type] ?? null, field: 'delta', how: 'sum', places: ['home', 'space', 'system'] },
+  { metric: 'temperature_c', of: () => TEMPERATURE, field: 'mean', how: 'mean', places: ['home', 'space', 'system'] },
+  { metric: 'setpoint_c', of: () => 'indoor_temp_setpoint_c', field: 'mean', how: 'mean', places: ['home', 'space', 'system'] },
+  { metric: 'valve_position_pct', of: () => 'valve_position_pct', field: 'mean', how: 'mean', places: ['home', 'space', 'system'] },
+  { metric: 'heating_on_share', of: () => 'heating_on', field: 'on_share', how: 'mean', places: ['home', 'space', 'system'] },
+  { metric: 'heat_output_kwh', of: () => 'heat_output_kwh', field: 'delta', how: 'sum', places: ['system'] },
+  { metric: 'heating_energy_kwh', of: (type) => ({ heat_pump: 'heatpump_elec_kwh', boiler: 'boiler_gas_kwh' })[type] ?? null, field: 'delta', how: 'sum', places: ['system'] },
+  { metric: 'heat_pump_energy_kwh', of: (type) => (type === 'heat_pump' ? 'heatpump_elec_kwh' : null), field: 'delta', how: 'sum', places: ['system'] },
+  { metric: 'flow_temp_c', of: (type) => ({ heat_pump: 'heatpump_flow_temp_c', boiler: 'boiler_flow_temp_c' })[type] ?? null, field: 'mean', how: 'mean', places: ['system'] },
+  { metric: 'return_temp_c', of: (type) => ({ heat_pump: 'heatpump_return_temp_c', boiler: 'boiler_return_temp_c' })[type] ?? null, field: 'mean', how: 'mean', places: ['system'] },
+]);
+export const BASE_TEMP_C = 15.5;   // the heating degree-day base (the UK's), as heat.js
+
+/** The heating system's own ratios, from its lines of a slot: COP (heat out per electricity in, the heat pump's only, above 1 Wh) and degree-hours. PURE. */
+export function heatingRatios({ heatOut, pumpIn, outdoorC, durS }) {
+  const cop = heatOut != null && pumpIn != null && pumpIn > 0.001 ? Math.round((heatOut / pumpIn) * 1e9) / 1e9 : null;
+  const degreeHours = outdoorC == null ? null : Math.round(Math.max(0, BASE_TEMP_C - outdoorC) * (durS / 3600) * 1e9) / 1e9;
+  return { cop, degreeHours };
+}
+
+/**
  * Build the slots of one place (a space, a system or the home) for the local days fromDate..toDate, replacing its old rows of those
  * days. Reads the point slots of its members (build them first: buildHomePointSlots). Returns { slots }.
  */
 export async function buildNodeSlots(thingId, fromDate, toDate, { builtAt = nowSec() } = {}) {
-  const t = await db.prepare(`SELECT t.id, t.kind, t.type, t.home_id, s.timezone FROM thing t LEFT JOIN site s ON s.id = t.home_id WHERE t.id = ?`).get(thingId);
+  const t = await db.prepare(`SELECT t.id, t.kind, t.type, t.home_id, s.timezone, s.carbon_region, s.country, s.market_code FROM thing t LEFT JOIN site s ON s.id = t.home_id WHERE t.id = ?`).get(thingId);
   if (!t || !['home', 'space', 'system'].includes(t.kind)) throw Object.assign(new RangeError('a place timeline is for a home, a space or a system'), { status: 400 });
   const homeId = Number(t.home_id);
   const tz = t.timezone ?? 'UTC';
@@ -70,37 +98,81 @@ export async function buildNodeSlots(thingId, fromDate, toDate, { builtAt = nowS
   const slotsOfPoint = async (memberId, metric) => {
     const p = await db.prepare('SELECT p.id FROM point p JOIN metric m ON m.id = p.metric_id WHERE p.thing_id = ? AND m.code = ? AND p.superseded_at IS NULL').get(memberId, metric);
     if (!p) return null;
-    return new Map((await db.prepare('SELECT slot_start, dur_s, mean, delta, coverage FROM point_slot WHERE point_id = ? AND slot_start >= ? AND slot_start < ?').all(p.id, winFrom, winTo)).map((r) => [Number(r.slot_start), r]));
+    return new Map((await db.prepare('SELECT slot_start, dur_s, mean, delta, coverage, state_shares FROM point_slot WHERE point_id = ? AND slot_start >= ? AND slot_start < ?').all(p.id, winFrom, winTo))
+      .map((r) => [Number(r.slot_start), { ...r, on_share: r.state_shares == null ? null : Number((typeof r.state_shares === 'string' ? JSON.parse(r.state_shares) : r.state_shares)['1'] ?? 0) }]));
   };
-  const energy = []; const temps = [];
-  for (const m of members) {
-    const type = things.get(m.id);
-    if (CONSUMES[type]) { const s = await slotsOfPoint(m.id, CONSUMES[type]); if (s) energy.push({ ...m, slots: s }); }
-    const ts = await slotsOfPoint(m.id, TEMPERATURE);
-    if (ts) temps.push({ ...m, slots: ts });
+  // the lines of this place: one list of members (with their slots) each
+  const lines = [];
+  for (const line of LINES.filter((l) => l.places.includes(t.kind))) {
+    const have = [];
+    for (const m of members) {
+      const metric = line.of(things.get(m.id));
+      if (!metric) continue;
+      const s = await slotsOfPoint(m.id, metric);
+      if (s) have.push({ ...m, slots: s });
+    }
+    if (have.length) lines.push({ ...line, members: have });
   }
   const homeKwh = t.kind === 'home'
     ? new Map((await db.prepare('SELECT slot_start, dur_s, home FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? AND home IS NOT NULL').all(homeId, winFrom, winTo)).map((r) => [Number(r.slot_start), r]))
     : null;
+  // what energy costs and emits in a slot: the home's import price (the supply price slot of its meter) and the grid's carbon intensity
+  const price = new Map((await db.prepare("SELECT slot_start, unit_inc FROM supply_price_slot WHERE site_id = ? AND point = 'meter_import' AND slot_start >= ? AND slot_start < ? ORDER BY slot_start, id").all(homeId, winFrom, winTo)).map((r) => [Number(r.slot_start), Number(r.unit_inc)]));
+  const carbonSubject = t.carbon_region != null ? `carbon:${t.carbon_region}` : (t.country ?? t.market_code) === 'FR' ? 'carbon:FR' : null;
+  // the region's carbon facts are read on the home's own grid (a region is shared by homes of different slot lengths)
+  let carbonPeriods = [];
+  if (carbonSubject) {
+    const series = (await db.prepare("SELECT s.id FROM series s JOIN point p ON p.id = s.point_id JOIN thing r ON r.id = p.thing_id JOIN metric m ON m.id = s.metric_id WHERE r.kind = 'context' AND r.name = ? AND m.code = 'carbon_intensity'").all(carbonSubject)).map((r) => Number(r.id));
+    carbonPeriods = (await readIntervals(series, winFrom - 3600, winTo + 3600)).map((r) => ({ start: Number(r.start_ts), end: Number(r.end_ts), value: r.value }));
+  }
+  const carbon = { has: (start) => carbonOf(start) != null, get: (start) => carbonOf(start) };
+  const carbonCache = new Map();
+  function carbonOf(start) {
+    if (!carbonCache.has(start)) carbonCache.set(start, carbonPeriods.length ? aggregatePeriodMeans(carbonPeriods, start, start + curDur).mean : null);
+    return carbonCache.get(start);
+  }
+  let curDur = 1800;
+  const outdoor = t.kind === 'system' && t.type === 'heating' ? await slotsOfPoint(homeId, 'outdoor_temp_c') : null;
   const starts = new Set();
-  for (const g of [...energy, ...temps]) for (const k of g.slots.keys()) starts.add(k);
+  for (const l of lines) for (const m of l.members) for (const k of m.slots.keys()) starts.add(k);
   if (homeKwh) for (const k of homeKwh.keys()) starts.add(k);
   const out = [];
   for (const start of [...starts].sort((a, b) => a - b)) {
-    const dur = [...energy, ...temps].map((g) => g.slots.get(start)?.dur_s).find(Boolean) ?? homeKwh?.get(start)?.dur_s ?? 1800;
+    const dur = lines.flatMap((l) => l.members).map((m) => m.slots.get(start)?.dur_s).find(Boolean) ?? homeKwh?.get(start)?.dur_s ?? 1800;
     const row = (metric, r) => out.push({ start, dur, metric, ...r });
-    if (energy.length) {
-      const r = rollUp(energy.map((g) => ({ id: g.id, required: g.required, value: g.slots.get(start)?.delta ?? null, coverage: g.slots.get(start)?.coverage ?? 0 })));
-      if (r.value != null) row('energy_kwh', r);
-      if (homeKwh?.has(start)) {
-        const u = untracked(homeKwh.get(start).home, r.value ?? 0);
-        row('home_kwh', { value: homeKwh.get(start).home, coverage: 1, state: 'final', lineage: { from: 'site_hh' } });
-        if (u != null) row('untracked_kwh', { value: u, coverage: r.coverage, state: r.state === 'missing' ? 'partial' : r.state, lineage: { home_kwh: homeKwh.get(start).home, tracked_kwh: r.value ?? 0, ...r.lineage } });
+    curDur = dur;
+    const got = {};
+    for (const l of lines) {
+      const r = rollUp(l.members.map((m) => ({ id: m.id, required: m.required, value: m.slots.get(start)?.[l.field] ?? null, coverage: m.slots.get(start)?.coverage ?? 0 })), l.how);
+      if (r.value == null) continue;
+      got[l.metric] = r;
+      row(l.metric, r);
+    }
+    const e = got.energy_kwh;
+    if (homeKwh?.has(start)) {
+      row('home_kwh', { value: homeKwh.get(start).home, coverage: 1, state: 'final', lineage: { from: 'site_hh' } });
+      const hk = homeKwh.get(start).home;
+      if (price.has(start)) row('home_cost_minor', { value: Math.round(hk * price.get(start) * 1e6) / 1e6, coverage: 1, state: 'final', lineage: { kwh: hk, unit_inc: price.get(start) } });
+      if (carbon.has(start)) row('home_carbon_g', { value: Math.round(hk * carbon.get(start) * 1e6) / 1e6, coverage: 1, state: 'final', lineage: { kwh: hk, intensity: carbon.get(start) } });
+      const u = untracked(homeKwh.get(start).home, e?.value ?? 0);
+      if (u != null && (e || homeKwh.has(start))) {
+        const r = { value: u, coverage: e?.coverage ?? 0, state: !e || e.state === 'missing' ? 'partial' : e.state, lineage: { home_kwh: homeKwh.get(start).home, tracked_kwh: e?.value ?? 0, ...(e?.lineage ?? {}) } };
+        if (e) { row('untracked_kwh', r); got.untracked_kwh = r; }
       }
-    } else if (homeKwh?.has(start)) row('home_kwh', { value: homeKwh.get(start).home, coverage: 1, state: 'final', lineage: { from: 'site_hh' } });
-    if (temps.length) {
-      const r = rollUp(temps.map((g) => ({ id: g.id, required: g.required, value: g.slots.get(start)?.mean ?? null, coverage: g.slots.get(start)?.coverage ?? 0 })), 'mean');
-      if (r.value != null) row('temperature_c', r);
+    }
+    // cost and carbon on each energy line (5.3): the slot's energy at the slot's import price and the grid's intensity
+    for (const [metric, r] of Object.entries(got)) {
+      const base = { energy_kwh: 'energy', untracked_kwh: 'untracked', heat_pump_energy_kwh: 'heat_pump' }[metric];
+      if (!base) continue;
+      const kwh = r.value;
+      if (kwh == null) continue;
+      if (price.has(start)) row(`${base}_cost_minor`, { value: Math.round(kwh * price.get(start) * 1e6) / 1e6, coverage: r.coverage, state: r.state, lineage: { kwh, unit_inc: price.get(start) } });
+      if (carbon.has(start)) row(`${base}_carbon_g`, { value: Math.round(kwh * carbon.get(start) * 1e6) / 1e6, coverage: r.coverage, state: r.state, lineage: { kwh, intensity: carbon.get(start) } });
+    }
+    if (t.kind === 'system' && t.type === 'heating') {
+      const { cop, degreeHours } = heatingRatios({ heatOut: got.heat_output_kwh?.value ?? null, pumpIn: got.heat_pump_energy_kwh?.value ?? null, outdoorC: outdoor?.get(start)?.mean ?? null, durS: dur });
+      if (cop != null) row('cop', { value: cop, coverage: Math.min(got.heat_output_kwh.coverage, got.heat_pump_energy_kwh.coverage), state: got.heat_output_kwh.state === 'final' && got.heat_pump_energy_kwh.state === 'final' ? 'final' : 'partial', lineage: { heat_output_kwh: got.heat_output_kwh.value, heat_pump_energy_kwh: got.heat_pump_energy_kwh.value } });
+      if (degreeHours != null) row('degree_hours', { value: degreeHours, coverage: outdoor.get(start).coverage, state: 'final', lineage: { outdoor_c: outdoor.get(start).mean, base_c: BASE_TEMP_C } });
     }
   }
   await tx(async () => {

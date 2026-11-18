@@ -197,9 +197,9 @@ Give every thing its own timeline on the shared grid, and roll them up.
 
 | # | Work | Size |
 |---|---|---|
-| 5.1 | Heating graph: heat source `feeds` emitters, which `feeds` rooms; thermostat and TRVs `control` the source and emitters; a heating zone is a system. | M |
-| 5.2 | Per-room heating timeline: indoor temperature, setpoint, valve opening, demand, time heating was on. Heating system timeline: flow / return temperature, heat output, energy in, COP, degree-hours. `site_heat_slot` built from it; `heat-gb` test unchanged. | M to L |
-| 5.3 | Consumption: per device → room → floor → home, plus untracked, with cost (from the meter's tariff) and carbon on each line. | M |
+| 5.1 | ✅ 2026-11-18 (see `docs/build/heating.md`): the heating system, feeds, controls and zones from what is certain, in the seeder. Original: Heating graph: heat source `feeds` emitters, which `feeds` rooms; thermostat and TRVs `control` the source and emitters; a heating zone is a system. | M |
+| 5.2 | partly 2026-11-18 (see `docs/build/heating.md`): per-room lines and the heating system's heat out, energy in, COP, flow and return, degree-hours. **Not done:** `site_heat_slot` is not built from them (`heat.js` still builds it; the two are proved equal on the synthetic home). Original: Per-room heating timeline: indoor temperature, setpoint, valve opening, demand, time heating was on. Heating system timeline: flow / return temperature, heat output, energy in, COP, degree-hours. `site_heat_slot` built from it; `heat-gb` test unchanged. | M to L |
+| 5.3 | ✅ 2026-11-18 (see `docs/build/heating.md`): consumption through the tree with the untracked line, cost and carbon on each energy line. Original: Consumption: per device → room → floor → home, plus untracked, with cost (from the meter's tariff) and carbon on each line. | M |
 
 **Exit:** for the synthetic home, room heating and consumption add up to the home's totals within meter tolerance.
 

@@ -99,3 +99,24 @@ export async function placePlantPoints(homeId) {
   }
   return moved;
 }
+
+/**
+ * Two things became one (core/things.js mergeThings): each current point of the dropped thing is merged into the survivor's point of the same
+ * key (made if the survivor has none). The dropped point's series move to it where it has no series of the same metric and source; the others
+ * stay on the dropped point, which says where it went (`merged_into`), so a timeline reads both. Bindings follow. Returns the points merged.
+ */
+export async function mergePoints(dropId, keepId, stamp = Date.now()) {
+  let n = 0;
+  for (const p of await db.prepare('SELECT id, key, metric_id, class, access, capability FROM point WHERE thing_id = ? AND superseded_at IS NULL ORDER BY id').all(dropId)) {
+    let to = (await db.prepare('SELECT id FROM point WHERE thing_id = ? AND key = ? AND superseded_at IS NULL').get(keepId, p.key))?.id;
+    if (to == null) {
+      to = (await db.prepare('INSERT INTO point (thing_id, key, metric_id, class, access, capability) VALUES (?, ?, ?, ?, ?, ?) RETURNING id').get(keepId, p.key, p.metric_id, p.class, p.access, p.capability)).id;
+    }
+    await db.prepare(`UPDATE series SET point_id = ? WHERE point_id = ? AND NOT EXISTS
+      (SELECT 1 FROM series s2 WHERE s2.point_id = ? AND s2.metric_id = series.metric_id AND s2.source_id = series.source_id)`).run(to, p.id, to);
+    await db.prepare('UPDATE point_binding SET point_id = ? WHERE point_id = ?').run(to, p.id);
+    await db.prepare('UPDATE point SET superseded_at = GREATEST(recorded_at, ?), merged_into = ? WHERE id = ?').run(stamp, to, p.id);
+    n++;
+  }
+  return n;
+}

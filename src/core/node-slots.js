@@ -51,9 +51,16 @@ export function untracked(homeKwh, trackedKwh, tolerance = METER_TOLERANCE_KWH) 
   return x < 0 ? (x >= -tolerance ? 0 : null) : Math.round(x * 1e9) / 1e9;   // a total below the tracked devices by more than the tolerance is a meter problem, not a negative use
 }
 
+// Every placement and membership of the home, ended ones too, with the time each held (null: unbounded): a slot is rolled up from the places things
+// were in then, not from where they are now.
 async function homeEdges(homeId) {
-  return (await db.prepare(`SELECT from_id, to_id, required FROM thing_relation WHERE home_id = ? AND rel IN ('located_in', 'part_of') AND superseded_at IS NULL AND valid_to IS NULL`).all(homeId))
-    .map((r) => ({ from: Number(r.from_id), to: Number(r.to_id), required: Number(r.required) }));
+  return (await db.prepare(`SELECT from_id, to_id, required, valid_from, valid_to FROM thing_relation WHERE home_id = ? AND rel IN ('located_in', 'part_of') AND superseded_at IS NULL`).all(homeId))
+    .map((r) => ({ from: Number(r.from_id), to: Number(r.to_id), required: Number(r.required), vf: r.valid_from == null ? null : Number(r.valid_from), vt: r.valid_to == null ? null : Number(r.valid_to) }));
+}
+/** The things in a place over a window, as segments: [{ from, members: Map(id -> required) }] that change where a placement starts or ends. PURE. */
+export function membershipOver(rootId, edges, winFrom, winTo) {
+  const cuts = [winFrom, ...[...new Set(edges.flatMap((e) => [e.vf, e.vt]).filter((x) => x != null && x > winFrom && x < winTo))].sort((a, b) => a - b)];
+  return cuts.map((from) => ({ from, members: new Map(membersOf(rootId, edges.filter((e) => (e.vf ?? -Infinity) <= from && from < (e.vt ?? Infinity))).map((m) => [m.id, m.required])) }));
 }
 
 /**
@@ -93,7 +100,9 @@ export async function buildNodeSlots(thingId, fromDate, toDate, { builtAt = nowS
   const tz = t.timezone ?? 'UTC';
   const [winFrom] = dayBounds(tz, fromDate); const winTo = dayBounds(tz, toDate)[1];
   const edges = await homeEdges(homeId);
-  const members = membersOf(thingId, edges);
+  const segments = membershipOver(thingId, edges, winFrom, winTo);
+  const members = [...new Set(segments.flatMap((s) => [...s.members.keys()]))].map((id) => ({ id }));   // everything that was in the place at some time in the window
+  const segmentAt = (start) => { let k = 0; while (k + 1 < segments.length && segments[k + 1].from <= start) k++; return segments[k].members; };
   const things = new Map((await db.prepare(`SELECT id, type FROM thing WHERE home_id = ? AND superseded_at IS NULL AND merged_into IS NULL`).all(homeId)).map((x) => [Number(x.id), x.type]));
   const slotsOfPoint = async (memberId, metric) => {
     const p = await db.prepare('SELECT p.id FROM point p JOIN metric m ON m.id = p.metric_id WHERE p.thing_id = ? AND m.code = ? AND p.superseded_at IS NULL').get(memberId, metric);
@@ -143,7 +152,10 @@ export async function buildNodeSlots(thingId, fromDate, toDate, { builtAt = nowS
     curDur = dur;
     const got = {};
     for (const l of lines) {
-      const r = rollUp(l.members.map((m) => ({ id: m.id, required: m.required, value: m.slots.get(start)?.[l.field] ?? null, coverage: m.slots.get(start)?.coverage ?? 0 })), l.how);
+      const here = segmentAt(start);
+      const inside = l.members.filter((m) => here.has(m.id));
+      if (!inside.length) continue;
+      const r = rollUp(inside.map((m) => ({ id: m.id, required: here.get(m.id), value: m.slots.get(start)?.[l.field] ?? null, coverage: m.slots.get(start)?.coverage ?? 0 })), l.how);
       if (r.value == null) continue;
       got[l.metric] = r;
       row(l.metric, r);

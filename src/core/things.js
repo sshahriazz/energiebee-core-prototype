@@ -134,6 +134,11 @@ async function begin(siteId) {
   await db.prepare("SELECT set_config('thing.record_ms', ?, true) AS v").get(String(stamp));
   return stamp;
 }
+/** Takes a home's lock for the rest of the transaction (the library's own operations take it too): read facts after it, then write. */
+export async function lockHome(siteId) {
+  if (!inTx()) throw new Error('lockHome needs a transaction');
+  await db.prepare('SELECT 1 AS x FROM (SELECT pg_advisory_xact_lock(hashtext(?), ?::int)) l').get('eb_thing_home', siteId);
+}
 // The home of a thing, read before the lock (a thing's home never changes).
 async function siteOf(ref) {
   const k = refKey(ref);
@@ -735,7 +740,7 @@ export async function relationsAt(siteId, { rels = null, thing = null, ...o } = 
   const { at, known } = when(o);
   const v = visible('r', { at, known });
   const id = thing == null ? null : (await getThing(thing)).id;
-  return await db.prepare(`SELECT r.id, r.home_id, r.from_id, f.uid AS from_uid, r.from_port, r.rel, r.to_id, t.uid AS to_uid, r.to_port, r.required, r.valid_from, r.valid_to, r.changed_at, r.recorded_at, r.superseded_at
+  return await db.prepare(`SELECT r.id, r.uid, r.home_id, r.from_id, f.uid AS from_uid, r.from_port, r.rel, r.to_id, t.uid AS to_uid, r.to_port, r.required, r.valid_from, r.valid_to, r.changed_at, r.recorded_at, r.superseded_at
       FROM thing_relation r JOIN thing f ON f.id = r.from_id JOIN thing t ON t.id = r.to_id
       WHERE r.home_id IS NOT DISTINCT FROM ?::bigint AND ${v.sql} AND (?::jsonb IS NULL OR r.rel IN (SELECT jsonb_array_elements_text(?::jsonb)))
         AND (?::bigint IS NULL OR r.from_id = ? OR r.to_id = ?)

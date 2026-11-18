@@ -41,6 +41,7 @@ import * as devicesView from './core/devices-view.js';
 import { createSyntheticIotHome } from './core/synthetic-iot.js';
 import * as pushIngest from './core/push-ingest.js';
 import { mapAsync } from "./core/async.js";
+import { ensureAllHomes } from './core/energy-graph.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Exported so tests can serve it on a spare port; it listens (and syncs) only when this file is
@@ -648,7 +649,7 @@ app.get('/api/sites/:id/everything', async (req, res) => {
   // By provider (the order of the (site_id, provider) index the read always used), stated so that
   // planner statistics (PRAGMA optimize) cannot reorder the keys.
   const conns = Object.fromEntries((await db.prepare('SELECT provider, external_ref, status, last_success_at, last_error FROM connection WHERE site_id = ? ORDER BY provider').all(s.id)).map((c) => [c.provider, c]));
-  const devices = await db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL').all(s.id);
+  const devices = await db.prepare('SELECT kind, provider, external_ref, label, attrs FROM device WHERE site_id = ? AND retired_at IS NULL AND provider <> \'thing\'').all(s.id);
   const mask = (ref) => (ref && ref.length > 6 ? `…${ref.slice(-4)}` : ref);
   res.json({
     from, to, start, end: tEnd, now, timezone: s.timezone, rows, forecast, events, ...ledgerOf(s), provenance: await provenanceOf(s, from, to),
@@ -845,6 +846,7 @@ app.get('/api/connectors', async (req, res) => res.json(await connectors(db)));
 app.get('/api/compatibility', async (req, res) => res.json(await compatibility(db)));
 app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
 app.use('/api', (await import('./routes/prices.js')).default);   // price slots: GET /api/tariffs/:id/slots, /api/sites/:id/prices (src/core/tariff-slots.js)
+app.use('/api', (await import('./routes/things.js')).default);   // the thing graph: /api/homes/:uid/graph, /api/things/:uid (src/routes/things.js)
 
 // ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
 // What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,
@@ -960,6 +962,10 @@ export async function start() {
   const server = app.listen(port, async () => {
     startRawCheckSchedule(rawCheck);   // background: the first run does not hold up the first request
     const minutes = startScheduler();
+    // Every home's energy graph (plant, spaces, wiring) from what is known of it; idempotent, a few reads per home when there is nothing to do.
+    const graph = await ensureAllHomes().catch((err) => ({ created: 0, related: 0, failed: [{ error: err.message }] }));
+    for (const f of graph.failed) console.error(`energy graph of home ${f.homeId ?? ''}: ${f.error}`);
+    if (graph.created || graph.related) console.log(`energy graph: ${graph.created} thing(s) and ${graph.related} relation(s) made`);
     // Control cycles run only for registered vendor drivers (jobs/control.js); none ship yet, so this is idle.
     if (registeredDrivers().length) startControlScheduler(Number(process.env.CONTROL_EVERY_SECONDS) || 30);
     console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);

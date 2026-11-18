@@ -261,7 +261,7 @@ export async function onboarding(siteId) {
         bindings: await mapAsync(current.filter((b) => b.role === role).sort((a, b) => (a.from ?? -Infinity) - (b.from ?? -Infinity) || a.priority - b.priority || a.id - b.id), async (b) => ({ ...b, data: await dataFor(b.source), defaultChannels: defaultsOf(b.source) })),
       }));
   const channels = await channelRows(site.id);
-  const devices = await db.prepare('SELECT id, kind, provider, label, retired_at AS "retiredAt" FROM device WHERE site_id = ? ORDER BY id').all(site.id);
+  const devices = await db.prepare('SELECT id, kind, provider, label, retired_at AS "retiredAt" FROM device WHERE site_id = ? AND provider <> \'thing\' ORDER BY id').all(site.id);
   const rj = await rejects(site.id, { days: 7 });
   return {
     site: { id: site.id, name: site.name, timezone: site.timezone, slot_s: site.slot_s ?? 1800, currency: site.currency ?? 'GBP' },

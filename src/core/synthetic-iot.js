@@ -19,6 +19,7 @@ import { createSimulatedDriver, runControlCycle } from './executor.js';
 import { enqueueIfChanged, getCommand, commandLog } from './commands.js';
 import { todMinute, localDate, nowSec } from './time.js';
 import { mapAsync } from "./async.js";
+import { ensureEnergyGraph } from './energy-graph.js';
 
 export const ENV_KEY = 'synthetic_iot';
 export const STEP_S = 300;                 // one reading every five minutes
@@ -28,11 +29,11 @@ const BATTERY_KWH = 10;
 
 // What each device is. kind is a device_kind row, source the source its readings belong to.
 export const DEVICES = [
-  { key: 'plug', kind: 'smart_plug', source: 'synthetic_plug', ref: 'synthetic-plug-1', label: 'Smart plug: heater (synthetic)', roles: ['plug_energy'] },
-  { key: 'heatpump', kind: 'heat_pump', source: 'synthetic_heatpump', ref: 'synthetic-heatpump-1', label: 'Heat pump (synthetic)', roles: ['heat_pump_energy', 'heat_output_energy', 'heat_telemetry'] },
+  { key: 'plug', kind: 'smart_plug', source: 'synthetic_plug', ref: 'synthetic-plug-1', label: 'Smart plug: heater (synthetic)', room: 'Living room', roles: ['plug_energy'] },
+  { key: 'heatpump', kind: 'heat_pump', source: 'synthetic_heatpump', ref: 'synthetic-heatpump-1', label: 'Heat pump (synthetic)', room: 'Utility room', roles: ['heat_pump_energy', 'heat_output_energy', 'heat_telemetry'] },
   { key: 'ev', kind: 'ev_charger', source: 'synthetic_evcharger', ref: 'synthetic-evcharger-1', label: 'EV charger (synthetic)', roles: ['ev_charger_energy'] },
   { key: 'battery', kind: 'battery', source: 'synthetic_battery', ref: 'synthetic-battery-1', label: 'Battery (synthetic)', roles: [] },
-  { key: 'sensor', kind: 'temperature_sensor', source: 'synthetic_sensor', ref: 'synthetic-sensor-1', label: 'Living room temperature sensor (synthetic)', roles: ['heat_telemetry'] },
+  { key: 'sensor', kind: 'temperature_sensor', source: 'synthetic_sensor', ref: 'synthetic-sensor-1', label: 'Living room temperature sensor (synthetic)', room: 'Living room', roles: ['heat_telemetry'] },
 ];
 const SOURCE_NAMES = {
   synthetic_plug: 'Synthetic smart plug (generated, not a real device)',
@@ -194,6 +195,9 @@ export async function createSyntheticIotHome({ days = 3, now = nowSec() } = {}) 
     });
   const dev = await devicesOf(site.id);
   const tz = site.timezone;
+  // Its energy graph is declared, not guessed: a synthetic inverter, the rooms its devices are in, the driveway from its charger.
+  const rooms = [...new Set(DEVICES.map((d) => d.room).filter(Boolean))].map((name) => ({ name, things: DEVICES.filter((d) => d.room === name).map((d) => dev[d.key].id) }));
+  await ensureEnergyGraph(site.id, { declare: { inverter: 'Inverter (synthetic)', rooms } });
 
   // Channels: what the device kind brings, plus the points the kind does not know.
   for (const d of DEVICES) await ensureChannels(site.id, d.source, dev[d.key].id);

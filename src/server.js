@@ -850,6 +850,7 @@ app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // D
 app.use('/api', (await import('./routes/prices.js')).default);   // price slots: GET /api/tariffs/:id/slots, /api/sites/:id/prices (src/core/tariff-slots.js)
 app.use('/api', (await import('./routes/things.js')).default);   // the thing graph: /api/homes/:uid/graph, /api/things/:uid (src/routes/things.js)
 app.use('/api', (await import('./routes/controls.js')).default);   // what a thing can be asked, requests and their winners, a request on a room, scenes (src/routes/controls.js)
+app.use('/api', (await import('./routes/home-integrations.js')).default);   // each connection with its health, linked things and last raw answer (src/routes/home-integrations.js)
 
 // ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
 // What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,

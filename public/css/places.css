@@ -1,0 +1,25 @@
+/* Places: the home, its floors, rooms and devices, one panel for what is selected (public/js/pages/places.js). */
+.pl { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 800px) { .pl { grid-template-columns: 1fr; } }
+.pl-tree, .pl-panel { background: var(--surface, var(--card, #fff)); border: 1px solid var(--border, #e3e3e3); border-radius: 12px; padding: 12px 14px; }
+.pl-tree ul { list-style: none; margin: 0; padding-left: 14px; }
+.pl-tree > ul { padding-left: 0; }
+.pl-tree li { margin: 2px 0; }
+.pl-tree button { all: unset; cursor: pointer; padding: 3px 6px; border-radius: 6px; display: inline-block; max-width: 100%; box-sizing: border-box; }
+.pl-tree button:hover, .pl-tree button:focus-visible { background: var(--hover, rgba(128, 128, 128, .15)); }
+.pl-tree button[aria-current="true"] { font-weight: 600; background: var(--hover, rgba(128, 128, 128, .2)); }
+.pl-tree small, .pl-crumb, .pl-note { color: var(--text-3, #777); }
+.pl-tree h3, .pl-panel h2, .pl-panel h3 { margin: 12px 0 6px; font-size: 1rem; }
+.pl-panel h2 { margin-top: 0; font-size: 1.2rem; }
+.pl-crumb { font-size: .85rem; margin-bottom: 6px; }
+.pl-crumb button { all: unset; cursor: pointer; text-decoration: underline; }
+.pl-chart { margin: 8px 0 14px; }
+.pl-chart h3 { margin: 0 0 2px; }
+.pl-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.pl-table td, .pl-table th { padding: 3px 8px 3px 0; text-align: left; vertical-align: top; }
+.pl-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.pl-actions input[type=number] { width: 5.5em; }
+.pl-msg { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: var(--hover, rgba(128, 128, 128, .12)); }
+.pl-msg.bad { background: rgba(200, 40, 40, .15); }
+.pl-place { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+.pl-chip { font-size: .75rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border, #ccc); }

@@ -187,8 +187,8 @@ across other runs, clears after a good check, 404 for an unknown home); settings
 calls `start()` with a bad RAW_VERIFY, RAW_VERIFY_BATCH or RAW_VERIFY_HOURS and is refused before it listens; landing the same
 body again writes a lost file back (home and home-less) and a detached raw store is not recreated; `redacted-` names are skipped
 and other outside names are `missing`; and the retention cases above. The `RAW_DIR` child process also reads a receipt through
-the explorer (`rawOne`). The tests no longer depend on each other's damage for what they assert; they still share one database,
-so run the file whole, not with `--test-name-pattern`. `test/rules-rawstore.test.js` breaks `raw_check_run_fixed` on purpose.
+the explorer (`rawOne`). The tests share one database and some damage (the retention test compares against the problems found before it), so run the
+file whole, not with `--test-name-pattern`. `test/rules-rawstore.test.js` breaks `raw_check_run_fixed` on purpose.
 
 Run and passing in this checkout, after the round 2 changes: raw-store (16), rules-rawstore (2), rules-all (2), table-kinds (4),
 retention (6), delete-home (5), erasure (3), ingest-durability (3), explorer (12), replay-sunsynk (10), tounify (33). The whole suite was not run (the

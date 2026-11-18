@@ -147,7 +147,7 @@ export async function seriesId(subjectKind, subjectId, metric, source) {
   if (seriesCache.has(key)) return seriesCache.get(key);
   // The series is the feed of a source into the point of the subject's thing for this metric (made on first use).
   const mid = await metricId(metric);
-  const args = [await pointOf(await subjectThing(subjectKind, subjectId), mid), mid, await sourceId(source)];
+  const args = [await pointOf(await subjectThing(subjectKind, subjectId, metric), mid), mid, await sourceId(source)];
   let row = await findSeries.get(...args);
   if (!row) row = { id: Number((await insertSeries.run(...args)).lastInsertRowid) };
   seriesCache.set(key, row.id);

@@ -29,7 +29,7 @@ export async function buildPointSlots(pointId, fromDate, toDate, { builtAt = now
   const home = p.home_id == null ? null : await db.prepare('SELECT timezone, slot_s FROM site WHERE id = ?').get(p.home_id);
   const tz = home?.timezone ?? 'UTC';
   const slotS = home ? slotLength(home) : 1800;
-  const series = (await db.prepare(`SELECT s.id, so.code AS source, so.traits FROM series s JOIN source so ON so.id = s.source_id WHERE s.point_id = ? ORDER BY so.code`).all(pointId))
+  const series = (await db.prepare(`SELECT s.id, so.code AS source, so.traits FROM series s JOIN source so ON so.id = s.source_id WHERE (s.point_id = ? OR s.point_id IN (SELECT m.id FROM point m WHERE m.merged_into = ?)) ORDER BY s.id`).all(pointId, pointId))
     .filter((s) => !JSON.parse(s.traits || '{}').forecastOnly);
   const rank = await sourceRank(p.home_id);
   const [winFrom] = dayBounds(tz, fromDate); const winTo = dayBounds(tz, toDate)[1];

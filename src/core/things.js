@@ -626,9 +626,12 @@ export async function mergeThings(keepRef, dropRef, { siteId, reason } = {}) {
       }
     }
 
+    // The dropped thing's points become the survivor's (their feeds with them), before the other tables are moved.
+    const tables = { point: { merged: await (await import('./points.js')).mergePoints(drop.id, keep.id, stamp) } };
+
     // Other tables that name the dropped thing.
-    const tables = {};
     for (const ref of await thingReferences()) {
+      if (ref.table === 'point') continue;   // done above
       const key = `${ref.table}.${ref.column}`;
       if (HISTORY_KINDS.has(ref.kind)) {
         tables[key] = { kept: Number((await db.prepare(`SELECT COUNT(*) AS n FROM ${q(ref.table)} WHERE ${q(ref.column)} = ?`).get(drop.id)).n), why: `${ref.kind}: append-only, stays on the thing it was written for (follow merged_into)` };

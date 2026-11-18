@@ -115,3 +115,14 @@ await test('cost and carbon on each energy line: the slot\'s energy at the slot\
   assert.equal((await get(room.id, 'energy_cost_minor')).value, 50, '2 kWh at 25 minor units');
   assert.equal((await get(room.id, 'energy_carbon_g')).value, 400, '2 kWh at 200 g/kWh: the slot is 900 s at 100 and 900 s at 300');
 });
+
+await test('what was in a place at a time: placements that end and begin split the window into segments (pure)', async () => {
+  const { membershipOver } = await import('../src/core/node-slots.js');
+  const edges = [{ from: 2, to: 1, required: 1, vf: 0, vt: 100 }, { from: 2, to: 3, required: 1, vf: 100, vt: null }, { from: 3, to: 9, required: 1, vf: null, vt: null }, { from: 4, to: 1, required: 0, vf: null, vt: null }];
+  const seg = membershipOver(1, edges, 0, 200);
+  assert.deepEqual(seg.map((s) => [s.from, [...s.members]]), [[0, [[2, true], [4, false]]], [100, [[4, false]]]], 'the plug is in place 1 until 100, then it is in place 3');
+  assert.deepEqual(membershipOver(3, edges, 0, 200).map((s) => [s.from, [...s.members.keys()]]), [[0, []], [100, [2]]]);
+  const { firstHoldsBack } = await import('../src/core/node-slots.js');
+  const written = [{ from: 5, to: 1, rel: 'located_in', required: 1, vf: 500, vt: 900 }, { from: 5, to: 2, rel: 'located_in', required: 1, vf: 900, vt: null }];
+  assert.deepEqual(firstHoldsBack(written).map((e) => e.vf), [null, 900], 'the first placement holds back to the start of time; the move keeps its own start');
+});

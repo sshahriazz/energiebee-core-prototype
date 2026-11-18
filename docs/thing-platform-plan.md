@@ -207,9 +207,9 @@ Give every thing its own timeline on the shared grid, and roll them up.
 
 | # | Work | Size |
 |---|---|---|
-| 6.1 | Home → Floor → Room → Device navigation. Each level shows its timeline, its events and its controls. It replaces the Devices page. | L |
-| 6.2 | Onboarding: after a provider is connected, show the discovered devices and ask the owner to place each one in a room. | M |
-| 6.3 | Integration page: each connection with its health, linked things and last raw answer. | M |
+| 6.1 | partly 2026-11-18 (see `docs/build/pages.md`): the Places page, Home → Floor → Room → Device with timeline, events, controls and connections. **Not done:** it does not replace the Devices page (push set-up and the demo simulator are still there). Original: Home → Floor → Room → Device navigation. Each level shows its timeline, its events and its controls. It replaces the Devices page. | L |
+| 6.2 | partly 2026-11-18 (see `docs/build/pages.md`): devices without a room are listed on the home's panel to be placed, and a room can be added. **Not done:** onboarding does not send the owner there after a provider is connected. Original: Onboarding: after a provider is connected, show the discovered devices and ask the owner to place each one in a room. | M |
+| 6.3 | ✅ 2026-11-18 (see `docs/build/pages.md`): the Integrations page and `GET /api/homes/:uid/integrations`. Original: Integration page: each connection with its health, linked things and last raw answer. | M |
 
 **Exit:** an owner can find any device by room, see its timeline beside its room's, and control it.
 

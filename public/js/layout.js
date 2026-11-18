@@ -4,9 +4,9 @@ import { api, setUser, ago, esc, fmt, setCurrency, setSlot, slotNoun, slotNouns,
 // The pages in nav order, in groups. A wide screen shows them in one row (the group names hidden); a narrow one
 // shows the Menu button and the groups in a drawer.
 const PAGE_GROUPS = [
-  ['Your energy', [['my', 'My energy', '/my'], ['index', 'Home', '/'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown']]],
+  ['Your energy', [['my', 'My energy', '/my'], ['index', 'Home', '/'], ['places', 'Places', '/places'], ['everything', 'Timeline', '/timeline'], ['breakdown', 'Breakdown', '/breakdown']]],
   ['Energy and prices', [['solar', 'Solar', '/solar'], ['battery', 'Battery', '/battery'], ['grid', 'Grid', '/grid'], ['tariffs', 'Tariffs', '/tariffs'], ['ev', 'EV', '/ev']]],
-  ['Data and setup', [['data', 'Data & trust', '/data'], ['connectors', 'Connectors', '/connectors'], ['providers', 'Providers', '/providers'], ['devices', 'Devices', '/devices'],
+  ['Data and setup', [['data', 'Data & trust', '/data'], ['connectors', 'Connectors', '/connectors'], ['providers', 'Providers', '/providers'], ['integrations', 'Integrations', '/integrations'], ['devices', 'Devices', '/devices'],
     ['compatibility', 'Compatibility', '/compatibility'], ['explorer', 'Data Explorer', '/explorer']]],
 ];
 const NARROW = '(max-width: 1100px)';   // the same width as the drawer rule in app.css

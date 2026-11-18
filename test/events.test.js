@@ -39,10 +39,25 @@ await test('state changes, events and commands of a device, oldest first', async
 
 await test('a place has the events of everything in it, each saying which thing; a window outside has none', async () => {
   const all = await eventsOf(room.id, T0, T0 + 3600);
-  assert.deepEqual(all.filter((e) => e.kind !== 'command').map((e) => [e.thing.type, e.what]), [['smart_plug', 'plug_on'], ['heat_pump', 'event_defrost'], ['smart_plug', 'plug_on']]);
+  assert.deepEqual(all.filter((e) => e.kind !== 'command').map((e) => [e.thing.type, e.what]), [['smart_plug', 'plug_on'], ['smart_plug', 'plug_on'], ['heat_pump', 'event_defrost']]);
   const whole = await eventsOf(home.id, T0, T0 + 3600);
   assert.equal(whole.filter((e) => e.kind !== 'command').length, 3, 'the home holds the room that holds them');
   assert.equal((await eventsOf(room.id, T0 + 7200, T0 + 9000)).length, 0);
   assert.equal((await eventsOf(room.id, T0, T0 + 3600, { limit: 1 })).length, 1, 'the newest are kept');
   await assert.rejects(() => eventsOf(999999, T0, T0 + 1), /no such thing/);
+});
+
+await test('GET /api/things/:uid/events: entries name their thing by uid; the window and the limit are checked', async () => {
+  process.env.USER_SWITCHER = '1';
+  const { app } = await import('../src/server.js');
+  const server = app.listen(0); server.unref();
+  const call = async (p) => { const r = await fetch(`http://127.0.0.1:${server.address().port}${p}`); return { status: r.status, body: await r.json() }; };
+  const uid = (await db.prepare('SELECT uid FROM thing WHERE id = ?').get(room.id)).uid;
+  const r = await call(`/api/things/${uid}/events?from=${T0}&to=${T0 + 3600}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.events.filter((e) => e.kind !== 'command').map((e) => [e.kind, e.what, e.thing.type]), [['state', 'plug_on', 'smart_plug'], ['state', 'plug_on', 'smart_plug'], ['event', 'event_defrost', 'heat_pump']]);
+  assert.ok(r.body.events.every((e) => /^[0-9a-f-]{36}$/.test(e.thing.uid)), 'a thing is its uid');
+  assert.ok(!JSON.stringify(r.body).includes('"id"'), 'no integer id');
+  assert.equal((await call(`/api/things/${uid}/events?from=${T0}&to=${T0 + 40 * 86400}`)).status, 400);
+  assert.equal((await call(`/api/things/${uid}/events?from=${T0}&to=${T0 + 60}&limit=0`)).status, 400);
 });

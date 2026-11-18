@@ -42,6 +42,7 @@ import { inputsProvenance, dataOriginOf } from './provenance.js';
 import { buildHeat, hasHeatingSeries, HEAT_METHOD_VERSION } from './heat.js';
 import { reduceAsync, flatMapAsync, mapAsync, someAsync } from "./async.js";
 import { homeTopology } from './topology.js';
+import { buildLayers, staleDays } from './layers.js';
 
 export const METHOD_VERSION = 'v4-gaps-filled';
 
@@ -876,9 +877,14 @@ export async function processQueue({ siteId = null, maxHomes = Infinity } = {}) 
     const from = res.ranges[0]?.from ?? null;
     // Heating rows (site_heat_slot, src/core/heat.js) only for a home with a heating series: one query otherwise.
     const heat = from && builtTo && await hasHeatingSeries(id) ? await buildHeat(id, from, builtTo) : null;
+    // The layers above: every point's slots, then every place's, over the days rebuilt (and over any days built by an older method).
+    const stale = await staleDays(id);
+    const layerFrom = stale && (!from || stale.from < from) ? stale.from : from;
+    const layerTo = stale && (!builtTo || stale.to > builtTo) ? stale.to : builtTo;
+    const layers = layerFrom && layerTo ? await buildLayers(id, layerFrom, layerTo) : null;
     // Processed requests are removed (only those read here: one queued meanwhile waits for the next call).
     await db.prepare('DELETE FROM rebuild_queue WHERE id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)').run(JSON.stringify(requests.map((r) => r.id)));
-    out.push({ siteId: id, from, to: builtTo, ms: Date.now() - t0, ...res, ...(heat ? { heat: { days: heat.days, slots: heat.slots } } : {}) });
+    out.push({ siteId: id, from, to: builtTo, ms: Date.now() - t0, ...res, ...(heat ? { heat: { days: heat.days, slots: heat.slots } } : {}), ...(layers && (layers.pointSlots || layers.nodeSlots) ? { layers } : {}) });
   }
   // Fresh planner statistics after a rebuild (cheap when nothing is out of date).
   if (out.length) await optimizeDb();

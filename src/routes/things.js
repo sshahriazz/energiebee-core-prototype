@@ -11,6 +11,8 @@ import { canSee, visibleSiteIds } from '../core/users.js';
 import * as T from '../core/things.js';
 import { stateOf } from '../core/point-state.js';
 import { readPointSlots } from '../core/point-slots.js';
+import { eventsOf } from '../core/events.js';
+import { lanesOf, LANE_NAMES } from '../core/lanes.js';
 import { readNodeSlots } from '../core/node-slots.js';
 import { dayBounds, localDate } from '../core/time.js';
 import { parseAt, parseKnown, viewThing, viewThings, viewRelations, viewTree, viewHistory, lookup, scrub } from '../core/things-view.js';
@@ -219,7 +221,31 @@ router.get('/things/:uid/timeline', route(async (req) => {
     if (!slots.length) continue;
     lines.push({ key: p.key, metric: p.metric, unit: p.unit, class: p.class, slots, ...(res === 'day' ? { days: day(slots, (l) => dayOfPoint(p.class, l)) } : {}) });
   }
-  return { body: { thing: await viewThing(thing), kind: 'device', from, to, lines } };
+  const asked = req.query.lanes == null ? null : String(req.query.lanes).split(',').filter(Boolean);
+  if (asked && (!asked.length || asked.some((l) => !LANE_NAMES.includes(l)))) throw bad(`lanes is a list of ${LANE_NAMES.join(', ')}`);
+  return { body: { thing: await viewThing(thing), kind: 'device', from, to, lines, ...(asked ? { lanes: await lanesOf(thing, from, to, asked) } : {}) } };
+}));
+
+router.get('/things/:uid/events', route(async (req) => {
+  const { thing } = await guard(req, req.params.uid);
+  if (thing.home_id == null) return { body: { events: [] } };
+  const tz = (await db.prepare('SELECT timezone FROM site WHERE id = ?').get(thing.home_id))?.timezone ?? 'UTC';
+  const stamp = (v, edge) => {
+    if (v == null || v === '') return null;
+    if (/^\d{1,11}$/.test(String(v))) return Number(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return dayBounds(tz, String(v))[edge];
+    throw bad('from and to are epoch seconds or local dates (YYYY-MM-DD)');
+  };
+  const today = dayBounds(tz, localDate(tz, Math.floor(Date.now() / 1000)));
+  const from = stamp(req.query.from, 0) ?? today[0];
+  const to = stamp(req.query.to, 1) ?? today[1];
+  if (!(to > from)) throw bad('to is after from');
+  if (to - from > 31 * 86400 + 3600) throw bad('at most 31 days at a time');
+  const limit = req.query.limit == null ? 500 : Number(req.query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw bad('limit is 1 to 500');
+  const events = await eventsOf(thing.id, from, to, { limit });
+  const uids = await lookup(events.map((e) => e.thing?.id));
+  return { body: { from, to, events: events.map((e) => ({ ts: e.ts, kind: e.kind, what: e.what, detail: e.detail, thing: e.thing ? { uid: uids.get(e.thing.id)?.uid, name: e.thing.name, type: e.thing.type } : null })) } };
 }));
 
 router.get('/things/:uid/place', route(async (req) => {

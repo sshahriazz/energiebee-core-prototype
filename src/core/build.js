@@ -34,7 +34,7 @@ import { devicesAt } from './devices.js';
 import { bindingsFor, sourceAt, holdSOf, FILL_MAX_S } from './inputs.js';
 import { siteAt } from './versions.js';
 import { loadPricing } from './pricing.js';
-import { supplyPricer, dropOtherLengths, readSubMeterFacts } from './supply-price.js';
+import { supplyPricer, dropOtherLengths, dropStaleSlots, readSubMeterFacts } from './supply-price.js';
 import { unitInc } from './slot-price.js';
 import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
@@ -339,7 +339,7 @@ async function build(siteId, fromDate, toDate, opts) {
   // The home's price slots: the stored ones for a current build (computed and stored where missing; nothing is written in a dry
   // run), the same maths in memory for a build as known at a moment and for the trace of one slot.
   const pricer = await supplyPricer({ siteId, p: pricing, slotS, tz, materialise: asOf == null && !T, persist: !opts.dryRun });
-  if (asOf == null && !T && !opts.dryRun) await dropOtherLengths(siteId, slotS);
+  if (asOf == null && !T && !opts.dryRun) { await dropOtherLengths(siteId, slotS); await dropStaleSlots(siteId, pricer.stamp); }
   // Sub-meters with a tariff of their own (R11): their energy is priced with it and taken out of the main meter's priced energy.
   const subMeters = await mapAsync(pricer.subMeters, async (m) => ({ ...m, facts: await readSubMeterFacts(m.deviceId, winStart, winEnd) }));
   const dataOrigin = dataOriginOf(site);

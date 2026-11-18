@@ -19,6 +19,8 @@ import { createSite } from '../core/sites.js';
 import { plan, newCycle, adapterFor, providersFor } from '../core/providers.js';
 import { INITIAL_DAYS, resumeDate } from './steps.js';
 
+const PRICE_MARKS_PER_SYNC = 20;   // marks of each scope one home's sync works off; the rest waits for the next sync or start
+
 export { resumeDate };
 const env = process.env;
 const running = new Set();
@@ -238,7 +240,15 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
     }
     // Price changes marked by the write functions (rate rows, windows, tax rules, agreements): each shared change is worked off once and the
     // homes it reaches are queued, so this home's rebuild below also covers what changed in its prices since its last sync.
-    await processPriceQueue();
+    // Bounded (the rest waits for the next sync or start) and guarded: a failing mark is counted on its row and shows here as a failed step, it
+    // never stops this home's build or another home's sync.
+    const tp = Date.now();
+    try {
+      const priced = await processPriceQueue({ maxMarks: PRICE_MARKS_PER_SYNC });
+      log.push({ step: 'prices', ok: priced.failed.length === 0, ms: Date.now() - tp, queued: priced.queued, ...(priced.failed.length ? { error: priced.failed.map((f) => `${f.scope} ${f.id ?? ''}: ${f.error}`).join('; ') } : {}) });
+    } catch (err) {
+      log.push({ step: 'prices', ok: false, ms: Date.now() - tp, error: err.message });
+    }
     const t0 = Date.now();
     const rebuilt = await processQueue({ siteId });
     log.push({ step: 'build', ok: true, ms: Date.now() - t0, rebuilt });

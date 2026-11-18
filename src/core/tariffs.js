@@ -19,7 +19,7 @@ import { currency as currencyOf } from './money.js';
 import { checkOrigin } from './provenance.js';
 import { dayBounds, addDays, recordedNow } from './time.js';
 import { mapAsync } from "./async.js";
-import { markTariffDirty, markHomeDirty } from './price-marks.js';
+import { markTariffDirty, markTariffColumnsDirty, markHomeDirty } from './price-marks.js';
 
 const KINDS = ['flat', 'tou', 'calendar_tou', 'dynamic', 'spot_indexed', 'dispatch', 'market'];
 
@@ -175,13 +175,16 @@ export async function storeWindows(tariffId, {
   windows = [], registerPrices, tz, fromDate, toDate, calendar = null, defaultRegister = null, deviceId = null, siteId = null,
   estimate = null, recordedAt = recordedNow(), origin = null, originNote = null,
 }) {
-  const t = await db.prepare('SELECT structure, origin, origin_note FROM tariff WHERE id = ?').get(tariffId);
+  const t = await db.prepare('SELECT structure, origin, origin_note, default_register FROM tariff WHERE id = ?').get(tariffId);
   if (t?.structure !== 'windows') throw new Error(`tariff ${tariffId}: register windows are stored only for structure 'windows'`);
   const label = { origin: origin ?? t.origin, originNote: originNote ?? t.origin_note, recordedAt };
   checkOrigin(label.origin, `register windows of tariff ${tariffId}`);
   let rows;
   await tx(async () => {
-        if (defaultRegister) await db.prepare('UPDATE tariff SET default_register = ? WHERE id = ?').run(defaultRegister, tariffId);
+        if (defaultRegister && defaultRegister !== t.default_register) {
+          await db.prepare('UPDATE tariff SET default_register = ? WHERE id = ?').run(defaultRegister, tariffId);
+          await markTariffColumnsDirty(tariffId, ['default_register']);
+        }
         for (const c of [calendar].flat().filter(Boolean)) await putCalendar(c, label);
         await putWindows(tariffId, windows, label);
         rows = await expandStored(tariffId, { registerPrices, tz, fromDate, toDate, deviceId, estimate });

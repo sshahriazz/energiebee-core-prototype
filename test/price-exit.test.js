@@ -7,6 +7,8 @@
 // "Validity" of a tariff is where it has price runs: a tariff with no rate rows at all (the fixture holds several, held only by old
 // agreements) has no validity to be gapless in, and is counted as such; a hole between two blocks of runs is not inside a block.
 // Inside a block every slot that lies wholly in it, within an agreement of the home, must have a price.
+// The blocks are made of the runs themselves, so a hole in the runs (a missing expansion) could never show there. The last test of
+// this file therefore also checks the runs against the agreements alone, with no block in between.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { useDb, hasLive } from './helpers.js';
@@ -133,4 +135,38 @@ await test('the real GB home: the known future is kept as slots (the table), the
   assert.equal(tl.computed, 0, 'now every slot is read from the table');
   assert.equal(tl.stored, slots.length);
   await processPriceQueue();   // nothing marked: nothing to do, and no error on a home with slots stored ahead
+});
+
+// Independent of the blocks above: every second of a current agreement of the real GB home, from its start to its end (or nine days ahead),
+// is covered by a unit run of every register the tariff has. The tariffs below have a hole at the start of an agreement because the frozen
+// fixture holds no price rows for those first days or months (they were fetched later than the agreement began): the data is absent and
+// nothing is guessed. They must still have a hole, so the list cannot go stale. Agreements on tariffs with no rate rows at all have no
+// registers and are not in this count (the first test of this file counts them).
+const DATA_ABSENT = new Set(['E-1R-AGILE-OUTGOING-19-05-13-G', 'E-1R-AGILE-24-10-01-G', 'E-1R-OUTGOING-VAR-24-10-26-G', 'E-1R-INTELLI-FIX-12M-26-06-13-G']);
+
+await test('the real GB home: the runs cover every agreement second by second, apart from the days the fixture holds no prices for', { skip }, async () => {
+  const now = nowSec();
+  const agreements = await db.prepare('SELECT a.*, t.tariff_code FROM tariff_agreement a JOIN tariff t ON t.id = a.tariff_id WHERE a.site_id = 1 AND a.superseded_at IS NULL ORDER BY a.valid_from, a.id').all();
+  const holes = new Map();
+  let covered = 0;
+  for (const a of agreements) {
+    await ensureRuns([a.tariff_id]);
+    const runs = await db.prepare("SELECT register, valid_from, valid_to FROM tariff_price_run WHERE tariff_id = ? AND component = 'unit' AND (site_id IS NULL OR site_id = ?) ORDER BY register, valid_from").all(a.tariff_id, a.site_id);
+    const hi = Math.min(a.valid_to ?? Infinity, now + 9 * DAY);
+    const byRegister = Map.groupBy(runs, (r) => r.register);
+    for (const [register, rs] of byRegister) {
+      let at = a.valid_from;
+      let missing = 0;
+      for (const r of rs) {
+        if (r.valid_from > at) missing += Math.max(0, Math.min(r.valid_from, hi) - at);
+        at = Math.max(at, r.valid_to ?? Infinity);
+      }
+      if (at < hi) missing += hi - at;
+      if (missing > 0) holes.set(`${a.tariff_code} ${register}`, (holes.get(`${a.tariff_code} ${register}`) ?? 0) + missing);
+      else covered++;
+    }
+  }
+  assert.deepEqual([...holes.keys()].filter((k) => !DATA_ABSENT.has(k.split(' ')[0])), [], 'a hole in the runs of a tariff whose prices are in the fixture');
+  assert.deepEqual([...DATA_ABSENT].filter((c) => ![...holes.keys()].some((k) => k.startsWith(`${c} `))), [], 'a tariff on the list of absent data has no hole any more: take it off');
+  assert.ok(covered >= 3, `registers checked and gapless: ${covered}`);   // IOG day and night, the 18-month gas fix
 });

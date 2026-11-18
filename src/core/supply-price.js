@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto';
 import { db } from '../db/db.js';
 import { nowSec } from './time.js';
-import { inForce } from './facts.js';
+import { inForce, knownAtMs } from './facts.js';
 import { rateStamps } from './price-run-store.js';
 import { slotPrice, fixedShare } from './slot-price.js';
 
@@ -111,6 +111,8 @@ async function storeRows(rows) {
 // object (the full one when computed, the stored fields when read: both carry what a build uses), fixedInc the fixed charges of the
 // slot with taxes.
 export async function supplyPricer({ siteId, p, slotS, tz, materialise = false, persist = true }) {
+  // The table describes now (the stamp does not hold the moment a read is "as known at"): such a read computes in memory.
+  if (knownAtMs() != null) { materialise = false; persist = false; }
   const points = supplyPoints(p);
   const byKey = new Map(points.map((pt) => [pt.key, pt]));
   const memo = new Map(points.map((pt) => [pt.key, new Map()]));
@@ -121,6 +123,7 @@ export async function supplyPricer({ siteId, p, slotS, tz, materialise = false, 
   const stamp = materialise ? await inputsStamp(siteId, p, slotS) : null;
   const stats = { read: 0, made: 0, stored: 0 };
   return {
+    stamp,
     points: points.map((pt) => pt.key),
     subMeters: points.filter((pt) => pt.deviceId != null).map(({ key, deviceId, kind }) => ({ key, deviceId, kind })),
     stats,
@@ -167,4 +170,10 @@ export async function supplyPricer({ siteId, p, slotS, tz, materialise = false, 
 // every stored row stale anyway).
 export async function dropOtherLengths(siteId, slotS) {
   return Number((await db.prepare('DELETE FROM supply_price_slot WHERE site_id = ? AND dur_s <> ?').run(siteId, slotS)).changes);
+}
+
+// A home's rows of any other stamp than the current one are unreachable (a read takes only rows of its own stamp), so a build that has
+// made its range under the current stamp removes them: the table does not collect rows of every earlier state of the home's inputs.
+export async function dropStaleSlots(siteId, stamp) {
+  return Number((await db.prepare('DELETE FROM supply_price_slot WHERE site_id = ? AND stamp <> ?').run(siteId, stamp)).changes);
 }

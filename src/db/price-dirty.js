@@ -10,6 +10,6 @@ export async function markPriceDirty(d, { tariffId = null, country = null, siteI
   const [scope, col, key] = tariffId != null ? ['tariff', 'tariff_id', tariffId] : country != null ? ['country', 'country', country] : ['home', 'site_id', siteId];
   if (key == null) throw new TypeError('a price change names a tariff, a country or a home');
   await d.prepare(`INSERT INTO price_dirty (scope, ${col}, from_ts, reason, marked_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT (${col}) WHERE scope = '${scope}' DO UPDATE SET from_ts = LEAST(price_dirty.from_ts, excluded.from_ts), reason = excluded.reason, marked_at = excluded.marked_at`)
+    ON CONFLICT (${col}) WHERE scope = '${scope}' DO UPDATE SET from_ts = LEAST(price_dirty.from_ts, excluded.from_ts), reason = excluded.reason, marked_at = excluded.marked_at, attempts = 0, last_error = NULL`)
     .run(scope, key, Math.floor(fromTs), reason, at);
 }

@@ -9,12 +9,12 @@ import { useDb } from './helpers.js';
 
 await useDb();
 const { db, syncGbVat } = await import('../src/db/db.js');
-const { seriesId, putIntervals } = await import('../src/core/facts.js');
+const { seriesId, putIntervals, withKnownAt } = await import('../src/core/facts.js');
 const { createSite } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, agreeTariff, addDevice } = await import('../src/core/tariffs.js');
 const { buildSite } = await import('../src/core/build.js');
 const { loadPricing } = await import('../src/core/pricing.js');
-const { supplyPricer, inputsStamp, supplyPoints } = await import('../src/core/supply-price.js');
+const { supplyPricer, inputsStamp, supplyPoints, dropStaleSlots } = await import('../src/core/supply-price.js');
 const { slotPrice, fixedShare } = await import('../src/core/slot-price.js');
 const { dayBounds, slotsOfDay } = await import('../src/core/time.js');
 const { deleteHome } = await import('../src/core/delete-home.js');
@@ -92,20 +92,24 @@ await test('a slot is read only while its inputs are the ones it was made from: 
   assert.deepEqual([after[0].import_rate_ex, after[24].import_rate_ex, after[47].import_rate_ex], [30, 40, 40], 'the new rows price the slots after noon');
   assert.notEqual((await rows(h.site.id))[0].stamp, before, 'the stored slots were made again with the new inputs');
   assert.equal((await rows(h.site.id)).length, 48, 'one row per slot, replaced in place');
-  // A tax rule: 20 % VAT from the start of the day, written straight to tax_rule.
-  await db.prepare("UPDATE tax_rule SET superseded_at = ? WHERE country = 'GB' AND code = 'vat' AND fuel = 'electricity' AND direction = 'import' AND superseded_at IS NULL").run(t0 + 1);
-  await db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, seq, valid_from, source, unverified, recorded_at, origin)
-    VALUES ('GB', 'vat', 'electricity', 'import', 'domestic', 'all', 'percent', 0.2, 100, 0, 'test', 0, ?, 'sourced')`).run(t0 + 1);
-  await buildSite(h.site.id, DAY, DAY);
-  const taxed = await hh(h.site.id);
-  assert.equal(taxed[0].import_vat, 0.2);
-  assert.equal(taxed[0].standing_cost, 1.2, 'the fixed share is taxed too');
-  assert.equal((await rows(h.site.id))[0].vat, 0.2);
-  // An agreement ended (superseded) behind the write functions: no slot has a price.
-  await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE site_id = ? AND superseded_at IS NULL').run(Date.now(), h.site.id);
-  await buildSite(h.site.id, DAY, DAY);
-  assert.ok((await hh(h.site.id)).every((r) => r.rate_found === 0 && r.import_rate_ex == null), 'no agreement, no price: never guessed');
-  await syncGbVat();   // the registry's VAT back in force for the tests that follow
+  // The registry's VAT is put back in force whatever fails below, for the tests that follow.
+  try {
+    // A tax rule: 20 % VAT from the start of the day, written straight to tax_rule.
+    await db.prepare("UPDATE tax_rule SET superseded_at = ? WHERE country = 'GB' AND code = 'vat' AND fuel = 'electricity' AND direction = 'import' AND superseded_at IS NULL").run(t0 + 1);
+    await db.prepare(`INSERT INTO tax_rule (country, code, fuel, direction, customer_class, applies_to, kind, value, seq, valid_from, source, unverified, recorded_at, origin)
+      VALUES ('GB', 'vat', 'electricity', 'import', 'domestic', 'all', 'percent', 0.2, 100, 0, 'test', 0, ?, 'sourced')`).run(t0 + 1);
+    await buildSite(h.site.id, DAY, DAY);
+    const taxed = await hh(h.site.id);
+    assert.equal(taxed[0].import_vat, 0.2);
+    assert.equal(taxed[0].standing_cost, 1.2, 'the fixed share is taxed too');
+    assert.equal((await rows(h.site.id))[0].vat, 0.2);
+    // An agreement ended (superseded) behind the write functions: no slot has a price.
+    await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE site_id = ? AND superseded_at IS NULL').run(Date.now(), h.site.id);
+    await buildSite(h.site.id, DAY, DAY);
+    assert.ok((await hh(h.site.id)).every((r) => r.rate_found === 0 && r.import_rate_ex == null), 'no agreement, no price: never guessed');
+  } finally {
+    await syncGbVat();
+  }
 });
 
 await test('a slot with no agreement is stored as exactly that, and is not made again', async () => {
@@ -241,4 +245,30 @@ await test('supplyPoints names the meter kinds with an agreement and each other 
   const s2 = await inputsStamp(h.site.id, p, 1800);
   await db.prepare('UPDATE site SET contracted_kva = 7 WHERE id = ?').run(h.site.id);
   assert.notEqual(await inputsStamp(h.site.id, await loadPricing(h.site.id, A, B), 1800), s2, 'the contracted capacity');
+});
+
+await test('a read "as known at" a moment never reads or writes the table, and a build removes the rows of earlier states of the home\'s inputs', async () => {
+  const h = await meterHome('asof2');
+  await buildSite(h.site.id, DAY, DAY);
+  // A price corrected from 30 to 40 (written straight, so no queue is involved): the stored rows are of the old state.
+  const t0 = Date.now();
+  const cur = await db.prepare("SELECT id, valid_from FROM rate_interval WHERE tariff_id = ? AND component = 'unit' AND superseded_at IS NULL").get(h.tariff.id);
+  await db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?').run(t0, cur.id);
+  await db.prepare("INSERT INTO rate_interval (tariff_id, component, register, payment_method, valid_from, valid_to, price_ex_vat, recorded_at, origin) VALUES (?, 'unit', 'single', 'ANY', ?, NULL, 40, ?, 'user')").run(h.tariff.id, cur.valid_from, t0 + 1);
+  const slots = slotsOfDay(TZ, DAY, 1800);
+  const asOfPrice = await withKnownAt(t0 - 1, async () => {
+    const pricer = await supplyPricer({ siteId: h.site.id, p: await loadPricing(h.site.id, A, B), slotS: 1800, tz: TZ, materialise: true });
+    await pricer.load(slots);
+    return [pricer.get('meter_import', slots[0]).price.unitEx, pricer.stats];
+  });
+  assert.deepEqual(asOfPrice, [30, { read: 0, made: 48, stored: 0 }], 'computed in memory from the rows of that moment, nothing read, nothing stored');
+  assert.ok((await rows(h.site.id)).every((r) => r.unit_ex === 30), 'the table is as it was');
+  // A current build makes the range again under the new stamp and drops what the old stamp left (here: a day the build does not touch).
+  const old = (await rows(h.site.id))[0].stamp;
+  await db.prepare("INSERT INTO supply_price_slot (site_id, point, device_id, tariff_id, slot_start, dur_s, register, unit_ex, supply_ex, vat, levy, unit_inc, fixed_inc, weighted, estimated, capacity_unknown, tax_source, tax_unverified, lineage, stamp, built_at) SELECT site_id, point, device_id, tariff_id, slot_start - 86400, dur_s, register, unit_ex, supply_ex, vat, levy, unit_inc, fixed_inc, weighted, estimated, capacity_unknown, tax_source, tax_unverified, lineage, stamp, built_at FROM supply_price_slot WHERE site_id = ? AND slot_start = ?").run(h.site.id, A);
+  await buildSite(h.site.id, DAY, DAY);
+  const after = await rows(h.site.id);
+  assert.equal(after.length, 48, 'the day before, made under the old stamp, is gone');
+  assert.ok(after.every((r) => r.unit_ex === 40 && r.stamp !== old));
+  assert.equal(await dropStaleSlots(h.site.id, after[0].stamp), 0);
 });

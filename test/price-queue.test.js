@@ -1,6 +1,6 @@
 // Phase T.5: a changed rate row, window, tax rule or agreement marks what it reaches (price_dirty, written by the write functions, not by
 // triggers); processPriceQueue works each shared change off once: a tariff's runs are made again once however many rows changed, and the
-// homes on it are queued for a rebuild in batches; prices that lie ahead extend the timeline (the homes' price slots) and rebuild nothing;
+// homes on it are queued for a rebuild in batches, whether or not a read made the runs again first; prices that lie ahead extend the timeline (the homes' price slots) and rebuild nothing;
 // a tax change queues the homes of its country; an agreement change queues its home. Marks survive a failure and are claimed by one worker.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,9 @@ const { createSite } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, putWindows, agreeTariff, addDevice } = await import('../src/core/tariffs.js');
 const { supersedeAgreements } = await import('../src/core/devices.js');
 const { seriesId, putIntervals } = await import('../src/core/facts.js');
-const { markTariffDirty, markCountryDirty, markHomeDirty } = await import('../src/core/price-marks.js');
+const { markTariffDirty, markTariffColumnsDirty, markCountryDirty, markHomeDirty } = await import('../src/core/price-marks.js');
+const { putRates } = await import('../src/adapters/octopus.js');
+const { loadPricing } = await import('../src/core/pricing.js');
 const { processPriceQueue, HORIZON_S } = await import('../src/core/price-queue.js');
 const { processQueue } = await import('../src/core/build.js');
 const { withKnownAt } = await import('../src/core/facts.js');
@@ -64,16 +66,19 @@ await test('the write functions mark what they change; a mark keeps the earliest
 await test('a tax rule changed by the registry marks the homes\' country, and only where the country has a home', async () => {
   await clear();
   const changed = VAT_RATES.map((v) => ({ ...v, rate: v.rate + 0.01 }));
-  assert.equal(await syncGbVat(changed), true);
-  assert.deepEqual((await dirty()).filter((d) => d.scope === 'country').length, 1, 'a GB home exists in this database');
-  const first = (await dirty())[0];
-  assert.equal(first.country, 'GB');
-  assert.equal(first.from_ts, Math.min(...VAT_RATES.map((v) => v.validFrom)), 'from the first rule that differs');
-  await syncGbVat();
-  await clear();
+  try {
+    assert.equal(await syncGbVat(changed), true);
+    assert.deepEqual((await dirty()).filter((d) => d.scope === 'country').length, 1, 'a GB home exists in this database');
+    const first = (await dirty())[0];
+    assert.equal(first.country, 'GB');
+    assert.equal(first.from_ts, Math.min(...VAT_RATES.map((v) => v.validFrom)), 'from the first rule that differs');
+  } finally {
+    await syncGbVat();   // the registry's VAT back in force for the tests that follow, whatever failed above
+    await clear();
+  }
 });
 
-await test('a changed tariff is worked off once: its runs are made again, the homes on it are queued from the change in batches, and a mark that changed nothing queues nobody', async () => {
+await test('a changed tariff is worked off once: its runs are made again, the homes on it are queued from the change in batches, ', async () => {
   await clear();
   const t = await tariff();
   const other = await tariff();
@@ -84,18 +89,13 @@ await test('a changed tariff is worked off once: its runs are made again, the ho
   await db.prepare("DELETE FROM price_dirty WHERE scope = 'home'").run();
   const now = nowSec();
   const r = await processPriceQueue({ batch: 2, now });
-  assert.deepEqual(r.tariffs.map((x) => [x.tariffId, x.runs, x.unchanged, x.homes, x.queued]).sort(), [[t.id, 2, false, 3, 3], [other.id, 1, false, 1, 1]].sort());
+  assert.deepEqual(r.tariffs.map((x) => [x.tariffId, x.runs, x.homes, x.queued]).sort(), [[t.id, 2, 3, 3], [other.id, 1, 1, 1]].sort());
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM price_dirty').get()).n, 0, 'the marks are gone');
   assert.deepEqual((await queued()).map((q) => [q.site_id, q.from_ts, q.to_ts]).sort((a, b) => a[0] - b[0]),
     [...homes.map((h) => [h.site.id, A - 86400, now]), [away.site.id, A - 86400, now]].sort((a, b) => a[0] - b[0]));
   assert.match((await queued())[0].reason, /price change: tariff PQ-/);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM tariff_price_run WHERE tariff_id = ?').get(t.id)).n, 2);
-  // Marked again with nothing changed: the runs come out the same, so no home is queued.
   await db.prepare('DELETE FROM rebuild_queue').run();
-  await markTariffDirty(t.id, A - 86400, 'nothing really changed');
-  const again = await processPriceQueue({ now });
-  assert.deepEqual(again.tariffs.map((x) => [x.unchanged, x.queued]), [[true, 0]]);
-  assert.equal((await queued()).length, 0);
   // A price changes: one mark for any number of rows, one queue entry per home, and the home's rebuild shows the new price.
   const cur = await db.prepare("SELECT id FROM rate_interval WHERE tariff_id = ? AND component = 'unit' AND superseded_at IS NULL").get(t.id);
   await db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?').run(Date.now(), cur.id);
@@ -156,19 +156,91 @@ await test('a tax change queues the homes of its country and no others; an agree
   assert.deepEqual((await queued()).map((x) => [x.site_id, x.reason]), [[gb.site.id, 'agreement test']]);
 });
 
-await test('each mark is worked once by one worker, and a mark that failed is still there', async () => {
+await test('each mark is worked once by one worker', async () => {
   await clear();
   const ts = [await tariff(), await tariff(), await tariff()];
   for (const t of ts) { await putRateRows(t.id, [{ component: 'unit', validFrom: A, price: 20 }]); await homeOn(t, `p${t.id}`); }
   await db.prepare("DELETE FROM price_dirty WHERE scope = 'home'").run();
   const [a, b] = await Promise.all([processPriceQueue({ now: nowSec() }), processPriceQueue({ now: nowSec() })]);
   assert.deepEqual([...a.tariffs, ...b.tariffs].map((x) => x.tariffId).sort(), ts.map((t) => t.id).sort(), 'every tariff exactly once, whichever worker took it');
+});
+
+await test('a mark that fails is counted and kept, never stops the marks behind it, and is parked after three tries until a new change', async () => {
   await clear();
-  await markTariffDirty(ts[0].id, A, 'will fail');
-  await assert.rejects(async () => await withKnownAt(Date.now(), async () => await processPriceQueue()), /describe now/);
-  assert.equal((await dirty()).length, 1, 'the mark stays when the work fails');
-  assert.equal((await processPriceQueue({ now: nowSec() })).tariffs.length, 1);
+  const ts = [await tariff(), await tariff()];
+  const h = await homeOn(ts[0], 'fail');
+  await markTariffDirty(ts[0].id, A, 'will fail'); await markTariffDirty(ts[1].id, A, 'will fail too');
+  await db.prepare("DELETE FROM price_dirty WHERE scope = 'home'").run();
+  await markHomeDirty(h.site.id, A, 'must still be worked off');
+  // An "as known at" read cannot make the runs the tariff marks need (they describe now): both tariff marks fail, the home mark does not.
+  const asOf = async () => await withKnownAt(Date.now(), async () => await processPriceQueue());
+  const r1 = await asOf();
+  assert.deepEqual(r1.failed.map((f) => [f.scope, f.tariffId]).sort(), ts.map((t) => ['tariff', t.id]).sort());
+  assert.match(r1.failed[0].error, /describe now/);
+  assert.deepEqual(r1.homes.map((x) => x.siteId), [h.site.id], 'the home mark behind them was worked off');
+  assert.deepEqual((await db.prepare("SELECT attempts, last_error FROM price_dirty WHERE scope = 'tariff' ORDER BY id").all()).map((x) => [x.attempts, /describe now/.test(x.last_error)]), [[1, true], [1, true]]);
+  await asOf(); await asOf();
+  assert.deepEqual((await db.prepare("SELECT attempts FROM price_dirty WHERE scope = 'tariff'").all()).map((x) => x.attempts), [3, 3]);
+  const parked = await processPriceQueue({ now: nowSec() });
+  assert.deepEqual([parked.tariffs.length, parked.failed.length], [0, 0], 'parked marks are not tried again');
+  assert.equal((await dirty()).length, 2, 'and are still there');
+  await markTariffDirty(ts[0].id, A - 5, 'a new change');
+  assert.equal((await db.prepare('SELECT attempts FROM price_dirty WHERE tariff_id = ?').get(ts[0].id)).attempts, 0, 'a new change sets the count back');
+  const again = await processPriceQueue({ now: nowSec() });
+  assert.deepEqual(again.tariffs.map((x) => x.tariffId), [ts[0].id]);
+  await clear();
+});
+
+await test('a read between the write and the queue run loses nothing: the mark alone decides what is queued', async () => {
+  await clear();
+  const t = await tariff();
+  const h = await homeOn(t, 'race');
+  await putRateRows(t.id, [{ component: 'unit', validFrom: A - 86400, price: 20 }]);
+  await processPriceQueue({ now: nowSec() });
+  await clear();
+  const cur = await db.prepare("SELECT id FROM rate_interval WHERE tariff_id = ? AND component = 'unit' AND superseded_at IS NULL").get(t.id);
+  await db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?').run(Date.now(), cur.id);
+  await putRateRows(t.id, [{ component: 'unit', validFrom: A - 86400, price: 25 }]);
+  // Any current read (a build, the API, a comparison) makes the tariff's runs again as soon as its rows changed.
+  await loadPricing(h.site.id, A, A + 86400);
+  assert.equal((await db.prepare('SELECT price_ex_vat FROM tariff_price_run WHERE tariff_id = ?').get(t.id)).price_ex_vat, 25, 'the read already made the new runs');
+  await db.prepare("DELETE FROM price_dirty WHERE scope = 'home'").run();
+  const r = await processPriceQueue({ now: nowSec() });
+  assert.deepEqual([r.tariffs[0].homes, r.tariffs[0].queued], [1, 1]);
+  assert.deepEqual((await queued()).map((q) => q.site_id), [h.site.id]);
+  await clear();
+});
+
+await test('only the rows that changed set the mark: a sync that passes known days with a new day rebuilds nothing and extends the timeline', async () => {
+  await clear();
+  const t = await tariff({ kind: 'dynamic', provider: 'octopus', tariffCode: 'E-1R-AGILE-TEST-G' });
+  const h1 = await homeOn(t, 'ag1', { from: A }); await homeOn(t, 'ag2', { from: A });
+  const now = nowSec();
+  const today = dayBounds(TZ, localDate(TZ, now))[0];
+  const tomorrow = dayBounds(TZ, addDays(localDate(TZ, now), 1))[0];
+  const rows = (from, k) => Array.from({ length: k }, (_, i) => ({ validFrom: from + i * 1800, validTo: from + (i + 1) * 1800, priceExVat: 10 + (i % 7) }));
+  await putRates(t.id, 'unit', 'single', rows(today - 2 * 86400, 144));
+  await db.prepare("DELETE FROM price_dirty WHERE scope = 'home'").run();
+  assert.equal((await dirty())[0].from_ts, today - 2 * 86400);
+  await processPriceQueue({ now }); await clear();
+  // The next sync passes the same three days and tomorrow: 144 rows are known and skipped, 48 are new.
+  assert.equal(await putRates(t.id, 'unit', 'single', rows(today - 2 * 86400, 192)), 48);
+  assert.deepEqual((await dirty()).map((d) => d.from_ts), [tomorrow], 'the mark starts at the first row that changed');
+  const r = await processPriceQueue({ now });
+  assert.equal(r.queued, 0, 'nothing built is affected');
+  assert.equal((await queued()).length, 0);
+  assert.equal(r.extended, 96);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM supply_price_slot WHERE site_id = ? AND point = 'meter_import' AND slot_start >= ?").get(h1.site.id, tomorrow)).n, 48);
+});
+
+await test('a change to a tariff column the pricing reads marks the tariff from the start; one it does not read marks nothing', async () => {
+  await clear();
+  const t = await tariff();
+  await markTariffColumnsDirty(t.id, ['name', 'region']);
   assert.equal((await dirty()).length, 0);
+  await markTariffColumnsDirty(t.id, ['name', 'structure']);
+  assert.deepEqual((await dirty()).map((d) => [d.scope, d.tariff_id, d.from_ts]), [['tariff', t.id, 0]]);
+  await clear();
 });
 
 await test('a change reaches no further back than a home\'s first data, and a home with no data and nothing built is not queued (a rebuild from 1970 would price every day since)', async () => {

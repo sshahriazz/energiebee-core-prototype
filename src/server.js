@@ -950,7 +950,8 @@ export async function start() {
   if (maintenance.retention) console.log(retentionSummary(maintenance.retention));
   // Price changes marked while the server was off, and VAT rules recorded at start-up (db.js syncVatRules): each shared change is
   // worked off once, and every home it reaches is queued for a rebuild from the change, so days built before it are priced as now.
-  const priced = await processPriceQueue();
+  const priced = await processPriceQueue().catch((err) => { console.error('price changes:', err.message); return { tariffs: [], countries: [], homes: [], queued: 0, failed: [] }; });
+  for (const f of priced.failed) console.error(`price changes: ${f.scope} mark ${f.id ?? ''} failed: ${f.error}`);
   if (priced.queued) console.log(`price changes: ${priced.tariffs.length} tariff(s), ${priced.countries.length} tax change(s), ${priced.homes.length} home(s) marked; ${priced.queued} home rebuild(s) queued`);
   const port = Number(process.env.PORT) || 4100;
   const server = app.listen(port, async () => {

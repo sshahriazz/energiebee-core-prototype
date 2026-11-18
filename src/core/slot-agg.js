@@ -87,6 +87,18 @@ export function aggregateCounter(readings, s, e) {
   return { ...none, delta: round(b - a), coverage: 1, last: round(b) };
 }
 
+/** measurement from periods that each hold a mean (carbon intensity, irradiance): the mean over the covered time, min and max of the periods, last. */
+export function aggregatePeriodMeans(periods, s, e) {
+  const dur = e - s;
+  const parts = periods.filter((p) => p.value != null && p.end > p.start).map((p) => ({ lo: Math.max(p.start, s), hi: Math.min(p.end, e), value: p.value })).filter((p) => p.hi > p.lo).sort((a, b) => a.lo - b.lo);
+  const covered = parts.reduce((t, p) => t + (p.hi - p.lo), 0);
+  if (!covered) return { mean: null, min: null, max: null, last: null, delta: null, state_shares: null, state: null, coverage: 0 };
+  return {
+    mean: round(parts.reduce((t, p) => t + p.value * (p.hi - p.lo), 0) / covered), min: Math.min(...parts.map((p) => p.value)), max: Math.max(...parts.map((p) => p.value)),
+    last: parts[parts.length - 1].value, delta: null, state_shares: null, state: null, coverage: round(Math.min(1, covered / dur)),
+  };
+}
+
 /** event: periods [{ start, end }]: how many touch the slot, and the share of the slot they cover. */
 export function aggregateEvents(periods, s, e) {
   const dur = e - s;
@@ -101,5 +113,6 @@ export function aggregateEvents(periods, s, e) {
 export function aggregateSlot(cls, data, s, e, opts = {}) {
   if (cls === 'event') return aggregateEvents(data.periods ?? [], s, e);
   if (cls === 'total') return data.periods?.length || !data.readings?.length ? aggregatePeriods(data.periods ?? [], s, e) : aggregateCounter(data.readings, s, e);
+  if (cls === 'measurement' && data.periods) return aggregatePeriodMeans(data.periods, s, e);
   return aggregateInstants(cls, data.samples ?? [], s, e, opts);
 }

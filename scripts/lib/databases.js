@@ -142,8 +142,8 @@ export async function* postgresTables(url) {
 // temporary folder unless given) before src/db/db.js is imported. Returns { name, url, dataDir }.
 export async function scriptDatabase({ prefix = 'energiebee_tmp', keep = null, dataDir = null } = {}) {
   if (!process.env.DATABASE_URL) { try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides it */ } }
-  const base = process.env.DATABASE_URL;
-  if (!base) throw new Error('DATABASE_URL is not set (see .env.example): it names the Postgres server to use');
+  // The server: DATABASE_URL (.env), else the one tests use (TEST_DATABASE_URL, or the local server): a checkout without a .env still works.
+  const base = process.env.DATABASE_URL || process.env.TEST_DATABASE_URL || 'postgresql://localhost:5432/postgres';
   let db;
   if (keep) {
     if (keep === databaseName(base)) throw new Error(`refusing to replace ${keep}: it is the database DATABASE_URL names (the app's own)`);

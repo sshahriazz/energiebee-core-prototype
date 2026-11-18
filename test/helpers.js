@@ -27,6 +27,13 @@ if (!process.env.TEST_DATABASE_URL) {
 // server's postgres database). Test databases take its user, password, host and port.
 export const adminUrl = process.env.TEST_DATABASE_URL || 'postgresql://localhost:5432/postgres';
 
+// Databases made here are named <prefix>_tpl_<hash>_<kind> (templates) and <prefix>_t_<pid>_<random> (a test file's own). The
+// prefix is `energiebee` unless TEST_DB_PREFIX names another: separate checkouts (git worktrees) that run tests at the same
+// time each set their own, so one run's template cleanup and leftover cleanup never touch another's databases.
+const PREFIX = process.env.TEST_DB_PREFIX || 'energiebee';
+if (!/^[a-z][a-z0-9_]{0,20}$/.test(PREFIX)) throw new Error(`TEST_DB_PREFIX ${PREFIX}: lower-case letters, digits and underscores, at most 21`);
+const like = (s) => s.replace(/[\\_%]/g, (c) => `\\${c}`);   // a name as a LIKE pattern, underscores literal
+
 // The frozen, identifier-free real GB home (scripts/make-fixture.js). Tests that need real shapes start
 // from it, so a repopulated development database cannot turn them red.
 export const fixtureDb = path.join(root, 'test', 'fixtures', 'gb-home.json.gz');
@@ -36,7 +43,7 @@ export const hasLive = fs.existsSync(fixtureDb);
 const templateHash = () => migrationsHash([...(hasLive ? [fixtureDb] : []), path.join(root, 'scripts', 'lib', 'databases.js')]);
 
 async function ensureTemplate(kind) {
-  const name = `energiebee_tpl_${templateHash()}_${kind}`;
+  const name = `${PREFIX}_tpl_${templateHash()}_${kind}`;
   await withClient(adminUrl, async (c) => {
     const exists = async () => (await c.query('SELECT 1 FROM pg_database WHERE datname = $1', [name])).rowCount > 0;
     if (await exists()) return;
@@ -44,7 +51,7 @@ async function ensureTemplate(kind) {
     try {
       if (await exists()) return;
       // Older templates go: their migrations or fixture changed.
-      for (const r of (await c.query("SELECT datname FROM pg_database WHERE datname LIKE 'energiebee_tpl_%' AND datname NOT LIKE $1", [`energiebee_tpl_${templateHash()}_%`])).rows) {
+      for (const r of (await c.query("SELECT datname FROM pg_database WHERE datname LIKE $1 AND datname NOT LIKE $2", [`${like(PREFIX)}\\_tpl\\_%`, `${like(PREFIX)}\\_tpl\\_${templateHash()}\\_%`])).rows) {
         await c.query(`DROP DATABASE IF EXISTS ${quoteId(r.datname)} WITH (FORCE)`);
       }
       const building = `${name}_building`;
@@ -66,7 +73,7 @@ let created = null;
 // DATA_DIR. Returns the database URL.
 export async function useDb({ snapshot = false } = {}) {
   const template = await ensureTemplate(snapshot ? 'fixture' : 'empty');
-  const name = `energiebee_t_${process.pid}_${crypto.randomBytes(3).toString('hex')}`;
+  const name = `${PREFIX}_t_${process.pid}_${crypto.randomBytes(3).toString('hex')}`;
   const url = await createDatabase(name, adminUrl, { template });
   created = name;
   process.env.DATABASE_URL = url;
@@ -93,7 +100,7 @@ export async function useDb({ snapshot = false } = {}) {
 // Drop the test databases an interrupted run left behind (npm pretest).
 export async function dropLeftovers() {
   await withClient(adminUrl, async (c) => {
-    for (const r of (await c.query("SELECT datname FROM pg_database WHERE datname LIKE 'energiebee_t\\_%'")).rows) {
+    for (const r of (await c.query("SELECT datname FROM pg_database WHERE datname LIKE $1", [`${like(PREFIX)}\\_t\\_%`])).rows) {
       await c.query(`DROP DATABASE IF EXISTS ${quoteId(r.datname)} WITH (FORCE)`);
     }
   });

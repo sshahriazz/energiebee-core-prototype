@@ -41,7 +41,7 @@ export function weakest(origins) {
 // "tax_rule FR/accise [placeholder]": how an input is named in lineage, the API and the demo.
 export const labelOf = (what, origin) => `${what} [${originOf(origin)}]`;
 
-// Inputs of one or more prices ({ what, origin } each, see pricing.js priceAt) to the slot's
+// Inputs of one or more prices ({ what, origin } each, see slot-price.js instantPrice) to the slot's
 // provenance: the weakest origin, and every placeholder or synthetic input named.
 export function inputsProvenance(inputs) {
   const seen = new Map();

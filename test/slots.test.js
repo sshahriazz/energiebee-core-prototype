@@ -6,7 +6,9 @@ import { useDb } from './helpers.js';
 
 await useDb();
 const { slotsOfDay, slotOfDay, todMinute, slotLabel, slotLength, slotPhase, SLOT_LENGTHS, localToUtc } = await import('../src/core/time.js');
-const { priceAt, priceOver, dispatchAllowance } = await import('../src/core/pricing.js');
+const { dispatchAllowance } = await import('../src/core/pricing.js');
+const { instantPrice, slotPrice } = await import('../src/core/slot-price.js');
+const { runsFromRates, indexRuns } = await import('../src/core/price-runs.js');
 
 await test('slots per local day at 15, 30 and 60 minutes: short, long and ordinary days in three zones', () => {
   const expect = { '2026-03-29': [92, 46, 23], '2026-10-25': [100, 50, 25], '2026-10-24': [96, 48, 24] };
@@ -48,60 +50,61 @@ await test('slot of the day comes from the local clock, so a time keeps its inde
 // A hand-made price list: one import agreement, unit rows as given, 0% VAT.
 const T = Date.UTC(2026, 9, 20, 13, 0) / 1000;   // 14:00 London (BST)
 function pricing(units, { structure = 'flat', dispatches = [], iogWindow = null } = {}) {
-  return {
-    agreements: [{ kind: 'meter_import', tariff_id: 1, tariff_code: 'TEST', structure, fuel: 'electricity', direction: 'import', valid_from: 0, valid_to: null }],
-    rates: [
+  const rates = [
       ...units.map(([from, to, price, register = 'single']) => ({ tariff_id: 1, component: 'unit', register, valid_from: from, valid_to: to, price_ex_vat: price, payment_method: 'ANY', site_id: null })),
       { tariff_id: 1, component: 'standing', register: 'single', valid_from: 0, valid_to: null, price_ex_vat: 48, payment_method: 'ANY', site_id: null },
-    ],
+    ];
+  return {
+    agreements: [{ kind: 'meter_import', tariff_id: 1, tariff_code: 'TEST', structure, fuel: 'electricity', direction: 'import', valid_from: 0, valid_to: null }],
+    runs: indexRuns(runsFromRates(rates)),
     vat: [{ fuel: 'electricity', direction: 'import', rate: 0, valid_from: 0, valid_to: null }],
     dispatches, tz: 'Europe/London', iogWindow, dispatchAllowed: dispatchAllowance(dispatches, 'Europe/London'),
   };
 }
 
-await test('priceOver: two prices in a slot give their time-weighted mean', () => {
+await test('slotPrice: two prices in a slot give their time-weighted mean', () => {
   const p = pricing([[T, T + 1800, 10], [T + 1800, T + 3600, 20]]);
-  const hour = priceOver(p, 'meter_import', T, 3600);
+  const hour = slotPrice(p, 'meter_import', T, 3600);
   assert.equal(hour.unitEx, 15);
   assert.equal(hour.weighted, true);
   assert.equal(hour.standingEx, 48);
   // Three quarters at 10p and one at 20p.
   const q = pricing([[T, T + 2700, 10], [T + 2700, T + 3600, 20]]);
-  assert.equal(priceOver(q, 'meter_import', T, 3600).unitEx, 12.5);
+  assert.equal(slotPrice(q, 'meter_import', T, 3600).unitEx, 12.5);
 });
 
-await test('priceOver: one unpriced moment leaves the slot unpriced', () => {
+await test('slotPrice: one unpriced moment leaves the slot unpriced', () => {
   const p = pricing([[T, T + 1800, 10]]);
-  const hour = priceOver(p, 'meter_import', T, 3600);
+  const hour = slotPrice(p, 'meter_import', T, 3600);
   assert.equal(hour.unitEx, null);
   assert.equal(hour.standingEx, 48, 'the standing charge is still known');
 });
 
-await test('priceOver: equal prices across the slot return exactly what priceAt gives (half-hours unchanged)', () => {
+await test('slotPrice: equal prices across the slot return exactly what instantPrice gives (half-hours unchanged)', () => {
   const p = pricing([[T, T + 1800, 10.123456789], [T + 1800, T + 3600, 20]]);
-  assert.deepEqual(priceOver(p, 'meter_import', T, 1800), priceAt(p, 'meter_import', T));
-  assert.deepEqual(priceOver(p, 'meter_import', T + 1800, 1800), priceAt(p, 'meter_import', T + 1800));
-  assert.equal(priceOver(p, 'meter_import', T, 1800).weighted, undefined);
-  assert.deepEqual(priceOver(p, 'meter_import', T + 900, 900), priceAt(p, 'meter_import', T + 900));
+  assert.deepEqual(slotPrice(p, 'meter_import', T, 1800), instantPrice(p, 'meter_import', T));
+  assert.deepEqual(slotPrice(p, 'meter_import', T + 1800, 1800), instantPrice(p, 'meter_import', T + 1800));
+  assert.equal(slotPrice(p, 'meter_import', T, 1800).weighted, undefined);
+  assert.deepEqual(slotPrice(p, 'meter_import', T + 900, 900), instantPrice(p, 'meter_import', T + 900));
 });
 
 await test('Intelligent Octopus: a smart-charge half-hour discounts the 15-minute slots inside it, :15 and :45 included', () => {
   const units = [[0, null, 30, 'day'], [0, null, 7, 'night']];
   const p = pricing(units, { structure: 'iog', iogWindow: { start: 23 * 60 + 30, end: 5 * 60 + 30 }, dispatches: [{ start_ts: T, end_ts: T + 1800 }] });
   for (const s of [T, T + 900]) {
-    const q = priceOver(p, 'meter_import', s, 900);
+    const q = slotPrice(p, 'meter_import', s, 900);
     assert.equal(q.register, 'night', `slot at +${s - T}s`);
     assert.equal(q.unitEx, 7);
   }
-  assert.equal(priceOver(p, 'meter_import', T, 1800).unitEx, 7, 'the half-hour itself, as before');
-  assert.equal(priceOver(p, 'meter_import', T + 1800, 900).unitEx, 30, 'after the dispatch: day rate');
+  assert.equal(slotPrice(p, 'meter_import', T, 1800).unitEx, 7, 'the half-hour itself, as before');
+  assert.equal(slotPrice(p, 'meter_import', T + 1800, 900).unitEx, 30, 'after the dispatch: day rate');
   // A dispatch from :15 to :45 counts its two half-hours (Octopus's grid), so 14:15 and 14:45 are both discounted.
   const p2 = pricing(units, { structure: 'iog', iogWindow: { start: 23 * 60 + 30, end: 5 * 60 + 30 }, dispatches: [{ start_ts: T + 900, end_ts: T + 2700 }] });
-  assert.equal(priceOver(p2, 'meter_import', T + 900, 900).unitEx, 7);
-  assert.equal(priceOver(p2, 'meter_import', T + 2700, 900).unitEx, 7);
+  assert.equal(slotPrice(p2, 'meter_import', T + 900, 900).unitEx, 7);
+  assert.equal(slotPrice(p2, 'meter_import', T + 2700, 900).unitEx, 7);
   // An hour slot half inside a discounted half-hour pays the mean of night and day.
   const p3 = pricing(units, { structure: 'iog', iogWindow: { start: 23 * 60 + 30, end: 5 * 60 + 30 }, dispatches: [{ start_ts: T, end_ts: T + 1800 }] });
-  assert.equal(priceOver(p3, 'meter_import', T, 3600).unitEx, 18.5);
+  assert.equal(slotPrice(p3, 'meter_import', T, 3600).unitEx, 18.5);
 });
 
 await test('a new slot length is recorded once as slot_s, not as a change in slot counts', async () => {

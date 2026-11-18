@@ -13,7 +13,8 @@
 import { db } from '../db/db.js';
 import { buildSite, METHOD_VERSION } from './build.js';
 import { QUALITY, withKnownAt, inForce } from './facts.js';
-import { priceAt, rateRow, fixedPerDay } from './pricing.js';
+import { rateRow, fixedPerDay } from './pricing.js';
+import { instantPrice } from './slot-price.js';
 import { slotLength, slotPhase, slotFloor, localDate, zonedParts, slotNoun, isoUtc, offsetSeconds } from './time.js';
 
 export class ExplainError extends Error {
@@ -163,11 +164,11 @@ function taxLines(price) {
   return t.rules.map((r) => ({ id: r.id ?? null, code: r.code, kind: r.kind, value: r.value, applies_to: r.applies_to, seq: r.seq, charge_period: r.charge_period ?? null, source: 'tax_rule', origin: r.origin ?? null, unverified: r.unverified === 1 || r.unverified === true }));
 }
 
-// The 15-minute price samples of a slot (priceOver's own sampling, pricing.js), merged where equal.
+// The 15-minute price samples of a slot (slotPrice's own sampling, slot-price.js), merged where equal.
 export function pricePieces(p, kind, slot, slotS) {
   const pieces = [];
   for (let t = slot; t < slot + slotS; t += 900) {
-    const s = priceAt(p, kind, t);
+    const s = instantPrice(p, kind, t);
     const inc = s?.unitEx != null ? s.unitEx * (1 + s.vat) : null;
     const u = unitRowOf(p, kind, t, s);
     const last = pieces[pieces.length - 1];

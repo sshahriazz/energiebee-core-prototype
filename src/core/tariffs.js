@@ -19,6 +19,7 @@ import { currency as currencyOf } from './money.js';
 import { checkOrigin } from './provenance.js';
 import { dayBounds, addDays, recordedNow } from './time.js';
 import { mapAsync } from "./async.js";
+import { markTariffDirty, markHomeDirty } from './price-marks.js';
 
 const KINDS = ['flat', 'tou', 'calendar_tou', 'dynamic', 'spot_indexed', 'dispatch', 'market'];
 
@@ -63,6 +64,8 @@ export async function putRateRows(tariffId, rows, { siteId = null, recordedAt = 
           await ins.run(tariffId, siteId, r.component ?? 'unit', r.register ?? 'single', r.chargePeriod ?? null, r.paymentMethod ?? 'ANY', r.validFrom, r.validTo ?? null, r.price, recordedAt,
                     t.origin, r.originNote ?? t.origin_note ?? null, r.estimated ? 1 : 0);
         }
+        // The tariff's runs are made again from the earliest start, and the homes on it queued (price-queue.js).
+        if (rows.length) await markTariffDirty(tariffId, Math.min(...rows.map((r) => r.validFrom)), siteId != null ? `home-specific rate rows for home ${siteId}` : 'rate rows stored');
       });
   return rows.length;
 }
@@ -94,6 +97,10 @@ export async function putWindows(tariffId, windows, { origin, originNote = null,
           cur.push(w);
           added++;
         }
+        // A meter's own windows change that home's registers; a tariff's windows change the tariff's.
+        const own = windows.map((x) => windowRow(x)).find((w) => w.device_id != null);
+        if (added && own) await markHomeDirty((await db.prepare('SELECT site_id FROM device WHERE id = ?').get(own.device_id)).site_id, 0, `meter windows changed for device ${own.device_id}`);
+        else if (added) await markTariffDirty(tariffId, Math.min(...windows.map((x) => windowRow(x).valid_from ?? 0)), 'register windows stored');
       });
   return added;
 }
@@ -187,11 +194,13 @@ export async function storeWindows(tariffId, {
         const want = new Set(rows.map((r) => key(r.register, r.validFrom, r.validTo, r.price, r.estimated)));
         const kept = new Set();
         const sup = db.prepare('UPDATE rate_interval SET superseded_at = ? WHERE id = ?');
+        let superseded = 0;
         for (const c of await db.prepare(`SELECT id, register, valid_from, valid_to, price_ex_vat, estimated FROM rate_interval WHERE tariff_id = ? AND COALESCE(site_id, 0) = ?
         AND component = 'unit' AND superseded_at IS NULL AND valid_from >= ? AND valid_to <= ?`).all(tariffId, siteId ?? 0, a, b)) {
           const k = key(c.register, c.valid_from, c.valid_to, c.price_ex_vat, c.estimated);
-          if (want.has(k) && !kept.has(k)) kept.add(k); else await sup.run(recordedAt, c.id);
+          if (want.has(k) && !kept.has(k)) kept.add(k); else { await sup.run(recordedAt, c.id); superseded++; }
         }
+        if (superseded) await markTariffDirty(tariffId, a, 'unit rows superseded by a new expansion of the windows');
         const fresh = rows.filter((r) => !kept.has(key(r.register, r.validFrom, r.validTo, r.price, r.estimated)));
         await putRateRows(tariffId, fresh.map((r) => ({ component: 'unit', register: r.register, validFrom: r.validFrom, validTo: r.validTo, price: r.price, estimated: r.estimated,
                 originNote: r.estimated ? `estimated: ${r.calendarDay} day type not known; priced as ${r.dayType} with the caller's cautious default` : undefined })),
@@ -205,6 +214,7 @@ export async function storeWindows(tariffId, {
 export async function agreeTariff({ siteId, deviceId, tariffId, validFrom, validTo = null, recordedAt = Date.now(), paymentMethod = null }) {
   await db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(siteId, deviceId, tariffId, validFrom, validTo, recordedAt, paymentMethod);
+  await markHomeDirty(siteId, validFrom, `tariff agreement added for device ${deviceId}`);
 }
 
 // A meter or other device of a home, known from recordedAt (ms).

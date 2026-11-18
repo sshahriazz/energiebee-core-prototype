@@ -62,6 +62,7 @@ import { envCredentials, SERVICE_CREDENTIALS } from '../core/providers.js';
 import { assertOwner } from './contract.js';
 import { tariffKindOf, nativePeriodOf } from './octopus.js';
 import { linkSupplier, tariffscannerSupplierOf } from '../core/suppliers.js';
+import { markTariffDirty } from '../core/price-marks.js';
 
 export const PROVIDER = 'tariffscanner';
 export const DEFAULT_BASE_URL = 'https://api.tariffscan.futureenergy.associates';
@@ -489,6 +490,7 @@ export async function putCatalogueRates(tariffId, rows, { rawId = null, recorded
           await insRate.run(tariffId, r.component, r.register, r.paymentMethod, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null);
           changed++;
         }
+        if (changed) await markTariffDirty(tariffId, Math.min(...rows.map((r) => r.validFrom)), 'rates stored from Tariffscanner');
       });
   return changed;
 }

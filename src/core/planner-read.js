@@ -36,7 +36,7 @@
 //   interval + sum (energy, kWh)       split by overlap: each fact adds value x overlap / length
 //                                      (a half-hour meter reading feeds six 5-minute steps by 1/6).
 //   interval + mean (carbon, W/m2)     time-weighted mean of the facts overlapping the step (not split).
-//   price (rates())                    the price in force at the step is held across it (priceOver:
+//   price (rates())                    the price in force at the step is held across it (slotPrice:
 //                                      time-weighted when a step spans two prices, as the build).
 //   daily counter (counterDifference   5-minute power integrated per step and fitted to the
 //     Series())                        inverter's daily total (build.js align), differenced per step,
@@ -52,7 +52,8 @@
 import { db } from '../db/db.js';
 import { carbonSubjectOf } from './carbon-series.js';
 import * as facts from './facts.js';
-import { loadPricing, priceOver, priceAt, fixedOver, fixedPerDay } from './pricing.js';
+import { loadPricing, fixedPerDay } from './pricing.js';
+import { slotPrice, instantPrice, fixedShare } from './slot-price.js';
 import { inputsProvenance } from './provenance.js';
 import { siteAt } from './versions.js';
 import { attributeAt, attributesAt } from './attributes.js';
@@ -523,7 +524,7 @@ export async function counterDifferenceSeries(siteId, metric, from, to, opts = {
 
 /**
  * Import, export (and gas) prices per step in MINOR units of the home's currency per kWh including
- * tax, priced exactly as the build prices a slot (pricing.js loadPricing + priceOver; tax applied as
+ * tax, priced exactly as the build prices a slot (pricing.js loadPricing + slot-price.js slotPrice; tax applied as
  * unitEx x (1 + vat)), with the fixed charges, as known at asOf.
  * @param opts { stepS = 300 | 'slot', asOf (ms), direction: 'import' | 'export' | 'gas' | 'both'
  *   (import + export, default) | a list }
@@ -559,14 +560,14 @@ export async function rates(siteId, from, to, opts = {}) {
       const r = { values: [], unitEx: [], vat: [], register: [], tariff: [], estimated: [], unpriced: [], weighted: [], origin: [], standing: [], quality: [] };
       for (let k = 0; k < g.n; k++) {
         const t = g.start + k * stepS;
-        const pr = priceOver(p, kind, t, stepS);
+        const pr = slotPrice(p, kind, t, stepS);
         const unpriced = pr?.unitEx == null;
         const [, ds, de] = dayOf(t);
         r.values.push(unpriced ? null : pr.unitEx * (1 + pr.vat));
         r.unitEx.push(pr?.unitEx ?? null); r.vat.push(pr?.vat ?? null); r.register.push(pr?.register ?? null); r.tariff.push(pr?.tariffCode ?? null);
         r.estimated.push(!!pr?.estimated); r.unpriced.push(unpriced); r.weighted.push(!!pr?.weighted);
         r.origin.push(pr ? (inputsProvenance(pr.inputs ?? [])?.origin ?? null) : null);
-        r.standing.push(pr ? fixedOver(pr, t, stepS, (de - ds) / stepS, tz) : null);
+        r.standing.push(pr ? fixedShare(pr, t, stepS, tz) : null);
         r.quality.push((unpriced ? QUALITY.CHECK_FAILED : 0) | (pr?.estimated ? QUALITY.ESTIMATED : 0));
       }
       out[d] = r;
@@ -576,10 +577,10 @@ export async function rates(siteId, from, to, opts = {}) {
     for (let date = localDate(tz, g.start); date <= localDate(tz, g.end - 1); date = addDays(date, 1)) {
       const [ds, de] = dayBounds(tz, date);
       const row = { date, start: ds, end: de };
-      for (const d of wanted) { const pr = priceAt(p, DIRECTIONS[d], Math.max(ds, g.start)); row[d] = pr ? fixedPerDay(pr, Math.max(ds, g.start), tz) : null; }
+      for (const d of wanted) { const pr = instantPrice(p, DIRECTIONS[d], Math.max(ds, g.start)); row[d] = pr ? fixedPerDay(pr, Math.max(ds, g.start), tz) : null; }
       out.standingPerDay.push(row);
     }
-    out.origin = { rule: 'price_held_over_step (priceOver)', directions: wanted, tariffs: [...new Set(p.agreements.map((a) => a.tariff_code))], country: p.country, asOf };
+    out.origin = { rule: 'price_held_over_step (slotPrice)', directions: wanted, tariffs: [...new Set(p.agreements.map((a) => a.tariff_code))], country: p.country, asOf };
     return out;
   });
 }

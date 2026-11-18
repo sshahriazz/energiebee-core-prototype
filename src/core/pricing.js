@@ -1,7 +1,10 @@
-// Resolves the price of any slot: agreement in force -> tariff -> rate row
-// covering the slot (home-specific rows win) -> taxes for the home's country, fuel, direction and date.
-// priceAt prices an instant; priceOver prices a whole slot of any length (15, 30 or 60
-// minutes) from 15-minute samples, so a slot that spans two prices pays their time-weighted mean.
+// What a slot costs is worked out in two places that share everything: this file loads the inputs of a home (agreements, taxes,
+// the meter's windows, dispatches) and the tariffs' price runs, and has the rules that pick a register and the taxes; slot-price.js
+// prices an instant and a whole slot of any length (15, 30 or 60 minutes) from runs, so a slot that spans two prices pays their
+// time-weighted mean, and takes the fixed charges as a share of the slot. Agreement in force -> tariff -> run covering the slot
+// (home-specific runs win) -> taxes for the home's country, fuel, direction and date. A current read takes the runs from
+// tariff_price_run (price-run-store.js); a read "as known at" a past moment makes them in memory from the rate rows of that moment
+// (price-runs.js): the same code, two ways to read it. A home's slots are kept in supply_price_slot (supply-price.js).
 //
 // Money is in MINOR units of the home's currency (site.currency: pence, cents). A tariff priced in
 // another currency is refused (no FX): the database triggers stop the agreement, and loadPricing
@@ -34,8 +37,10 @@ import { db } from '../db/db.js';
 import { zonedParts, localDate, addDays, floorTo, dayBounds } from './time.js';
 import { inForce, knownAtMs } from './facts.js';
 import { rulesFor, applyTaxes } from './tax.js';
-import { fixedChargePerSlot, fixedChargeMicro, periodBounds } from './tariff-expand.js';
+import { fixedChargeMicro, periodBounds } from './tariff-expand.js';
 import { tariffFlagsAt } from './versions.js';
+import { runsFromRates, indexRuns } from './price-runs.js';
+import { currentRuns } from './price-run-store.js';
 
 // The account API does not say how the customer pays, so a price is only used when
 // it does not depend on it: a row for any payment method, or rows that all agree.
@@ -49,7 +54,10 @@ const rateTies = (a = '') => (knownAtMs() == null ? `${a}tariff_id, ${a}componen
 
 // siteRow: the home as the caller reads it (build.js passes it as known at its asOf, H5); null reads
 // today's row. Inside withKnownAt, each tariff's pricing columns are read as known then (tariff_version).
-export async function loadPricing(siteId, fromTs, toTs, siteRow = null) {
+// The result carries `runs` (indexed price runs, see the head of this file). The rate rows themselves (`rates`) are read only
+// where they are needed: for a read "as known at" a moment (the runs are made from them) and with rateRows, for a caller that
+// shows which row a price came from (explain.js, the explorer).
+export async function loadPricing(siteId, fromTs, toTs, siteRow = null, { rateRows = false } = {}) {
   // In meter order, then by start: the order the reads always gave (device scan, then
   // agreement_current), stated so that an index or new planner statistics cannot change it.
   const agreements = await db.prepare(
@@ -59,7 +67,8 @@ export async function loadPricing(siteId, fromTs, toTs, siteRow = null) {
      ORDER BY a.device_id, a.valid_from, a.id`).all(siteId, toTs, fromTs);
   if (knownAtMs() != null) for (const a of agreements) Object.assign(a, await tariffFlagsAt(a.tariff_id, knownAtMs()));
   const tariffIds = [...new Set(agreements.map((a) => a.tariff_id))];
-  const rates = tariffIds.length ? await db.prepare(
+  const asOf = knownAtMs() != null;
+  const rates = tariffIds.length && (asOf || rateRows) ? await db.prepare(
       `SELECT * FROM rate_interval WHERE tariff_id IN (${tariffIds.map(() => '?').join(',')})
        AND ${inForce()} AND valid_from < ? AND COALESCE(valid_to, 9000000000) > ?
        AND (site_id IS NULL OR site_id = ?)
@@ -99,8 +108,8 @@ export async function loadPricing(siteId, fromTs, toTs, siteRow = null) {
     }
   }
   return {
-    agreements, rates, vat, taxRules, country, currency, dispatches, tz, payment, meterWindows,
-    hasFixed: rates.some((r) => r.component === 'fixed' || r.component === 'capacity'),
+    agreements, rates, runs: asOf ? indexRuns(runsFromRates(rates)) : await currentRuns(tariffIds, siteId, fromTs, toTs),
+    vat, taxRules, country, currency, dispatches, tz, payment, meterWindows,
     capacityKva: site?.contracted_kva ?? null, capacityOrigin: site?.contracted_kva_origin ?? null,
     shapes: new Map(),
     iogWindow: await learnIogWindow(site?.gsp_region, tz), dispatchAllowed: dispatchAllowance(dispatches, tz),
@@ -159,8 +168,10 @@ export async function learnIogWindow(region, tz) {
   return { start, end, source: best.code, rows: best.n };
 }
 
-export function agreementAt(p, kind, ts) {
-  return p.agreements.find((a) => a.kind === kind && a.valid_from <= ts && (a.valid_to == null || a.valid_to > ts));
+// The agreement of a supply point at ts: a meter kind ('meter_import'), or a device id (a sub-meter with a tariff of its own).
+export function agreementAt(p, point, ts) {
+  const is = typeof point === 'number' ? (a) => a.device_id === point : (a) => a.kind === point;
+  return p.agreements.find((a) => is(a) && a.valid_from <= ts && (a.valid_to == null || a.valid_to > ts));
 }
 
 // The dated GB VAT table (vat_rate). Still the fallback for a GB home with no tax rule.
@@ -271,37 +282,6 @@ export function rateRow(p, tariffId, component, register, ts, period) {
   return pool.every((r) => Math.abs(r.price_ex_vat - pool[0].price_ex_vat) < 1e-9) ? pool[0] : null;
 }
 
-// Fixed charges in force at ts, ex tax: per local day (the GB standing charge, or 'fixed' rows
-// with charge_period day), and per month or year (a subscription), one entry per register.
-// Capacity rows: price per kW (kVA) per period x the home's contracted capacity; without a
-// contracted capacity they are not priced (capacityUnknown). rows: the rate rows used.
-function fixedAt(p, tariffId, ts) {
-  const standing = rateRow(p, tariffId, 'standing', 'single', ts);
-  let day = standing ? standing.price_ex_vat : 0;
-  const periods = [];
-  const rows = standing ? [standing] : [];
-  let capacityUnknown = false;
-  if (!p.hasFixed) return { day, periods, rows, capacityUnknown };
-  for (const component of ['fixed', 'capacity']) {
-    const keys = new Set(p.rates.filter((r) => r.tariff_id === tariffId && r.component === component && r.valid_from <= ts && (r.valid_to == null || r.valid_to > ts))
-      .map((r) => `${r.register}\u0000${r.charge_period}`));
-    for (const k of [...keys].sort()) {
-      const [register, period] = k.split('\u0000');
-      const row = rateRow(p, tariffId, component, register, ts, period);
-      if (!row) continue;
-      let amount = row.price_ex_vat;
-      if (component === 'capacity') {
-        if (!(p.capacityKva > 0)) { capacityUnknown = true; continue; }
-        amount *= p.capacityKva;
-      }
-      rows.push(row);
-      if (period === 'day') day += amount;
-      else periods.push({ register: component === 'capacity' ? `capacity:${register}` : register, period, amount });
-    }
-  }
-  return { day, periods, rows, capacityUnknown };
-}
-
 // The labelled inputs of one price: tariff, rate rows, tax rules, contracted capacity.
 export function inputsOf(p, a, tax, fixed, unit) {
   const out = [{ what: `tariff ${a.tariff_code}`, origin: a.tariff_origin }];
@@ -311,76 +291,7 @@ export function inputsOf(p, a, tax, fixed, unit) {
   return out.concat(tax.inputs ?? []);
 }
 
-// Price of a slot for one meter kind:
-//   unitEx      unit price before percentage taxes (supplier price + per-kWh levies), minor/kWh
-//   supplyEx    the supplier's own unit price, ex every tax
-//   vat         percentage taxes on unitEx: price paid = unitEx x (1 + vat)
-//   standingEx  fixed charge per local day, ex tax; fixed: per month / year charges, ex tax
-//   tax         where the taxes came from (tax_rule | vat_rate | none) and the rules
-export function priceAt(p, kind, ts) {
-  const a = agreementAt(p, kind, ts);
-  if (!a) return null;
-  const tax = taxesAt(p, a.fuel, a.direction, ts, { inPrice: a.taxes_in_price === 1 });
-  const fixed = fixedAt(p, a.tariff_id, ts);
-  const base = {
-    tariffCode: a.tariff_code, structure: a.structure, currency: a.currency ?? p.currency ?? null,
-    standingEx: fixed.day, fixed: fixed.periods, vat: tax.vat, levy: tax.levy, tax,
-    ...(fixed.capacityUnknown ? { capacityUnknown: true } : {}),
-  };
-  let register = registerAt(p, a, ts);
-  if (register == null) return { ...base, register: null, unitEx: null, supplyEx: null, inputs: inputsOf(p, a, tax, fixed, null) };
-  let unit;
-  if (register === ANY_REGISTER) {
-    unit = rateRow(p, a.tariff_id, 'unit', null, ts);
-    register = unit?.register ?? null;
-  } else {
-    unit = rateRow(p, a.tariff_id, 'unit', register, ts);
-    if (!unit && register !== 'single') {
-      // Intelligent Octopus publishes one time-varying rate list. Inside a smart-charge
-      // dispatch the whole home pays the off-peak price: the lowest rate within a day.
-      unit = rateRow(p, a.tariff_id, 'unit', 'single', ts);
-      if (unit && a.structure === 'iog' && register === 'night') {
-        const offPeak = p.rates.filter((r) => r.tariff_id === a.tariff_id && r.component === 'unit' && r.register === 'single'
-          && r.valid_from < ts + 86400 && (r.valid_to == null || r.valid_to > ts - 86400))
-          .reduce((m, r) => (!m || r.price_ex_vat < m.price_ex_vat ? r : m), null);
-        if (offPeak && offPeak.price_ex_vat < unit.price_ex_vat) unit = offPeak;
-      }
-    }
-  }
-  const supplyEx = unit ? unit.price_ex_vat : null;
-  return {
-    ...base, register, supplyEx, unitEx: supplyEx == null ? null : (tax.levy ? supplyEx + tax.levy : supplyEx),
-    inputs: inputsOf(p, a, tax, fixed, unit), ...(unit?.estimated === 1 ? { estimated: true } : {}),
-  };
-}
-
-// Price of a whole slot [start, start + durS): priceAt sampled every 15 minutes. When every
-// sample has the same unit price the first sample is returned unchanged (always the case for a
-// half-hour slot on GB half-hourly prices). If any sample has no unit price the slot has none
-// (unitEx null), as one unpriced moment means the slot's cost is not known. Otherwise the unit
-// price is the time-weighted mean of the samples, marked weighted: true; taxes, fixed charges
-// and tariff are the first sample's.
 export const SAMPLE = 900;
-export function priceOver(p, kind, start, durS) {
-  const samples = [];
-  for (let t = start; t < start + durS; t += SAMPLE) samples.push([t, Math.min(SAMPLE, start + durS - t), priceAt(p, kind, t)]);
-  const first = samples[0]?.[2] ?? null;
-  if (samples.length <= 1) return first;
-  if (samples.every(([, , s]) => s == null)) return null;
-  const unpriced = samples.find(([, , s]) => s == null || s.unitEx == null);
-  if (unpriced) return unpriced[2] ?? { ...(first || samples.find(([, , s]) => s)[2]), register: null, unitEx: null, supplyEx: null };
-  if (samples.every(([, , s]) => s.unitEx === first.unitEx)) {
-    // Same price throughout: the first sample, unless another part of the slot was estimated.
-    return samples.some(([, , s]) => s.estimated) && !first.estimated ? { ...first, estimated: true, inputs: samples.flatMap(([, , s]) => s.inputs ?? []) } : first;
-  }
-  let num = 0; let den = 0; let sup = 0;
-  for (const [, w, s] of samples) { num += s.unitEx * w; sup += s.supplyEx * w; den += w; }
-  const register = samples.every(([, , s]) => s.register === first.register) ? first.register : 'mixed';
-  // Every sample's inputs count: a slot that spans an estimated or placeholder price says so.
-  const inputs = samples.flatMap(([, , s]) => s.inputs ?? []);
-  const estimated = samples.some(([, , s]) => s.estimated);
-  return { ...first, register, unitEx: num / den, supplyEx: sup / den, weighted: true, inputs, ...(estimated ? { estimated: true } : {}) };
-}
 
 // Period lengths a per-period tax needs (the local day, month or year holding the slot).
 export function periodLengths(rules, tz, ts) {
@@ -392,20 +303,6 @@ export function periodLengths(rules, tz, ts) {
     out[key[r.charge_period]] = b - a;
   }
   return out;
-}
-
-// Fixed charges of one slot including tax, in minor units: the daily charge by the slot's share
-// of its local day (nSlotsDay slots: 46, 48 or 50 half-hours), monthly and yearly charges by real
-// seconds (fixedChargePerSlot), and per-period taxes (a yearly credit) through applyTaxes, so VAT
-// is charged on the credit as the rules order it. With only a daily charge and one VAT rate on
-// everything (every GB tariff), this is the arithmetic the build always used.
-export function fixedOver(p, slot, slotS, nSlotsDay, tz) {
-  if (!p) return 0;
-  if (p.tax.simple && !p.fixed.length) return (p.standingEx * (1 + p.vat)) / nSlotsDay;
-  let fixedEx = p.standingEx / nSlotsDay;
-  for (const f of p.fixed) fixedEx += fixedChargePerSlot(f.amount, f.period, slot, slotS, tz);
-  if (!p.tax.rules.length) return fixedEx * (1 + p.vat);
-  return applyTaxes(p.tax.rules, { currency: p.currency, fixedEx, slotS, ...periodLengths(p.tax.rules, tz, slot) }).inc.fixed;
 }
 
 // The same over the whole local day holding ts (for "standing charge per day" in the API).

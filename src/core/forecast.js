@@ -15,7 +15,8 @@
 import { db } from '../db/db.js';
 import { carbonSeriesOf } from './carbon-series.js';
 import { seriesId, readForecastOfRecord, readReadings, readIntervals, spanOf } from './facts.js';
-import { loadPricing, priceOver } from './pricing.js';
+import { loadPricing } from './pricing.js';
+import { slotPrice } from './slot-price.js';
 import { SLOT, nowSec, localDate, dayBounds, slotsOfDay, slotLength, slotPhase, slotFloor, slotsPerDay, slotOfDay, slotLabel, todMinute, eachSlotOverlap } from './time.js';
 
 // Reporting choices and decision rules from the brief, not measured quantities.
@@ -485,8 +486,8 @@ export async function forecastSite(siteId, hours = 48, { at = nowSec() } = {}) {
     const scale = (await dayOf(date)).scale;
     const ev = evAt(t);
     const raw = rawBy.has(t) ? rawBy.get(t) : null;
-    const pi = priceOver(pricing, 'meter_import', t, slotS);
-    const pe = priceOver(pricing, 'meter_export', t, slotS);
+    const pi = slotPrice(pricing, 'meter_import', t, slotS);
+    const pe = slotPrice(pricing, 'meter_export', t, slotS);
     const imp = pi?.unitEx != null ? pi.unitEx * (1 + pi.vat) : null;
     const expRate = pe?.unitEx != null ? pe.unitEx * (1 + pe.vat) : null;
     slots.push({

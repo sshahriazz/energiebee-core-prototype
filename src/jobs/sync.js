@@ -7,6 +7,7 @@ import { db } from '../db/db.js';
 import { carbonSubjectOf } from '../core/carbon-series.js';
 import { markDirty, seriesId, putForecasts } from '../core/facts.js';
 import { processQueue } from '../core/build.js';
+import { processPriceQueue } from '../core/price-queue.js';
 import { FILL_MAX_S } from '../core/inputs.js';
 import { forecastSite } from '../core/forecast.js';
 import { nowSec, localDate, addDays, dayBounds, slotLength } from '../core/time.js';
@@ -235,6 +236,9 @@ export async function syncSite(siteId, { cycle = newCycle() } = {}) {
       if (yShort < Infinity) await markDirty(siteId, yShort, yEnd, 'yesterday is short');
       if (allFrom < Infinity) await markDirty(siteId, allFrom, now, 'tariff agreements changed');
     }
+    // Price changes marked by the write functions (rate rows, windows, tax rules, agreements): each shared change is worked off once and the
+    // homes it reaches are queued, so this home's rebuild below also covers what changed in its prices since its last sync.
+    await processPriceQueue();
     const t0 = Date.now();
     const rebuilt = await processQueue({ siteId });
     log.push({ step: 'build', ok: true, ms: Date.now() - t0, rebuilt });

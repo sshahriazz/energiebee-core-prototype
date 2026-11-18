@@ -22,7 +22,8 @@ import { carbonSeriesOf, carbonSubjectOf } from './carbon-series.js';
 import { QUALITY, readRaw } from './facts.js';
 import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTime, findSeries, minorOf, dayWords, slotWords, pctWords } from './explain.js';
 import { series as plannerSeries } from './planner-read.js';
-import { loadPricing, priceAt, fixedPerDay } from './pricing.js';
+import { loadPricing, fixedPerDay } from './pricing.js';
+import { instantPrice } from './slot-price.js';
 import { buildSite } from './build.js';
 import { bindingsFor } from './inputs.js';
 import { nowSec, localDate, addDays, dayBounds, daysBetween, slotLength, slotNoun, slotLabel, zonedParts, todMinute, floorTo, parseIso, slotFloor } from './time.js';
@@ -866,8 +867,8 @@ async function loadCx(site, from, to, { slot = null } = {}) {
   const [a] = dayBounds(tz, from); const [, b] = dayBounds(tz, to);
   const sidOf = async (metric, source) => await findSeries('site', site.id, metric, source);
   let built; let pricing;
-  if (slot != null) { const t = await traceSlot(site.id, slot); built = t.built; pricing = t.trace.pricing ?? await loadPricing(site.id, a, b); }
-  else { built = await buildSite(site.id, from, to, { dryRun: true }); pricing = await loadPricing(site.id, a, b); }
+  if (slot != null) { const t = await traceSlot(site.id, slot); built = t.built; pricing = t.trace.pricing ?? await loadPricing(site.id, a, b, null, { rateRows: true }); }
+  else { built = await buildSite(site.id, from, to, { dryRun: true }); pricing = await loadPricing(site.id, a, b, null, { rateRows: true }); }
   const rows = await db.prepare('SELECT * FROM site_hh WHERE site_id = ? AND slot_start >= ? AND slot_start < ? ORDER BY slot_start').all(site.id, a, b);
   const power = Object.fromEntries(await mapAsync(Object.entries(POWER), async ([k, m]) => [k, await sidOf(m, 'sunsynk_5min')]));
   const socId = await sidOf('battery_soc_pct', 'sunsynk_5min');
@@ -1138,8 +1139,8 @@ async function priceChecks(cx, row) {
 
   // Standing charge per slot = the day's amount x slot length / day length.
   const date = row.local_date; const [ds, de] = dayBounds(tz, date);
-  const pi = priceAt(pricing, 'meter_import', slot);
-  const pg = row.gas != null ? priceAt(pricing, 'meter_gas', slot) : null;
+  const pi = instantPrice(pricing, 'meter_import', slot);
+  const pg = row.gas != null ? instantPrice(pricing, 'meter_gas', slot) : null;
   const perDay = pi ? fixedPerDay(pi, slot, tz) + (pg ? fixedPerDay(pg, slot, tz) : 0) : null;
   const want = perDay != null ? (perDay * slotS) / (de - ds) : null;
   const sDiff = want != null && row.standing_cost != null ? row.standing_cost - want : null;

@@ -8,6 +8,7 @@ import { ingestObservations, setDeviceChannel } from '../core/channels.js';
 import { setDeviceAttrs, supersedeAgreements } from '../core/devices.js';
 import { isoUtc, nowSec, parseIso } from '../core/time.js';
 import { mapAsync } from "../core/async.js";
+import { markTariffDirty } from '../core/price-marks.js';
 
 const BASE = 'https://api.octopus.energy/v1';
 const GQL = 'https://api.octopus.energy/v1/graphql/';
@@ -116,6 +117,7 @@ export async function putRates(tariffId, component, register, rows, siteId = nul
           await insRate.run(tariffId, siteId, component, register, pm, r.validFrom, r.validTo ?? null, r.priceExVat, now, r.rawId ?? null);
           changed++;
         }
+        if (changed) await markTariffDirty(tariffId, sorted[0].validFrom, 'rates synced from Octopus');
       });
   return changed;
 }

@@ -9,11 +9,12 @@
 //           region's octopus_gsp alias). Prices synced by syncComparison.
 //   others  every other import tariff of the home's country and currency held in the database
 //           whose prices cover the period (no Octopus code is ever built for them).
-// Every alternative is priced by the same engine as the home's own tariff (pricing.js priceOver
+// Every alternative is priced by the same engine as the home's own tariff (slot-price.js slotPrice
 // through a stand-in agreement: windows, dynamic prices, fixed and capacity charges, the home's
 // country's taxes), money is in the home's currency, and a day has its real number of slots.
 import { db } from '../db/db.js';
-import { loadPricing, priceOver, fixedPerDay } from './pricing.js';
+import { loadPricing, fixedPerDay } from './pricing.js';
+import { slotPrice } from './slot-price.js';
 import { dayBounds, zonedParts, slotLength, slotsPerDay, slotOfDay, slotNoun } from './time.js';
 import { CURRENCIES } from './money.js';
 import { fetchJson } from './http.js';
@@ -124,7 +125,7 @@ export async function compareSite(siteId, from, to) {
   const altPrice = (key, kind, ts) => {
     const ap = altPricing.get(key);
     if (!ap.agreements.some((a) => a.kind === kind)) return null;
-    const p = priceOver(ap, kind, ts, slotS);
+    const p = slotPrice(ap, kind, ts, slotS);
     if (!p || p.unitEx == null) return null;
     if (altInputs.get(key).length < 64) altInputs.get(key).push(...(p.inputs ?? []));
     return { unit: p.unitEx * (1 + p.vat), standing: kind === 'meter_import' ? fixedPerDay(p, ts, site.timezone) : 0 };
@@ -145,8 +146,8 @@ export async function compareSite(siteId, from, to) {
 
   for (const r of rows) {
     const t = r.slot_start;
-    const pi = priceOver(pricing, 'meter_import', t, slotS);
-    const pe = priceOver(pricing, 'meter_export', t, slotS);
+    const pi = slotPrice(pricing, 'meter_import', t, slotS);
+    const pe = slotPrice(pricing, 'meter_export', t, slotS);
     if (!pi || pi.unitEx == null) { skipped++; continue; }
     if (curInputs.length < 64) curInputs.push(...(pi.inputs ?? []), ...(pe?.inputs ?? []));
     const cur = { unit: pi.unitEx * (1 + pi.vat), standing: fixedPerDay(pi, t, site.timezone), exp: pe?.unitEx != null ? pe.unitEx * (1 + pe.vat) : 0 };

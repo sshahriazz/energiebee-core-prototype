@@ -5,6 +5,7 @@
 //   - a changed tariff history supersedes the old agreements and adds the new ones.
 import { db, tx } from '../db/db.js';
 import { mapAsync } from "./async.js";
+import { markHomeDirty } from './price-marks.js';
 
 const atClause = (alias, ms, from = 'recorded_at', to = 'superseded_at') => {
   const a = alias ? `${alias}.` : '';
@@ -83,9 +84,12 @@ export async function retireDevice(deviceId) {
 export async function supersedeAgreements(siteId, deviceId, rows) {
   const now = Date.now();
   await tx(async () => {
+        const before = (await db.prepare('SELECT MIN(valid_from) AS first FROM tariff_agreement WHERE device_id = ? AND superseded_at IS NULL').get(deviceId))?.first;
         await db.prepare('UPDATE tariff_agreement SET superseded_at = ? WHERE device_id = ? AND superseded_at IS NULL').run(now, deviceId);
         const ins = db.prepare('INSERT INTO tariff_agreement (site_id, device_id, tariff_id, valid_from, valid_to, recorded_at, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)');
         for (const r of rows) await ins.run(siteId, deviceId, r.tariffId, r.from, r.to ?? null, now, r.paymentMethod ?? null);
+        const first = Math.min(...[before, ...rows.map((r) => r.from)].filter((x) => x != null));
+        if (Number.isFinite(first)) await markHomeDirty(siteId, first, `tariff agreements replaced for device ${deviceId}`);
       });
 }
 

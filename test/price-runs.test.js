@@ -1,5 +1,5 @@
 // Phase T.1 and T.2: price runs and fixed shares. Pure cases (how rows join into runs, how a run is looked up, every kind of price
-// the rate-row path knows, each checked slot by slot against it), the table (materialise, read, idempotence, a past moment made
+// the first pricing code knew, each checked slot by slot against the numbers it gave), the table (materialise, read, idempotence, a past moment made
 // in memory), the expansion from windows and calendars, and fixed shares adding up on 23, 24 and 25-hour days and in months.
 // The homes of the fixture and of the synthetic scenarios are in price-runs-gb.test.js and price-runs-synthetic.test.js.
 import { test } from 'node:test';
@@ -10,9 +10,9 @@ import { diffPricing } from './price-runs-lib.js';
 await useDb();
 const { db } = await import('../src/db/db.js');
 const { runsFromRates, runsFromWindows, indexRuns, coveringRuns, runAt, withRunsFromRates, lineageOf } = await import('../src/core/price-runs.js');
-const { priceOverRuns, fixedShare } = await import('../src/core/slot-price.js');
-const { dispatchAllowance, loadPricing, priceOver } = await import('../src/core/pricing.js');
-const { materialiseRuns, materialiseHomeRuns, readRuns, pricingWithStoredRuns } = await import('../src/core/price-run-store.js');
+const { slotPrice, fixedShare } = await import('../src/core/slot-price.js');
+const { dispatchAllowance, loadPricing } = await import('../src/core/pricing.js');
+const { materialiseRuns, materialiseHomeRuns, readRuns } = await import('../src/core/price-run-store.js');
 const { createSite } = await import('../src/core/sites.js');
 const { createTariff, putRateRows, agreeTariff, addDevice, storeWindows } = await import('../src/core/tariffs.js');
 const { withKnownAt } = await import('../src/core/facts.js');
@@ -75,9 +75,9 @@ function context({ rates, structure = 'flat', ...more }) {
   };
 }
 const standing = (price = 48) => row(0, { component: 'standing', valid_from: 0, price });
-const differ = async (p, label, opts = {}) => await diffPricing(p, { 'in memory': withRunsFromRates(p) }, TZ, '2026-10-24', '2026-10-26', { kinds: ['meter_import', 'meter_export'], label, ...opts });
+const differ = async (p, label, opts = {}) => await diffPricing({ 'in memory': withRunsFromRates(p) }, TZ, '2026-10-24', '2026-10-26', { kinds: ['meter_import', 'meter_export'], label, ...opts });
 
-await test('every kind of price the rate-row path knows is the same from runs, at 15, 30 and 60 minutes across a 25-hour day', async () => {
+await test('every kind of price is the recorded one from runs, at 15, 30 and 60 minutes across a 25-hour day', async () => {
   // Half-hourly prices cut off the hour (a row starting at :07 makes a slot weighted), with a standing charge.
   const agile = [];
   for (let t = D0 - 3 * H, i = 0; t < D0 + 75 * H; t += 1800, i++) agile.push(row(0, { valid_from: t + (i % 5 === 0 ? 420 : 0), valid_to: t + 1800, price: 10 + ((i * 7) % 13) }));
@@ -131,7 +131,7 @@ await test('every kind of price the rate-row path knows is the same from runs, a
   assert.ok((await differ(context({ rates: [row(1, { valid_from: 0, valid_to: D0 + 30 * H, price: 20 }), row(2, { valid_from: D0 + 10 * H, valid_to: D0 + 50 * H, price: 21 }), standing()] }), 'overlapping rows')).priced > 0);
 });
 
-await test('fixed charges: standing, monthly, yearly and capacity are the same share per slot from runs, with taxes in the price, per-period taxes and an unknown capacity', async () => {
+await test('fixed charges: standing, monthly, yearly and capacity are the recorded share per slot from runs, with taxes in the price, per-period taxes and an unknown capacity', async () => {
   const fixedRows = [
     standing(60), row(0, { component: 'fixed', register: 'supply', charge_period: 'month', valid_from: 0, price: 599 }),
     row(0, { component: 'fixed', register: 'network', charge_period: 'day', valid_from: 0, price: 120 }),
@@ -142,7 +142,7 @@ await test('fixed charges: standing, monthly, yearly and capacity are the same s
   const known = await differ(context({ rates: fixedRows, capacityKva: 9, capacityOrigin: 'user' }), 'fixed with capacity');
   assert.ok(known.fixed > 0);
   const p = withRunsFromRates(context({ rates: fixedRows }));
-  const unknown = priceOverRuns(p, 'meter_import', D0, 1800);
+  const unknown = slotPrice(p, 'meter_import', D0, 1800);
   assert.equal(unknown.capacityUnknown, true, 'no contracted capacity: the capacity charge is left out and the price says so');
   assert.ok((await differ(context({ rates: fixedRows }), 'fixed, capacity unknown')).fixed > 0);
   // Dutch placeholder rules: VAT and a yearly credit that VAT is charged on; a tariff with its taxes in the price takes VAT only.
@@ -160,7 +160,7 @@ await test('fixed shares: the slots of a day add up to the day\'s charge, whatev
   const p = withRunsFromRates(context({ rates: rows }));
   for (const date of ['2026-03-29', '2026-10-24', '2026-10-25']) {
     for (const slotS of [900, 1800, 3600]) {
-      const total = slotsOfDay(TZ, date, slotS).reduce((t, s) => t + fixedShare(priceOverRuns(p, 'meter_import', s, slotS), s, slotS, TZ), 0);
+      const total = slotsOfDay(TZ, date, slotS).reduce((t, s) => t + fixedShare(slotPrice(p, 'meter_import', s, slotS), s, slotS, TZ), 0);
       assert.ok(Math.abs(total - 60 * 1.05) < 1e-9, `${date} at ${slotS} s: ${total}`);
     }
   }
@@ -172,7 +172,7 @@ await test('fixed shares: the slots of a month add up to the monthly charge on t
   const p = withRunsFromRates({ ...context({ rates: rows }), tz });
   for (const slotS of [900, 1800, 3600]) {
     let total = 0;
-    for (const date of daysBetween('2026-03-01', '2026-03-31')) for (const s of slotsOfDay(tz, date, slotS)) total += fixedShare(priceOverRuns(p, 'meter_import', s, slotS), s, slotS, tz);
+    for (const date of daysBetween('2026-03-01', '2026-03-31')) for (const s of slotsOfDay(tz, date, slotS)) total += fixedShare(slotPrice(p, 'meter_import', s, slotS), s, slotS, tz);
     assert.ok(Math.abs(total - 1523 * 1.05) < 1e-6, `March 2026 at ${slotS} s: ${total}`);
   }
 });
@@ -224,8 +224,7 @@ await test('read: a home reads the shared runs and its own, never another home\'
   assert.deepEqual((await readRuns([t.id], a.site.id, 2000, 2001)).length, 1, 'a home run ends where its row ends');
   assert.deepEqual(await readRuns([], a.site.id, 0, 1e9), []);
   // The home's own run wins for that home when read through a pricing context.
-  const p = await loadPricing(a.site.id, 0, 3000);
-  const ctx = await pricingWithStoredRuns(p, a.site.id, 0, 3000);
+  const ctx = await loadPricing(a.site.id, 0, 3000);
   assert.equal(runAt(ctx, t.id, 'unit', 'single', 1500).price_ex_vat, 15);
   assert.equal(runAt(ctx, t.id, 'unit', 'single', 2500).price_ex_vat, 20);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM tariff_price_run WHERE site_id = ?').get(b.site.id)).n, 1);
@@ -233,7 +232,7 @@ await test('read: a home reads the shared runs and its own, never another home\'
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM tariff_price_run WHERE site_id = ?').get(b.site.id)).n, 0, 'a deleted home takes its runs with it');
 });
 
-await test('a build "as known at" a past moment makes its runs in memory from the rows of that moment, with the same result as the rate-row path; the table only describes now', async () => {
+await test('a build "as known at" a past moment makes its runs in memory from the rows of that moment, with the recorded numbers; the table only describes now', async () => {
   const h = await home('as-of');
   const t = await tariff(4);
   const [a] = dayBounds(TZ, '2026-10-20'); const [, b] = dayBounds(TZ, '2026-10-21');
@@ -245,17 +244,14 @@ await test('a build "as known at" a past moment makes its runs in memory from th
   await putRateRows(t.id, [{ component: 'unit', validFrom: a, price: 26 }], { recordedAt: t0 + 5000 });
   await materialiseHomeRuns(h.site.id);
   const priceAtMoment = async (ms) => await withKnownAt(ms, async () => {
-    const p = await loadPricing(h.site.id, a, b);
-    const mem = withRunsFromRates(p);
-    const seen = await diffPricing(p, { 'in memory': mem }, TZ, '2026-10-20', '2026-10-20', { kinds: ['meter_import'], label: `as known at ${ms}` });
+    const mem = await loadPricing(h.site.id, a, b);   // as known at ms: the runs are made in memory from the rows of that moment
+    const seen = await diffPricing({ 'in memory': mem }, TZ, '2026-10-20', '2026-10-20', { kinds: ['meter_import'], label: `as known at ${ms === t0 + 3000 ? 'before the correction' : 'after the correction'}` });
     assert.ok(seen.priced > 0);
-    return priceOverRuns(mem, 'meter_import', a, 1800).supplyEx;
+    return slotPrice(mem, 'meter_import', a, 1800).supplyEx;
   });
   assert.equal(await priceAtMoment(t0 + 3000), 20, 'as known before the correction');
   assert.equal(await priceAtMoment(t0 + 6000), 26, 'as known after it');
-  const p = await loadPricing(h.site.id, a, b);
-  assert.equal(priceOverRuns(await pricingWithStoredRuns(p, h.site.id, a, b), 'meter_import', a, 1800).supplyEx, 26, 'the table describes now');
-  assert.equal(priceOver(p, 'meter_import', a, 1800).supplyEx, 26);
+  assert.equal(slotPrice(await loadPricing(h.site.id, a, b), 'meter_import', a, 1800).supplyEx, 26, 'the table describes now');
 });
 
 // ───────────── From windows and calendars ─────────────

@@ -1,11 +1,11 @@
-// A slot's price read from price runs (Phase T.1 and T.2): the same numbers pricing.js priceAt / priceOver / fixedOver give from
-// rate rows, taken from runs (price-runs.js) instead. The context is a pricing.js loadPricing result with `runs` added, either
-// built in memory from the rows it read (withRunsFromRates, the "as known at" path) or read from tariff_price_run
-// (price-run-store.js). What differs from the rate-row path is only where a unit price, a standing or fixed charge is looked
-// up; the register rules (windows, the meter's own windows, Intelligent Octopus dispatches), the taxes and the sampling are
-// pricing.js's own, so a number cannot move because it was read from a run.
+// A slot's price from price runs (Phase T.1 and T.2): the one place where an instant, a slot and the fixed charges of a slot are
+// priced. The context is a pricing.js loadPricing result, whose `runs` are made in memory from the rate rows of a past moment (the
+// "as known at" path) or read from tariff_price_run (price-run-store.js, a current read). The register rules (windows, the meter's
+// own windows, Intelligent Octopus dispatches) and the taxes are pricing.js's; here a unit price, a standing or fixed charge is
+// looked up in the runs, and a slot is sampled and its fixed charges shared.
+// A supply point is a meter kind ('meter_import', 'meter_export', 'meter_gas') or a device id (a sub-meter with its own tariff).
 //
-// A slot [start, start + durS) is priced from 15-minute samples (priceOver's rule): one price when every sample agrees, else the
+// A slot [start, start + durS) is priced from 15-minute samples (the 15-minute sampling rule): one price when every sample agrees, else the
 // time-weighted mean; a sample with no unit price makes the slot's price unknown. Fixed charges are the share of the slot, by
 // the slot's part of its local day, month or year (fixedShare).
 import { localDate, dayBounds } from './time.js';
@@ -42,15 +42,16 @@ function fixedAtRuns(p, tariffId, ts) {
   return { day, periods, rows, capacityUnknown };
 }
 
-// The price at one instant, in the shape pricing.js priceAt returns (unitEx, supplyEx, vat, levy, standingEx, fixed, tax,
-// register, inputs, estimated).
-export function priceAtRuns(p, kind, ts) {
-  const a = agreementAt(p, kind, ts);
+// The price at one instant: { tariffCode, structure, currency, tariffId, deviceId, unitEx, supplyEx, vat, levy, standingEx, fixed,
+// tax, register, inputs, estimated }. unitEx is the unit price before percentage taxes (the supplier's price plus per-kWh levies),
+// null when no price is known; the price paid is unitEx x (1 + vat).
+export function instantPrice(p, point, ts) {
+  const a = agreementAt(p, point, ts);
   if (!a) return null;
   const tax = taxesAt(p, a.fuel, a.direction, ts, { inPrice: a.taxes_in_price === 1 });
   const fixed = fixedAtRuns(p, a.tariff_id, ts);
   const base = {
-    tariffCode: a.tariff_code, structure: a.structure, currency: a.currency ?? p.currency ?? null,
+    tariffCode: a.tariff_code, tariffId: a.tariff_id, deviceId: a.device_id, structure: a.structure, currency: a.currency ?? p.currency ?? null,
     standingEx: fixed.day, fixed: fixed.periods, vat: tax.vat, levy: tax.levy, tax,
     ...(fixed.capacityUnknown ? { capacityUnknown: true } : {}),
   };
@@ -83,9 +84,9 @@ export function priceAtRuns(p, kind, ts) {
 // The price of a whole slot from 15-minute samples (see the head of this file): the first sample's price when all agree
 // (marked estimated when another part of the slot was), else the time-weighted mean of the unit prices, weighted: true. Taxes,
 // fixed charges and tariff are the first sample's, except where a sample has no price: that sample's price stands for the slot.
-export function priceOverRuns(p, kind, start, durS) {
+export function slotPrice(p, point, start, durS) {
   const samples = [];
-  for (let t = start; t < start + durS; t += SAMPLE) samples.push([t, Math.min(SAMPLE, start + durS - t), priceAtRuns(p, kind, t)]);
+  for (let t = start; t < start + durS; t += SAMPLE) samples.push([t, Math.min(SAMPLE, start + durS - t), instantPrice(p, point, t)]);
   const first = samples[0]?.[2] ?? null;
   if (samples.length <= 1) return first;
   if (samples.every(([, , s]) => s == null)) return null;
@@ -107,7 +108,7 @@ export function priceOverRuns(p, kind, start, durS) {
 // capacity by real seconds over the real length of their period (fixedChargePerSlot, which adds up to the period's amount
 // exactly), then the home's taxes: one percentage on everything (every GB tariff) is a plain factor, anything else (a
 // per-period credit such as the Dutch yearly one) goes through applyTaxes so VAT is charged on it as the rules order it.
-// price: priceOverRuns of the slot. The shares of a day's slots add up to the day's charge.
+// price: slotPrice of the slot. The shares of a day's slots add up to the day's charge.
 export function fixedShare(price, slot, slotS, tz) {
   if (!price) return 0;
   const [dayStart, dayEnd] = dayBounds(tz, localDate(tz, slot));

@@ -68,6 +68,7 @@ import { db, tx, dataDir } from '../db/db.js';
 import { landRaw, quarantine, readRaw } from '../core/facts.js';
 import { createTariff, addDevice } from '../core/tariffs.js';
 import { supersedeAgreements } from '../core/devices.js';
+import { markTariffDirty } from '../core/price-marks.js';
 import { linkSupplier } from '../core/suppliers.js';
 import { CURRENCIES, toMinor } from '../core/money.js';
 import { rulesFor } from '../core/tax.js';
@@ -677,6 +678,7 @@ export async function putRates(tariffId, siteId, rows, { component = 'unit', raw
           await ins.run(tariffId, siteId, component, register, period, r.validFrom, r.validTo ?? null, r.price, recordedAt, rawId, r.originNote ?? null, est);
           changed++;
         }
+        if (changed) await markTariffDirty(tariffId, Math.min(...rows.map((r) => r.validFrom)), `rates stored for home ${siteId}`);
       });
   return changed;
 }

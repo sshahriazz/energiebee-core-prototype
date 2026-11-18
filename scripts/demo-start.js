@@ -17,6 +17,7 @@ const name = process.env.DEMO_DATABASE || 'energiebee_demo';
 if (!await databaseExists(name, server)) { console.error(`no demo database ${name}: run npm run demo:users first`); process.exit(1); }
 process.env.DATABASE_URL = urlFor(name, server);
 process.env.DATA_DIR = path.join(root, 'data', 'demo');
+delete process.env.RAW_DIR;   // the demo's raw files are its own (data/demo/raw)
 process.env.USER_SWITCHER = '1';
 process.env.PORT ||= '4101';
 if (!process.env.SECRET_KEY) {

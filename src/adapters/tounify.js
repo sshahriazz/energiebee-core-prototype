@@ -64,7 +64,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { db, tx, dataDir } from '../db/db.js';
+import { db, tx } from '../db/db.js';
 import { landRaw, quarantine, readRaw } from '../core/facts.js';
 import { createTariff, addDevice } from '../core/tariffs.js';
 import { supersedeAgreements } from '../core/devices.js';

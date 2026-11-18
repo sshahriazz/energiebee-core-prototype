@@ -16,8 +16,7 @@
 // Every read is bounded by the request (dates, a limit, an id); the indexes each uses are listed in
 // docs/what-it-does.md ("API: Data Explorer").
 import fs from 'node:fs';
-import path from 'node:path';
-import { db, dataDir } from '../db/db.js';
+import { db, rawDir, rawFilePath } from '../db/db.js';
 import { carbonSeriesOf, carbonSubjectOf } from './carbon-series.js';
 import { QUALITY, readRaw } from './facts.js';
 import { explainSlot, traceSlot, compareRows, ExplainError, pricePieces, localTime, findSeries, minorOf, dayWords, slotWords, pctWords } from './explain.js';
@@ -161,11 +160,7 @@ function describeSeries(s, st, site) {
 
 // ───────────── Raw payloads ─────────────
 
-const rawRoot = () => path.resolve(dataDir);
-function rawPath(r) {
-  const p = path.resolve(dataDir, r.file);
-  return p.startsWith(rawRoot() + path.sep) ? p : null;
-}
+const rawPath = (r) => rawFilePath(r.file);
 const sizeCache = new Map();
 function rawSize(r) {
   if (sizeCache.has(r.file)) return sizeCache.get(r.file);
@@ -402,7 +397,7 @@ function payloadCache({ budget = Infinity } = {}) {
     if (cache.get(rawId)?.deferred && !optional) cache.delete(rawId);
     if (!cache.has(rawId)) {
       const r = await db.prepare('SELECT p.*, so.code AS source FROM raw_payload p JOIN source so ON so.id = p.source_id WHERE p.id = ?').get(rawId);
-      const key = r ? `${dataDir}|${r.hash}` : null;
+      const key = r ? `${rawDir}|${r.hash}` : null;
       let hit = key ? bodies.get(key) : null;
       if (hit) { bodies.delete(key); bodies.set(key, hit); }   // most recently used last
       if (r && !hit && optional) {
@@ -414,7 +409,7 @@ function payloadCache({ budget = Infinity } = {}) {
         const text = await rawText(r);
         const j = text != null ? parseJson(text) : { ok: false, value: null };
         hit = { text, body: j.value, json: j.ok, ix: null };
-        if (text != null && text.length < 4e6) { bodies.set(`${dataDir}|${r.hash}`, hit); if (bodies.size > PAYLOAD_CACHE) bodies.delete(bodies.keys().next().value); }
+        if (text != null && text.length < 4e6) { bodies.set(`${rawDir}|${r.hash}`, hit); if (bodies.size > PAYLOAD_CACHE) bodies.delete(bodies.keys().next().value); }
       }
       cache.set(rawId, r ? { r, ...hit, entry: hit } : { r: null });
     }

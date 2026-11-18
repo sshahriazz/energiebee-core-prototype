@@ -404,6 +404,7 @@ async function main() {
   const { tempDatabase } = await import(pathToFileURL(path.join(root, 'scripts', 'lib', 'databases.js')).href);
   process.env.DATABASE_URL = (await tempDatabase(process.env.DATABASE_URL, { prefix: 'energiebee_coverage' })).url;
   process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-coverage-'));
+  delete process.env.RAW_DIR;
   const { db, closeDb } = await import(pathToFileURL(path.join(root, 'src', 'db', 'db.js')).href);
   const readFunctions = new Set(Object.keys(await import(pathToFileURL(path.join(root, 'src', 'core', 'planner-read.js')).href)));
   const ctx = await schemaContext(db);

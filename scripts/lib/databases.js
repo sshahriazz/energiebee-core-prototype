@@ -139,7 +139,7 @@ export async function* postgresTables(url) {
 // ───────────── a database for a script ─────────────
 // A fresh, migrated database for a script on the server of DATABASE_URL (.env): dropped when the script ends,
 // or kept under `keep` (a database name, emptied and migrated again). Sets DATABASE_URL (and DATA_DIR, a
-// temporary folder unless given) before src/db/db.js is imported. Returns { name, url, dataDir }.
+// temporary folder unless given; RAW_DIR is cleared) before src/db/db.js is imported. Returns { name, url, dataDir }.
 export async function scriptDatabase({ prefix = 'energiebee_tmp', keep = null, dataDir = null } = {}) {
   if (!process.env.DATABASE_URL) { try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides it */ } }
   // The server: DATABASE_URL (.env), else the one tests use (TEST_DATABASE_URL, or the local server): a checkout without a .env still works.
@@ -155,6 +155,7 @@ export async function scriptDatabase({ prefix = 'energiebee_tmp', keep = null, d
   const dir = dataDir ?? fs.mkdtempSync(path.join((await import('node:os')).tmpdir(), `${prefix}-`));
   fs.mkdirSync(dir, { recursive: true });
   process.env.DATA_DIR = dir;
+  delete process.env.RAW_DIR;   // a throwaway run keeps its raw files in its own folder, never in the live raw store
   if (!dataDir) process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
   return { ...db, dataDir: dir };
 }

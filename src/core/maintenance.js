@@ -3,7 +3,8 @@
 // Retention (runRetention, below): what is kept and for how long; a dry-run report unless asked.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, dataDir } from '../db/db.js';
+import { db, tx, rawDir, rawFilePath } from '../db/db.js';
+import { rawName } from '../db/raw-dir.js';
 import { seriesId } from './facts.js';
 import { nowSec } from './time.js';
 import { bindingsFor } from './inputs.js';
@@ -58,7 +59,8 @@ export async function seedSiteAttributes(siteId) {
 
 // The start-up hook (server.js start). Per home: { gasKwhWithdrawn }. Then retention, in the mode
 // RETENTION sets: 'report' (the default: a dry run, nothing deleted), 'apply', or 'off'; its report
-// is returned under `retention` (null when off).
+// is returned under `retention` (null when off). The raw-file check is not here: it runs in the background after the server
+// listens (src/core/raw-integrity.js).
 export async function runMaintenance({ retention = retentionSettings().mode } = {}) {
   const out = {};
   for (const { id } of await db.prepare('SELECT id FROM site').all()) {
@@ -169,19 +171,21 @@ export function endpointOf(requestText) {
 }
 
 // Every column with a foreign key to raw_payload (reading, interval_fact, forecast_fact,
-// rate_interval.raw_id today), read from the schema so a table added later is respected too.
+// rate_interval.raw_id today), read from the schema so a table added later is respected too. raw_payload_check (the file
+// check's record) is not a use: its row goes with the receipt. It is named, not matched by ON DELETE CASCADE, so a fact table
+// that later references a receipt with a cascade still protects it.
 async function rawRefs() {
   const out = [];
   for (const fk of await db.prepare(`SELECT kcu.table_name AS t, kcu.column_name AS col FROM information_schema.referential_constraints rc
       JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
       JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name AND ccu.constraint_schema = rc.unique_constraint_schema
-      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
+      WHERE rc.constraint_schema = current_schema() AND ccu.table_name = 'raw_payload' AND kcu.table_name <> 'raw_payload_check' ORDER BY kcu.table_name, kcu.column_name`).all()) out.push([fk.t, fk.col]);
   return out;
 }
 const notReferenced = (refs, alias) => refs.map(([t, c]) => `NOT EXISTS (SELECT 1 FROM "${t}" WHERE "${c}" = ${alias}.id)`).join(' AND ') || 'TRUE';
 
 function fileSize(rel) {
-  try { return fs.statSync(path.join(dataDir, rel)).size; } catch { return null; }
+  try { return fs.statSync(rawFilePath(rel)).size; } catch { return null; }
 }
 
 async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) {
@@ -219,16 +223,21 @@ async function rawRetention(cutoff, dryRun, batch, keepReplayableCutoff = null) 
     });
     out.deleted += gone.length;
     for (const r of gone) {
-      try { fs.unlinkSync(path.join(dataDir, r.file)); out.filesDeleted++; } catch (err) { if (err.code !== 'ENOENT') throw err; }
+      const file = rawFilePath(r.file);   // null: the name is not in the raw store, nothing to remove
+      if (!file) continue;
+      try { fs.unlinkSync(file); out.filesDeleted++; } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
   }
   return out;
 }
 
-// Files under data/raw that no raw_payload row names, last written before the cutoff.
+// Only a file in the layout the store writes can be an orphan: <source>/<day>/<name>.json, or its half-written .<pid>.tmp /
+// .sealing form. RAW_DIR can be a volume that holds other things (a mount's lost+found, notes); those are never touched.
+const STORE_FILE = /^[a-z0-9_-]+\/\d{4}-\d{2}-\d{2}\/[A-Za-z0-9_-]+\.json(\.\d+\.tmp|\.sealing)?$/;
+
+// Files under the raw store (RAW_DIR, default data/raw) that no raw_payload row names, last written before the cutoff.
 async function orphanFiles(cutoff, dryRun) {
   const out = { found: 0, bytes: 0, deleted: 0 };
-  const rawDir = path.join(dataDir, 'raw');
   if (!fs.existsSync(rawDir)) return out;
   const known = new Set((await db.prepare('SELECT file FROM raw_payload').all()).map((r) => path.normalize(r.file)));
   const walk = (dir) => {
@@ -236,8 +245,8 @@ async function orphanFiles(cutoff, dryRun) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) { walk(full); continue; }
       if (!e.isFile()) continue;
-      const rel = path.normalize(path.relative(dataDir, full));
-      if (known.has(rel)) continue;
+      const rel = rawName(rawDir, full);
+      if (known.has(rel) || !STORE_FILE.test(path.relative(rawDir, full).split(path.sep).join('/'))) continue;
       const st = fs.statSync(full);
       if (st.mtimeMs >= cutoff * 1000) continue;
       out.found++; out.bytes += st.size;

@@ -15,7 +15,7 @@
 //  - A receipt whose file is gone (retention) is counted, not an error.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, tx, dataDir, rolledBack } from '../db/db.js';
+import { db, tx, rolledBack } from '../db/db.js';
 import { ingestObservations } from './channels.js';
 import { forgetSeriesCache, markDirty, readRaw } from './facts.js';
 import { nowSec, recordedNow } from './time.js';

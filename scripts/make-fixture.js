@@ -7,11 +7,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadTables, postgresTables, scriptDatabase, writeDump } from './lib/databases.js';
+import { resolveRawDir, rawFileIn } from '../src/db/raw-dir.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 try { process.loadEnvFile(path.join(root, '.env')); } catch { /* the environment provides DATABASE_URL */ }
 const live = process.env.DATABASE_URL;
-const liveData = path.resolve(root, process.env.DATA_DIR || 'data');
+const liveRaw = resolveRawDir(process.env, root);   // the live raw store (RAW_DIR, else DATA_DIR/raw)
 const out = path.resolve(process.argv[2] || path.join(root, 'test', 'fixtures', 'gb-home.json.gz'));   // another path to try it without replacing the fixture
 
 const tmp = await scriptDatabase({ prefix: 'energiebee_fixture' });   // throwaway, dropped at the end
@@ -34,7 +35,7 @@ fs.rmSync(rawOut, { recursive: true, force: true });
 for (const { file } of await db.prepare(`SELECT file FROM raw_payload WHERE id IN ${keep}`).all()) {
   const to = path.join(rawOut, file);
   fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.copyFileSync(path.join(liveData, file), to);
+  fs.copyFileSync(rawFileIn(liveRaw, file), to);
 }
 // Keep only the tariffs this home was ever on; the rest of the catalogue is not part of its history.
 const used = '(SELECT DISTINCT tariff_id FROM tariff_agreement)';

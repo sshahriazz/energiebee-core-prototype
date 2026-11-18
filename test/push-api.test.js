@@ -46,7 +46,7 @@ await test('native: a plug registered by its first push, counters with a restart
   assert.match(r.body.warnings.join(' '), /registered a new smart_plug/);
   const dev = await db.prepare('SELECT * FROM device WHERE id = ?').get(r.body.device);
   assert.deepEqual([dev.provider, dev.kind, dev.label, JSON.parse(dev.attrs).emulated], ['push', 'smart_plug', 'Test plug A', true]);
-  assert.equal(await count('SELECT COUNT(*) n FROM channel WHERE device_id = ? AND superseded_at IS NULL', dev.id), 3, 'the plug brought its standard channels: energy_total, power, relay');
+  assert.equal(await count('SELECT COUNT(*) n FROM point_binding WHERE device_id = ? AND superseded_at IS NULL', dev.id), 3, 'the plug brought its standard channels: energy_total, power, relay');
   const per = await series('plug-A', 'plug_kwh', 'interval_fact');
   assert.equal(per.length, 4);
   assert.ok(Math.abs(per.reduce((t, p) => t + p.value, 0) - 1.4) < 1e-9, 'energy = 0.4 + 0.4 + 0.2 (only what the counter shows after the restart) + 0.4');
@@ -109,7 +109,7 @@ await test('home assistant: a list of states, converted, with the unavailable an
   assert.ok(Math.abs((await series('ha-plug', 'plug_counter_kwh'))[0].value - 12.345) < 1e-9);
   assert.equal((await series('ha-plug', 'plug_on'))[0].value, 1);
   assert.match(r.body.warnings.join(' '), /garage_power.*unavailable/);
-  assert.equal(await count("SELECT COUNT(*) n FROM channel WHERE device_id = ? AND point = 'temperature'", await deviceId('ha-plug')), 0, 'a plug has no temperature channel: that point is reported as unmapped');
+  assert.equal(await count("SELECT COUNT(*) n FROM point_binding WHERE device_id = ? AND point = 'temperature'", await deviceId('ha-plug')), 0, 'a plug has no temperature channel: that point is reported as unmapped');
   assert.deepEqual(r.body.unmapped, ['temperature']);
 });
 
@@ -142,7 +142,7 @@ await test('registering a heat pump brings its standard channels; a point with n
   const r = await push({ device: 'hp-1', register: true, kind: 'heat_pump', emulated: true, observations: [
     { point: 'elec_total', ts: T0, value: 100 }, { point: 'flow_temp', ts: T0, value: 35.5 }, { point: 'mystery', ts: T0, value: 1 }] });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(await count('SELECT COUNT(*) n FROM channel WHERE device_id = ? AND superseded_at IS NULL', await deviceId('hp-1')), 5, 'a heat pump brings two counters, two temperatures and a defrost event');
+  assert.equal(await count('SELECT COUNT(*) n FROM point_binding WHERE device_id = ? AND superseded_at IS NULL', await deviceId('hp-1')), 5, 'a heat pump brings two counters, two temperatures and a defrost event');
   assert.deepEqual(r.body.unmapped, ['mystery']);
   assert.match(r.body.warnings.join(' '), /no channel for: mystery/);
   assert.equal(await count("SELECT COUNT(*) n FROM channel_reject WHERE point = 'mystery' AND reason = 'unmapped_point'"), 1);

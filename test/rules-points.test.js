@@ -61,4 +61,37 @@ await test('a thing type names only capabilities that are registered', async () 
   await run("INSERT INTO thing_type (type, kind, label, capabilities) VALUES ('rules_points_ok', 'device', 'Rules', '[\"power_meter\"]')");
 });
 
+await test('a point binding is in the home of its point and for its metric', async () => {
+  const a = await site('Binding A'); const b = await site('Binding B');
+  const bat = await device(a, 'battery', 'pb-bat');
+  const m = await metric('battery_soc_pct');
+  const p = await pointOf(bat, 'battery_soc_pct');
+  const src = (await get("SELECT id FROM source WHERE code = 'sunsynk_5min'")).id;
+  const bind = 'INSERT INTO point_binding (point_id, site_id, source_id, device_id, point, metric_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)';
+  await run(bind, p, a, src, bat, 'soc', m, 1);
+  maintained('point_binding_matches_point');
+  await refused('point_binding_matches_point', bind, p, b, src, bat, 'soc2', m, 1);
+  await refused('point_binding_matches_point', bind, p, a, src, bat, 'soc3', await metric('battery_soc_kwh'), 1);
+});
+
+await test('a link is in the home of its thing; a device with an integration behind it has one, made and ended with it', async () => {
+  const a = await site('Links A'); const b = await site('Links B');
+  const d = await device(a, 'battery', 'serial-1');
+  const link = await get('SELECT * FROM thing_link WHERE thing_id = ?', d);
+  assert.deepEqual([link.provider, link.external_ref, link.kind, link.home_id, link.valid_to], ['test', 'serial-1', 'cloud', a, null]);
+  maintained('device_make_link');
+  const plant = await ins("INSERT INTO thing (home_id, kind, type, name) VALUES (?, 'device', 'pv_array', 'Graph only')", a);
+  await run("INSERT INTO device (id, site_id, kind, provider, external_ref, label, uid) VALUES (?, ?, 'pv_array', 'thing', ?, 'Graph only', (SELECT uid FROM thing WHERE id = ?))", plant, a, 'graph-only', plant);
+  assert.equal((await get('SELECT COUNT(*) AS n FROM thing_link WHERE thing_id = ?', plant)).n, 0, 'a graph-only thing has no provider to name it');
+  await run('UPDATE device SET retired_at = ? WHERE id = ?', (NOW + 7200) * 1000, d);
+  assert.ok((await get('SELECT valid_to FROM thing_link WHERE id = ?', link.id)).valid_to > 0, 'retiring the device ends its link');
+  maintained('device_end_link');
+  await refused('thing_link_home_matches', "INSERT INTO thing_link (home_id, thing_id, kind, provider, external_ref) VALUES (?, ?, 'cloud', 'x', 'y')", b, d);
+  await refused('thing_link_uid_fixed', "UPDATE thing_link SET uid = '01900000-0000-7000-8000-0000000000bb' WHERE id = ?", link.id);
+  // the provider's name stands for one thing at a time
+  const e = await device(a, 'inverter', 'serial-2');
+  await assert.rejects(() => run("INSERT INTO thing_link (home_id, thing_id, kind, provider, external_ref) VALUES (?, ?, 'cloud', 'test', 'serial-2')", a, d), /thing_link_one_open|duplicate key/);
+  assert.ok(e > 0);
+});
+
 await test('what the cases above proved is what test/rules/points.json declares', () => { checkDeclared(); });

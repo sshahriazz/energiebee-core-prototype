@@ -286,7 +286,7 @@ async function pipelineSteps(siteId, dev, step) {
   const out = [];
   for (const d of DEVICES) {
     const device = dev[d.key];
-    const chans = await db.prepare(`SELECT c.point, c.scale, c.shift, c.part, c.kind, c.access, m.code AS metric, dm.code AS derived FROM channel c JOIN metric m ON m.id = c.metric_id
+    const chans = await db.prepare(`SELECT c.point, c.scale, c.shift, c.part, c.kind, c.access, m.code AS metric, dm.code AS derived FROM point_binding c JOIN metric m ON m.id = c.metric_id
       LEFT JOIN metric dm ON dm.id = c.derived_metric_id JOIN source s ON s.id = c.source_id WHERE c.site_id = ? AND s.code = ? AND c.device_id = ? AND c.superseded_at IS NULL`).all(siteId, d.source, device.id);
     for (const o of step.obs[d.key]) {
       const c = chans.find((x) => x.point === o.point);

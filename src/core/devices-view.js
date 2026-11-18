@@ -44,7 +44,7 @@ async function metricRow(id) { return await db.prepare('SELECT id, code, label, 
 // The channel rows of a device (current ones), plus any series of the device no channel row describes (data written before channels
 // existed): those are shown too, with point null, so nothing a device holds is hidden.
 async function channelsOfDevice(site, device) {
-  const rows = await db.prepare(`SELECT c.*, so.code AS source FROM channel c JOIN source so ON so.id = c.source_id WHERE c.site_id = ? AND c.device_id = ? AND c.superseded_at IS NULL ORDER BY c.id`).all(site.id, device.id);
+  const rows = await db.prepare(`SELECT c.*, so.code AS source FROM point_binding c JOIN source so ON so.id = c.source_id WHERE c.site_id = ? AND c.device_id = ? AND c.superseded_at IS NULL ORDER BY c.id`).all(site.id, device.id);
   const out = await mapAsync(rows, async (c) => {
         const m = await metricRow(c.metric_id); const dm = c.derived_metric_id ? await metricRow(c.derived_metric_id) : null;
         return { id: c.id, point: c.point, source: c.source, kind: c.kind, access: c.access, scale: c.scale, shift: c.shift, part: c.part, min: c.min_value, max: c.max_value,

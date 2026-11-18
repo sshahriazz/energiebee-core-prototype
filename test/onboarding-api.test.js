@@ -101,7 +101,7 @@ await test('a dry run on every write returns what would happen and keeps nothing
   assert.equal(u.status, 200); assert.equal(u.body.dryRun, true);
   const c = await post(`/api/sites/${SITE}/channels`, { dryRun: true, source: 'open_meteo', point: 'temp_dry', metric: 'outdoor_temp_c' });
   assert.equal(c.status, 200); assert.equal(c.body.dryRun, true); assert.equal(c.body.channel.point, 'temp_dry');
-  const r = await post(`/api/sites/${SITE}/channels/retire`, { dryRun: true, id: (await db.prepare('SELECT id FROM channel LIMIT 1').get())?.id ?? 1 });
+  const r = await post(`/api/sites/${SITE}/channels/retire`, { dryRun: true, id: (await db.prepare('SELECT id FROM point_binding LIMIT 1').get())?.id ?? 1 });
   assert.ok([200, 404].includes(r.status));
   assert.deepEqual([await count('binding'), await count('channel')], before, 'nothing was kept');
 });

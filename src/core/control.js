@@ -126,7 +126,7 @@ export const STANDARD_POINTS = [
 ];
 export const DEFAULT_MODES = { 0: 'demand', 1: 'charge', 2: 'export', 3: 'freeze_charge', 4: 'freeze_export', 5: 'hold' };
 export async function ensureControlChannels(siteId, source, deviceId, { modes = DEFAULT_MODES } = {}) {
-  const have = db.prepare('SELECT 1 FROM channel c JOIN source s ON s.id = c.source_id WHERE c.site_id = ? AND s.code = ? AND c.device_id = ? AND c.point = ? AND c.superseded_at IS NULL');
+  const have = db.prepare('SELECT 1 FROM point_binding c JOIN source s ON s.id = c.source_id WHERE c.site_id = ? AND s.code = ? AND c.device_id = ? AND c.point = ? AND c.superseded_at IS NULL');
   let made = 0;
   for (const [point, metric] of STANDARD_POINTS) {
     if (await have.get(siteId, source, deviceId, point)) continue;
@@ -155,7 +155,7 @@ export async function readReported(deviceId, desired, atMs) {
     compared.push(key);
     if (!row) { missing.push(key); continue; }
     if (key === 'action') {
-      const ch = await db.prepare(`SELECT c.enum_values FROM channel c JOIN metric m ON m.id = c.metric_id WHERE c.device_id = ? AND m.code = ? AND c.superseded_at IS NULL ORDER BY c.id DESC LIMIT 1`).get(deviceId, metric);
+      const ch = await db.prepare(`SELECT c.enum_values FROM point_binding c JOIN metric m ON m.id = c.metric_id WHERE c.device_id = ? AND m.code = ? AND c.superseded_at IS NULL ORDER BY c.id DESC LIMIT 1`).get(deviceId, metric);
       const words = ch?.enum_values ? JSON.parse(ch.enum_values) : null;
       reported.action = words ? words[String(row.value)] ?? `code ${row.value}` : row.value;
     } else if (key === 'window_start' || key === 'window_end') {

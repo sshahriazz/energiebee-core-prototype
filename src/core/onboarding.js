@@ -146,7 +146,7 @@ const defaultsOf = (code) => (SOURCES.find((x) => x.code === code)?.channels ?? 
 }));
 
 export async function channelRows(siteId, { source = null, all = false } = {}) {
-  const rows = await db.prepare(`SELECT c.*, m.code AS metric, m.unit, so.code AS source, dm.code AS derived_metric FROM channel c JOIN metric m ON m.id = c.metric_id JOIN source so ON so.id = c.source_id
+  const rows = await db.prepare(`SELECT c.*, m.code AS metric, m.unit, so.code AS source, dm.code AS derived_metric FROM point_binding c JOIN metric m ON m.id = c.metric_id JOIN source so ON so.id = c.source_id
     LEFT JOIN metric dm ON dm.id = c.derived_metric_id
     WHERE c.site_id = ?${source ? ' AND so.code = ?' : ''}${all ? '' : ' AND c.superseded_at IS NULL'} ORDER BY so.code, c.device_id IS NOT NULL, c.device_id, c.point, m.code, c.id`)
       .all(siteId, ...(source ? [source] : []));
@@ -301,7 +301,7 @@ async function warningsFor(site, a, action) {
   if (action === 'bind') {
     const d = await dataOf(site, a.source);
     if (!d.series) w.push(`"${a.source}" has no data for this home yet. Slots from the start date will show this input as missing until the source delivers data.`);
-    if (!await db.prepare('SELECT 1 FROM channel c JOIN source so ON so.id = c.source_id WHERE c.site_id = ? AND so.code = ? AND c.superseded_at IS NULL').get(site.id, a.source)
+    if (!await db.prepare('SELECT 1 FROM point_binding c JOIN source so ON so.id = c.source_id WHERE c.site_id = ? AND so.code = ? AND c.superseded_at IS NULL').get(site.id, a.source)
       && !(SOURCES.find((x) => x.code === a.source)?.channels?.length)) w.push(`"${a.source}" has no channels on this home: its points are not mapped to standard measurements, so nothing it sends can be used.`);
   } else if (!await db.prepare('SELECT 1 FROM binding WHERE site_id = ? AND role = ? AND superseded_at IS NULL AND valid_to IS NULL').get(site.id, a.role)) {
     w.push('This role has no open binding: there is nothing to end.');
@@ -451,8 +451,8 @@ export async function applyChannel(siteId, body, { dryRun = false } = {}) {
 export async function retireChannel(siteId, body, { dryRun = false } = {}) {
   const site = await siteOf(siteId);
   const id = num(body.id, 'id', { required: true });
-  const row = await db.prepare('SELECT id FROM channel WHERE id = ? AND site_id = ? AND superseded_at IS NULL').get(id, site.id);
+  const row = await db.prepare('SELECT id FROM point_binding WHERE id = ? AND site_id = ? AND superseded_at IS NULL').get(id, site.id);
   if (!row) throw new OnboardingError(404, 'not_found', `No current channel ${id} on this home`, 'id');
-  const go = async () => { await db.prepare('UPDATE channel SET superseded_at = ? WHERE id = ?').run(Date.now(), id); return { id }; };
+  const go = async () => { await db.prepare('UPDATE point_binding SET superseded_at = ? WHERE id = ?').run(Date.now(), id); return { id }; };
   return dryRun ? { dryRun: true, ...await rolledBack(go) } : { dryRun: false, ...await tx(go) };
 }

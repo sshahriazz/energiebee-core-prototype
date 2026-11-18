@@ -59,7 +59,7 @@ await test('the history ends half an hour before now, and was written through in
   assert.equal(plug.at(-1).ts, histEnd);
   assert.ok(plug.length > 800, `${plug.length} plug counter readings`);
   assert.ok((await periods(dev.plug.id, 'plug_kwh')).length > 800, 'the energy of each period was derived by the core, not written by the generator');
-  assert.ok((await db.prepare('SELECT COUNT(*) n FROM channel WHERE site_id = ? AND device_id IS NOT NULL').get(site.id)).n >= 25, 'channels exist for every device');
+  assert.ok((await db.prepare('SELECT COUNT(*) n FROM point_binding WHERE site_id = ? AND device_id IS NOT NULL').get(site.id)).n >= 25, 'channels exist for every device');
 });
 
 await test('the plug counter restarts: periods around a reset are partial, one at midnight each day and one mid-day', async () => {

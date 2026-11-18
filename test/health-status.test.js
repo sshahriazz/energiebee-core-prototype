@@ -69,7 +69,7 @@ await test('cadence by kind when the source declares none: a forecast 3600 s, a 
   // a counter on a plug
   const dev = Number((await db.prepare("INSERT INTO device (site_id, kind, provider, external_ref, label, attrs, recorded_at) VALUES (?, 'smart_plug', 'push', 'h-plug', 'p', '{}', 0)").run(SITE)).lastInsertRowid);
   await mk('plug_vendor'); await bind(SITE, 'plug_energy', 'plug_vendor', { from: null, reason: 'test', deviceId: dev });
-  await db.prepare("INSERT INTO channel (site_id, source_id, device_id, point, metric_id, kind, recorded_at) VALUES (?, (SELECT id FROM source WHERE code = 'plug_vendor'), ?, 'total', (SELECT id FROM metric WHERE code = 'plug_counter_kwh'), 'counter', 0)").run(SITE, dev);
+  await db.prepare("INSERT INTO point_binding (site_id, source_id, device_id, point, metric_id, kind, recorded_at) VALUES (?, (SELECT id FROM source WHERE code = 'plug_vendor'), ?, 'total', (SELECT id FROM metric WHERE code = 'plug_counter_kwh'), 'counter', 0)").run(SITE, dev);
   const cs = await seriesId('device', dev, 'plug_counter_kwh', 'plug_vendor');
   await putReadings(cs, [{ ts: now - 200, value: 5 }]); await stamp('reading', cs, now - 200);
   const c = roleHealth(await H.health(SITE, { now }), 'plug_energy').bindings[0];

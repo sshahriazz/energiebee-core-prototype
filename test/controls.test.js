@@ -20,7 +20,7 @@ const NOW = Date.UTC(2026, 10, 18, 10, 0) ; const at = NOW / 1000;
 const dev = async (kind, ref) => (await addDevice({ siteId: home.id, kind, provider: 'synthetic', externalRef: ref })).id;
 const garage = await createThing({ siteId: home.id, type: 'garage', name: 'Garage' });
 const plugA = await dev('smart_plug', 'c-plug-a'); const plugB = await dev('smart_plug', 'c-plug-b'); const bat = await dev('battery', 'c-bat'); const stat = await dev('thermostat', 'c-stat');
-for (const [id, to] of [[plugA, garage.id], [plugB, garage.id], [garage.id, home.id], [stat, garage.id]]) await relate({ siteId: home.id, from: id, rel: 'located_in', to });
+for (const [id, to] of [[plugA, garage.id], [plugB, garage.id], [garage.id, home.id], [stat, garage.id], [bat, home.id]]) await relate({ siteId: home.id, from: id, rel: 'located_in', to });
 for (const [id, action] of [[plugA, 'on'], [plugA, 'off'], [plugB, 'on'], [plugB, 'off'], [bat, 'charge'], [bat, 'demand'], [stat, 'set_target_temp']]) await plans.setCapability(id, action, true, { source: 'adapter' });
 const ask = (o) => C.submitRequest({ validFrom: at, validUntil: at + 3600, source: 'test', now: NOW, ...o });
 
@@ -55,7 +55,7 @@ await test('a request needs a thing with the capability, an action it allows, a 
   await updateThing(bat, { siteId: home.id, attrs: { external_controller: 'Octopus Intelligent Go' } });
   await assert.rejects(() => ask({ thingId: bat, capability: 'battery_storage', action: 'charge', priority: 'optimiser' }), /run by Octopus Intelligent Go/);
   assert.ok(await ask({ thingId: bat, capability: 'battery_storage', action: 'charge', priority: 'manual' }), 'a person may still ask');
-  const nobody = await createUser({ name: 'Nobody' });
+  const nobody = (await createUser({ name: 'Nobody' })).id;
   await assert.rejects(() => ask({ thingId: plugA, capability: 'on_off', action: 'on', actorUserId: nobody }), /may not control/);
   await giveHome(nobody, home.id);
   await db.prepare("INSERT INTO site_grant (user_id, site_id, role, scope, recorded_at) VALUES (?, ?, 'owner', 'all', 0)").run(nobody, home.id).catch(() => null);
@@ -83,7 +83,7 @@ await test('a manual request beats the optimiser and expires correctly: the opti
 await test('an external change is a manual request that nothing reverts before it expires, and shows as one', async () => {
   const ext = await C.recordExternalChange({ thingId: stat, capability: 'thermostat', action: 'set_target_temp', desired: { setpointC: 24 }, forS: 1800, now: NOW });
   assert.deepEqual([ext.external, ext.priority, ext.source], [1, 'manual', 'external']);
-  const optimiser = await ask({ thingId: stat, capability: 'thermostat', action: 'set_target_temp', desired: { setpointC: 19 }, priority: 'optimiser', validUntil: at + 7200 });
+  const optimiser = await ask({ thingId: stat, capability: 'thermostat', action: 'set_target_temp', desired: { setpointC: 19 }, priority: 'optimiser', validUntil: at + 20000 });
   let s = await C.settle(stat, 'thermostat', { now: NOW + 60_000 });
   assert.deepEqual([s.external, s.written], [true, false], 'nothing is sent, nothing is reverted');
   s = await C.settle(stat, 'thermostat', { now: NOW + 1900 * 1000 });
@@ -102,10 +102,10 @@ await test('a limit on a place binds what is in it; a request on the garage reac
   const g = await C.groupRequest({ placeId: garage.id, capability: 'thermostat', action: 'set_target_temp', desired: { setpointC: 30 }, validFrom: at + 8000, validUntil: at + 9000, source: 'test', now: NOW + 8000 * 1000 });
   assert.deepEqual(g.members.map((m) => [m.name, m.status]), [['thermostat', 'blocked']], 'the garage\'s comfort range holds the thermostat in it');
   assert.equal(g.members[0].blocks[0].gate, 'limit');
-  const ok = await C.groupRequest({ placeId: garage.id, capability: 'on_off', action: 'on', validFrom: at + 8000, validUntil: at + 9000, source: 'test', now: NOW + 8000 * 1000 });
+  const ok = await C.groupRequest({ placeId: garage.id, capability: 'on_off', action: 'off', validFrom: at + 8000, validUntil: at + 9000, source: 'test', now: NOW + 8000 * 1000 });
   assert.deepEqual(ok.members.map((m) => [m.type, m.status]).sort(), [['smart_plug', 'enqueued'], ['smart_plug', 'enqueued']]);
   assert.ok(ok.members.every((m) => m.requestId) && /^[0-9a-f-]{36}$/.test(ok.group), 'the requests of one command share a group');
-  const again = await C.groupRequest({ placeId: garage.id, capability: 'on_off', action: 'on', validFrom: at + 8000, validUntil: at + 9000, source: 'test', now: NOW + 8001 * 1000 });
+  const again = await C.groupRequest({ placeId: garage.id, capability: 'on_off', action: 'off', validFrom: at + 8000, validUntil: at + 9000, source: 'test', now: NOW + 8001 * 1000 });
   assert.ok(again.members.every((m) => m.status === 'unchanged'), 'asking again reaches nobody twice');
   assert.deepEqual((await C.capableMembers(home.id, 'battery_storage', 'charge')).map((m) => m.type), ['battery'], 'the home holds the garage, and the battery is in it too');
 });

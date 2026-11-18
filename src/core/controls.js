@@ -11,7 +11,7 @@
 //
 // A request never changes: it is cancelled or it runs out. When a winner runs out, the next one returns at the next settle.
 import { db, tx } from '../db/db.js';
-import { enqueueIfChanged, diffState } from './commands.js';
+import { enqueueIfChanged, diffState, normaliseDesired } from './commands.js';
 import { canControl } from './access.js';
 import { membersOf } from './node-slots.js';
 import { dayBounds, localDate, addDays } from './time.js';
@@ -133,7 +133,7 @@ export async function recordExternalChange({ thingId, capability, action, desire
 export async function noticeExternalChange({ thingId, capability, reported, graceS = 300, now = Date.now(), forS = 6 * 3600 }) {
   const winner = pickWinner(await requestsOf(thingId, capability), nowSec(now));
   if (!winner || winner.external) return null;
-  const want = { action: winner.action, ...winner.desired };
+  const want = normaliseDesired({ action: winner.action, ...winner.desired });
   const diff = diffState(Object.fromEntries(Object.entries(want).filter(([k]) => reported?.[k] !== undefined)), reported);
   if (!Object.keys(diff).length) return null;
   const open = await db.prepare("SELECT 1 AS x FROM command WHERE device_id = ? AND status IN ('pending', 'sent') LIMIT 1").get(thingId);
@@ -177,7 +177,7 @@ export async function groupRequest({ placeId, capability, action, desired = {}, 
   const groupUid = (await db.prepare('SELECT uuidv7() AS u').get()).u;
   const results = [];
   const over = new Map();   // member id -> the sum limits it breaks
-  const probe = { action, ...desired };
+  const probe = normaliseDesired({ action, ...desired });   // the keys the limits are written in (current_a)
   const limitRows = [];
   for (const m of members) for (const p of [m.id, ...await placesOf(m.id)]) limitRows.push({ member: m.id, place: p });
   const places = [...new Set(limitRows.map((r) => r.place))];

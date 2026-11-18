@@ -81,3 +81,22 @@ CREATE TABLE scene_schedule (
   until_min bigint NOT NULL CHECK (until_min > 0 AND until_min <= 1440), -- and ends (a window never crosses midnight: two schedules do)
   CONSTRAINT scene_schedule_window CHECK (until_min > from_min)
 );
+
+-- 4.1: actions belong to capabilities. A device is confirmed for an action when its type's capabilities allow it, or (as before) its kind lists it
+-- in device_action; the action is no longer refused for a kind (a smart plug's on and off) the older table never listed.
+CREATE OR REPLACE FUNCTION trg_device_capability_known_action() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM device d JOIN device_action a ON a.device_kind = d.kind AND a.action = NEW.action WHERE d.id = NEW.device_id)
+     AND NOT EXISTS (SELECT 1 FROM thing t JOIN thing_type ty ON ty.type = t.type JOIN capability c ON ty.capabilities ? c.code WHERE t.id = NEW.device_id AND c.actions ? NEW.action) THEN
+    RAISE EXCEPTION 'device_capability: action not defined in device_action for this device kind';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE FUNCTION trg_device_capability_known_action_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM device d JOIN device_action a ON a.device_kind = d.kind AND a.action = NEW.action WHERE d.id = NEW.device_id)
+     AND NOT EXISTS (SELECT 1 FROM thing t JOIN thing_type ty ON ty.type = t.type JOIN capability c ON ty.capabilities ? c.code WHERE t.id = NEW.device_id AND c.actions ? NEW.action) THEN
+    RAISE EXCEPTION 'device_capability: action not defined in device_action for this device kind';
+  END IF;
+  RETURN NEW;
+END $$;

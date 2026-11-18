@@ -16,9 +16,13 @@ export async function capabilityRow(deviceId, action) {
   return await db.prepare('SELECT supported, source FROM device_capability WHERE device_id = ? AND action = ?').get(deviceId, action) ?? null;
 }
 
+// The limits that bind a device: its own and those of every place it is in (a room's comfort range, the home's export limit), each member held
+// to them one by one ('each'); a 'sum' limit is checked across the members of a group command (groupRequest), not here.
 export async function limitsFor(deviceId, action, nowMs) {
-  return await db.prepare(`SELECT * FROM control_limit WHERE device_id = ? AND superseded_at IS NULL AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)
-    AND (action IS NULL OR action = ?)`).all(deviceId, nowMs, nowMs, action);
+  const places = (await db.prepare(`WITH RECURSIVE up(id, depth) AS (SELECT ?::bigint, 0 UNION SELECT r.to_id, u.depth + 1 FROM up u JOIN thing_relation r ON r.from_id = u.id
+      WHERE r.rel = 'located_in' AND r.superseded_at IS NULL AND r.valid_to IS NULL AND u.depth < 20) SELECT id FROM up`).all(deviceId)).map((r) => Number(r.id));
+  return await db.prepare(`SELECT * FROM control_limit WHERE device_id = ANY(?::bigint[]) AND superseded_at IS NULL AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)
+    AND (action IS NULL OR action = ?) AND aggregate = 'each'`).all(`{${places.join(',')}}`, nowMs, nowMs, action);
 }
 
 // Who may set a limit, strongest first (fix list R17). A lower source can only tighten a higher one: the database refuses a

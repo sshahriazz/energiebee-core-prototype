@@ -849,6 +849,7 @@ app.get('/api/compatibility', async (req, res) => res.json(await compatibility(d
 app.use('/api/explorer', (await import('./routes/explorer.js')).default);   // Data Explorer: read-only (src/core/explorer.js)
 app.use('/api', (await import('./routes/prices.js')).default);   // price slots: GET /api/tariffs/:id/slots, /api/sites/:id/prices (src/core/tariff-slots.js)
 app.use('/api', (await import('./routes/things.js')).default);   // the thing graph: /api/homes/:uid/graph, /api/things/:uid (src/routes/things.js)
+app.use('/api', (await import('./routes/controls.js')).default);   // what a thing can be asked, requests and their winners, a request on a room, scenes (src/routes/controls.js)
 
 // ───────────── Providers: bindings, channels, impact preview (src/core/onboarding.js) ─────────────
 // What the Providers screen reads and writes. Errors are { error, code, field? }: a machine code (unknown_role,

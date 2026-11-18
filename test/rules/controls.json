@@ -1,0 +1,21 @@
+{
+ "triggers": {
+  "control_request_fixed": [
+   "a cancelled control request stays cancelled",
+   "a control request never changes: cancel it and ask again"
+  ],
+  "control_request_home_matches": [
+   "a control request is in the home of its thing"
+  ],
+  "control_request_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ],
+  "device_capability_known_action": [
+   "device_capability: action not defined in device_action for this device kind"
+  ],
+  "scene_uid_fixed": [
+   "uid never changes (it is the identity outside this database)"
+  ]
+ },
+ "exclusions": []
+}

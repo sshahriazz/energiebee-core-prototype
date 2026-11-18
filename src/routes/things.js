@@ -25,11 +25,11 @@ const WRITABLE_RELS = ['part_of'];          // feeds, meters and controls are se
 const ENDABLE_RELS = ['part_of', 'located_in'];
 const MADE_KINDS = ['space', 'system'];     // what a person makes through the API
 const err = (status, message, code = null) => Object.assign(new Error(message), { status, apiCode: code });
-const bad = (message, code = null) => err(400, message, code);
-const notFound = (what) => err(404, `No such ${what}`, 'not_found');
+export const bad = (message, code = null) => err(400, message, code);
+export const notFound = (what) => err(404, `No such ${what}`, 'not_found');
 const CODES = { 400: 'bad_request', 401: 'unauthorized', 404: 'not_found', 409: 'conflict' };
 
-const route = (fn) => async (req, res) => {
+export const route = (fn) => async (req, res) => {
   try {
     const out = await fn(req);
     res.status(out.status ?? 200).json(out.body);
@@ -42,7 +42,7 @@ const route = (fn) => async (req, res) => {
 
 // ───────────── guards ─────────────
 // A thing by uid that this user may see: the survivor of a merge (with the uid asked for), or a shared context thing.
-async function guard(req, uid, { home = false, what = 'thing' } = {}) {
+export async function guard(req, uid, { home = false, what = 'thing' } = {}) {
   if (!UUID.test(String(uid))) throw notFound(home ? 'home' : what);
   let row;
   try { row = await T.getThing(String(uid).toLowerCase()); } catch { throw notFound(home ? 'home' : what); }
@@ -61,8 +61,8 @@ const homeOf = (t) => (t.home_id == null ? null : Number(t.home_id));
 const at = (req, source = req.query) => parseAt(source.at, 'at');
 const known = (req) => parseKnown(req.query.known, 'known');
 const timeOpts = (req) => { const o = {}; const a = at(req); const k = known(req); if (a !== undefined) o.at = a; if (k !== undefined) o.known = k; return o; };
-const body = (req) => { const b = req.body ?? {}; if (typeof b !== 'object' || Array.isArray(b)) throw bad('the body is a JSON object'); return b; };
-const text = (v, what, { min = 1, max = 120 } = {}) => {
+export const body = (req) => { const b = req.body ?? {}; if (typeof b !== 'object' || Array.isArray(b)) throw bad('the body is a JSON object'); return b; };
+export const text = (v, what, { min = 1, max = 120 } = {}) => {
   if (typeof v !== 'string') throw bad(`${what} is text`);
   const s = v.trim();
   if (s.length < min || s.length > max) throw bad(`${what} is ${min} to ${max} characters`);

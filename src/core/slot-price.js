@@ -103,6 +103,10 @@ export function slotPrice(p, point, start, durS) {
   return { ...first, register, unitEx: num / den, supplyEx: sup / den, weighted: true, inputs, ...(estimated ? { estimated: true } : {}) };
 }
 
+// The price paid per kWh in a slot: the unit price before percentage taxes times (1 + the percentage taxes). null when no price is known.
+// Every cost in the build, the comparison and the API takes the slot's price from here.
+export const unitInc = (price) => (price?.unitEx != null ? price.unitEx * (1 + price.vat) : null);
+
 // The fixed charges of one slot including tax, in minor units: the daily charge by the slot's share of its local day (46, 48 or
 // 50 half-hours, or 92, 96, 100 quarter-hours: the day is cut into slots of this length), monthly and yearly charges and
 // capacity by real seconds over the real length of their period (fixedChargePerSlot, which adds up to the period's amount

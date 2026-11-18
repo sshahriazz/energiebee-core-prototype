@@ -35,6 +35,7 @@ import { bindingsFor, sourceAt, holdSOf, FILL_MAX_S } from './inputs.js';
 import { siteAt } from './versions.js';
 import { loadPricing } from './pricing.js';
 import { supplyPricer, dropOtherLengths, readSubMeterFacts } from './supply-price.js';
+import { unitInc } from './slot-price.js';
 import { METRICS } from '../db/registry.js';
 import { nowSec, localDate, dayBounds, slotsOfDay, daysBetween, zonedParts, floorTo, addDays, slotLength, slotFloor, todMinute, slotNoun } from './time.js';
 import { inputsProvenance, dataOriginOf } from './provenance.js';
@@ -526,8 +527,8 @@ async function build(siteId, fromDate, toDate, opts) {
       const { price: pi, fixedInc: piFixed } = pricer.get('meter_import', slot);
       const { price: pe } = pricer.get('meter_export', slot);
       const { price: pg, fixedInc: pgFixed } = gas != null ? pricer.get('meter_gas', slot) : { price: null, fixedInc: 0 };
-      const impInc = pi?.unitEx != null ? pi.unitEx * (1 + pi.vat) : null;
-      const expRate = pe?.unitEx != null ? pe.unitEx * (1 + pe.vat) : 0;
+      const impInc = unitInc(pi);
+      const expRate = unitInc(pe) ?? 0;
       if (impInc != null) { day.rated++; } else q |= QUALITY.CHECK_FAILED;
       // Sub-meters with a tariff of their own (R11): what a sub-meter measured is billed at its tariff and taken out of the main
       // meter's priced energy. Bounded by what the home drew from the grid for itself, so energy the sun or the battery supplied is
@@ -542,7 +543,7 @@ async function build(siteId, fromDate, toDate, opts) {
         if (!(kwh > 0) || impInc == null) continue;
         const moved = Math.min(kwh, gToHome);
         if (sp.unitEx == null) { subs.push({ device: m.deviceId, tariff: sp.tariffCode, kwh: moved, unpriced: true }); continue; }
-        const subInc = sp.unitEx * (1 + sp.vat);
+        const subInc = unitInc(sp);
         subDelta += moved * (subInc - impInc);
         subs.push({ device: m.deviceId, tariff: sp.tariffCode, kwh: moved, unit_inc: subInc, main_unit_inc: impInc, delta: moved * (subInc - impInc) });
       }

@@ -18,7 +18,7 @@ import { loadPricing, fixedPerDay } from './core/pricing.js';
 import { slotPrice } from './core/slot-price.js';
 import { fixedChargeMicro } from './core/tariff-expand.js';
 import { createSite, setSlotLength, regionsOf } from './core/sites.js';
-import { startControlScheduler, registeredDrivers } from './jobs/control.js';
+import { startControlScheduler, startRequestScheduler, registeredDrivers } from './jobs/control.js';
 import { ensureEnvSite, syncSite, syncAll, startScheduler, isSyncing, closeInterruptedRuns } from './jobs/sync.js';
 import { providerStatus, connectProvider } from './core/providers.js';
 import { connectors } from './core/connectors.js';
@@ -971,6 +971,7 @@ export async function start() {
     if (graph.created || graph.related) console.log(`energy graph: ${graph.created} thing(s) and ${graph.related} relation(s) made`);
     // Control cycles run only for registered vendor drivers (jobs/control.js); none ship yet, so this is idle.
     if (registeredDrivers().length) startControlScheduler(Number(process.env.CONTROL_EVERY_SECONDS) || 30);
+    startRequestScheduler(Number(process.env.REQUEST_EVERY_SECONDS) || 60);   // scenes due, requests that began or ran out (src/core/controls.js)
     console.log(`EnergieBee core prototype on http://localhost:${port}  (sync every ${minutes} min${envSite ? '' : '; no Sunsynk/Octopus credentials in .env, so no home to show'})`);
     // Demo homes have no providers to sync: their data is generated. One cycle, home after home,
     // so shared steps (a region, a tariff, a location) run once.

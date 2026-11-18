@@ -135,3 +135,19 @@ await test('scenes: named sets of requests, applied at the priority of a schedul
   assert.deepEqual(w.map((x) => x.date), ['2026-11-16', '2026-11-18'], 'Monday and Wednesday');
   assert.equal(w[0].until - w[0].from, 4 * 3600);
 });
+
+await test('the request tick asks for the scenes that are due and settles what began or ran out', async () => {
+  const { requestTick } = await import('../src/jobs/control.js');
+  const soon = Date.now() + 120_000;
+  const tz = (await db.prepare('SELECT timezone FROM site WHERE id = ?').get(home.id)).timezone;
+  const d = new Date(soon);
+  const sc = await C.saveScene({ homeId: home.id, name: 'Soon', items: [{ thingId: plugA, capability: 'on_off', action: 'on', desired: {} }], now: Date.now() });
+  const { zonedParts } = await import('../src/core/time.js');
+  const p = zonedParts(tz, Math.floor(soon / 1000));
+  const iso = ((d.getUTCDay() + 6) % 7) + 1;
+  await C.scheduleScene(sc.id, { weekdays: [iso], fromMin: p.hh * 60 + p.mm + 1, untilMin: Math.min(1440, p.hh * 60 + p.mm + 60) });
+  const first = await requestTick({ now: Date.now() });
+  assert.equal(first.scenes, 1, 'the window starts within the hour: its requests are made');
+  const second = await requestTick({ now: Date.now() });
+  assert.equal(second.scenes, 0, 'once per window');
+});

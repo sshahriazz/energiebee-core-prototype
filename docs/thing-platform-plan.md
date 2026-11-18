@@ -250,5 +250,7 @@ Made by the owner on 16 November 2026:
 | Devices (17 Nov) | All devices talk through a local hub; cloud adapters for cloud sources and as stand-ins | Section 2, thing-model.md §5 |
 | Money baseline (17 Nov) | Every tariff is converted to a slotted tariff; all costs are energy per slot × price per slot | Section 2, Phase T |
 | `site` vs the home thing | Fold `site` into the home thing | Phase 1.3b |
+| Sunsynk login (18 Nov) | The owner's own Sunsynk login can change inverter settings in the Sunsynk app (confirmed by the owner). This settles the one technical unknown of the research note; it does not settle Sunsynk's terms on automated use, so writes stay off until the conditions in `docs/build/sunsynk-writes.md` hold | Phase 4.5 |
+| BMW 530e on Intelligent Octopus smart charging (18 Nov) | The owner is not sure. The stored Octopus answers show the car registered (status LIVE) with smart control reported NOT_AVAILABLE, no planned and no completed dispatches in any answer since 26 Oct (unchanged at the last sync on 17 Nov), and the import tariff since 1 Sep has the code E-1R-IOG-… (Intelligent Octopus Go). Until the owner checks in the Octopus app that the car is set up for smart charging, the Octopus fallback for step 4.5 counts as unavailable | Phase 4.5, Phase T dispatch overlay |
 
 Nothing is open that blocks Phases 0–3.

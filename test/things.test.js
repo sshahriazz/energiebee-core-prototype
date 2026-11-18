@@ -427,7 +427,7 @@ await test('history and graph reads: shared context is a node, a query can ask f
 });
 
 // The tables that name a device point at the device THING (its detail row, device, has the same id: its own key is identity, not a reference).
-const DEVICE_KEYED = ['attribute_value.device_id:config', 'binding.device_id:config', 'command.device_id:log', 'command_block.device_id:runtime', 'control_limit.device_id:config', 'device_attr_version.device_id:config', 'device_capability.device_id:config', 'plan_run_device.device_id:serving', 'plan_score.device_id:serving', 'plan_slot.device_id:serving', 'point.home_id:config', 'point.thing_id:config', 'point_binding.device_id:config', 'push_log.device_id:log', 'register_window.device_id:config', 'supply_price_slot.device_id:serving', 'tariff_agreement.device_id:config'];
+const DEVICE_KEYED = ['attribute_value.device_id:config', 'binding.device_id:config', 'command.device_id:log', 'command_block.device_id:runtime', 'control_limit.device_id:config', 'device_attr_version.device_id:config', 'device_capability.device_id:config', 'node_slot.thing_id:serving', 'plan_run_device.device_id:serving', 'plan_score.device_id:serving', 'plan_slot.device_id:serving', 'point.home_id:config', 'point.thing_id:config', 'point_binding.device_id:config', 'push_log.device_id:log', 'register_window.device_id:config', 'supply_price_slot.device_id:serving', 'tariff_agreement.device_id:config'];
 
 await test('every table that points at a thing is found, with the kind that decides how its rows move', async () => {
   const refs = await T.thingReferences();

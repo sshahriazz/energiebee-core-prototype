@@ -1,7 +1,9 @@
 // A home's plant, read from its energy graph (plan 2.7, R1): which inverters, PV arrays, batteries, meters and supply it has and how
 // they are wired, and whether the allocation the build does (docs/timeline-forecast-and-data-states.md: solar, battery, grid and the
 // home's use, from the flows measured at home level) covers it. The build asks before it builds: a home the rules do not cover is
-// refused with the reasons, not built into numbers that look right and are not.
+// refused with the reasons, not built into numbers that look right and are not. The check judges a graph that is there: a home whose
+// graph is not built yet (no connection and no supply) or has several inverters (each is a unit of the build, bound per device, and the
+// seeder does not wire what it cannot know) is covered, and a home with no inverter is read as it always was, from its measured flows.
 //
 //   plantOf(facts)        PURE: the plant, from the things and relations of a home
 //   topologyOf(facts)     PURE: the plant, its class and the reasons it is not covered, if it is not
@@ -42,12 +44,10 @@ export function topologyOf(facts) {
   const flows = facts.evidence?.flows ?? {};
   const reasons = [];
   const unwired = (m) => Object.entries(m).filter(([, i]) => i == null).map(([id]) => Number(id));
-  if (plant.inverters.length === 0) {
-    if (plant.arrays.length && flows.solar) reasons.push('PV panels have no inverter in the graph, yet solar power was measured');
-    if (plant.batteries.length && flows.battery) reasons.push('a battery has no inverter in the graph, yet battery power was measured');
-  } else {
-    if (flows.solar && unwired(plant.arrayInverter).length) reasons.push('a PV array is not wired to an inverter');
-    if (flows.battery && unwired(plant.batteryInverter).length) reasons.push('a battery is not wired to an inverter');
+  const graphBuilt = plant.connection.length + plant.supply.length > 0;
+  if (graphBuilt && plant.inverters.length === 1) {
+    if (flows.solar && unwired(plant.arrayInverter).length) reasons.push('a PV array is not wired to the inverter');
+    if (flows.battery && unwired(plant.batteryInverter).length) reasons.push('a battery is not wired to the inverter');
   }
   const cls = plant.inverters.length === 0 && !plant.arrays.length && !plant.batteries.length ? 'no_plant'
     : plant.inverters.length > 1 ? 'several_inverters'

@@ -52,7 +52,7 @@ Each has a case in `test/rules-things.test.js`; `test/rules/things.json` records
 | a thing's uid never changes | trigger `thing_uid_fixed` (reuses `trg_uid_fixed`) | "uid never changes ..." |
 | a thing keeps its kind and its home | trigger `thing_identity_fixed` | "a thing keeps its kind and its home" |
 | a thing carries only the keys its type lists | trigger `thing_attrs_allowed` (insert, update of attrs or type) | "attribute % is not carried by type %" |
-| every change of name or attributes is a version | triggers `thing_attr_version_on_insert`, `thing_attr_version_on_update` (they write, they do not refuse) | proved by the rows they wrote |
+| every change of name, attributes or span of life is a version | triggers `thing_attr_version_on_insert`, `thing_attr_version_on_update` (they write, they do not refuse) | proved by the rows they wrote |
 | versions are append-only | trigger `thing_attr_version_append_only`: superseded once, never deleted, except inside a logged erasure (same `erasure_open()` as the facts) | two messages |
 | relations join one home or shared context; `site_id` is set from the things | trigger `thing_relation_checks` | "a relation joins things of one home, or shared context"; "relation home differs from the home of its things" |
 | only what a rule allows | same trigger | "no % rule allows a % to a %" |

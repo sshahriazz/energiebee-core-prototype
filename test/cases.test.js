@@ -32,17 +32,17 @@ const [D0] = dayBounds('Europe/London', DAY);              // local midnight (BS
 let nHome = 0;
 const home = async (name) => Number((await db.prepare("INSERT INTO site (name, created_at, country, market_code, currency) VALUES (?, ?, 'GB', 'GB', 'GBP')").run(`${name} ${++nHome}`, T0)).lastInsertRowid);
 const device = async (siteId, kind, ref, label = null) => await addDevice({ siteId, kind, provider: 'push', externalRef: ref, label, recordedAt: (T0 + 3600) * 1000 });
-const place = async (siteId, id, to) => await T.relate({ siteId, from: id, rel: 'located_in', to, at: T0 + 86400 });
+const place = async (siteId, id, to, required = 1) => await T.relate({ siteId, from: id, rel: 'located_in', to, at: T0 + 86400, required });
 const space = async (siteId, type, name) => { const s = await T.createThing({ siteId, type, name, validFrom: T0 + 3600 }); await place(siteId, s.id, siteId); return s; };
 const write = async (source, fn) => await F.asWriter(source, fn);
 const series = async (kind, id, metric, source) => await F.seriesId(kind, id, metric, source);
 const inSlot = async (thing, metric, day = DAY) => await readPointSlots(await pointOf(thing, metric), dayBounds('Europe/London', day)[0], dayBounds('Europe/London', day)[1]);
 
 await test('case 1: the inverter is replaced by another brand: the swap is a new thing in the same place, the old timeline ends, the home\'s does not break', async () => {
-  const h = await home('Swap'); await buildPointSlots(await pointOf(h, 'solar_w'), DAY, DAY);
+  const h = await home('Swap');
   const old = await device(h, 'inverter', 'inv-old', 'Old inverter'); await place(h, old.id, h);
   const noon = D0 + 12 * 3600;
-  const oldS = await series('device', old.id, 'load_w', 'sunsynk_5min'); const homeS = await series('site', h, 'ghi_wm2', 'open_meteo');
+  const oldS = await series('device', old.id, 'load_w', 'sunsynk_5min'); const homeS = await series('site', h, 'outdoor_temp_c', 'open_meteo');
   await write('sunsynk_5min', async () => { await F.putReadings(oldS, Array.from({ length: 12 }, (_, i) => ({ ts: D0 + 6 * 3600 + i * 1800, value: 300 }))); });
   await write('open_meteo', async () => { await F.putReadings(homeS, Array.from({ length: 40 }, (_, i) => ({ ts: D0 + 4 * 3600 + i * 1800, value: 200 }))); });
   const swap = await T.replaceThing(old.id, { siteId: h, name: 'New inverter', reason: 'case 1', at: noon });
@@ -54,7 +54,7 @@ await test('case 1: the inverter is replaced by another brand: the swap is a new
   const newS = await series('device', swap.thing.id, 'load_w', 'sunsynk_5min');
   await write('sunsynk_5min', async () => { await F.putReadings(newS, Array.from({ length: 12 }, (_, i) => ({ ts: swap.boundary + i * 1800, value: 400 }))); });
   await buildHomePointSlots(h, DAY, DAY);
-  const before = await inSlot(old.id, 'load_w'); const after = await inSlot(swap.thing.id, 'load_w'); const homeSlots = await inSlot(h, 'ghi_wm2');
+  const before = await inSlot(old.id, 'load_w'); const after = await inSlot(swap.thing.id, 'load_w'); const homeSlots = await inSlot(h, 'outdoor_temp_c');
   assert.ok(before.length && before.every((s) => s.slot_start < swap.boundary), 'the old inverter\'s timeline stops at the swap');
   assert.ok(after.length && after.every((s) => s.slot_start >= swap.boundary), 'the new one\'s begins there');
   assert.ok(homeSlots.some((s) => s.slot_start < swap.boundary) && homeSlots.some((s) => s.slot_start >= swap.boundary), 'the home\'s own timeline runs through the day of the swap');
@@ -188,8 +188,7 @@ await test('case 17: a detached garage on a second hub: devices of both hubs in 
 await test('case 18: one broken temperature sensor in the bedroom: the home stays final, the bedroom shows lower coverage', async () => {
   const h = await home('Broken'); const room = await space(h, 'room', 'Bedroom');
   const good = await device(h, 'temperature_sensor', 's-good'); const dead = await device(h, 'temperature_sensor', 's-dead');
-  await place(h, good.id, room.id); await place(h, dead.id, room.id);
-  await db.prepare("UPDATE thing_relation SET required = 0 WHERE from_id = ? AND rel = 'located_in'").run(dead.id);   // the second sensor is a nice-to-have
+  await place(h, good.id, room.id); await place(h, dead.id, room.id, 0);   // the second sensor is a nice-to-have
   const s = await series('device', good.id, 'indoor_temp_c', 'push_native'); await series('device', dead.id, 'indoor_temp_c', 'push_native');
   await write('push_native', async () => { await F.putReadings(s, [{ ts: D0 + 36000, value: 19 }, { ts: D0 + 36300, value: 19 }]); });
   await buildHomePointSlots(h, DAY, DAY); await buildHomeNodeSlots(h, DAY, DAY);

@@ -9,8 +9,7 @@
 //
 // Time. Valid time is seconds, record time is milliseconds (like every configuration table). A change to a relation takes
 // effect at the next slot boundary of the home (R13): `changed_at` keeps the exact moment, `valid_from` and a chosen `valid_to`
-// are boundaries. The boundary comes from the home's slot length and time zone (an explicit option, else the site row until the
-// site is folded into the home thing: `homeClock` is the one place to change then). A relation is never edited in place: the
+// are boundaries. The boundary comes from the home's slot length and time zone (an explicit option, else the site row, the home thing's detail row: `homeClock`). A relation is never edited in place: the
 // old row is superseded and the corrected one is written, so "as known at" any earlier moment still shows what was known (the
 // pattern of site_group_member; the database enforces it, thing_relation_append_only).
 //
@@ -46,8 +45,8 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LO = -9_000_000_000;   // the same stand-ins for "no start" and "no end" as the exclusion constraints use
 const HI = 9_000_000_000;
-const THING_COLS = 'id, uid, site_id, kind, type, name, attrs, std_ref, valid_from, valid_to, recorded_at, superseded_at, merged_into';
-const REL_COLS = 'id, uid, site_id, from_id, from_port, rel, to_id, to_port, required, valid_from, valid_to, changed_at, recorded_at, superseded_at';
+const THING_COLS = 'id, uid, home_id, kind, type, name, attrs, std_ref, valid_from, valid_to, recorded_at, superseded_at, merged_into';
+const REL_COLS = 'id, uid, home_id, from_id, from_port, rel, to_id, to_port, required, valid_from, valid_to, changed_at, recorded_at, superseded_at';
 const bad = (message) => Object.assign(new RangeError(message), { status: 400 });
 // Ids as one parameter for `col = ANY(?::bigint[])` (an index can be used, unlike a cast of the column).
 const idArray = (ids) => `{${ids.map((i) => { if (!Number.isSafeInteger(Number(i))) throw bad(`not an id: ${i}`); return Number(i); }).join(',')}}`;
@@ -109,8 +108,8 @@ export function nextSlotBoundary(ts, { slotS = SLOT, timezone = 'UTC' } = {}) {
 }
 
 /**
- * A home's slot length and time zone: the site row, which is the authority until the site is folded into the home thing (a home
- * thing that names either must name the site's: thing_home_clock). That fold changes this one query.
+ * A home's slot length and time zone: the site row, the detail row of the home thing (the same id). A home thing that names
+ * either in its attributes must name the site's (thing_home_clock).
  */
 export async function homeClock(siteId) {
   if (siteId == null) return { slotS: SLOT, timezone: 'UTC' };
@@ -138,9 +137,9 @@ async function begin(siteId) {
 // The home of a thing, read before the lock (a thing's home never changes).
 async function siteOf(ref) {
   const k = refKey(ref);
-  const row = k.id != null ? await db.prepare('SELECT site_id FROM thing WHERE id = ?').get(k.id) : await db.prepare('SELECT site_id FROM thing WHERE uid = ?::uuid').get(k.uid);
+  const row = k.id != null ? await db.prepare('SELECT home_id FROM thing WHERE id = ?').get(k.id) : await db.prepare('SELECT home_id FROM thing WHERE uid = ?::uuid').get(k.uid);
   if (!row) throw fail(404, `no thing ${k.id ?? k.uid}`);
-  return row.site_id;
+  return row.home_id;
 }
 // The home a write is for: required (null is shared context), and the thing must be in it. A thing of another home is "not found".
 function homeArg(siteId) {
@@ -148,10 +147,10 @@ function homeArg(siteId) {
   if (siteId !== null && !(Number.isSafeInteger(Number(siteId)) && Number(siteId) > 0)) throw bad(`not a home: ${siteId}`);
   return siteId === null ? null : Number(siteId);
 }
-const inside = (t, s) => { if (t.site_id !== s) throw fail(404, `no thing ${t.id} in ${s == null ? 'shared context' : `home ${s}`}`); return t; };
+const inside = (t, s) => { if (t.home_id !== s) throw fail(404, `no thing ${t.id} in ${s == null ? 'shared context' : `home ${s}`}`); return t; };
 async function homeOf(ref, siteId) {
   const s = homeArg(siteId);
-  inside({ id: refKey(ref).id ?? refKey(ref).uid, site_id: await siteOf(ref) }, s);
+  inside({ id: refKey(ref).id ?? refKey(ref).uid, home_id: await siteOf(ref) }, s);
   return s;
 }
 
@@ -311,6 +310,7 @@ export async function thingReferences() {
       JOIN pg_class cl ON cl.oid = c.conrelid
       JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
      WHERE c.contype = 'f' AND c.confrelid = 'thing'::regclass AND cl.relnamespace = current_schema()::regnamespace
+       AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.conrelid AND i.indisprimary AND i.indnkeyatts = 1 AND i.indkey[0] = c.conkey[1])
      ORDER BY 1, 4`).all();
   const found = rows.filter((r) => !OWN_TABLES.has(r.child));
   const odd = found.find((r) => Number(r.width) !== 1 || !r.to_id);
@@ -344,8 +344,8 @@ async function moveRows(ref, from, to, stamp, ids = null) {
 // ───────────── the operation log ─────────────
 async function logOp(op, thing, other, effectiveAt, reason, detail, stamp) {
   if (!String(reason ?? '').trim()) throw fail(400, `a ${op} needs a reason`);
-  return Number((await db.prepare('INSERT INTO thing_op (site_id, op, thing_id, other_id, effective_at, reason, detail, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?)')
-    .run(thing.site_id, op, thing.id, other.id, effectiveAt, String(reason).trim(), JSON.stringify(detail), stamp)).lastInsertRowid);
+  return Number((await db.prepare('INSERT INTO thing_op (home_id, op, thing_id, other_id, effective_at, reason, detail, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?)')
+    .run(thing.home_id, op, thing.id, other.id, effectiveAt, String(reason).trim(), JSON.stringify(detail), stamp)).lastInsertRowid);
 }
 
 // ───────────── create, change, retire ─────────────
@@ -363,6 +363,7 @@ export async function createThing(o) {
 
 async function makeThing({ siteId = null, type, name, attrs = {}, uid = null, validFrom = null, stdRef = null }, stamp) {
   const ty = await typeRow(type);
+  if (ty.kind === 'home') throw fail(400, 'a home thing is made with its site (createSite)');
   if (ty.kind === 'context' && siteId != null) throw fail(400, `a ${type} is shared context: it has no home`);
   if (ty.kind !== 'context' && siteId == null) throw fail(400, `a ${type} belongs to a home: give siteId`);
   if (uid != null && !(typeof uid === 'string' && UUID_V7.test(uid))) throw bad(`uid ${uid} is not a UUIDv7`);
@@ -370,9 +371,15 @@ async function makeThing({ siteId = null, type, name, attrs = {}, uid = null, va
   if (name.includes('\u0000')) throw bad('a name cannot hold a NUL character');
   if (validFrom != null) sec(validFrom, 'validFrom');
   const clean = await checkAttrs(ty, attrs);
-  const id = Number((await db.prepare('INSERT INTO thing (uid, site_id, kind, type, name, attrs, std_ref, valid_from, recorded_at) VALUES (COALESCE(?::uuid, uuidv7()), ?, ?, ?, ?, ?::jsonb, ?, ?, ?)')
+  const id = Number((await db.prepare('INSERT INTO thing (uid, home_id, kind, type, name, attrs, std_ref, valid_from, recorded_at) VALUES (COALESCE(?::uuid, uuidv7()), ?, ?, ?, ?, ?::jsonb, ?, ?, ?)')
     .run(uid, siteId, ty.kind, type, name.trim(), JSON.stringify(clean), stdRef, validFrom, stamp)).lastInsertRowid);
-  return await getThing(id);
+  const made = await getThing(id);
+  // A device thing has its device row (provider 'thing': the library made it); the row takes the thing's id and uid (device_make_thing adopts them).
+  if (ty.kind === 'device') {
+    await db.prepare("INSERT INTO device (id, site_id, kind, provider, external_ref, label, uid, recorded_at) VALUES (?, ?, ?, 'thing', ?, ?, ?::uuid, ?)")
+      .run(id, siteId, type, made.uid, made.name, made.uid, stamp);
+  }
+  return made;
 }
 
 /** Rename a thing and/or change attributes: `attrs` is a patch (a key set to null is removed). One change is one version. */
@@ -387,11 +394,15 @@ export async function updateThing(ref, { siteId, name, attrs } = {}) {
     if (!nextName) throw bad('a thing needs a name');
     if (nextName.includes('\u0000')) throw bad('a name cannot hold a NUL character');
     if (nextName !== t.name || JSON.stringify(sortKeys(next)) !== JSON.stringify(sortKeys(t.attrs))) {
+      // The thing first (one change, one version); the detail row then finds its thing already named so (device_sync_thing writes nothing).
       await db.prepare('UPDATE thing SET name = ?, attrs = ?::jsonb WHERE id = ?').run(nextName, JSON.stringify(next), t.id);
+      if (nextName !== t.name && t.kind === 'home') await db.prepare('UPDATE site SET name = ? WHERE id = ?').run(nextName, t.id);
+      if (nextName !== t.name && await isDeviceRow(t.id)) await db.prepare('UPDATE device SET label = ? WHERE id = ?').run(nextName, t.id);
     }
     return await getThing(t.id);
   });
 }
+const isDeviceRow = async (id) => Boolean(await db.prepare('SELECT 1 FROM device WHERE id = ?').get(id));
 const sortKeys = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1)));
 
 /**
@@ -402,7 +413,7 @@ export async function retireThing(ref, { siteId, at = nowSec() } = {}) {
   return await operation(async () => {
     const stamp = await begin(await homeOf(ref, siteId));
     const t = await liveThing(ref);
-    const { changedAt, boundary } = await snap(t.site_id, at);
+    const { changedAt, boundary } = await snap(t.home_id, at);
     if (t.valid_to != null && t.valid_to <= boundary) throw fail(409, `${t.name} was retired already (at ${t.valid_to})`);
     if (t.valid_from != null && boundary <= t.valid_from) throw fail(409, `${t.name} began at ${t.valid_from}: it cannot be retired before it began`);
     const holds = await db.prepare(`SELECT f.name FROM thing_relation r JOIN thing f ON f.id = r.from_id
@@ -419,6 +430,7 @@ export async function retireThing(ref, { siteId, at = nowSec() } = {}) {
       if (what !== 'unchanged') ended.push({ id: r.id, rel: r.rel, what });
     }
     await db.prepare('UPDATE thing SET valid_to = ? WHERE id = ?').run(boundary, t.id);
+    if (await isDeviceRow(t.id)) await db.prepare('UPDATE device SET retired_at = ? WHERE id = ? AND retired_at IS NULL').run(boundary * 1000, t.id);
     return { thing: await getThing(t.id), changedAt, boundary, relations: ended };
   });
 }
@@ -443,9 +455,9 @@ export async function relate({ siteId, from, rel, to, fromPort = null, toPort = 
     const stamp = await begin((await siteOf(from)) ?? (await siteOf(to)));
     const a = await getThing(from);
     const b = await getThing(to);
-    for (const t of [a, b]) if (t.site_id != null) inside(t, home);   // (shared context may join a home's things)
-    if (home == null && (a.site_id != null || b.site_id != null)) throw fail(404, 'no such relation in shared context');
-    const { changedAt, boundary, grid } = await snap(a.site_id ?? b.site_id, at);
+    for (const t of [a, b]) if (t.home_id != null) inside(t, home);   // (shared context may join a home's things)
+    if (home == null && (a.home_id != null || b.home_id != null)) throw fail(404, 'no such relation in shared context');
+    const { changedAt, boundary, grid } = await snap(a.home_id ?? b.home_id, at);
     assertAlive(a, boundary);
     assertAlive(b, boundary);
     const chosen = validTo == null ? null : nextSlotBoundary(sec(validTo, 'validTo'), grid);
@@ -462,12 +474,12 @@ export async function relate({ siteId, from, rel, to, fromPort = null, toPort = 
 export async function unrelate(relationId, { siteId, at = nowSec() } = {}) {
   return await operation(async () => {
     const home = homeArg(siteId);
-    const found = await db.prepare('SELECT site_id FROM thing_relation WHERE id = ?').get(relationId);
-    if (!found || found.site_id !== home) throw fail(404, `no relation ${relationId}`);
-    const stamp = await begin(found.site_id);
+    const found = await db.prepare('SELECT home_id FROM thing_relation WHERE id = ?').get(relationId);
+    if (!found || found.home_id !== home) throw fail(404, `no relation ${relationId}`);
+    const stamp = await begin(found.home_id);
     const r = await db.prepare(`SELECT ${REL_COLS} FROM thing_relation WHERE id = ? AND superseded_at IS NULL`).get(relationId);
     if (!r) throw fail(404, `no current relation ${relationId}`);
-    const { boundary } = await snap(r.site_id, at);
+    const { boundary } = await snap(r.home_id, at);
     return { what: await endRelation(r, boundary, stamp), boundary };
   });
 }
@@ -483,7 +495,7 @@ export async function moveThing(ref, to, { siteId, at = nowSec() } = {}) {
     const stamp = await begin(home);
     const t = await liveThing(ref);
     const dest = inside(await getThing(to), home);
-    const { changedAt, boundary } = await snap(t.site_id, at);
+    const { changedAt, boundary } = await snap(t.home_id, at);
     const placed = await db.prepare(`SELECT ${REL_COLS} FROM thing_relation WHERE from_id = ? AND rel = 'located_in' AND superseded_at IS NULL
       AND COALESCE(valid_to, ${HI}) > ? ORDER BY COALESCE(valid_from, ${LO})`).all(t.id, boundary);
     const now = placed.find((r) => (r.valid_from ?? LO) <= boundary);
@@ -521,7 +533,7 @@ export async function replaceThing(ref, { siteId, to = null, name, attrs = {}, i
     if (await db.prepare("SELECT 1 AS x FROM thing_relation WHERE rel = 'replaces' AND to_id = ? AND superseded_at IS NULL").get(old.id)) {
       throw fail(409, `${old.name} was replaced already: replace the newer device`);
     }
-    const { changedAt, boundary } = await snap(old.site_id, at);
+    const { changedAt, boundary } = await snap(old.home_id, at);
     if (old.valid_to != null && old.valid_to <= boundary) throw fail(409, `${old.name} was retired at ${old.valid_to}: it cannot be replaced at ${boundary}`);
     if (old.valid_from != null && boundary <= old.valid_from) throw fail(409, `${old.name} began at ${old.valid_from}: it cannot be replaced before that`);
     let made;
@@ -529,14 +541,14 @@ export async function replaceThing(ref, { siteId, to = null, name, attrs = {}, i
       if (name != null || uid != null || inherit.length || Object.keys(attrs).length) throw bad('a replacement that exists keeps its own name, attributes and uid');
       made = await liveThing(to);
       if (made.id === old.id) throw bad('a device cannot replace itself');
-      if (made.site_id !== old.site_id || made.type !== old.type) throw fail(400, `the replacement must be a ${old.type} of the same home (${made.name} is a ${made.type})`);
+      if (made.home_id !== old.home_id || made.type !== old.type) throw fail(400, `the replacement must be a ${old.type} of the same home (${made.name} is a ${made.type})`);
       if (await db.prepare("SELECT 1 AS x FROM thing_relation WHERE rel = 'replaces' AND from_id = ? AND superseded_at IS NULL").get(made.id)) throw fail(409, `${made.name} replaces a device already`);
       if (made.valid_from != null && made.valid_from > boundary) throw fail(409, `${made.name} began at ${made.valid_from}: after the old device leaves service at ${boundary}`);
       if (made.valid_to != null && made.valid_to <= boundary) throw fail(409, `${made.name} was retired at ${made.valid_to}`);
       if (made.valid_from == null) await db.prepare('UPDATE thing SET valid_from = ? WHERE id = ?').run(boundary, made.id);
     } else {
       const kept = Object.fromEntries(inherit.map((k) => [k, old.attrs[k]]).filter(([, v]) => v !== undefined));
-      made = await makeThing({ siteId: old.site_id, type: old.type, name: name ?? `${old.name} (replacement)`, attrs: { ...kept, ...attrs }, uid, validFrom: boundary }, stamp);
+      made = await makeThing({ siteId: old.home_id, type: old.type, name: name ?? `${old.name} (replacement)`, attrs: { ...kept, ...attrs }, uid, validFrom: boundary }, stamp);
     }
     const rows = (await currentRelationsOf(old.id)).filter((r) => r.rel !== 'replaces');
     const moved = await transferRelations(rows, old, made, boundary, changedAt, stamp);
@@ -570,7 +582,7 @@ export async function mergeThings(keepRef, dropRef, { siteId, reason } = {}) {
     const keep = await liveThing(keepRef);
     const drop = inside(await liveThing(dropRef), home);
     if (keep.id === drop.id) throw fail(400, 'a thing cannot be merged into itself');
-    if (keep.site_id !== drop.site_id || keep.kind !== drop.kind) throw fail(400, 'only two things of one home and kind are merged');
+    if (keep.home_id !== drop.home_id || keep.kind !== drop.kind) throw fail(400, 'only two things of one home and kind are merged');
     if (!String(reason ?? '').trim()) throw fail(400, 'a merge needs a reason');
     // a generic device found twice may be dropped into the typed thing it turned out to be; never the other way
     if (keep.type !== drop.type && drop.type !== 'generic_device') {
@@ -640,7 +652,7 @@ export async function splitThing(ref, { siteId, name, type = null, attrs = null,
     const stamp = await begin(await homeOf(ref, siteId));
     const src = await liveThing(ref);
     if (!String(reason ?? '').trim()) throw fail(400, 'a split needs a reason');
-    const snapped = at == null ? null : await snap(src.site_id, at);
+    const snapped = at == null ? null : await snap(src.home_id, at);
     const boundary = snapped?.boundary ?? null;
     const theirs = await currentRelationsOf(src.id);
     const chosen = relations.map((id) => {
@@ -656,7 +668,7 @@ export async function splitThing(ref, { siteId, name, type = null, attrs = null,
     }
     const ty = await typeRow(type ?? src.type);
     if (ty.kind !== src.kind) throw fail(400, `a ${src.kind} cannot be split into a ${ty.kind}`);
-    const made = await makeThing({ siteId: src.site_id, type: ty.type, name: name ?? `${src.name} (split)`, attrs: attrs ?? src.attrs, uid, validFrom: boundary }, stamp);
+    const made = await makeThing({ siteId: src.home_id, type: ty.type, name: name ?? `${src.name} (split)`, attrs: attrs ?? src.attrs, uid, validFrom: boundary }, stamp);
     const moved = await transferRelations(chosen, src, made, boundary, snapped?.changedAt ?? null, stamp);
     const tables = {};
     for (const [t, ids] of Object.entries(rows)) {
@@ -685,7 +697,7 @@ const when = (o = {}) => ({ at: o.at === undefined ? nowSec() : (o.at == null ? 
 async function inHome(ref, siteId, { strict = false } = {}) {
   if (siteId == null) throw bad('give siteId: a walk stays inside one home');
   const t = await resolveThing(ref);
-  if (t.site_id !== Number(siteId) && (strict || t.site_id != null)) throw fail(404, `no thing ${t.id} in home ${siteId}`);
+  if (t.home_id !== Number(siteId) && (strict || t.home_id != null)) throw fail(404, `no thing ${t.id} in home ${siteId}`);
   return t;
 }
 
@@ -711,7 +723,7 @@ export async function thingAsKnown(ref, { known = null } = {}) {
 export async function thingsOf(siteId, { kind = null, type = null, ...o } = {}) {
   const { at, known } = when(o);
   const rec = known == null ? 't.superseded_at IS NULL' : 't.recorded_at <= ? AND (t.superseded_at IS NULL OR t.superseded_at > ?)';
-  const rows = await db.prepare(`SELECT ${THING_COLS.split(', ').map((c) => `t.${c}`).join(', ')} FROM thing t WHERE t.site_id = ? AND ${rec}
+  const rows = await db.prepare(`SELECT ${THING_COLS.split(', ').map((c) => `t.${c}`).join(', ')} FROM thing t WHERE t.home_id = ? AND ${rec}
     AND (?::text IS NULL OR t.kind = ?) AND (?::text IS NULL OR t.type = ?) ORDER BY t.kind, t.type, t.name, t.id`)
     .all(siteId, ...(known == null ? [] : [known, known]), kind, kind, type, type);
   // the span of life is read from the versions as known, so a retirement made after `known` is not seen
@@ -723,9 +735,9 @@ export async function relationsAt(siteId, { rels = null, thing = null, ...o } = 
   const { at, known } = when(o);
   const v = visible('r', { at, known });
   const id = thing == null ? null : (await getThing(thing)).id;
-  return await db.prepare(`SELECT r.id, r.site_id, r.from_id, f.uid AS from_uid, r.from_port, r.rel, r.to_id, t.uid AS to_uid, r.to_port, r.required, r.valid_from, r.valid_to, r.changed_at, r.recorded_at, r.superseded_at
+  return await db.prepare(`SELECT r.id, r.home_id, r.from_id, f.uid AS from_uid, r.from_port, r.rel, r.to_id, t.uid AS to_uid, r.to_port, r.required, r.valid_from, r.valid_to, r.changed_at, r.recorded_at, r.superseded_at
       FROM thing_relation r JOIN thing f ON f.id = r.from_id JOIN thing t ON t.id = r.to_id
-      WHERE r.site_id IS NOT DISTINCT FROM ?::bigint AND ${v.sql} AND (?::jsonb IS NULL OR r.rel IN (SELECT jsonb_array_elements_text(?::jsonb)))
+      WHERE r.home_id IS NOT DISTINCT FROM ?::bigint AND ${v.sql} AND (?::jsonb IS NULL OR r.rel IN (SELECT jsonb_array_elements_text(?::jsonb)))
         AND (?::bigint IS NULL OR r.from_id = ? OR r.to_id = ?)
       ORDER BY r.rel, r.id`).all(siteId, ...v.params, rels && JSON.stringify(rels), rels && JSON.stringify(rels), id, id, id);
 }
@@ -742,7 +754,7 @@ export async function tree(ref, { siteId, rel = 'located_in', maxDepth = 20, ...
       SELECT ?::bigint, NULL::bigint, 0, ARRAY[?::bigint]
       UNION ALL
       SELECT e.from_id, d.id, d.depth + 1, d.path || e.from_id FROM down d JOIN thing_relation e ON e.to_id = d.id
-       WHERE e.rel = ? AND e.site_id = ?::bigint AND ${v.sql} AND NOT e.from_id = ANY(d.path) AND d.depth < ?
+       WHERE e.rel = ? AND e.home_id = ?::bigint AND ${v.sql} AND NOT e.from_id = ANY(d.path) AND d.depth < ?
     ) SELECT ${THING_COLS.split(', ').map((c) => `t.${c}`).join(', ')}, d.parent, d.depth FROM down d JOIN thing t ON t.id = d.id ORDER BY d.depth, t.name, t.id`).all(root.id, root.id, rel, siteId, ...v.params, maxDepth);
   const named = await knownAs(nodes, known);
   const byId = new Map(named.map((n) => [n.id, { ...n, children: [] }]));
@@ -759,7 +771,7 @@ export async function placeChain(ref, { siteId, rel = 'located_in', maxDepth = 2
       SELECT ?::bigint, 0, ARRAY[?::bigint]
       UNION ALL
       SELECT e.to_id, u.depth + 1, u.path || e.to_id FROM up u JOIN thing_relation e ON e.from_id = u.id
-       WHERE e.rel = ? AND e.site_id = ?::bigint AND ${v.sql} AND NOT e.to_id = ANY(u.path) AND u.depth < ?
+       WHERE e.rel = ? AND e.home_id = ?::bigint AND ${v.sql} AND NOT e.to_id = ANY(u.path) AND u.depth < ?
     ) SELECT ${THING_COLS.split(', ').map((c) => `t.${c}`).join(', ')}, u.depth FROM up u JOIN thing t ON t.id = u.id ORDER BY u.depth`).all(start.id, start.id, rel, siteId, ...v.params, maxDepth);
   return await knownAs(rows, known);
 }
@@ -779,7 +791,7 @@ export async function reach(ref, { siteId, rel = 'feeds', direction = 'out', max
   const depthOf = new Map([[start.id, 0]]);
   let frontier = [start.id];
   for (let depth = 1; depth <= maxDepth && frontier.length; depth++) {
-    const next = await db.prepare(`SELECT DISTINCT e.${far} AS id FROM thing_relation e WHERE e.${near} = ANY(?::bigint[]) AND e.rel = ? AND e.site_id = ?::bigint AND ${v.sql}`)
+    const next = await db.prepare(`SELECT DISTINCT e.${far} AS id FROM thing_relation e WHERE e.${near} = ANY(?::bigint[]) AND e.rel = ? AND e.home_id = ?::bigint AND ${v.sql}`)
       .all(idArray(frontier), rel, siteId, ...v.params);
     frontier = next.map((r) => r.id).filter((id) => !depthOf.has(id));
     for (const id of frontier) depthOf.set(id, depth);
@@ -803,7 +815,7 @@ export async function graph(siteId, { rels = null, ...o } = {}) {
   const have = new Set(nodes.map((n) => n.id));
   const extra = [...new Set(found.flatMap((e) => [e.from_id, e.to_id]))].filter((id) => !have.has(id));
   if (extra.length) {
-    const ctx = await db.prepare(`SELECT ${THING_COLS} FROM thing WHERE site_id IS NULL AND id = ANY(?::bigint[]) ORDER BY id`).all(idArray(extra));
+    const ctx = await db.prepare(`SELECT ${THING_COLS} FROM thing WHERE home_id IS NULL AND id = ANY(?::bigint[]) ORDER BY id`).all(idArray(extra));
     nodes.push(...await knownAs(ctx, known));
     for (const c of ctx) have.add(c.id);
   }

@@ -7,7 +7,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { useDb } from './helpers.js';
+import { useDb, erasing } from './helpers.js';
 
 await useDb();
 process.env.REQUIRE_LOGIN = '1';   // the main app: nobody signed in sees nothing
@@ -208,7 +208,7 @@ await test('connect: a wrong or incomplete login is refused and nothing is store
   const loose = (await db.prepare("INSERT INTO site (name, created_at) VALUES ('loose', 0) RETURNING id").get()).id;
   assert.equal((await browser()(`/api/sites/${loose}/providers/octopus`, { method: 'POST', body: { credentials: { apiKey: 'good', accountNumber: 'A-1234ABCD' } } })).status, 401);
   await db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings go with it
-  await db.prepare('DELETE FROM site WHERE id = ?').run(loose);
+  await erasing(loose, 'DELETE FROM site WHERE id = ?', loose);
 });
 
 await test('connect: SECRET_KEY missing -> 503, nothing stored', async () => {
@@ -262,7 +262,7 @@ await test('a stored login is bound to its home and key: copied to another home,
   const k = process.env.SECRET_KEY; process.env.SECRET_KEY = 'a-different-key-that-is-long-enough-0000';
   try { assert.match((await siteCredentials(site, 'octopus', { apiKey: 'X', accountNumber: 'Y' })).missing, /SECRET_KEY has changed/); } finally { process.env.SECRET_KEY = k; }
   await db.prepare('DELETE FROM binding WHERE site_id = ?').run(other.id);   // a home's bindings go with it
-  await db.prepare('DELETE FROM site WHERE id = ?').run(other.id);
+  await erasing(other.id, 'DELETE FROM site WHERE id = ?', other.id);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM connection_secret WHERE site_id = ?').get(other.id)).n, 0, 'deleting a home deletes its logins');
 });
 

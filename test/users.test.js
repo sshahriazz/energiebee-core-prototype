@@ -7,7 +7,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { useDb } from './helpers.js';
+import { useDb, erasing } from './helpers.js';
 
 await useDb();
 process.env.USER_SWITCHER = '1';
@@ -50,7 +50,7 @@ await test('no user header: only the homes no user owns (all of them before any 
   assert.equal((await call(`/api/sites/${loose}/now`, alice.id)).status, 404, 'a user sees only their own homes');
   await db.prepare('DELETE FROM binding WHERE site_id = ?').run(loose);   // a home's bindings and series go with it
   await db.prepare('DELETE FROM series WHERE site_id = ?').run(loose);
-  await db.prepare('DELETE FROM site WHERE id = ?').run(loose);
+  await erasing(loose, 'DELETE FROM site WHERE id = ?', loose);
   assert.equal(await visibleSiteIds(admin), null);
 });
 
@@ -142,7 +142,7 @@ await test('deleting a home drops its links', async () => {
   const tmp = (await db.prepare("INSERT INTO site (name, created_at) VALUES ('tmp', 0) RETURNING id").get()).id;
   await giveHome(nora.id, tmp);
   await db.prepare('DELETE FROM binding WHERE site_id = ?').run(tmp);   // a home's bindings go with it
-  await db.prepare('DELETE FROM site WHERE id = ?').run(tmp);
+  await erasing(tmp, 'DELETE FROM site WHERE id = ?', tmp);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM user_site WHERE site_id = ?').get(tmp)).n, 0);
 });
 

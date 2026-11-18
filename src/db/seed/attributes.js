@@ -253,6 +253,14 @@ export const DEVICE_KINDS = Object.freeze([
   k('hot_water_tank', 'Hot-water tank', 'passive', [], 'A hot-water cylinder as a physical store: heated by an immersion, boiler or heat pump.'),
   k('hot_water', 'Hot-water service', 'controllable', ['auto', 'heat_water'], 'The hot water planned as one (the cylinder and whatever heats it): the device kind of the device_action heat_water.'),
   k('smart_plug', 'Smart plug', 'controllable', ['on', 'off'], 'A switched socket (an appliance the planner may time).'),
+  // The things of the energy graph that are not a vendor's product but are devices of a home (a device thing needs a device row).
+  k('hub', 'Hub', 'passive', [], 'The local hub agent: devices are served_by it.'),
+  k('grid_connection', 'Grid connection', 'passive', [], 'The home\'s connection to the grid: where import and export cross.'),
+  k('home_supply', 'Home supply', 'passive', [], 'The consumer unit: where the home\'s loads hang.'),
+  k('pv_array', 'PV array', 'passive', [], 'One array of solar panels, with its own size and angles.'),
+  k('emitter', 'Emitter', 'passive', [], 'A radiator or an underfloor loop.'),
+  k('appliance', 'Appliance', 'passive', [], 'A load behind a plug or a circuit.'),
+  k('generic_device', 'Unknown device', 'passive', [], 'A device a hub announced that has no type yet.'),
 ]);
 
 export const ATTRIBUTE_DEF_COLUMNS = Object.freeze(['key', 'label', 'unit', 'value_type', 'min_value', 'max_value', 'step', 'allowed_values', 'json_shape',

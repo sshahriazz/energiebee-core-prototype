@@ -30,14 +30,13 @@ await test('a hub that discovered a device gives its uid, and it is kept; the sa
   const s = await createSite({ name: 'hub home' });
   const uid = '01900000-0000-7000-8000-000000000001';
   assert.equal((await addDevice({ siteId: s.id, kind: 'battery', provider: 'hub', externalRef: 'h1', uid })).uid, uid);
-  await assert.rejects(async () => await addDevice({ siteId: s.id, kind: 'battery', provider: 'hub', externalRef: 'h2', uid }), /UNIQUE constraint failed: device_uid_key/);
+  await assert.rejects(async () => await addDevice({ siteId: s.id, kind: 'battery', provider: 'hub', externalRef: 'h2', uid }), /UNIQUE constraint failed: thing_uid_key/);
 });
 
 await test('a copy to another database keeps every uid, whatever happens to the integer ids', async () => {
   // Things and the seeded thing types hold jsonb arrays and objects: the copy must send them as JSON text, not as Postgres arrays.
   const { createThing } = await import('../src/core/things.js');
   const home = await createSite({ name: 'thing copy home' });
-  await createThing({ siteId: home.id, type: 'house', name: 'thing copy house' });
   const t = await createThing({ siteId: home.id, type: 'inverter', name: 'copied inverter' });
   const before = await db.prepare('SELECT id, uid FROM device ORDER BY id').all();
   const typesBefore = await db.prepare('SELECT type, capabilities, ports, attribute_keys FROM thing_type ORDER BY type').all();

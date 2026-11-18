@@ -82,16 +82,16 @@ await test('slot boundaries: the next boundary on the home\'s grid, a change on 
 });
 
 await test('create and change: the type decides the kind, values are checked, every change is a version, a uid resolves', async () => {
-  const home = await mk('house', 'Home A', { timezone: 'Europe/London', slot_s: 1800, currency: 'GBP' });
+  const home = await T.updateThing(A, { siteId: A, attrs: { timezone: 'Europe/London', slot_s: 1800, currency: 'GBP' } });   // the home thing is made with its site (same id)
   assert.equal(home.kind, 'home');
   assert.match(home.uid, /^[0-9a-f-]{36}$/);
-  await refused(() => mk('house', 'Second home'), /thing_one_home/);
+  await refused(() => mk('house', 'Second home'), /made with its site/);
   await refused(() => mk('nonsense', 'x'), /unknown thing type/);
   await refused(() => T.createThing({ type: 'inverter', name: 'No home' }), /belongs to a home/);
   await refused(() => T.createThing({ siteId: A, type: 'tariff', name: 'Homed context' }), /shared context/);
   await refused(() => mk('battery', 'B', { pv_kwp: 3 }), /not carried by type battery/);
   await refused(() => mk('battery', 'B', { battery_kwh: -4 }), /battery_kwh/);               // checked by the registry row
-  await refused(() => mk('house', 'H', { slot_s: 1234 }), /slot_s/);                          // a key only things have
+  await refused(() => T.updateThing(A, { siteId: A, attrs: { slot_s: 1234 } }), /slot_s/);     // a key only things have
   await refused(() => mk('battery', 'B', { colour: 'red' }), /not carried/);
   await refused(() => mk('battery', '  '), /needs a name/);
   const hubUid = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b';
@@ -120,7 +120,7 @@ await test('create and change: the type decides the kind, values are checked, ev
 });
 
 // Home A for the rest: a floor, the garage and kitchen, the energy devices.
-const home = await T.getThing((await get("SELECT id FROM thing WHERE site_id = ? AND kind = 'home'", A)).id);
+const home = await T.getThing(A);
 const garage = await mk('garage', 'Garage');
 const kitchen = await mk('room', 'Kitchen');
 const living = await mk('room', 'Living room');
@@ -135,7 +135,7 @@ const plug = (await all("SELECT id FROM thing WHERE name = 'Kettle plug'"))[0];
 
 await test('relate: a change takes effect at the next slot boundary and keeps the exact moment (case 21)', async () => {
   const r = await T.relate({ from: plug.id, rel: 'located_in', to: garage.id, at: at(8, 5) });
-  assert.deepEqual([r.changed_at, r.valid_from, r.site_id], [at(8, 5), at(8, 30), A]);
+  assert.deepEqual([r.changed_at, r.valid_from, r.home_id], [at(8, 5), at(8, 30), A]);
   for (const [a, b] of [[floor, home], [kitchen, floor], [living, floor], [garage, home]]) await T.relate({ from: a.id, rel: 'located_in', to: b.id, at: at(0) });
   // the plug is moved from the garage to the kitchen at 14:10
   const m = await T.moveThing(plug.id, kitchen.uid, { at: at(14, 10) });
@@ -170,10 +170,9 @@ await test('slot length: the boundary follows the home\'s grid (the site row); a
   const quarter = await site('Quarter-hour home', 900);
   const q = (type, name, attrs) => T.createThing({ siteId: quarter, type, name, attrs });
   const Q = { siteId: quarter };
-  await refused(() => q('room', 'Room'), /needs its home thing/);
-  await refused(() => q('house', 'Quarter-hour home', { slot_s: 3600 }), /slot length of a home thing is the slot length of its site/);
-  await refused(() => q('house', 'Quarter-hour home', { timezone: 'Europe/Paris' }), /time zone of a home thing is the time zone of its site/);
-  await q('house', 'Quarter-hour home', { slot_s: 900, timezone: 'Europe/London' });
+  await refused(() => T.updateThing(quarter, { siteId: quarter, attrs: { slot_s: 3600 } }), /slot length of a home thing is the slot length of its site/);
+  await refused(() => T.updateThing(quarter, { siteId: quarter, attrs: { timezone: 'Europe/Paris' } }), /time zone of a home thing is the time zone of its site/);
+  await T.updateThing(quarter, { siteId: quarter, attrs: { slot_s: 900, timezone: 'Europe/London' } });
   const room = await q('room', 'Room');
   const lamp = await q('smart_plug', 'Lamp');
   assert.equal((await T.homeClock(quarter)).slotS, 900);
@@ -373,7 +372,6 @@ await test('merge: a placement is not written over a place the survivor already 
 
   await refused(() => T.mergeThings(b.id, a.id, { reason: 'r' }), /was merged into/);
   const siteB = await site('Home B');
-  await T.createThing({ siteId: siteB, type: 'house', name: 'Home B' });
   const other = await T.createThing({ siteId: siteB, type: 'smart_plug', name: 'Foreign plug' });
   await refused(() => T.mergeThings(b.id, other.id, { reason: 'r' }), /no thing .* in home/);
 });
@@ -420,7 +418,7 @@ await test('history and graph reads: shared context is a node, a query can ask f
   await T.relate({ from: meter.id, rel: 'supplied_on', to: tariff.id, at: at(0) });
   const g = await T.graph(A, { at: at(5), rels: ['supplied_on'] });
   assert.deepEqual(g.edges.map((e) => [e.rel, e.to_uid]), [['supplied_on', tariff.uid]]);
-  assert.ok(g.nodes.some((n) => n.id === tariff.id && n.site_id === null), 'the tariff is a node though it belongs to no home');
+  assert.ok(g.nodes.some((n) => n.id === tariff.id && n.home_id === null), 'the tariff is a node though it belongs to no home');
   assert.equal((await T.relationsAt(A, { at: null, rels: ['replaces'] })).length, 2, 'at null every window counts');
   assert.deepEqual(names(await T.thingsOf(A, { kind: 'space', at: at(5) })).sort(), ['Garage', 'Ground floor', 'Kitchen', 'Living room', 'Shed']);
   // a flow loop (battery <-> inverter): each thing once, at its shortest distance
@@ -428,9 +426,12 @@ await test('history and graph reads: shared context is a node, a query can ask f
   assert.deepEqual(r.map((x) => [x.name, x.depth]), [['Battery', 1], ['Consumer unit', 1]]);
 });
 
+// The tables that name a device point at the device THING (its detail row, device, has the same id: its own key is identity, not a reference).
+const DEVICE_KEYED = ['attribute_value.device_id:config', 'binding.device_id:config', 'channel.device_id:config', 'command.device_id:log', 'command_block.device_id:runtime', 'control_limit.device_id:config', 'device_attr_version.device_id:config', 'device_capability.device_id:config', 'plan_run_device.device_id:serving', 'plan_score.device_id:serving', 'plan_slot.device_id:serving', 'push_log.device_id:log', 'register_window.device_id:config', 'supply_price_slot.device_id:serving', 'tariff_agreement.device_id:config'];
+
 await test('every table that points at a thing is found, with the kind that decides how its rows move', async () => {
   const refs = await T.thingReferences();
-  assert.deepEqual(refs.map((r) => `${r.table}.${r.column}:${r.kind}`).sort(), ['thing_event.thing_id:log', 'thing_label.thing_id:registry', 'thing_note.thing_id:runtime', 'thing_reading.thing_id:fact', 'thing_tag.thing_id:config']);
+  assert.deepEqual(refs.map((r) => `${r.table}.${r.column}:${r.kind}`).sort(), [...DEVICE_KEYED, 'thing_event.thing_id:log', 'thing_label.thing_id:registry', 'thing_note.thing_id:runtime', 'thing_reading.thing_id:fact', 'thing_tag.thing_id:config']);
 });
 
 await test('the operations are atomic: a refusal after the work was done leaves the graph as it was', async () => {
@@ -462,7 +463,6 @@ await test('every change lands on a slot boundary of its home, on a 25-hour day 
   for (const slotS of [900, 1800, 3600]) {
     const S = await site(`Autumn home ${slotS}`, slotS);
     const make = (type, name) => T.createThing({ siteId: S, type, name });
-    await make('house', `Autumn home ${slotS}`);
     const room = await make('room', `Autumn room ${slotS}`);
     const lamp = await make('smart_plug', `Autumn lamp ${slotS}`);
     // a change in the last slot of the day ends on the day's midnight, 25 hours in
@@ -598,11 +598,10 @@ await test('one operation is one moment in record time: a read at its own stamp 
 
 await test('walks stay in one home, and a dense feeds network is walked once per thing', async () => {
   const siteC = await site('Home C');
-  await T.createThing({ siteId: siteC, type: 'house', name: 'Home C' });
   const tariff = await T.createThing({ type: 'tariff', name: 'Shared tariff', attrs: { provider: 'Acme' } });
   const mA = await mk('meter_import', 'Meter of A');
   const mC = await T.createThing({ siteId: siteC, type: 'meter_import', name: 'Meter of C' });
-  for (const m of [mA, mC]) await T.relate({ siteId: m.site_id, from: m.id, rel: 'supplied_on', to: tariff.id, at: at(0) });
+  for (const m of [mA, mC]) await T.relate({ siteId: m.home_id, from: m.id, rel: 'supplied_on', to: tariff.id, at: at(0) });
   assert.deepEqual(names(await T.reach(tariff.id, { siteId: A, rel: 'supplied_on', direction: 'in', at: at(1) })), ['Meter of A'], 'from shared context, only this home\'s meters');
   assert.deepEqual(names(await T.reach(tariff.id, { siteId: siteC, rel: 'supplied_on', direction: 'in', at: at(1) })), ['Meter of C']);
   await refused(() => T.reach(mC.id, { siteId: A, rel: 'supplied_on' }), /no thing .* in home/);
@@ -637,11 +636,19 @@ await test('input is checked and answered with a status: ids, uids, names, units
   assert.equal(await status(() => T.reach(plug.id, { siteId: A, direction: 'sideways' })), 400);
 });
 
-await test('a thing needs its home thing before anything else is put in its home', async () => {
-  const bare = await site('Bare home');
-  await refused(() => T.createThing({ siteId: bare, type: 'inverter', name: 'First' }), /needs its home thing/);
-  await T.createThing({ siteId: bare, type: 'flat', name: 'Bare home' });
-  assert.equal((await T.createThing({ siteId: bare, type: 'inverter', name: 'First' })).site_id, bare);
+await test('a site makes its home thing, a device row makes its device thing, and the library makes neither a home nor a second one', async () => {
+  const fresh = await site('Fresh home');
+  const home = await T.getThing(fresh);
+  assert.deepEqual([home.kind, home.type, home.home_id, home.name], ['home', 'house', fresh, 'Fresh home']);
+  await refused(() => T.createThing({ siteId: fresh, type: 'flat', name: 'Fresh home' }), /made with its site/);
+  const dev = await T.createThing({ siteId: fresh, type: 'inverter', name: 'First' });   // made through a device row
+  assert.equal(dev.home_id, fresh);
+  const row = await get('SELECT id, uid, kind, provider, label FROM device WHERE id = ?', dev.id);
+  assert.deepEqual([row.uid, row.kind, row.provider, row.label], [dev.uid, 'inverter', 'thing', 'First']);
+  await T.updateThing(dev.id, { siteId: fresh, name: 'First, renamed' });
+  assert.equal((await get('SELECT label FROM device WHERE id = ?', dev.id)).label, 'First, renamed', 'a rename is the device row\'s too');
+  await T.retireThing(dev.id, { siteId: fresh, at: at(10) });
+  assert.ok((await get('SELECT retired_at FROM device WHERE id = ?', dev.id)).retired_at > 0, 'a retirement is the device row\'s too');
 });
 
 await test('every table that points at a thing is understood: one column to thing(id); any other shape stops merge and split loudly', async () => {
@@ -657,7 +664,7 @@ await test('every table that points at a thing is understood: one column to thin
   assert.equal((await T.getThing(twinB.id)).merged_into, null, 'nothing was merged');
   await refused(() => T.splitThing(twinA.id, { reason: 'r' }), /do not understand/);
   await db.exec('DROP TABLE thing_by_pair; ALTER TABLE thing DROP CONSTRAINT thing_id_kind_tmp');
-  assert.equal((await T.thingReferences()).length, 5);
+  assert.equal((await T.thingReferences()).length, DEVICE_KEYED.length + 5);
 });
 
 await test('merge: no start is the earliest start, and a relation that ended with the dropped thing\'s scheduled retirement carries on for the survivor', async () => {
@@ -705,7 +712,6 @@ await test('retire: a date before everything the thing was put in is refused ins
 
 await test('writes name their home: a thing of another home is not found, and a database refusal comes with a status', async () => {
   const other = await site('Write guard home');
-  await T.createThing({ siteId: other, type: 'house', name: 'Write guard home' });
   const foreign = await T.createThing({ siteId: other, type: 'smart_plug', name: 'Foreign' });
   const status = async (fn) => { try { await fn(); } catch (e) { return [e.status, e.message]; } return null; };
   assert.equal((await status(() => raw.updateThing(foreign.id, { name: 'x' })))[0], 400, 'siteId is required');
@@ -720,7 +726,7 @@ await test('writes name their home: a thing of another home is not found, and a 
   assert.equal((await status(() => raw.unrelate(rel.id, { siteId: A })))[0], 404);
   assert.equal((await T.getThing(foreign.id)).name, 'Foreign', 'untouched');
   // what the database refuses is a conflict (409) or a value it cannot take (400), not a 500
-  assert.equal((await status(() => mk('house', 'Second home of A')))[0], 409, 'a second home thing');
+  assert.equal((await status(() => mk('house', 'Second home of A')))[0], 400, 'a home thing is made with its site, never by the library');
   assert.equal((await status(() => mk('hub', 'Same uid', {}, { uid: hub.uid })))[0], 409, 'a uid that exists');
   assert.equal((await status(() => mk('hub', 'Nul\u0000name')))[0], 400);
   assert.equal((await status(() => T.relate({ from: battery.id, rel: 'located_in', to: inverter.id, at: at(1) })))[0], 409, 'no rule allows it');

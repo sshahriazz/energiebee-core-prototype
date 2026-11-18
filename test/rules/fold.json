@@ -1,0 +1,17 @@
+{
+ "triggers": {
+  "device_delete_thing": [],
+  "device_is_thing": [
+   "a device is the detail of a device thing of its own home and kind: the same id and uid"
+  ],
+  "device_make_thing": [],
+  "device_sync_thing": [],
+  "site_delete_thing": [],
+  "site_is_home": [
+   "a site is the detail of a home thing: the same id and uid"
+  ],
+  "site_make_thing": [],
+  "site_sync_thing": []
+ },
+ "exclusions": []
+}

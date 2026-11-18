@@ -4,7 +4,7 @@
 // here syncs, and the fetch below fails any network call.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { useDb } from './helpers.js';
+import { useDb, erasing } from './helpers.js';
 
 await useDb();
 const calls = [];
@@ -269,7 +269,7 @@ await test('POST connections: allowed for the market, stored without secrets; re
 
 await test('the .env home takes its market from SITE_COUNTRY and only the connections that market allows', async () => {
   await db.prepare("DELETE FROM binding WHERE site_id IN (SELECT id FROM site WHERE env_key = 'env')").run();   // a home's bindings go with it
-  await db.prepare("DELETE FROM site WHERE env_key = 'env'").run();
+  await erasing(null, "DELETE FROM site WHERE env_key = 'env'");
   process.env.SITE_COUNTRY = 'FR';
   const id = await ensureEnvSite();
   delete process.env.SITE_COUNTRY;

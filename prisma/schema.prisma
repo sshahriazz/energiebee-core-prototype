@@ -380,6 +380,7 @@ model device {
   plan_slot           plan_slot[]
   push_log            push_log[]
   register_window     register_window[]
+  supply_price_slot   supply_price_slot[]
   tariff_agreement    tariff_agreement[]
 
   @@unique([site_id, provider, external_ref])
@@ -795,23 +796,24 @@ model rate_interval {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model raw_payload {
-  id            BigInt          @id @default(autoincrement())
-  source_id     BigInt
-  site_id       BigInt?
-  request       String?
-  fetched_at    BigInt
-  hash          String          @unique
-  file          String
-  status        String          @default("accepted")
-  reason        String?
-  command       command[]
-  forecast_fact forecast_fact[]
-  interval_fact interval_fact[]
-  plan_run      plan_run[]
-  push_log      push_log[]
-  rate_interval rate_interval[]
-  source        source          @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  reading       reading[]
+  id                BigInt             @id @default(autoincrement())
+  source_id         BigInt
+  site_id           BigInt?
+  request           String?
+  fetched_at        BigInt
+  hash              String             @unique
+  file              String
+  status            String             @default("accepted")
+  reason            String?
+  command           command[]
+  forecast_fact     forecast_fact[]
+  interval_fact     interval_fact[]
+  plan_run          plan_run[]
+  push_log          push_log[]
+  rate_interval     rate_interval[]
+  source            source             @relation(fields: [source_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  raw_payload_check raw_payload_check?
+  reading           reading[]
 
   @@index([site_id, status, fetched_at], map: "raw_payload_site_status")
 }
@@ -1002,8 +1004,11 @@ model site {
   home_key                         home_key?
   interval_fact                    interval_fact[]
   plan_run                         plan_run[]
+  price_dirty                      price_dirty?
   push_log                         push_log[]
   rate_interval                    rate_interval[]
+  raw_check_run                    raw_check_run[]
+  raw_payload_check                raw_payload_check[]
   reading                          reading[]
   rebuild_queue                    rebuild_queue[]
   replay_log                       replay_log[]
@@ -1020,8 +1025,10 @@ model site {
   site_region                      site_region[]
   site_setting                     site_setting[]
   site_version                     site_version?
+  supply_price_slot                supply_price_slot[]
   sync_run                         sync_run[]
   tariff_agreement                 tariff_agreement[]
+  tariff_price_run                 tariff_price_run[]
   tenant_site                      tenant_site?
   thing                            thing?
   thing_attr_version               thing_attr_version[]
@@ -1399,10 +1406,10 @@ model sync_run {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model tariff {
-  id                                 BigInt             @id @default(autoincrement())
+  id                                 BigInt              @id @default(autoincrement())
   provider                           String
   product_code                       String?
-  tariff_code                        String             @unique
+  tariff_code                        String              @unique
   fuel                               String
   direction                          String
   structure                          String
@@ -1415,13 +1422,17 @@ model tariff {
   origin                             String?
   origin_note                        String?
   default_register                   String?
-  taxes_in_price                     BigInt             @default(0)
+  taxes_in_price                     BigInt              @default(0)
   supplier_id                        BigInt?
+  price_dirty                        price_dirty?
   rate_interval                      rate_interval[]
   register_window                    register_window[]
-  currency_tariff_currencyTocurrency currency?          @relation("tariff_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
-  supplier                           supplier?          @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supply_price_slot                  supply_price_slot[]
+  currency_tariff_currencyTocurrency currency?           @relation("tariff_currencyTocurrency", fields: [currency], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  supplier                           supplier?           @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   tariff_agreement                   tariff_agreement[]
+  tariff_price_run                   tariff_price_run[]
+  tariff_price_state                 tariff_price_state?
   tariff_version                     tariff_version?
 
   @@index([structure, region], map: "tariff_structure_region")
@@ -1711,4 +1722,125 @@ model thing_op {
   @@index([other_id], map: "thing_op_other")
   @@index([site_id], map: "thing_op_site", where: raw("(site_id IS NOT NULL)"))
   @@index([thing_id], map: "thing_op_thing")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model price_dirty {
+  id         BigInt  @id @default(autoincrement())
+  scope      String
+  tariff_id  BigInt? @unique(map: "price_dirty_tariff", where: raw("(scope = 'tariff'::text)"))
+  country    String? @unique(map: "price_dirty_country", where: raw("(scope = 'country'::text)"))
+  site_id    BigInt? @unique(map: "price_dirty_home", where: raw("(scope = 'home'::text)"))
+  from_ts    BigInt
+  reason     String?
+  marked_at  BigInt
+  attempts   Int     @default(0)
+  last_error String?
+  site       site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tariff     tariff? @relation(fields: [tariff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model raw_check_run {
+  id         BigInt  @id @default(autoincrement())
+  site_id    BigInt?
+  ran_at     BigInt
+  trigger    String
+  checked    Int
+  ok         Int
+  mismatch   Int
+  corrupt    Int
+  missing    Int
+  unreadable Int
+  erased     Int
+  unsealed   Int
+  bytes      BigInt
+  ms         Int?
+  site       site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([site_id, id(sort: Desc)], map: "raw_check_run_site")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model raw_payload_check {
+  payload_id  BigInt      @id
+  site_id     BigInt?
+  checked_at  BigInt
+  state       String
+  raw_payload raw_payload @relation(fields: [payload_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  site        site?       @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([checked_at, payload_id], map: "raw_payload_check_oldest")
+  @@index([site_id], map: "raw_payload_check_problem", where: raw("(state <> ALL (ARRAY['ok'::text, 'erased'::text]))"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model supply_price_slot {
+  id               BigInt  @id @default(autoincrement())
+  site_id          BigInt
+  point            String
+  device_id        BigInt?
+  tariff_id        BigInt?
+  slot_start       BigInt
+  dur_s            Int
+  register         String?
+  unit_ex          Float?
+  supply_ex        Float?
+  vat              Float?
+  levy             Float?
+  unit_inc         Float?
+  fixed_inc        Float   @default(0)
+  weighted         BigInt  @default(0)
+  estimated        BigInt  @default(0)
+  capacity_unknown BigInt  @default(0)
+  tax_source       String?
+  tax_unverified   BigInt  @default(0)
+  lineage          Json
+  stamp            String
+  built_at         BigInt
+  device           device? @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  site             site    @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tariff           tariff? @relation(fields: [tariff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([site_id, point, dur_s, slot_start], map: "supply_price_slot_key")
+  @@index([device_id], map: "supply_price_slot_device", where: raw("(device_id IS NOT NULL)"))
+  @@index([tariff_id], map: "supply_price_slot_tariff", where: raw("(tariff_id IS NOT NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This table contains exclusion constraints and requires additional setup for migrations. Visit https://pris.ly/d/exclusion-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model tariff_price_run {
+  id             BigInt  @id @default(autoincrement())
+  tariff_id      BigInt
+  site_id        BigInt?
+  component      String
+  register       String
+  charge_period  String?
+  payment_method String  @default("ANY")
+  valid_from     BigInt
+  valid_to       BigInt?
+  price_ex_vat   Float
+  estimated      BigInt  @default(0)
+  origin         String?
+  lineage        Json
+  built_at       BigInt
+  site           site?   @relation(fields: [site_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tariff         tariff  @relation(fields: [tariff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([site_id], map: "tariff_price_run_site", where: raw("(site_id IS NOT NULL)"))
+  @@index([tariff_id, valid_from], map: "tariff_price_run_tariff_time")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model tariff_price_state {
+  tariff_id BigInt @id
+  stamp     String
+  built_at  BigInt
+  tariff    tariff @relation(fields: [tariff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }

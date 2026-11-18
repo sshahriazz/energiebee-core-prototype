@@ -7,6 +7,7 @@ import { db, tx } from '../db/db.js';
 import { readReadings, readIntervals } from './facts.js';
 import { holdSOf } from './inputs.js';
 import { aggregateSlot } from './slot-agg.js';
+import { buildDerivedSlots } from './derived-slots.js';
 
 export const FUSION_TOLERANCE = 0.05;   // a shape that is more than this far from its total is flagged (R6)
 import { dayBounds, slotsOfDay, slotLength, nowSec, daysBetween } from './time.js';
@@ -118,10 +119,11 @@ export async function setFusion(pointId, { shape, total, tolerance = null }) {
 
 /** Every current point of a home, for the days fromDate..toDate. Returns { points, slots }. */
 export async function buildHomePointSlots(siteId, fromDate, toDate, opts = {}) {
-  const points = await db.prepare('SELECT id FROM point WHERE home_id = ? AND superseded_at IS NULL ORDER BY id').all(siteId);
+  const points = await db.prepare("SELECT id FROM point WHERE home_id = ? AND superseded_at IS NULL AND key NOT LIKE 'derived\\_%' ORDER BY id").all(siteId);
   let slots = 0;
   for (const { id } of points) slots += (await buildPointSlots(Number(id), fromDate, toDate, opts)).slots;
-  return { points: points.length, slots };
+  const derived = await buildDerivedSlots(siteId, fromDate, toDate, opts);   // after the measured slots they are worked out of
+  return { points: points.length, slots, derived: derived.slots };
 }
 
 /** The slots of a point in [from, to): rows as stored. */
